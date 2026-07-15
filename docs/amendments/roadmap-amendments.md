@@ -1,52 +1,52 @@
-# Roadmap
-## Canonical correction to the exploratory roadmap
+# Дорожная карта
+## Каноническая корректировка исследовательского плана
 
-**Status:** canonical roadmap amendment  
-**Version:** 0.2  
-**Date:** 15 July 2026
+**Статус:** каноническое дополнение к дорожной карте  
+**Версия:** 0.3  
+**Дата:** 15 июля 2026
 
-Calendar estimates are removed because they were generated without implementation evidence.
+Календарные оценки удалены, поскольку они были сгенерированы без подтверждения реальной разработкой.
 
-## Stage 0: Playable local chat
+## Этап 0. Играбельный локальный чат
 
-Campaign CRUD, provider config, streaming, stop, raw persistence, restart and continue, undo/regenerate, export and error handling.
+Управление кампанией, настройка провайдера, потоковая генерация, остановка ответа, сохранение сырого журнала, перезапуск и продолжение, отмена или регенерация, экспорт и обработка ошибок.
 
-Exit: one campaign runs for 50 turns and survives restart.
+Критерий выхода: одна кампания проходит не менее пятидесяти ходов и продолжается после перезапуска.
 
-## Stage 1: Manual canon and scene theses
+## Этап 1. Ручной канон и тезисы сцены
 
-Scenes, participants, Scene Thesis UI, characters, manual facts/beliefs/goals/relationships, Memory Inspector and actor-scoped context.
+Сцены, участники, интерфейс тезисов сцены, персонажи, ручные факты, убеждения, цели и отношения, инспектор памяти и контекст, ограниченный знаниями действующего персонажа.
 
-Exit: a controlled scenario proves an NPC does not receive a fact they do not know.
+Критерий выхода: контролируемый сценарий доказывает, что NPC не получает неизвестный ему факт.
 
-## Stage 1.5: Assisted Canon
+## Этап 1.5. Assisted Canon
 
-At most five proposed changes after a response; accept/reject/edit; proposals persist across restart; accepted records enter future context. No auto-approve.
+После ответа создаётся не более пяти предлагаемых изменений. Пользователь может принять, отклонить или изменить их. Предложения сохраняются после перезапуска, а принятые записи попадают в будущий контекст. Автоматического принятия нет.
 
-## Stage 2: Thin atmosphere slice
+## Этап 2. Минимальный атмосферный слой
 
-Manual ComfyUI scene generation with one approved reference per character, saved workflow metadata, local music library, scene mood signature, weighted selection and cooldown.
+Ручная генерация сцены через ComfyUI с одним утверждённым референсом на персонажа, сохранение метаданных процесса генерации, локальная музыкальная библиотека, музыкальная сигнатура сцены, взвешенный выбор и защита от повторов.
 
-## Stage 3: Long-campaign retrieval
+## Этап 3. Поиск для длинной кампании
 
-Scene summaries, FTS5, entity-aware filtering, optional sqlite-vec, context provenance and rebuild.
+Резюме сцен, FTS5, фильтрация по сущностям, необязательный sqlite-vec, происхождение контекста и пересборка производной памяти.
 
-## Stage 4: Continuity assistance
+## Этап 4. Помощь в сохранении непрерывности
 
-Start with invalid entity/status references, item placement conflicts, actor knowledge boundary checks, locked-thesis conflicts and soft warnings. Do not begin with several semantic LLM judges on every turn.
+Начать с неверных ссылок на сущности и статусы, конфликтов положения предметов, нарушения границ знаний персонажа, конфликтов с закреплёнными тезисами и мягких предупреждений. Не начинать с нескольких смысловых LLM-проверок на каждом ходе.
 
-## Stage 5: Advanced atmosphere
+## Этап 5. Продвинутая атмосфера
 
-Multiple references, IP-Adapter/InstantID, pose/composition controls, multi-character scenes, automatic visual triggers and adaptive music.
+Несколько референсов, IP-Adapter, InstantID, управление позой и композицией, сцены с несколькими персонажами, автоматические визуальные триггеры и адаптивная музыка.
 
-## Stage 6: Optional mechanics
+## Этап 6. Необязательные игровые механики
 
-Dice tools and one concrete ruleset or systemless mechanics. No generic plugin framework before a second ruleset exists.
+Инструменты для бросков и одна конкретная система правил либо свободный режим. Универсальная плагинная архитектура не создаётся до появления второй реально поддерживаемой системы.
 
-## Phase 2: Separate decision
+## Фаза 2. Отдельное решение
 
-Multiplayer, server mode, PostgreSQL, auth/roles, private player knowledge and concurrent state need their own product foundation.
+Многопользовательский режим, серверная работа, PostgreSQL, аутентификация и роли, приватные знания игроков и конкурентное изменение состояния требуют отдельного продуктового фундамента.
 
-## Removed from early scope
+## Убрано из раннего объёма
 
-Full branch tree, branch merge, relationship graph, PostgreSQL adapter, semantic validation of every response and unsupported calendar estimates.
+Полное дерево веток, слияние веток, граф отношений, адаптер PostgreSQL, смысловая проверка каждого ответа и неподтверждённые календарные оценки.
