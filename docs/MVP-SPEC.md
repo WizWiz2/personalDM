@@ -1,123 +1,123 @@
-# MVP Specification
+# Спецификация MVP
 ## Первый проверяемый вертикальный срез
 
-**Статус:** канонический для MVP  
-**Версия:** 0.1  
+**Статус:** канонический документ MVP  
+**Версия:** 0.2  
 **Дата:** 15 июля 2026
 
 ## Цель
 
 Проверить, что Campaign Truth Engine делает длинную AI-кампанию устойчивее обычного чата.
 
-MVP доказывает три вещи:
+MVP должен доказать три вещи:
 
-1. кампания переживает restart;
+1. кампания переживает перезапуск приложения;
 2. пользователь управляет тезисами и каноном;
 3. NPC не получает недоступные ему сведения.
 
 ## Основной сценарий
 
-Пользователь создаёт кампанию, подключает LLM, создаёт сцену и персонажей, добавляет тезисы, играет, просматривает proposed changes, принимает или исправляет их, перезапускает приложение, продолжает игру, проверяет источник знания NPC, регенерирует плохой ответ, вручную рисует сцену и запускает локальный музыкальный фон.
+Пользователь создаёт кампанию, подключает LLM, создаёт сцену и персонажей, добавляет тезисы, играет, просматривает предлагаемые изменения, принимает или исправляет их, перезапускает приложение, продолжает игру, проверяет источник знания NPC, регенерирует плохой ответ, вручную рисует сцену и запускает локальный музыкальный фон.
 
-## Scope
+## Объём MVP
 
-### Campaign и provider
+### Кампания и провайдер
 
-Campaign CRUD, OpenAI-compatible base URL, model name, optional API key, connection test, streaming, manual context length fallback.
+Создание, чтение, изменение и удаление кампании; OpenAI-совместимый базовый URL; имя модели; необязательный API-ключ; проверка подключения; потоковая генерация; резервное ручное указание размера контекста.
 
-### Chat
+### Чат
 
-User turn, DM response, streaming, stop, regenerate, undo last pair, raw history.
+Ход пользователя, ответ ДМа, потоковая генерация, остановка ответа, регенерация, отмена последней пары сообщений, сырой журнал истории.
 
-### Scene и thesis
+### Сцена и тезис сцены
 
-Title, location text, participants, mood, tension, active theses. Thesis supports create/edit/lock/resolve, visibility и source turn.
+Название, текстовое описание локации, участники, настроение, напряжение и активные тезисы. Тезис поддерживает создание, изменение, закрепление и завершение, а также область видимости и ссылку на исходный ход.
 
-### Character, Fact, Belief, Goal, Relationship Assertion
+### Персонаж, факт, убеждение, цель и утверждение об отношениях
 
-Manual creation plus provenance. Belief is character-scoped. Relationship has narrative type/description/reason and optional intensity.
+Ручное создание с указанием происхождения. Убеждение принадлежит конкретному персонажу. Отношение имеет повествовательный тип, описание, причину и необязательную интенсивность.
 
-### Memory Inspector
+### Инспектор памяти
 
-List facts and beliefs, show source turn, edit/supersede, show active scene theses.
+Список фактов и убеждений, показ исходного хода, изменение или замена записи, показ активных тезисов сцены.
 
 ### Assisted Canon
 
-After each DM response produce at most five proposals: fact, event, relationship assertion, scene thesis or movement. Every proposal supports accept, reject, edit. No auto-approve.
+После каждого ответа ДМа система предлагает не более пяти изменений: факт, событие, утверждение об отношениях, тезис сцены или перемещение. Каждое предложение можно принять, отклонить или изменить. Автоматическое принятие отключено.
 
-### Image slice
+### Минимальный слой изображений
 
-ComfyUI endpoint, one approved reference per character, manual «Generate scene», save prompt/workflow/seed/output path. No automatic generation.
+Подключение к ComfyUI, один утверждённый референс на персонажа, ручная команда «Нарисовать сцену», сохранение запроса, процесса генерации, начального значения и пути к результату. Автоматической генерации нет.
 
-### Music slice
+### Минимальный музыкальный слой
 
-Local folder, mood tags, current scene selection, recent-track cooldown, manual next/stop.
+Локальная папка с музыкой, теги настроения, выбор для текущей сцены, защита от недавних повторов, ручные команды «Следующий трек» и «Стоп».
 
-## Turn pipeline
+## Конвейер обработки хода
 
 ```text
-persist user input
-→ compile common scene context
-→ build actor-scoped packet
-→ stream narrative response
-→ persist response
-→ extract proposed changes
-→ deterministic validation
-→ user review
-→ commit accepted changes
-→ queue summary/index work
+сохранить ввод пользователя
+→ собрать общий контекст сцены
+→ построить пакет контекста действующего персонажа
+→ потоково сгенерировать повествовательный ответ
+→ сохранить ответ
+→ извлечь предлагаемые изменения
+→ выполнить детерминированную проверку
+→ показать предложения пользователю
+→ применить принятые изменения
+→ поставить в очередь резюме и индексацию
 ```
 
-Actor packet contains only public scene state, visible theses, the actor profile, goals, beliefs, relationships to present entities and memories known by the actor.
+Пакет действующего персонажа содержит только публичное состояние сцены, видимые тезисы, профиль персонажа, его цели, убеждения, отношения к присутствующим сущностям и известные ему воспоминания.
 
-## Streaming semantics
+## Семантика потоковой генерации
 
-Narrative text is visible before semantic continuity analysis. Late semantic checks produce warnings. State changes remain proposed until validated. Typed tools may reject impossible actions before commit.
+Повествовательный текст становится видимым до смысловой проверки непрерывности. Поздние смысловые проверки создают предупреждения. Изменения состояния остаются предложениями до проверки. Типизированные инструменты могут отвергнуть невозможные действия до применения.
 
-## Minimal data model
+## Минимальная модель данных
 
-campaigns, provider_configs, turns, scenes, scene_participants, scene_theses, entities, characters, character_goals, facts, beliefs, relationship_assertions, events, proposed_changes, media_assets, tracks, playback_history.
+`campaigns`, `provider_configs`, `turns`, `scenes`, `scene_participants`, `scene_theses`, `entities`, `characters`, `character_goals`, `facts`, `beliefs`, `relationship_assertions`, `events`, `proposed_changes`, `media_assets`, `tracks`, `playback_history`.
 
-A turn has `parent_turn_id` and status `active | alternative | undone`. This enables regenerate/undo without a full branch system.
+Ход имеет `parent_turn_id` и статус `active | alternative | undone`. Это позволяет реализовать регенерацию и отмену без полноценной системы веток.
 
-## Deterministic validation
+## Детерминированная проверка
 
-MVP validates explicit data only: entity existence, active status, scene membership for state-changing actions, exclusive item placement, correct belief owner, valid source turn and thesis visibility.
+MVP проверяет только явные структурированные данные: существование сущности, активный статус, участие в сцене для изменяющих состояние действий, единственное текущее положение предмета, правильного владельца убеждения, корректную ссылку на исходный ход и область видимости тезиса.
 
-It does not claim SQL can validate arbitrary prose.
+Система не утверждает, что SQL способен проверять смысл произвольной прозы.
 
-## Context order
+## Порядок контекста
 
-1. system and campaign instructions;
-2. current scene;
-3. active scene theses;
-4. actor packet;
-5. recent turns;
-6. accepted facts/events;
-7. retrieved older memory;
-8. reserved output budget.
+1. системные инструкции и инструкции кампании;
+2. текущая сцена;
+3. активные тезисы сцены;
+4. пакет действующего персонажа;
+5. последние ходы;
+6. принятые факты и события;
+7. найденная старая память;
+8. зарезервированный бюджет ответа.
 
-Compiler metadata records included/excluded blocks, token estimate, source IDs and actor.
+Метаданные компилятора хранят включённые и исключённые блоки, оценку токенов, идентификаторы источников и действующего персонажа.
 
-## Storage
+## Хранилище
 
-Only SQLite is implemented. Use WAL, Alembic, backup before migration, relative media paths. FTS5 comes after scene summaries; sqlite-vec is optional. Raw archive in SQLite is canonical; JSONL/Markdown are exports.
+Реализуется только SQLite. Используются WAL, Alembic, резервная копия перед миграцией и относительные пути к медиафайлам. FTS5 добавляется после появления резюме сцен; sqlite-vec остаётся необязательным. Сырой архив в SQLite является каноническим, JSONL и Markdown используются для экспорта.
 
-## Acceptance tests
+## Критерии приёмки
 
-- 50 turns survive backend restart.
-- Given Safira knows the king is alive and Liara believes he is dead, Liara's actor packet does not include the true fact.
-- A belief links to its source turn.
-- Superseded facts stop entering future packets.
-- Regenerate preserves old response as alternative.
-- Only accepted proposals enter future context.
-- Scene image stores workflow metadata.
-- Music avoids the previous three tracks when alternatives exist.
+- Пятьдесят ходов сохраняются после перезапуска backend.
+- Если Сафира знает, что король жив, а Лиара считает его мёртвым, пакет Лиары не содержит истинный факт.
+- Убеждение ссылается на исходный ход.
+- Заменённые факты перестают попадать в будущий контекст.
+- Регенерация сохраняет старый ответ как альтернативный.
+- В будущий контекст попадают только принятые предложения.
+- Изображение сцены сохраняет метаданные процесса генерации.
+- Музыка не повторяет предыдущие три трека, когда есть альтернативы.
 
-## Non-goals
+## Не является целью MVP
 
-Full event-sourced replay, named branch trees, branch merge, PostgreSQL, server mode, multiplayer, D&D automation, automatic image generation, perfect identity consistency and external streaming music integration.
+Полное воспроизведение состояния из событий, именованные деревья веток, слияние веток, PostgreSQL, серверный режим, многопользовательская игра, автоматизация D&D, автоматическая генерация изображений, идеальная визуальная консистентность и интеграция с внешними музыкальными сервисами.
 
-## Definition of done
+## Определение готовности
 
-The MVP is pleasant enough to run one real existing campaign for several sessions and demonstrates at least one prevented knowledge leak and one repaired memory error.
+MVP достаточно удобен, чтобы провести несколько игровых сессий одной реальной существующей кампании, и демонстрирует как минимум один предотвращённый перенос секретного знания и одну успешно исправленную ошибку памяти.

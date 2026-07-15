@@ -1,40 +1,40 @@
-# ADR-007: Turn pipeline and actor-scoped knowledge
+# ADR-007: Конвейер хода и граница знаний персонажа
 
-**Status:** Accepted  
-**Date:** 15 July 2026
+**Статус:** принято  
+**Дата:** 15 июля 2026
 
-## Context
+## Контекст
 
-Earlier documents described conflicting orders for Narrative LLM, Memory Scribe, Continuity Checker and state commit. They also proposed passing knowledge for all present NPCs in one shared context.
+В ранних документах порядок вызовов нарративной LLM, `Memory Scribe`, `Continuity Checker` и применения состояния описывался по-разному. Также предлагалось передавать знания всех присутствующих NPC в одном общем контексте.
 
-## Decision
+## Решение
 
-Use this pipeline:
+Использовать следующий конвейер:
 
 ```text
-persist input
-→ compile context
-→ stream narrative response
-→ persist response
-→ extract proposed changes
-→ deterministic validation
-→ human review / commit
-→ async summaries and semantic warnings
+сохранить ввод
+→ собрать контекст
+→ потоково сгенерировать повествовательный ответ
+→ сохранить ответ
+→ извлечь предлагаемые изменения
+→ выполнить детерминированную проверку
+→ показать пользователю или применить
+→ асинхронно создать резюме и смысловые предупреждения
 ```
 
-For any significant NPC action or reply, compile an actor-scoped packet. Facts unavailable to the actor are excluded rather than merely labelled secret.
+Для каждого значимого действия или ответа NPC формируется отдельный пакет контекста действующего персонажа. Недоступные ему факты исключаются, а не просто помечаются как секретные.
 
-## Consequences
+## Последствия
 
-- Memory Scribe produces proposals before commit.
-- Deterministic validators operate on typed proposals and tool calls.
-- Semantic continuity checks are warnings, not retroactive blockers.
-- Common scene context contains only observable state.
-- Private knowledge is supplied only in the relevant actor packet.
-- Context snapshots record actor and source IDs.
+- `Memory Scribe` создаёт предложения до применения состояния.
+- Детерминированные проверки работают с типизированными предложениями и вызовами инструментов.
+- Смысловые проверки непрерывности создают предупреждения, но не блокируют уже показанный текст задним числом.
+- Общий контекст сцены содержит только наблюдаемое состояние.
+- Приватные знания передаются только в пакет соответствующего персонажа.
+- Снимок контекста хранит идентификатор действующего персонажа и идентификаторы источников.
 
-## Rejected alternatives
+## Отклонённые варианты
 
-- **All NPC knowledge in one prompt:** rejected because instructions are weaker than information boundaries.
-- **Validate before streaming:** rejected for MVP because it requires buffering the response.
-- **Memory Scribe after commit:** rejected because Scribe proposes the changes that commit consumes.
+- **Все знания NPC в одном запросе:** отклонено, поскольку информационная граница надёжнее инструкции «не использовать секреты».
+- **Проверка до потокового показа:** отклонено для MVP, поскольку потребовало бы буферизовать весь ответ.
+- **`Memory Scribe` после применения состояния:** отклонено, поскольку писец формирует изменения, которые затем проверяются и применяются.

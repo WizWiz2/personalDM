@@ -1,33 +1,33 @@
-# Documentation map
+# Карта документации
 
-This repository contains canonical specifications and exploratory research. They are not equally authoritative.
+В репозитории есть канонические спецификации и исследовательские материалы. Они имеют разный приоритет.
 
-## Precedence
+## Порядок приоритета
 
-1. Accepted ADR
+1. Принятые ADR
 2. `MVP-SPEC.md`
 3. `product-foundation.md`
-4. Proposed ADR
-5. Amendments and research notes
+4. Предлагаемые ADR
+5. Дополнения и исследовательские заметки
 
-## Canonical documents
+## Канонические документы
 
-- `product-foundation.md` — product vision, priorities and scope.
-- `MVP-SPEC.md` — implementable MVP contract.
-- Accepted ADRs — decisions that override general documents.
+- `product-foundation.md` — видение продукта, приоритеты и границы.
+- `MVP-SPEC.md` — исполнимый контракт первого MVP.
+- Принятые ADR — решения, которые уточняют или переопределяют общие документы.
 
-## Current priorities
+## Текущие приоритеты
 
-- **P0:** local runtime, provider connection, immutable turn log, restart and continue.
-- **P1:** scenes, scene theses, characters, facts, beliefs, goals, relationships, inspectable memory.
-- **P2:** assisted canon plus manual scene image generation and simple local music.
-- **P3:** retrieval, provenance tooling and continuity warnings.
-- **P4:** advanced image consistency, music direction, rulesets and multiplayer.
+- **P0:** локальный запуск, подключение провайдера, неизменяемый журнал ходов, перезапуск и продолжение кампании.
+- **P1:** сцены, тезисы сцены, персонажи, факты, убеждения, цели, отношения и проверяемая память.
+- **P2:** Assisted Canon, ручная генерация изображения сцены и простая локальная музыка.
+- **P3:** поиск по памяти, происхождение записей и мягкие предупреждения о нарушении непрерывности.
+- **P4:** продвинутая визуальная консистентность, музыкальная режиссура, правила и многопользовательский режим.
 
-## Boundaries
+## Зафиксированные границы
 
-- SQLite is the only MVP storage backend.
-- PostgreSQL is future server mode, not an early adapter.
-- The LLM never receives all NPC secrets in one shared context.
-- Relationships are assertions with reasons and provenance; numeric axes are optional views.
-- Full branching is outside MVP. MVP supports undo and regenerate.
+- SQLite — единственное хранилище MVP.
+- PostgreSQL относится к будущему серверному режиму и не реализуется ранним адаптером.
+- LLM не получает секреты всех NPC в одном общем контексте.
+- Отношения хранятся как утверждения с причинами и происхождением; числовые шкалы являются необязательным представлением.
+- Полноценное ветвление не входит в MVP. MVP поддерживает отмену последнего хода и регенерацию ответа.

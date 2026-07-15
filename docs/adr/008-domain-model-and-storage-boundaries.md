@@ -1,38 +1,38 @@
-# ADR-008: Domain model and storage boundaries
+# ADR-008: Границы доменной модели и хранения
 
-**Status:** Accepted  
-**Date:** 15 July 2026
+**Статус:** принято  
+**Дата:** 15 июля 2026
 
-## Decision
+## Решение
 
-### Storage
+### Хранилище
 
-SQLite is the only MVP database. PostgreSQL is a future server-mode decision. Raw turns/events in SQLite are canonical; JSONL and Markdown are exports.
+SQLite — единственная база данных MVP. PostgreSQL относится к будущему серверному режиму. Сырые ходы и события в SQLite являются каноническими; JSONL и Markdown используются для экспорта.
 
-### Locations
+### Локации
 
-`Character.current_location_id` is canonical. Location occupants are queried, not stored as a second mutable list.
+`Character.current_location_id` является источником истины. Список находящихся в локации персонажей вычисляется запросом и не хранится вторым изменяемым списком.
 
-### Items
+### Предметы
 
-An item has exactly one current placement: owner, location, container item or unknown. A database constraint enforces exclusivity.
+Предмет имеет ровно одно текущее положение: владелец, локация, контейнер или неизвестное положение. Ограничение базы данных обеспечивает взаимоисключение вариантов.
 
-### Goals
+### Цели
 
-Goals are first-class rows with description, priority, status, secrecy, source and validity. They are not JSON arrays.
+Цели являются отдельными записями с описанием, приоритетом, статусом, секретностью, источником и сроком действия. Они не хранятся JSON-массивами.
 
-### Secrets and beliefs
+### Секреты и убеждения
 
-Secret backstory is represented with facts, visibility and character beliefs whenever possible. Biography prose does not replace structured truth.
+Тайная биография по возможности представляется фактами, областью видимости и убеждениями персонажей. Биографическая проза не заменяет структурированный канон.
 
-### Relationships
+### Отношения
 
-Relationships are assertion records with type, optional intensity, narrative description, reason, provenance, validity and visibility. Numeric dashboards may be derived later.
+Отношения хранятся как утверждения с типом, необязательной интенсивностью, повествовательным описанием, причиной, происхождением, сроком действия и видимостью. Числовые панели могут быть построены позднее как производное представление.
 
-### Alternatives and undo
+### Альтернативы и отмена
 
-MVP uses `parent_turn_id` and turn status for regenerate/undo. Full named branch trees and replay are deferred.
+MVP использует `parent_turn_id` и статус хода для регенерации и отмены. Полные именованные деревья веток и воспроизведение состояния откладываются.
 
-## Consequences
+## Последствия
 
-Fewer synchronisation bugs, clearer provenance and simpler MVP storage. Some joins are accepted. PostgreSQL and relationship graphs remain future work.
+Снижается риск рассинхронизации, происхождение данных становится понятнее, а хранилище MVP остаётся проще. Дополнительные соединения таблиц принимаются как разумная цена. PostgreSQL и граф отношений остаются будущей работой.

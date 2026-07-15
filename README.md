@@ -1,15 +1,15 @@
 # personalDM
 
-Local-first AI Game Master for long-running tabletop RPG campaigns.
+Локальный AI-мастер для продолжительных кампаний в настольных ролевых играх.
 
-The core is a **Campaign Truth Engine**: canon is separate from generated prose, NPC knowledge is scoped per character, and every important memory can be inspected and corrected.
+Ядро продукта — **Campaign Truth Engine**, движок истины кампании. Он отделяет канон от сгенерированной прозы, ограничивает знания каждого NPC доступной ему информацией и позволяет просматривать и исправлять важные записи памяти.
 
-## Documentation
+## Документация
 
-1. [`docs/product-foundation.md`](docs/product-foundation.md) — canonical vision and priorities.
-2. [`docs/MVP-SPEC.md`](docs/MVP-SPEC.md) — implementable first vertical slice.
-3. [`docs/README.md`](docs/README.md) — document map and precedence.
-4. [`docs/adr/`](docs/adr/) — architecture decisions.
-5. [`docs/amendments/`](docs/amendments/) — exploratory research, not automatically normative.
+1. [`docs/product-foundation.md`](docs/product-foundation.md) — каноническое видение продукта и приоритеты.
+2. [`docs/MVP-SPEC.md`](docs/MVP-SPEC.md) — реализуемый первый вертикальный срез.
+3. [`docs/README.md`](docs/README.md) — карта документов и порядок их приоритета.
+4. [`docs/adr/`](docs/adr/) — принятые и предлагаемые архитектурные решения.
+5. [`docs/amendments/`](docs/amendments/) — исследовательские дополнения, которые не становятся нормативными автоматически.
 
-**Delivery principle:** memory and scene theses first; a thin image/music slice immediately after the basic memory loop; advanced continuity and media later.
+**Принцип поставки:** сначала память и тезисы сцены; сразу после базового цикла памяти — минимальный слой изображений и музыки; сложная проверка непротиворечивости и продвинутая медиарежиссура появляются позже.
