@@ -13,7 +13,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
-from app.models.campaign import CampaignCreate
+from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.scene import SceneCreate
 from app.models.entity import EntityCreate, EntityType
 from app.models.character import CharacterCreate, CharacterUpdate
@@ -234,7 +234,7 @@ async def play_game_loop(campaign_id: UUID, session: AsyncSession, campaign_serv
             title="Introduction Scene",
             location_description="A quiet tavern crossroad"
         ))
-        campaign = await campaign_service.update_campaign(campaign_id, CampaignCreate(
+        campaign = await campaign_service.update_campaign(campaign_id, CampaignUpdate(
             name=campaign.name,
             current_scene_id=scene.id
         ))

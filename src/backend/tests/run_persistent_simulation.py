@@ -16,7 +16,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
-from app.models.campaign import CampaignCreate
+from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.scene import SceneCreate
 from app.models.entity import EntityCreate, EntityType
 from app.models.character import CharacterCreate
@@ -259,7 +259,7 @@ async def run_persistent_simulation():
             await scene_repo.add_participant(scene.id, npc.id)
             
         # Update campaign's current scene
-        await campaign_service.update_campaign(campaign_id, CampaignCreate(
+        await campaign_service.update_campaign(campaign_id, CampaignUpdate(
             name="Хроники Бездны: Сага о 20 Спутниках",
             current_scene_id=scene.id
         ))
