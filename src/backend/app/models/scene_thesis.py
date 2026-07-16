@@ -1,7 +1,9 @@
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict
+
+from pydantic import BaseModel, ConfigDict, Field
+
 
 class ThesisType(str, Enum):
     CANON = "canon"
@@ -13,13 +15,15 @@ class ThesisType(str, Enum):
     VISUAL_STATE = "visual_state"
     MUSIC_MOOD = "music_mood"
 
+
 class SceneThesisCreate(BaseModel):
     thesis_type: ThesisType
     text: str
     priority: int = 0
-    visibility: str = "dm"  # 'dm', 'public', 'character_only'
+    visibility: str = "dm"
     pinned: bool = False
-    related_entity_ids: list[UUID] = []
+    related_entity_ids: list[UUID] = Field(default_factory=list)
+
 
 class SceneThesisRead(BaseModel):
     id: UUID
@@ -27,15 +31,16 @@ class SceneThesisRead(BaseModel):
     thesis_type: str
     text: str
     priority: int
-    status: str  # 'active', 'resolved', 'superseded'
+    status: str
     visibility: str
-    source_turn_id: int | None
+    source_turn_id: UUID | None
     pinned: bool
-    related_entity_ids: list[UUID] = []
+    related_entity_ids: list[UUID] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class SceneThesisUpdate(BaseModel):
     text: str | None = None
