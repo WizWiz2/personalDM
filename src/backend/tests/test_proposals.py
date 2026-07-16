@@ -109,6 +109,7 @@ def test_proposed_changes_workflow(client: TestClient, mock_llm_and_scribe):
     assert facts[0]["subject"] == "Courtyard"
     assert facts[0]["predicate"] == "is_status"
     assert facts[0]["object_value"] == "quiet"
+    assert facts[0]["source_turn_id"] == assistant_turn_id
 
     resolve_res = client.put(
         f"/api/proposals/{thesis_proposal['id']}/resolve",
@@ -127,6 +128,7 @@ def test_proposed_changes_workflow(client: TestClient, mock_llm_and_scribe):
     theses = client.get(f"/api/scenes/{scene_id}/theses").json()
     assert len(theses) == 1
     assert theses[0]["text"] == "Tension is extremely high"
+    assert theses[0]["source_turn_id"] == assistant_turn_id
 
 
 @pytest.mark.asyncio
