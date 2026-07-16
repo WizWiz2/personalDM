@@ -40,8 +40,22 @@ jobs:
           alembic downgrade 293b3517b6ac
           alembic upgrade head
 
-      - name: Run tests
+      - name: Test campaigns
         working-directory: src/backend
-        env:
-          PDM_SECRET_ENCRYPTION_KEY: ""
-        run: pytest -q
+        run: pytest -q tests/test_campaign.py --tb=short
+
+      - name: Test context boundaries
+        working-directory: src/backend
+        run: pytest -q tests/test_context.py --tb=short
+
+      - name: Test canon proposals
+        working-directory: src/backend
+        run: pytest -q tests/test_proposals.py --tb=short
+
+      - name: Test turn lifecycle
+        working-directory: src/backend
+        run: pytest -q tests/test_turns.py --tb=short
+
+      - name: Test provider and scribe
+        working-directory: src/backend
+        run: pytest -q tests/test_provider_and_scribe.py --tb=short
