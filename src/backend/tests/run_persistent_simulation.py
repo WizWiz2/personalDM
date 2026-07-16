@@ -1,440 +1,595 @@
 import asyncio
-import json
-import random
+import os
 import re
 import time
-from uuid import uuid4, UUID
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.engine import get_session, Base, create_async_engine, async_sessionmaker
+from uuid import UUID
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from app.db.engine import Base
+from app.db.repositories.belief_repo import BeliefRepository
+from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.event_repo import EventRepository
+from app.db.repositories.fact_repo import FactRepository
+from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+from app.db.repositories.relationship_repo import RelationshipRepository
+from app.db.repositories.scene_repo import SceneRepository
+from app.db.repositories.turn_repo import TurnRepository
+from app.models.belief import BeliefCreate
+from app.models.campaign import CampaignCreate, CampaignUpdate
+from app.models.character import CharacterCreate, CharacterUpdate
+from app.models.entity import EntityType
+from app.models.event import EventCreate
+from app.models.fact import FactCreate
+from app.models.proposed_change import ChangeType, ProposalAction
+from app.models.provider_config import ProviderConfigCreate
+from app.models.relationship import RelationshipCreate
+from app.models.scene import SceneCreate
+from app.models.scene_thesis import SceneThesisCreate, ThesisType
+from app.models.turn import ChatMessage, TurnCreate
+from app.providers.llm_provider import LLMProvider
 from app.services.campaign_service import CampaignService
 from app.services.turn_runner import TurnRunner
-from app.services.context_compiler import ContextCompiler
-from app.services.memory_scribe import MemoryScribe
-from app.db.repositories.campaign_repo import CampaignRepository
-from app.db.repositories.scene_repo import SceneRepository
-from app.db.repositories.entity_repo import EntityRepository
-from app.db.repositories.fact_repo import FactRepository
-from app.db.repositories.belief_repo import BeliefRepository
-from app.db.repositories.proposed_change_repo import ProposedChangeRepository
-from app.models.campaign import CampaignCreate, CampaignUpdate
-from app.models.scene import SceneCreate
-from app.models.entity import EntityCreate, EntityType
-from app.models.character import CharacterCreate
-from app.models.fact import FactCreate
-from app.models.belief import BeliefCreate
-from app.models.turn import TurnCreate, ChatMessage
-from app.models.provider_config import ProviderConfigCreate
-from app.models.proposed_change import ProposalAction, ChangeType
-from app.providers.llm_provider import LLMProvider
 
-# 20 Companions with unique lore, personalities and backstory secrets
+# Twenty companions with deliberately isolated private knowledge.
 COMPANIONS_DATA = [
     {
         "name": "Valerius",
         "description": "A solemn cleric of the Holy Light clad in silver-trimmed vestments.",
         "personality": "Pious, soft-spoken but harbors deep doubts. Speaks in blessings.",
-        "secret": "The sacred temple chalice of restoration is filled with lethal, slow-acting nightshade poison."
+        "secret": "The sacred temple chalice of restoration is filled with lethal, slow-acting nightshade poison.",
     },
     {
         "name": "Sylvia",
         "description": "A slender elven mage wearing indigo robes embroidered with constellations.",
         "personality": "Arrogant, brilliant, and protective of her books. Speaks with ancient vocabulary.",
-        "secret": "She stole the forbidden spellbook of black stars from the Grand Archmage of Loria."
+        "secret": "She stole the forbidden spellbook of black stars from the Grand Archmage of Loria.",
     },
     {
         "name": "Garrick",
         "description": "A scarred rogue throwing silver daggers into the wooden benches.",
         "personality": "Sarcastic, hyper-vigilant, obsessed with gold. Slang-heavy speech.",
-        "secret": "He is a secret spy sent by the outlaw Red Syndicate to lead the party into an ambush."
+        "secret": "He is a secret spy sent by the outlaw Red Syndicate to lead the party into an ambush.",
     },
     {
         "name": "Thorin",
         "description": "A battle-hardened Dwarf warrior wielding a soot-covered iron hammer.",
         "personality": "Gruff, loyal to his ancestors, fond of ale. Low guttural voice.",
-        "secret": "He lost his clan's royal seal of ownership inside the dragon nests under the Mountain."
+        "secret": "He lost his clan's royal seal of ownership inside the dragon nests under the Mountain.",
     },
     {
         "name": "Lyra",
         "description": "A traveling bard playing a dark spruce wood lute.",
         "personality": "Charismatic, always smiling, writes poems about current events.",
-        "secret": "Every song she plays carries a subliminal charm spell designed to manipulate the listener's will."
+        "secret": "Every song she plays carries a subliminal charm spell designed to manipulate the listener's will.",
     },
     {
         "name": "Kaelen",
         "description": "A quiet ranger dressed in worn leather and green leaf camouflage.",
         "personality": "Reclusive, smells of pine wood, talks to crows. Observant.",
-        "secret": "He is hunting a cursed werewolf that is actually his own younger brother."
+        "secret": "He is hunting a cursed werewolf that is actually his own younger brother.",
     },
     {
         "name": "Eldrin",
         "description": "An ancient scholar carrying a stack of yellowed parchment scrolls.",
         "personality": "Forgetful but possesses vast historical knowledge. Mumbles to himself.",
-        "secret": "The great fire of the Imperial Library of Alexandria was ordered and lit by his own hand."
+        "secret": "The great fire of the Imperial Library of Alexandria was ordered and lit by his own hand.",
     },
     {
         "name": "Daphne",
         "description": "A druid with wild ivy leaves woven into her braided hair.",
         "personality": "Gentle, speaks in whispers, detests iron and metal.",
-        "secret": "She carries a pitch-black corrupted seed that is slowly decaying the forest around her."
+        "secret": "She carries a pitch-black corrupted seed that is slowly decaying the forest around her.",
     },
     {
         "name": "Korgan",
         "description": "A massive mercenary covered in heavy iron plate armor.",
-        "personality": " Ruthless, laughs at danger, values only hard gold.",
-        "secret": "He was hired by the Dark Lord to assassinate the player's family line when the quest is done."
+        "personality": "Ruthless, laughs at danger, values only hard gold.",
+        "secret": "He was hired by the Dark Lord to assassinate Eldon's family line when the quest is done.",
     },
     {
         "name": "Aria",
         "description": "A paladin of the Dawn Order with a golden shield.",
         "personality": "Righteous, strict follower of the Code of Valor. Loud commanding voice.",
-        "secret": "Her legendary holy sword broke its vow and lost its divine blessing three moons ago."
+        "secret": "Her legendary holy sword broke its vow and lost its divine blessing three moons ago.",
     },
     {
         "name": "Zephyr",
         "description": "A silent assassin wearing a mask of grey silk.",
         "personality": "Cold, calculated, speaks only when absolutely necessary.",
-        "secret": "He carries a royal poison dagger bearing the crest of the assassinated King."
+        "secret": "He carries a royal poison dagger bearing the crest of the assassinated King.",
     },
     {
         "name": "Morgana",
         "description": "A swamp witch smelling of damp earth and boiled toadstools.",
         "personality": "Cynical, speaks in riddles, loves to mock righteous paladins.",
-        "secret": "She brews her healing potions with forbidden demonic essence extracted from imps."
+        "secret": "She brews her healing potions with forbidden demonic essence extracted from imps.",
     },
     {
         "name": "Brog",
         "description": "An Orc barbarian wearing trophies of monster teeth.",
         "personality": "Hot-tempered, values physical strength above all, easily offended.",
-        "secret": "He is seeking blood vengeance for his fallen chieftain who was murdered by humans."
+        "secret": "He is seeking blood vengeance for his fallen chieftain who was murdered by humans.",
     },
     {
         "name": "Isabella",
         "description": "A noble duelist carrying a steel rapier with a golden hilt.",
         "personality": "Proud, elegant, easily offended by bad manners. Aristocratic dialect.",
-        "secret": "She fled her home to escape an arranged political marriage with the corrupt Duke."
+        "secret": "She fled her home to escape an arranged political marriage with the corrupt Duke.",
     },
     {
         "name": "Ignis",
         "description": "A fire sorcerer whose eyes glow like hot coals.",
         "personality": "Excitable, unstable, obsessed with burning things down.",
-        "secret": "He accidentally burned down his entire home village during a magical tantrum."
+        "secret": "He accidentally burned down his entire home village during a magical tantrum.",
     },
     {
         "name": "Seraphina",
         "description": "A young acolyte wearing plain white linen robes.",
         "personality": "Timid, prays constantly, flinches at loud noises.",
-        "secret": "She hears whispers of the Void in her ears during her holy prayers."
+        "secret": "She hears whispers of the Void in her ears during her holy prayers.",
     },
     {
         "name": "Gideon",
         "description": "An old sea captain with a wooden peg leg and a weathered face.",
         "personality": "Jovial, uses sailor slang, smells of rum and salt.",
-        "secret": "He abandoned his sinking ship and entire crew during the Great Storm to save himself."
+        "secret": "He abandoned his sinking ship and entire crew during the Great Storm to save himself.",
     },
     {
         "name": "Vesper",
         "description": "A shadow monk with tattooed forearms.",
         "personality": "Calm, moves like a shadow, speaks of balance between light and dark.",
-        "secret": "His hidden monastery actually worships the forbidden god of the Black Sun."
+        "secret": "His hidden monastery actually worships the forbidden god of the Black Sun.",
     },
     {
         "name": "Rowan",
         "description": "An alchemist surrounded by glass flasks of colorful liquids.",
         "personality": "Nervous, constantly shaking, smells of sulfur and mercury.",
-        "secret": "He is secretly hunting for the philosopher's stone to cure a terminal curse."
+        "secret": "He is secretly hunting for the philosopher's stone to cure a terminal curse.",
     },
     {
         "name": "Tariq",
         "description": "A desert scout wearing sand-colored robes and goggles.",
         "personality": "Quiet, possesses acute desert survival instincts. Speaks slowly.",
-        "secret": "He knows that the secret oasis, the party's only hope for water, has completely dried up."
-    }
+        "secret": "He knows that the secret oasis, the party's only hope for water, has completely dried up.",
+    },
 ]
+
 
 async def generate_player_action(
     llm_provider: LLMProvider,
     config: ProviderConfigCreate,
     history_turns: list,
-    companion_names: list[str]
+    companion_names: list[str],
 ) -> str:
-    """Uses Gemma to act as Eldon, the Player, reacting to recent history."""
+    """Generate only Eldon's intention, never the outcome of his action."""
     history_str = ""
-    # Format last 8 turns of history
-    for t in history_turns:
-        role_label = "DM (Narrator/NPC)" if t.role == "assistant" else "Eldon (Player)"
-        history_str += f"{role_label}: {t.content}\n"
+    for turn in history_turns:
+        role_label = "DM" if turn.role == "assistant" else "Eldon"
+        history_str += f"{role_label}: {turn.content}\n"
 
-    system_prompt = f"""You are Eldon, a gritty, cynical human adventurer exploring the mysterious Obsidian Citadel.
-You are accompanied by 20 companions: {', '.join(companion_names)}.
-Your immediate goal is to find the ancient relic key hidden somewhere in this citadel.
-Look at the recent history of the campaign and write your next action or dialogue response.
+    system_prompt = f"""You are Eldon, a gritty human adventurer in the Obsidian Citadel.
+You travel with these companions: {', '.join(companion_names)}.
+Your goal is to find the ancient relic key.
 
-CRITICAL RULES:
-1. You MUST react directly to what the Dungeon Master (DM) or the companions just said. Keep the conversation organic.
-2. If you talk to a specific companion, you MUST start your response with: [/talk CompanionName] "Your dialogue..."
-   Example: [/talk Sylvia] "Listen, Sylvia, I know you stole that archmage's book. Open it now!"
-3. If you want to do a general action (movement, searching, speaking to all), use: [/talk narrator] "Your action description..."
-   Example: [/talk narrator] "I draw my torch and inspect the heavy bronze door."
-4. Do NOT write any markdown wrapping tags like ```json or ```. Write only the plain text action.
-5. Keep your response short (1 to 3 sentences) and highly immersive.
+Write Eldon's next short action or line of dialogue.
+Rules:
+1. React directly to the latest completed DM response.
+2. Describe only Eldon's intention or attempted action. Never declare success,
+   discoveries, damage, opened doors, scanner results or other outcomes.
+3. Eldon owns only ordinary travelling clothes, a torch, rope, a dagger and a
+   basic set of lockpicks. Do not invent scanners, gauntlets, prisms or magic.
+4. To address a companion, begin with [/talk Name].
+5. For a general attempted action, begin with [/talk narrator].
+6. Do not reveal a companion's secret unless it was explicitly learned in play.
+7. Use plain text, one to three sentences, no markdown.
 """
     messages = [
         ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=f"Here is the recent history:\n{history_str}\n\nWhat is your next action Eldon?")
+        ChatMessage(
+            role="user",
+            content=f"Recent campaign history:\n{history_str}\nEldon's next intention:",
+        ),
     ]
-    
+
     response_text = ""
     async for token in llm_provider.generate_stream(messages, config):
         response_text += token
     return response_text.strip()
 
+
+async def apply_valid_proposal(
+    session,
+    campaign_id: UUID,
+    current_scene_id: UUID,
+    proposal,
+    entity_repo: EntityRepository,
+    scene_repo: SceneRepository,
+    proposed_repo: ProposedChangeRepository,
+) -> str | None:
+    """Apply a structurally valid benchmark proposal deterministically."""
+    if proposal.status == "invalid":
+        await proposed_repo.resolve(
+            proposal.id,
+            ProposalAction(status="rejected"),
+        )
+        return None
+    if proposal.status != "proposed":
+        return None
+
+    payload = proposal.payload
+    change_type = ChangeType(proposal.change_type)
+
+    if change_type == ChangeType.FACT:
+        await FactRepository(session).create(
+            campaign_id,
+            FactCreate(
+                subject=payload["subject"],
+                predicate=payload["predicate"],
+                object_value=payload.get("object_value"),
+                visibility=payload.get("visibility", "dm"),
+            ),
+        )
+        summary = (
+            f"FACT: {payload['subject']} {payload['predicate']} "
+            f"{payload.get('object_value', '')}"
+        )
+
+    elif change_type == ChangeType.SCENE_THESIS:
+        thesis_type = ThesisType(payload.get("thesis_type", "canon"))
+        await scene_repo.create_thesis(
+            UUID(payload.get("scene_id", str(current_scene_id))),
+            SceneThesisCreate(
+                thesis_type=thesis_type,
+                text=payload["text"],
+                visibility=payload.get("visibility", "dm"),
+                priority=payload.get("priority", 0),
+            ),
+        )
+        summary = f"THESIS[{thesis_type.value}]: {payload['text']}"
+
+    elif change_type == ChangeType.EVENT:
+        await EventRepository(session).create(
+            campaign_id,
+            EventCreate(
+                event_type=payload.get("event_type", "general"),
+                description=payload["description"],
+                location_id=(
+                    UUID(payload["location_id"])
+                    if payload.get("location_id")
+                    else None
+                ),
+                importance=payload.get("importance", "normal"),
+                participant_ids=[
+                    UUID(entity_id)
+                    for entity_id in payload.get("participant_ids", [])
+                ],
+            ),
+            source_turns=[proposal.turn_id],
+        )
+        summary = f"EVENT: {payload['description']}"
+
+    elif change_type == ChangeType.RELATIONSHIP:
+        await RelationshipRepository(session).create(
+            campaign_id,
+            RelationshipCreate(
+                subject_id=UUID(payload["subject_id"]),
+                object_id=UUID(payload["object_id"]),
+                relation_type=payload["relation_type"],
+                description=payload["description"],
+                reason=payload.get("reason"),
+                provenance="extracted",
+                visibility=payload.get("visibility", "dm"),
+            ),
+        )
+        summary = f"RELATIONSHIP: {payload['description']}"
+
+    elif change_type == ChangeType.MOVEMENT:
+        character_id = UUID(payload["character_id"])
+        location_id = UUID(payload["location_id"])
+        await entity_repo.update_character(
+            character_id,
+            CharacterUpdate(current_location_id=location_id),
+        )
+        summary = f"MOVEMENT: {character_id} -> {location_id}"
+
+    else:
+        return None
+
+    await proposed_repo.resolve(
+        proposal.id,
+        ProposalAction(status="accepted"),
+    )
+    return summary
+
+
 async def run_persistent_simulation():
-    print("=== STARTING PERSISTENT INTELLECTUAL LLM-VS-LLM SIMULATION (SQLITE FILE DB) ===")
-    
-    # Connect to persistent SQLite file database
+    print("=== STARTING PERSISTENT CANON STRESS TEST ===")
+
     engine = create_async_engine("sqlite+aiosqlite:///./data/campaign.db")
-    SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
-    
-    # Initialize the DB structure
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        
-    async with SessionLocal() as session:
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with session_factory() as session:
         campaign_service = CampaignService(session)
         turn_runner = TurnRunner(session)
-        compiler = ContextCompiler(session)
-        scribe = MemoryScribe(session)
         proposed_repo = ProposedChangeRepository(session)
         entity_repo = EntityRepository(session)
         belief_repo = BeliefRepository(session)
         scene_repo = SceneRepository(session)
         llm_provider = LLMProvider()
-        
-        # 1. Setup Campaign
-        campaign = await campaign_service.create_campaign(CampaignCreate(
-            name="Хроники Бездны: Сага о 20 Спутниках",
-            description="Persistent campaign running 1000 turns of autonomous LLM-vs-LLM RPG session.",
-            system_instructions="You are a high-quality, dark RPG Dungeon Master. Describe scenes in rich, literary, dark fantasy style. Roleplay NPCs truthfully according to their profiles.",
-            narrative_style="Grimdark, descriptive, rich dialogue, focus on mystery and dread."
-        ))
+
+        campaign = await campaign_service.create_campaign(
+            CampaignCreate(
+                name="Хроники Бездны: Сага о 20 Спутниках",
+                description="Autonomous canon stress test.",
+                system_instructions=(
+                    "You are a dark-fantasy Dungeon Master. The player describes "
+                    "attempts, never outcomes. Decide results yourself. Do not grant "
+                    "unlisted equipment or abilities. Keep NPC private knowledge "
+                    "isolated and advance the objective instead of repeating puzzles."
+                ),
+                narrative_style=(
+                    "Compact dark fantasy prose, concrete sensory details, decisive outcomes."
+                ),
+            )
+        )
         campaign_id = campaign.id
-        
-        # Configure model settings for Gemma
-        config = await campaign_service.configure_provider(campaign_id, ProviderConfigCreate(
-            base_url="http://127.0.0.1:11434/v1",
-            model_name="gemma4:e4b",
-            context_window=8192
-        ))
-        
-        # 2. Create 20 companions
-        print("Creating 20 fantasy companions with secrets on disk...")
+
+        config = await campaign_service.configure_provider(
+            campaign_id,
+            ProviderConfigCreate(
+                base_url="http://127.0.0.1:11434/v1",
+                model_name="gemma4:e4b",
+                context_window=8192,
+            ),
+        )
+
+        eldon = await entity_repo.create_character(
+            campaign_id,
+            CharacterCreate(
+                entity_type=EntityType.CHARACTER,
+                canonical_name="Eldon",
+                description=(
+                    "A cynical human adventurer carrying a torch, rope, dagger and "
+                    "basic lockpicks. He has no magic or advanced technology."
+                ),
+                personality="Practical, suspicious, terse, but capable of cooperation.",
+            ),
+        )
+
         npcs = []
         companion_names = []
         for companion in COMPANIONS_DATA:
-            npc = await entity_repo.create_character(campaign_id, CharacterCreate(
-                entity_type=EntityType.CHARACTER,
-                canonical_name=companion["name"],
-                description=companion["description"],
-                personality=companion["personality"]
-            ))
+            npc = await entity_repo.create_character(
+                campaign_id,
+                CharacterCreate(
+                    entity_type=EntityType.CHARACTER,
+                    canonical_name=companion["name"],
+                    description=companion["description"],
+                    personality=companion["personality"],
+                ),
+            )
             npcs.append(npc)
             companion_names.append(companion["name"])
-            
-            # Record private belief
-            await belief_repo.create(BeliefCreate(
-                character_id=npc.id,
-                proposition=f"{companion['name']} secret: {companion['secret']}",
-                status="known",
-                visibility="dm"
-            ))
-            
-        # 3. Create Scene
-        scene = await scene_repo.create(campaign_id, SceneCreate(
-            title="The Obsidian Citadel Sanctuary",
-            location_description="A massive dark hall made of polished black stone, lit by violet embers. 20 companions gather here, whispers echoing."
-        ))
-        
-        # Add participants
+            await belief_repo.create(
+                BeliefCreate(
+                    character_id=npc.id,
+                    proposition=f"Private secret: {companion['secret']}",
+                    status="known",
+                    visibility="character_only",
+                )
+            )
+
+        scene = await scene_repo.create(
+            campaign_id,
+            SceneCreate(
+                title="The Obsidian Citadel Sanctuary",
+                location_description=(
+                    "A massive hall of polished black stone lit by violet embers."
+                ),
+                mood="oppressive curiosity",
+                tension="guarded",
+            ),
+        )
+        await scene_repo.add_participant(scene.id, eldon.id)
         for npc in npcs:
             await scene_repo.add_participant(scene.id, npc.id)
-            
-        # Update campaign's current scene
-        await campaign_service.update_campaign(campaign_id, CampaignUpdate(
-            name="Хроники Бездны: Сага о 20 Спутниках",
-            current_scene_id=scene.id
-        ))
+
+        await campaign_service.update_campaign(
+            campaign_id,
+            CampaignUpdate(current_scene_id=scene.id),
+        )
         await session.commit()
-        
-        # Log file path
+
         log_file_path = "./data/persistent_simulation_play.log"
-        with open(log_file_path, "w", encoding="utf-8") as lf:
-            lf.write("============================================================\n")
-            lf.write("    CHRONICLES OF ABYSS: AUTONOMOUS PLAYER VS DM SIMULATION  \n")
-            lf.write("============================================================\n\n")
-            
-        print(f"Log will be recorded in real-time to {log_file_path}")
-        
-        turns_count = 1000
+        report_file_path = "./data/persistent_simulation_report.md"
+        os.makedirs("./data", exist_ok=True)
+        with open(log_file_path, "w", encoding="utf-8") as log_file:
+            log_file.write("CHRONICLES OF ABYSS: CANON STRESS TEST\n\n")
+
+        turns_count = int(os.getenv("PDM_SIM_TURNS", "1000"))
         stats = {
+            "generation_failures": 0,
             "proposals_generated": 0,
             "proposals_accepted": 0,
-            "proposals_rejected": 0,
-            "facts_applied": 0,
-            "theses_applied": 0
+            "proposals_rejected_invalid": 0,
+            "apply_failures": 0,
         }
-        
         start_time = time.time()
-        
-        for i in range(1, turns_count + 1):
-            # Fetch history from database
-            from app.db.repositories.turn_repo import TurnRepository
-            turn_repo = TurnRepository(session)
-            history_turns = await turn_repo.get_history(campaign_id, limit=8, active_only=True)
-            
-            # Determine player's next move
+        turn_repo = TurnRepository(session)
+
+        for index in range(1, turns_count + 1):
+            history_turns = await turn_repo.get_history(
+                campaign_id,
+                limit=8,
+                active_only=True,
+            )
+
             if not history_turns:
-                # First turn starter
-                player_content = '[/talk Sylvia] Sylvia, search your bag for the stolen spellbook. We need a strong warding spell immediately.'
+                player_content = (
+                    "[/talk narrator] I light my torch and carefully inspect the "
+                    "nearest sealed doorway without touching it."
+                )
             else:
-                print(f"[{i}/{turns_count}] Generating Player (Eldon) turn via Gemma...")
                 try:
-                    player_content = await generate_player_action(llm_provider, config, history_turns, companion_names)
-                except Exception as e:
-                    print(f"  [Warning] Player generator failed: {str(e)}. Using fallback.")
-                    player_content = '[/talk narrator] I look around the obsidian halls.'
-            
-            # Parse target NPC from player's content
+                    player_content = await generate_player_action(
+                        llm_provider,
+                        config,
+                        history_turns,
+                        companion_names,
+                    )
+                except Exception as exc:
+                    print(f"[{index}] Player generation failed: {exc}")
+                    player_content = (
+                        "[/talk narrator] I pause and observe the chamber for a safe path."
+                    )
+
             acting_character_id = None
             target_name = "narrator"
-            match = re.search(r'\[/talk\s+(\w+)\]', player_content)
+            match = re.search(r"\[/talk\s+([\w-]+)\]", player_content)
             if match:
                 target_name = match.group(1)
                 for npc in npcs:
                     if npc.canonical_name.lower() == target_name.lower():
                         acting_character_id = npc.id
                         break
-            
-            print(f"[{i}/{turns_count}] Executing DM response with target: {target_name if acting_character_id else 'narrator'}...")
-            
-            # Run actual turn through Gemma
+
             turn_data = TurnCreate(
                 role="user",
                 content=player_content,
                 scene_id=scene.id,
-                acting_character_id=acting_character_id
+                acting_character_id=acting_character_id,
             )
-            
+
             assistant_content = ""
             async for token in turn_runner.run_turn_stream(campaign_id, turn_data):
                 assistant_content += token
-                
             await session.commit()
-            
-            # Get proposals already extracted and saved by TurnRunner
-            assistant_history = await turn_repo.get_history(campaign_id, limit=1)
-            assistant_turn = assistant_history[-1]
-            
-            proposals = await proposed_repo.get_for_turn(assistant_turn.id)
-            stats["proposals_generated"] += len(proposals)
-            
-            # Record proposal status
+
             applied_proposals = []
-            for p in proposals:
-                # 80% accept, 20% reject
-                if random.random() < 0.80:
-                    await proposed_repo.resolve(p.id, ProposalAction(status="accepted"))
-                    stats["proposals_accepted"] += 1
-                    
-                    # Apply
-                    payload = p.payload
-                    ctype = p.change_type
-                    if ctype == ChangeType.FACT:
-                        await FactRepository(session).create(campaign_id, FactCreate(
-                            subject=payload.get("subject"),
-                            predicate=payload.get("predicate"),
-                            object_value=payload.get("object_value"),
-                            visibility="dm"
-                        ))
-                        stats["facts_applied"] += 1
-                        applied_proposals.append(f"FACT: {payload.get('subject')} {payload.get('predicate')} {payload.get('object_value')}")
-                    elif ctype == ChangeType.SCENE_THESIS:
-                        from app.models.scene_thesis import SceneThesisCreate, ThesisType
-                        await scene_repo.create_thesis(scene.id, SceneThesisCreate(
-                            thesis_type=ThesisType("canon"),
-                            text=payload.get("text"),
-                            visibility="dm"
-                        ))
-                        stats["theses_applied"] += 1
-                        applied_proposals.append(f"THESIS: {payload.get('text')}")
-                else:
-                    await proposed_repo.resolve(p.id, ProposalAction(status="rejected"))
-                    stats["proposals_rejected"] += 1
-                    
-            await session.commit()
-            
-            # Log turn to text file
-            with open(log_file_path, "a", encoding="utf-8") as lf:
-                lf.write("============================================================\n")
-                lf.write(f"TURN {i} / {turns_count}\n")
-                lf.write("============================================================\n")
-                lf.write(f"PLAYER: {player_content}\n")
-                lf.write("------------------------------------------------------------\n")
-                lf.write(f"DM (Gemma4): {assistant_content.strip()}\n")
-                lf.write("------------------------------------------------------------\n")
+            rejected_proposals = []
+            generation_failed = assistant_content.startswith("[Generation failed")
+            if generation_failed:
+                stats["generation_failures"] += 1
+            else:
+                latest_turns = await turn_repo.get_history(
+                    campaign_id,
+                    limit=1,
+                    active_only=True,
+                )
+                if latest_turns and latest_turns[-1].role == "assistant":
+                    assistant_turn = latest_turns[-1]
+                    proposals = await proposed_repo.get_for_turn(assistant_turn.id)
+                    stats["proposals_generated"] += len(proposals)
+
+                    for proposal in proposals:
+                        if proposal.status == "invalid":
+                            stats["proposals_rejected_invalid"] += 1
+                            rejected_proposals.append(
+                                proposal.payload.get(
+                                    "_validation_error",
+                                    "invalid proposal",
+                                )
+                            )
+                            await proposed_repo.resolve(
+                                proposal.id,
+                                ProposalAction(status="rejected"),
+                            )
+                            continue
+
+                        try:
+                            summary = await apply_valid_proposal(
+                                session,
+                                campaign_id,
+                                scene.id,
+                                proposal,
+                                entity_repo,
+                                scene_repo,
+                                proposed_repo,
+                            )
+                            if summary:
+                                applied_proposals.append(summary)
+                                stats["proposals_accepted"] += 1
+                            await session.commit()
+                        except Exception as exc:
+                            await session.rollback()
+                            stats["apply_failures"] += 1
+                            rejected_proposals.append(f"apply failed: {exc}")
+
+            with open(log_file_path, "a", encoding="utf-8") as log_file:
+                log_file.write("=" * 60 + "\n")
+                log_file.write(f"TURN {index} / {turns_count}\n")
+                log_file.write("=" * 60 + "\n")
+                log_file.write(f"TARGET: {target_name}\n")
+                log_file.write(f"PLAYER: {player_content}\n")
+                log_file.write("-" * 60 + "\n")
+                log_file.write(f"DM: {assistant_content.strip()}\n")
+                log_file.write("-" * 60 + "\n")
                 if applied_proposals:
-                    lf.write("ACCEPTED PROPOSALS INJECTED TO CANON:\n")
-                    for ap in applied_proposals:
-                        lf.write(f" - {ap}\n")
-                else:
-                    lf.write("NO NEW CANON CHANGES INJECTED\n")
-                lf.write("\n")
-                
-            # Periodic console output
-            if i % 10 == 0:
+                    log_file.write("ACCEPTED CANON DELTAS:\n")
+                    for proposal_summary in applied_proposals:
+                        log_file.write(f" - {proposal_summary}\n")
+                if rejected_proposals:
+                    log_file.write("REJECTED CANON DELTAS:\n")
+                    for error in rejected_proposals:
+                        log_file.write(f" - {error}\n")
+                if not applied_proposals and not rejected_proposals:
+                    log_file.write("NO CANON DELTAS\n")
+                log_file.write("\n")
+
+            if index % 10 == 0:
                 elapsed = time.time() - start_time
-                avg_speed = elapsed / i
-                eta = (turns_count - i) * avg_speed
-                print(f" -> Completed {i} turns. Average speed: {avg_speed:.2f}s/turn. ETA: {eta/60:.2f} min.")
-                
-        # Build final report
-        end_time = time.time()
-        elapsed = end_time - start_time
-        
-        db_turns = await turn_repo.get_history(campaign_id, limit=5000, active_only=False)
+                print(
+                    f"[{index}/{turns_count}] "
+                    f"{elapsed / index:.2f}s/turn, "
+                    f"generation failures={stats['generation_failures']}"
+                )
+
+        await session.commit()
+        elapsed = time.time() - start_time
+        db_turns = await turn_repo.get_history(
+            campaign_id,
+            limit=turns_count * 3,
+            active_only=False,
+        )
         total_facts = len(await FactRepository(session).list_active(campaign_id))
-        total_theses = len(await scene_repo.list_theses_by_scene(scene.id, active_only=True))
-        
-        report = f"""# 📚 Отчет о Персистентной Литературной Симуляции (Gemma 4)
- 
-Кампания «Хроники Бездны: Сага о 20 Спутниках» успешно записана в постоянную базу данных SQLite на диске.
- 
-## 📈 Итоговые Метрики
- 
-*   **Имя Кампании в БД:** Хроники Бездны: Сага о 20 Спутниках
-*   **Идентификатор Кампании (UUID):** {campaign_id}
-*   **Всего ходов записано в таблицу `turns`:** {len(db_turns)}
-*   **Количество NPC с уникальными секретами:** 20
-*   **Сгенерировано предложений реальным Scribe (Gemma):** {stats["proposals_generated"]}
-*   **Принято в канон:** {stats["proposals_accepted"]}
-*   **Отклонено:** {stats["proposals_rejected"]}
-*   **Итого активных фактов в каноне БД (`facts`):** {total_facts}
-*   **Итого активных тезисов в сцене (`scene_theses`):** {total_theses}
-*   **Время работы генерации:** {elapsed/60:.2f} минут (в среднем {elapsed/turns_count:.2f} сек на ход)
- 
-## 📁 Пути к Файлам на Диске
- 
-*   **Файл базы данных SQLite:** [campaign.db](file:///c:/work/personalDM/src/backend/data/campaign.db)
-*   **Текстовый лог художественной игры:** [persistent_simulation_play.log](file:///c:/work/personalDM/src/backend/data/persistent_simulation_play.log)
- 
-Симуляция завершена. База данных содержит полноценный лог взаимодействия со всеми 20 спутниками.
+        total_theses = len(
+            await scene_repo.list_theses_by_scene(scene.id, active_only=True)
+        )
+
+        report = f"""# Отчёт о canon stress test
+
+- Кампания: {campaign.name}
+- Запрошено раундов: {turns_count}
+- Строк turns: {len(db_turns)}
+- Ошибок генерации: {stats['generation_failures']}
+- Предложений Scribe: {stats['proposals_generated']}
+- Принято валидных предложений: {stats['proposals_accepted']}
+- Отклонено невалидных: {stats['proposals_rejected_invalid']}
+- Ошибок применения: {stats['apply_failures']}
+- Активных фактов: {total_facts}
+- Активных тезисов: {total_theses}
+- Время: {elapsed / 60:.2f} минут
 """
-        with open("C:/Users/User/.gemini/antigravity/brain/4877c6e1-77e6-43a3-b645-d0d21fc3bdcf/analysis_results.md", "w", encoding="utf-8") as f:
-            f.write(report)
-            
-        print("=== PERSISTENT SIMULATION COMPLETED ===")
+        with open(report_file_path, "w", encoding="utf-8") as report_file:
+            report_file.write(report)
+
+        # Flush WAL pages so copying campaign.db after the process exits produces
+        # a complete audit artifact.
+        await session.commit()
+        await session.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+        print("=== PERSISTENT CANON STRESS TEST COMPLETED ===")
+
+    await engine.dispose()
+
 
 if __name__ == "__main__":
     import sys
+
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(run_persistent_simulation())
