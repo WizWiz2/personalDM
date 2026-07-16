@@ -1,6 +1,8 @@
 from datetime import datetime
 from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict
+
 
 class GoalCreate(BaseModel):
     description: str
@@ -8,19 +10,21 @@ class GoalCreate(BaseModel):
     is_secret: bool = False
     valid_until: datetime | None = None
 
+
 class GoalRead(BaseModel):
     id: UUID
     character_id: UUID
     description: str
     priority: int
-    status: str  # 'active', 'completed', 'failed', 'abandoned'
+    status: str
     is_secret: bool
-    source_turn_id: int | None
+    source_turn_id: UUID | None
     valid_until: datetime | None
     created_at: datetime
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class GoalUpdate(BaseModel):
     description: str | None = None
