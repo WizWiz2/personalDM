@@ -104,16 +104,17 @@ CREATE TABLE characters (
     -- Биография
     biography TEXT,
     backstory_public TEXT,       -- то, что известно миру
-    backstory_secret TEXT,       -- то, что знает только ДМ/пользователь
+    backstory_secret TEXT,       -- fallback-проза; по ADR-008 предпочтительно
+                                --   выражать через Facts + visibility + Beliefs
 
     -- Текущее состояние
     emotional_state TEXT,
     current_location_id UUID REFERENCES entities(id),
     current_intentions TEXT,     -- JSON array текущих намерений
 
-    -- Цели
-    long_term_goals TEXT,        -- JSON array долгосрочных целей
-    short_term_goals TEXT,       -- JSON array краткосрочных целей
+    -- Цели хранятся в отдельной таблице character_goals (ADR-008).
+    -- Каждая цель — отдельная запись с описанием, приоритетом,
+    -- статусом, секретностью, источником и сроком действия.
 
     -- Визуальный профиль (для генерации изображений)
     visual_profile TEXT          -- JSON: canonical_desc, palette, default_outfit, negative_features...
@@ -129,8 +130,10 @@ CREATE TABLE locations (
     parent_location_id UUID REFERENCES entities(id),  -- иерархия: комната → здание → город
     climate TEXT,
     notable_features TEXT,       -- JSON array достопримечательностей
-    danger_level TEXT,           -- safe, moderate, dangerous, lethal
-    current_occupants TEXT       -- JSON array entity_id текущих обитателей
+    danger_level TEXT            -- safe, moderate, dangerous, lethal
+    -- current_occupants убран: по ADR-008 список находящихся
+    -- в локации персонажей вычисляется запросом по
+    -- characters.current_location_id, а не хранится вторым списком.
 );
 
 -- Специализированная таблица для предметов
@@ -256,14 +259,14 @@ class Character(EntityBase):
 
     biography: str | None = None
     backstory_public: str | None = None
-    backstory_secret: str | None = None
+    backstory_secret: str | None = None  # fallback; предпочтительно Facts + visibility (ADR-008)
 
     emotional_state: str | None = None
     current_location_id: UUID | None = None
     current_intentions: list[str] = []
 
-    long_term_goals: list[str] = []
-    short_term_goals: list[str] = []
+    # Цели хранятся в отдельной таблице character_goals (ADR-008).
+    # goals: list[CharacterGoal] загружаются через repository.
 
     visual_profile: dict | None = None
 
@@ -342,71 +345,37 @@ class EntityRepository(ABC):
 
 ---
 
-## 5. Модель отношений (Relationships) — оптимизация
+## 5. Модель отношений (Relationships) — приведение к ADR-008
 
-### Проблема масштабирования
+> **Обновлено 15 июля 2026.** Раздел переработан для соответствия принятому
+> [ADR-008](../adr/008-domain-model-and-storage-boundaries.md).
+> Первичная модель — **повествовательные утверждения**. Числовые шкалы —
+> необязательное производное представление.
 
-Исходный документ предлагает 10 осей отношений:
-доверие, симпатия, любовь, страх, долг, уважение, подозрение, власть, зависимость, лояльность.
+### Принцип: утверждение, а не шкала
 
-При 20 NPC (типичная кампания средней сложности):
-- **Направленные отношения:** 20 × 19 = 380 пар
-- **× 10 осей** = 3800 записей
-- **× temporal validity** = потенциально тысячи исторических записей
+Ранняя версия этого документа предлагала 4–10 числовых осей как первичную
+структуру хранения. ADR-008 зафиксировал другой подход:
 
-Для Context Compiler это создаёт проблему: **невозможно впихнуть 3800 строк в контекст LLM**.
+> *«Отношения хранятся как утверждения с типом, необязательной интенсивностью,
+> повествовательным описанием, причиной, происхождением, сроком действия
+> и видимостью. Числовые панели могут быть построены позднее как производное
+> представление.»*
 
-### Рекомендуемая стратегия: MVP-набор + расширение
+**Почему утверждения лучше осей для нарратива:**
 
-#### MVP (Этап 1): 4 оси
-
-| Ось | Тип | Описание |
+| Аспект | Числовые оси | Утверждения |
 |---|---|---|
-| **trust** | float [-1, 1] | От полного недоверия до абсолютной веры |
-| **affinity** | float [-1, 1] | От ненависти до обожания (симпатия + любовь) |
-| **fear** | float [0, 1] | От бесстрашия до ужаса |
-| **loyalty** | float [-1, 1] | От предательства до фанатичной преданности |
+| Что видит LLM | `trust: 0.6, fear: 0.3` | «Доверяет, но побаивается из-за случая в Акте II» |
+| Точность | Ложная — 0.6 vs 0.7 не значит ничего | Содержательная — причина и контекст |
+| Извлечение | LLM плохо даёт точные числа | LLM хорошо даёт тип + описание |
+| Отладка | «Почему 0.6?» — непонятно | «Почему доверяет?» — есть причина |
+| Масштабирование | N×N×K записей | Только значимые отношения |
 
-**Обоснование:**
-- Эти 4 оси покрывают ~80% нарративных ситуаций
-- `affinity` объединяет «симпатию» и «любовь» (разделение возможно позже)
-- `trust` + `loyalty` — два разных аспекта (можно не доверять, но быть лояльным из долга)
-- `fear` — критичен для интриг и конфликтов
-
-#### Расширенный набор (Этап 4+): +6 осей
-
-| Ось | Тип | Описание | Когда добавлять |
-|---|---|---|---|
-| **respect** | float [-1, 1] | От презрения до благоговения | Когда нужны иерархии |
-| **suspicion** | float [0, 1] | Подозрительность | Когда появляется Continuity Engine |
-| **power** | float [-1, 1] | Кто над кем доминирует | Для политических кампаний |
-| **debt** | float [-1, 1] | Кто кому должен | Для сложных обязательств |
-| **dependency** | float [0, 1] | Эмоциональная/физическая зависимость | Для глубоких связей |
-| **love** | float [0, 1] | Романтическая любовь (отдельно от affinity) | По запросу пользователя |
-
-#### Конфигурация кампании
-
-```python
-class RelationshipConfig(BaseModel):
-    """Конфигурация осей отношений для конкретной кампании."""
-    enabled_axes: list[str] = ["trust", "affinity", "fear", "loyalty"]
-    custom_axes: list[CustomAxis] = []
-
-class CustomAxis(BaseModel):
-    """Пользовательская ось отношений."""
-    name: str          # "romantic_tension"
-    display_name: str  # "Романтическое напряжение"
-    min_value: float   # 0
-    max_value: float   # 1
-    description: str   # "Степень романтического интереса"
-```
-
-Пользователь может **включить** дополнительные оси для конкретной кампании, или создать собственные.
-
-### Схема БД для отношений
+### Схема БД для утверждений об отношениях
 
 ```sql
-CREATE TABLE relationships (
+CREATE TABLE relationship_assertions (
     id UUID PRIMARY KEY DEFAULT (uuid()),
     campaign_id UUID NOT NULL REFERENCES campaigns(id),
 
@@ -414,136 +383,202 @@ CREATE TABLE relationships (
     subject_id UUID NOT NULL REFERENCES entities(id),
     object_id UUID NOT NULL REFERENCES entities(id),
 
-    -- Ось и значение
-    axis TEXT NOT NULL,        -- 'trust', 'affinity', 'fear', 'loyalty', ...
-    intensity REAL NOT NULL,   -- значение оси
+    -- Содержание утверждения
+    relation_type TEXT NOT NULL,     -- 'trust', 'fear', 'rivalry', 'debt',
+                                    -- 'romantic_interest', 'mentor', 'grudge', ...
+    description TEXT NOT NULL,       -- "Лиара доверяет Сафире с тех пор,
+                                    --  как та помогла ей скрыться от стражи"
+    reason TEXT,                     -- краткая причина: "помогла скрыться"
 
-    -- Контекст
-    reason TEXT,               -- почему такое отношение ("спасла жизнь в битве")
+    -- Необязательная интенсивность
+    intensity REAL,                  -- NULL или значение [-1.0, 1.0]
+                                    -- Числовое значение — вспомогательное;
+                                    -- description первичен.
+
+    -- Происхождение
     source_event_id UUID REFERENCES events(id),
-    source_turn INTEGER,
+    source_turn_id INTEGER,
+    provenance TEXT NOT NULL DEFAULT 'manual',  -- manual, extracted, system
+    confidence REAL DEFAULT 1.0,
 
     -- Temporal
     valid_from TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    valid_until TIMESTAMP,     -- NULL = текущее
+    valid_until TIMESTAMP,           -- NULL = текущее
     is_current BOOLEAN NOT NULL DEFAULT TRUE,
 
     -- Visibility
     visibility TEXT NOT NULL DEFAULT 'dm',  -- 'dm', 'public', 'character_only'
 
-    -- Metadata
-    confidence REAL DEFAULT 1.0,   -- уверенность в записи (если extracted)
-    provenance TEXT,               -- manual, extracted, system
-    superseded_by UUID REFERENCES relationships(id),
+    -- Версионирование
+    superseded_by UUID REFERENCES relationship_assertions(id),
 
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Constraints
     CHECK (subject_id != object_id),
-    CHECK (intensity >= -1.0 AND intensity <= 1.0)
+    CHECK (intensity IS NULL OR (intensity >= -1.0 AND intensity <= 1.0))
 );
 
--- Индексы для быстрого доступа
-CREATE INDEX idx_rel_subject ON relationships(subject_id, is_current);
-CREATE INDEX idx_rel_object ON relationships(object_id, is_current);
-CREATE INDEX idx_rel_campaign ON relationships(campaign_id, is_current);
-CREATE INDEX idx_rel_pair ON relationships(subject_id, object_id, axis, is_current);
+CREATE INDEX idx_ra_subject ON relationship_assertions(subject_id, is_current);
+CREATE INDEX idx_ra_object ON relationship_assertions(object_id, is_current);
+CREATE INDEX idx_ra_campaign ON relationship_assertions(campaign_id, is_current);
+CREATE INDEX idx_ra_pair ON relationship_assertions(subject_id, object_id, is_current);
 ```
 
-### Как Context Compiler потребляет отношения
+### Типы отношений
 
-Context Compiler **не загружает все 380+ записей**. Стратегия:
+Тип (`relation_type`) — **свободная строка**, не enum. Это позволяет кампании
+использовать любые типы без миграций. Рекомендуемые значения:
+
+| Тип | Описание | Пример |
+|---|---|---|
+| `trust` | Доверие | «Доверяет после спасения в Акте II» |
+| `distrust` | Недоверие | «Подозревает в подделке письма» |
+| `fear` | Страх | «Боится после того, как видела расправу» |
+| `loyalty` | Лояльность | «Верна из чувства долга перед семьёй» |
+| `affection` | Симпатия | «Чувствует тёплое расположение» |
+| `hostility` | Враждебность | «Ненавидит за предательство гильдии» |
+| `debt` | Долг | «Должна жизнь после битвы у реки» |
+| `rivalry` | Соперничество | «Соперничает за внимание короля» |
+| `romantic` | Романтический интерес | «Влюблена, но скрывает» |
+| `mentor` | Наставничество | «Обучает тайным искусствам» |
+| `grudge` | Обида | «Затаила обиду за публичное унижение» |
+| `alliance` | Союз | «Временный союз против общего врага» |
+
+Один персонаж может иметь **несколько утверждений** к другому одновременно:
+Лиара может одновременно `trust` Сафиру и `fear` её.
+
+### Pydantic-модель
+
+```python
+class RelationshipAssertion(BaseModel):
+    """Утверждение об отношении одного персонажа к другому."""
+    id: UUID
+    campaign_id: UUID
+    subject_id: UUID
+    object_id: UUID
+
+    relation_type: str              # 'trust', 'fear', 'rivalry', ...
+    description: str                # развёрнутое описание
+    reason: str | None = None       # краткая причина
+
+    intensity: float | None = None  # необязательное числовое значение
+    source_turn_id: int | None = None
+    provenance: str = "manual"
+    confidence: float = 1.0
+
+    valid_from: datetime
+    valid_until: datetime | None = None
+    is_current: bool = True
+    visibility: str = "dm"
+```
+
+### Как Context Compiler потребляет утверждения
+
+Стратегия не изменилась: загружать только отношения **действующего NPC**
+к **присутствующим** в сцене. Но формат стал нарративным:
 
 ```python
 async def get_relevant_relationships(
     scene: Scene,
-    speaking_character: Character,
-) -> list[Relationship]:
-    """Отбирает только релевантные отношения для текущей сцены."""
+    acting_character: Character,
+) -> list[RelationshipAssertion]:
+    """Отбирает утверждения об отношениях для контекста действующего персонажа."""
 
-    # 1. Отношения говорящего персонажа К присутствующим
     present_ids = [c.id for c in scene.participants]
-    rels = await repo.get_relationships(
-        subject_id=speaking_character.id,
+    assertions = await repo.get_assertions(
+        subject_id=acting_character.id,
         object_ids=present_ids,
         is_current=True,
+        visibility_in=["dm", "public", "character_only"],
     )
-
-    # 2. Фильтрация по значимости (не включать нейтральные)
-    significant = [r for r in rels if abs(r.intensity) > 0.2]
-
-    # 3. Форматирование для LLM
-    return format_relationships_for_context(significant)
+    return assertions
 ```
 
 **Пример вывода для LLM:**
 
 ```text
-[Отношения Лиары]
-→ Сафира: доверие 0.8, симпатия 0.6, страх 0, лояльность 0.7
-  (причина доверия: "помогла скрыться от стражи в Акте II")
-→ Страж: доверие -0.3, симпатия 0.1, страх 0.4, лояльность 0
-  (причина страха: "видела, как убил торговца без суда")
+[Отношения Лиары к присутствующим]
+
+→ Сафира:
+  - доверяет: «Помогла скрыться от стражи в Акте II»
+  - боится: «Видела, как Сафира уничтожила амулет голыми руками — сила пугает»
+
+→ Страж:
+  - не доверяет: «Подозревает в тайном сговоре с Советом»
+  - испытывает долг: «Страж спас её брата из темницы»
 ```
 
-Таким образом, вместо 3800 записей LLM видит **8–20 строк** — только отношения говорящего NPC к тем, кто сейчас в сцене.
+Это **естественный язык**, который LLM понимает лучше, чем `trust: 0.8, fear: 0.3`.
+Контекст компактнее: только значимые утверждения, без нулевых осей.
 
 ---
 
-## 6. Визуализация отношений в UI
+## 6. Производное числовое представление (будущее)
 
-### Граф отношений
+Числовые панели и графы отношений **не входят в MVP** (ADR-008).
+Когда они понадобятся, их можно построить как **view** поверх утверждений:
 
-Одна из сильных сторон структурированных отношений — возможность визуализации:
+```python
+def compute_numeric_summary(
+    assertions: list[RelationshipAssertion],
+) -> dict[str, float]:
+    """Агрегирует утверждения в числовые оценки для UI-панелей."""
+    summary = {}
+    for a in assertions:
+        # Если intensity задана — использовать её
+        if a.intensity is not None:
+            summary[a.relation_type] = a.intensity
+        else:
+            # Иначе — эвристика: положительный тип → +0.5, отрицательный → -0.5
+            sign = +1 if a.relation_type in POSITIVE_TYPES else -1
+            summary[a.relation_type] = sign * 0.5
+    return summary
 
-```text
-┌─────────┐   trust: 0.8   ┌─────────┐
-│  Лиара  │ ──────────────→ │ Сафира  │
-│         │ ←────────────── │         │
-└─────────┘  affinity: -0.2 └─────────┘
-     │                           │
-     │ fear: 0.4                 │ loyalty: 0.9
-     ▼                           ▼
-┌─────────┐                ┌─────────┐
-│  Страж  │                │  Король │
-└─────────┘                └─────────┘
+POSITIVE_TYPES = {"trust", "loyalty", "affection", "romantic", "mentor", "alliance"}
 ```
 
-**Реализация:** force-directed graph (D3.js или аналог) с:
-- Толщина линии = `|intensity|`
-- Цвет линии = тип оси (зелёный = trust, красный = fear, ...)
-- Направленность стрелок
-- Фильтрация по осям
-- Клик на линию → история изменений
+### Визуализация (будущий этап)
 
-### Таблица отношений
+Граф отношений строится из утверждений:
 
-Для более точного просмотра — таблица:
+```text
+┌─────────┐  доверяет, боится  ┌─────────┐
+│  Лиара  │ ─────────────────→ │ Сафира  │
+│         │ ←───────────────── │         │
+└─────────┘   соперничает      └─────────┘
+     │                              │
+     │ не доверяет, должна          │ лояльна
+     ▼                              ▼
+┌─────────┐                   ┌─────────┐
+│  Страж  │                   │  Король │
+└─────────┘                   └─────────┘
+```
 
-| | Сафира | Страж | Торговец |
-|---|---|---|---|
-| **Лиара** | 🟢 T:0.8 A:0.6 L:0.7 | 🔴 T:-0.3 F:0.4 | 🟡 T:0.2 A:0.3 |
-| **Сафира** | — | 🔴 T:-0.5 A:-0.7 | 🟡 T:0.1 |
-| **Страж** | 🟡 T:0.1 F:0.2 | — | 🔴 A:-0.9 |
+- Рёбра = утверждения (а не оси)
+- Цвет = тип (зелёный = доверие, красный = враждебность, ...)
+- Подпись = краткая причина
+- Клик → полная история утверждений между парой
 
 ---
 
 ## 7. Эволюция отношений — отслеживание изменений
 
-Каждое изменение оси создаёт **новую запись**, а предыдущая помечается как `is_current = FALSE`:
+Каждое новое утверждение **не удаляет** предыдущее. Предыдущее помечается
+как `is_current = FALSE`, `superseded_by = id нового`.
 
 ```text
-Turn 47: Лиара → Сафира, trust = 0.3 (первое знакомство)
-Turn 102: Лиара → Сафира, trust = 0.6 (Сафира помогла в бою)
-Turn 189: Лиара → Сафира, trust = 0.8 (Сафира раскрыла свой секрет)
-Turn 234: Лиара → Сафира, trust = 0.2 (Лиара узнала о подделанном письме)
+Turn 47:  Лиара → Сафира, trust: «Первое знакомство, осторожное доверие»
+Turn 102: Лиара → Сафира, trust: «Доверяет — Сафира помогла в бою» (supersedes prev)
+Turn 189: Лиара → Сафира, trust: «Полностью доверяет — Сафира раскрыла секрет»
+Turn 234: Лиара → Сафира, distrust: «Узнала о подделанном письме» (trust superseded)
 ```
 
 Это позволяет:
-- **Timeline отношений** — как менялось доверие Лиары к Сафире по ходам
-- **Provenance** — почему именно такое значение (source_event)
-- **Rollback** — при откате хода восстанавливается предыдущее значение
-- **Campaign Debugger** — «почему Лиара не доверяет Сафире?» → история изменений
+- **Timeline** — как менялись отношения Лиары к Сафире по ходам
+- **Provenance** — почему именно такое утверждение (source_turn, reason)
+- **Rollback** — при откате хода восстанавливается предыдущее утверждение
+- **Campaign Debugger** — «почему Лиара не доверяет Сафире?» → цепочка утверждений
 
 ---
 
@@ -571,9 +606,11 @@ items.current_location_id → entities.id (location)
 
 1. **Entity** — базовая таблица + специализированные таблицы по типам (не EAV, не широкая таблица)
 2. **custom_fields (JSONB)** — для экспериментальных и пользовательских полей с правилом продвижения
-3. **Relationship** — начать MVP с 4 осей (trust, affinity, fear, loyalty), расширять через конфигурацию кампании
-4. **Context Compiler** — загружает только отношения говорящего NPC к присутствующим, фильтруя по значимости
-5. **UI** — граф + таблица отношений, timeline изменений
-6. **Inventory** — через связь Item → Owner/Location с проверкой эксклюзивности
+3. **Цели** — отдельные записи `character_goals` с жизненным циклом (ADR-008), не JSON-массивы
+4. **Секреты** — предпочтительно через Facts + visibility + Beliefs; `backstory_secret` — fallback-проза (ADR-008)
+5. **Отношения** — повествовательные утверждения с типом, описанием, причиной и необязательной интенсивностью (ADR-008). Числовые панели — производное представление для будущего UI
+6. **Локации** — `current_occupants` не хранится; список вычисляется запросом по `characters.current_location_id` (ADR-008)
+7. **Context Compiler** — загружает только утверждения действующего NPC к присутствующим, в нарративном формате
+8. **Inventory** — через связь Item → Owner/Location/Container с проверкой эксклюзивности (ADR-008)
 
-> *Каждая Сущность в мире имеет свою Истинную Форму. Нельзя запирать Дракона и Свиток в одну клетку — у них разная природа, разные свойства, разная судьба. Но все они — дети одного Мира, и все несут на себе Печать Канона: имя, статус, происхождение. В этом — единство в многообразии.*
+> *Обновлено 15 июля 2026 для соответствия принятым ADR-007 и ADR-008.*
