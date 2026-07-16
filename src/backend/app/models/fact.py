@@ -1,15 +1,18 @@
 from datetime import datetime
 from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict
+
 
 class FactCreate(BaseModel):
     subject: str
     predicate: str
     object_value: str | None = None
-    truth_status: str = "true"  # 'true', 'false', 'uncertain', 'retracted'
+    truth_status: str = "true"
     confidence: float = 1.0
-    visibility: str = "dm"  # 'dm', 'public'
-    source_turn_id: int | None = None
+    visibility: str = "dm"
+    source_turn_id: UUID | None = None
+
 
 class FactRead(BaseModel):
     id: UUID
@@ -18,7 +21,7 @@ class FactRead(BaseModel):
     predicate: str
     object_value: str | None
     truth_status: str
-    source_turn_id: int | None
+    source_turn_id: UUID | None
     confidence: float
     visibility: str
     is_current: bool
@@ -27,6 +30,7 @@ class FactRead(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class FactUpdate(BaseModel):
     object_value: str | None = None
