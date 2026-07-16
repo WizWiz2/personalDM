@@ -18,6 +18,9 @@ class TurnRepository(BaseRepository):
         db_turn = Turn(
             campaign_id=str(campaign_id),
             scene_id=str(data.scene_id) if data.scene_id else None,
+            acting_character_id=(
+                str(data.acting_character_id) if data.acting_character_id else None
+            ),
             role=data.role,
             content=data.content,
             parent_turn_id=str(data.parent_turn_id) if data.parent_turn_id else None,
@@ -75,7 +78,6 @@ class TurnRepository(BaseRepository):
         ]
 
     async def undo_last_pair(self, campaign_id: UUID) -> bool:
-        """Mark the latest active user/assistant pair as undone."""
         result = await self._session.execute(
             select(Turn)
             .where(
@@ -113,7 +115,6 @@ class TurnRepository(BaseRepository):
         return True
 
     async def mark_failed(self, turn_id: UUID) -> bool:
-        """Exclude a turn whose generation failed from future active context."""
         result = await self._session.execute(
             select(Turn).where(Turn.id == str(turn_id))
         )
