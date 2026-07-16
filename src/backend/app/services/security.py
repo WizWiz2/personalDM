@@ -1,62 +1,76 @@
 import os
-import base64
-import uuid
-from cryptography.fernet import Fernet
+from pathlib import Path
+
+from cryptography.fernet import Fernet, InvalidToken
+
 from app.config import settings
 
-_fernet_instance = None
+_fernet_instance: Fernet | None = None
+
+
+def _write_private_key_file(path: Path, key: bytes) -> None:
+    """Create a key file with owner-only permissions where supported."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.write(descriptor, key)
+    finally:
+        os.close(descriptor)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        # Windows ACLs are not represented by POSIX mode bits. The file still
+        # remains local; a platform keychain can replace this in a later phase.
+        pass
+
 
 def get_fernet() -> Fernet:
-    """Lazily initializes and returns a Fernet instance.
+    """Return the configured local encryption primitive.
 
-    Uses SECRET_ENCRYPTION_KEY if configured, or falls back to a locally stored key.
+    An invalid configured key is a startup/configuration error. We never derive
+    a predictable replacement from MAC addresses or silently change keys.
     """
     global _fernet_instance
     if _fernet_instance is not None:
         return _fernet_instance
-        
-    key_str = settings.SECRET_ENCRYPTION_KEY
-    if not key_str:
-        # Fallback to key file in data directory
-        key_file = os.path.join(settings.DATA_DIR, ".key")
-        if os.path.exists(key_file):
-            with open(key_file, "r") as f:
-                key_str = f.read().strip()
+
+    key_value = settings.SECRET_ENCRYPTION_KEY
+    if key_value:
+        key_bytes = key_value.encode()
+    else:
+        key_file = Path(settings.DATA_DIR) / ".key"
+        if key_file.exists():
+            key_bytes = key_file.read_bytes().strip()
         else:
-            # Generate a new key and save it
-            os.makedirs(settings.DATA_DIR, exist_ok=True)
             key_bytes = Fernet.generate_key()
-            key_str = key_bytes.decode()
-            with open(key_file, "w") as f:
-                f.write(key_str)
-                
-    # Fernet requires url-safe base64 32-byte key
+            try:
+                _write_private_key_file(key_file, key_bytes)
+            except FileExistsError:
+                # Another process won the creation race.
+                key_bytes = key_file.read_bytes().strip()
+
     try:
-        _fernet_instance = Fernet(key_str.encode())
-    except Exception:
-        # If key is invalid base64 or length, derive one using node UUID
-        node_uuid = str(uuid.getnode())
-        # Pad or hash to get 32 bytes
-        derived = (node_uuid * 3).encode()[:32]
-        key_str = base64.urlsafe_b64encode(derived).decode()
-        _fernet_instance = Fernet(key_str.encode())
-        
+        _fernet_instance = Fernet(key_bytes)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError(
+            "PDM_SECRET_ENCRYPTION_KEY or data/.key is not a valid Fernet key"
+        ) from exc
     return _fernet_instance
 
+
 def encrypt_secret(secret: str) -> str:
-    """Encrypts a plaintext secret string."""
     if not secret:
         return ""
-    f = get_fernet()
-    return f.encrypt(secret.encode()).decode()
+    return get_fernet().encrypt(secret.encode()).decode()
+
 
 def decrypt_secret(encrypted: str) -> str:
-    """Decrypts an encrypted secret string."""
     if not encrypted:
         return ""
-    f = get_fernet()
     try:
-        return f.decrypt(encrypted.encode()).decode()
-    except Exception:
-        # In case of corruption or key change, return empty to prevent crash
-        return ""
+        return get_fernet().decrypt(encrypted.encode()).decode()
+    except InvalidToken as exc:
+        raise RuntimeError(
+            "Stored provider secret cannot be decrypted with the current key"
+        ) from exc
