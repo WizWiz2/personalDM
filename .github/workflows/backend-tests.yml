@@ -32,6 +32,14 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q src/backend/app src/backend/tests
 
+      - name: Validate database migrations
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+          alembic downgrade 293b3517b6ac
+          alembic upgrade head
+
       - name: Run tests
         working-directory: src/backend
         env:
