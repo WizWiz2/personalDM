@@ -1,0 +1,39 @@
+name: Backend tests
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  pull_request:
+    paths:
+      - "src/backend/**"
+      - ".github/workflows/backend-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+
+      - name: Install backend and test dependencies
+        run: python -m pip install -e "src/backend[dev]"
+
+      - name: Compile Python sources
+        run: python -m compileall -q src/backend/app src/backend/tests
+
+      - name: Run tests
+        working-directory: src/backend
+        env:
+          PDM_SECRET_ENCRYPTION_KEY: ""
+        run: pytest -q
