@@ -5,12 +5,16 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+from app.db.repositories.turn_repo import TurnRepository
+from app.models.campaign import CampaignCreate
 from app.models.proposed_change import (
     ChangeType,
     ProposalAction,
     ProposedChangeCreate,
 )
+from app.models.turn import TurnCreate
 
 
 async def mock_generate_stream(*args, **kwargs):
@@ -127,10 +131,28 @@ def test_proposed_changes_workflow(client: TestClient, mock_llm_and_scribe):
 
 @pytest.mark.asyncio
 async def test_invalid_proposal_cannot_be_accepted(db_session: AsyncSession):
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id,
+        CampaignCreate(name="Invalid Proposal Campaign"),
+    )
+    turn_repo = TurnRepository(db_session)
+    user_turn = await turn_repo.create(
+        campaign_id,
+        TurnCreate(role="user", content="I try to leave."),
+    )
+    assistant_turn = await turn_repo.create(
+        campaign_id,
+        TurnCreate(
+            role="assistant",
+            content="The way remains sealed.",
+            parent_turn_id=user_turn.id,
+        ),
+    )
+
     repo = ProposedChangeRepository(db_session)
-    turn_id = uuid4()
     created = await repo.create_batch(
-        turn_id,
+        assistant_turn.id,
         [
             ProposedChangeCreate(
                 change_type=ChangeType.MOVEMENT,
