@@ -1,16 +1,19 @@
 from datetime import datetime
 from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict
+
 
 class BeliefCreate(BaseModel):
     character_id: UUID
     fact_id: UUID | None = None
     proposition: str
-    status: str = "believed"  # 'known', 'believed', 'suspected', 'doubted', 'rejected', 'fabricated'
+    status: str = "believed"
     confidence: float = 1.0
-    source_turn_id: int | None = None
+    source_turn_id: UUID | None = None
     source_character_id: UUID | None = None
-    visibility: str = "dm"  # 'dm', 'public', 'character_only'
+    visibility: str = "dm"
+
 
 class BeliefRead(BaseModel):
     id: UUID
@@ -19,7 +22,7 @@ class BeliefRead(BaseModel):
     proposition: str
     status: str
     confidence: float
-    source_turn_id: int | None
+    source_turn_id: UUID | None
     source_character_id: UUID | None
     visibility: str
     is_current: bool
@@ -28,6 +31,7 @@ class BeliefRead(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class BeliefUpdate(BaseModel):
     proposition: str | None = None
