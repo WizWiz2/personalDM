@@ -1,12 +1,23 @@
 from uuid import UUID
+
 from sqlalchemy import select
+
 from app.db.repositories.base import BaseRepository
 from app.db.tables import RelationshipAssertion
-from app.models.relationship import RelationshipCreate, RelationshipRead, RelationshipUpdate
+from app.models.relationship import (
+    RelationshipCreate,
+    RelationshipRead,
+    RelationshipUpdate,
+)
+
 
 class RelationshipRepository(BaseRepository):
-    async def create(self, campaign_id: UUID, data: RelationshipCreate) -> RelationshipRead:
-        db_rel = RelationshipAssertion(
+    async def create(
+        self,
+        campaign_id: UUID,
+        data: RelationshipCreate,
+    ) -> RelationshipRead:
+        db_relationship = RelationshipAssertion(
             campaign_id=str(campaign_id),
             subject_id=str(data.subject_id),
             object_id=str(data.object_id),
@@ -14,68 +25,95 @@ class RelationshipRepository(BaseRepository):
             description=data.description,
             reason=data.reason,
             intensity=data.intensity,
-            source_turn_id=data.source_turn_id,
+            source_turn_id=(
+                str(data.source_turn_id) if data.source_turn_id else None
+            ),
             provenance=data.provenance,
             confidence=1.0,
             is_current=True,
-            visibility=data.visibility
+            visibility=data.visibility,
         )
-        self._session.add(db_rel)
+        self._session.add(db_relationship)
         await self._session.flush()
-        return RelationshipRead.model_validate(db_rel)
+        return RelationshipRead.model_validate(db_relationship)
 
-    async def get_by_id(self, assertion_id: UUID) -> RelationshipRead | None:
+    async def get_by_id(
+        self,
+        assertion_id: UUID,
+    ) -> RelationshipRead | None:
         result = await self._session.execute(
-            select(RelationshipAssertion).where(RelationshipAssertion.id == str(assertion_id))
+            select(RelationshipAssertion).where(
+                RelationshipAssertion.id == str(assertion_id)
+            )
         )
-        db_rel = result.scalar_one_or_none()
-        if not db_rel:
+        db_relationship = result.scalar_one_or_none()
+        if not db_relationship:
             return None
-        return RelationshipRead.model_validate(db_rel)
+        return RelationshipRead.model_validate(db_relationship)
 
-    async def get_for_character(self, subject_id: UUID, object_ids: list[UUID] | None = None, active_only: bool = True) -> list[RelationshipRead]:
-        query = select(RelationshipAssertion).where(RelationshipAssertion.subject_id == str(subject_id))
+    async def get_for_character(
+        self,
+        subject_id: UUID,
+        object_ids: list[UUID] | None = None,
+        active_only: bool = True,
+    ) -> list[RelationshipRead]:
+        query = select(RelationshipAssertion).where(
+            RelationshipAssertion.subject_id == str(subject_id)
+        )
         if active_only:
             query = query.where(RelationshipAssertion.is_current == True)
         if object_ids:
-            query = query.where(RelationshipAssertion.object_id.in_([str(i) for i in object_ids]))
-            
+            query = query.where(
+                RelationshipAssertion.object_id.in_(
+                    [str(object_id) for object_id in object_ids]
+                )
+            )
+
         result = await self._session.execute(query)
-        rels = result.scalars().all()
-        return [RelationshipRead.model_validate(r) for r in rels]
+        return [
+            RelationshipRead.model_validate(item)
+            for item in result.scalars().all()
+        ]
 
-    async def update(self, assertion_id: UUID, data: RelationshipUpdate) -> RelationshipRead | None:
+    async def update(
+        self,
+        assertion_id: UUID,
+        data: RelationshipUpdate,
+    ) -> RelationshipRead | None:
         result = await self._session.execute(
-            select(RelationshipAssertion).where(RelationshipAssertion.id == str(assertion_id))
+            select(RelationshipAssertion).where(
+                RelationshipAssertion.id == str(assertion_id)
+            )
         )
-        db_rel = result.scalar_one_or_none()
-        if not db_rel:
+        db_relationship = result.scalar_one_or_none()
+        if not db_relationship:
             return None
-            
-        update_data = data.model_dump(exclude_unset=True)
-        for key, value in update_data.items():
-            if key == "superseded_by" and value is not None:
-                setattr(db_rel, key, str(value))
-            else:
-                setattr(db_rel, key, value)
-                
-        await self._session.flush()
-        return RelationshipRead.model_validate(db_rel)
 
-    async def supersede(self, assertion_id: UUID, new_data: RelationshipCreate) -> RelationshipRead:
+        for key, value in data.model_dump(exclude_unset=True).items():
+            if key == "superseded_by" and value is not None:
+                setattr(db_relationship, key, str(value))
+            else:
+                setattr(db_relationship, key, value)
+
+        await self._session.flush()
+        return RelationshipRead.model_validate(db_relationship)
+
+    async def supersede(
+        self,
+        assertion_id: UUID,
+        new_data: RelationshipCreate,
+    ) -> RelationshipRead:
         result = await self._session.execute(
-            select(RelationshipAssertion).where(RelationshipAssertion.id == str(assertion_id))
+            select(RelationshipAssertion).where(
+                RelationshipAssertion.id == str(assertion_id)
+            )
         )
-        old_rel = result.scalar_one_or_none()
-        if not old_rel:
+        old_relationship = result.scalar_one_or_none()
+        if not old_relationship:
             raise ValueError(f"Relationship assertion {assertion_id} not found")
-            
-        # Create new relationship assertion
-        created_new = await self.create(UUID(old_rel.campaign_id), new_data)
-        
-        # Update old relation
-        old_rel.is_current = False
-        old_rel.superseded_by = str(created_new.id)
-        
+
+        created_new = await self.create(UUID(old_relationship.campaign_id), new_data)
+        old_relationship.is_current = False
+        old_relationship.superseded_by = str(created_new.id)
         await self._session.flush()
         return created_new
