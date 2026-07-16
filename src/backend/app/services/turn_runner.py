@@ -25,17 +25,30 @@ class TurnRunner:
         self._config_repo = ProviderConfigRepository(session)
         self._llm_provider = LLMProvider()
 
-    async def _fail_user_turn(self, user_turn_id: UUID) -> None:
-        await self._turn_repo.mark_failed(user_turn_id)
+    async def _fail_user_turn(self, user_turn_id: UUID, owned: bool) -> None:
+        if owned:
+            await self._turn_repo.mark_failed(user_turn_id)
         await self._session.commit()
 
     async def run_turn_stream(
         self,
         campaign_id: UUID,
         turn_create: TurnCreate,
+        existing_user_turn_id: UUID | None = None,
     ) -> AsyncIterator[str]:
-        """Run one context-aware turn and persist only usable model output."""
-        user_turn = await self._turn_repo.create(campaign_id, turn_create)
+        """Run one context-aware turn and persist only usable model output.
+
+        existing_user_turn_id is used by regeneration so a second copy of the
+        same user message is not inserted into the active history.
+        """
+        owns_user_turn = existing_user_turn_id is None
+        if existing_user_turn_id:
+            user_turn = await self._turn_repo.get_by_id(existing_user_turn_id)
+            if not user_turn or user_turn.role != "user":
+                yield "[Generation failed: source user turn was not found.]"
+                return
+        else:
+            user_turn = await self._turn_repo.create(campaign_id, turn_create)
 
         campaign_key = str(campaign_id)
         if campaign_key in active_tasks:
@@ -44,7 +57,7 @@ class TurnRunner:
 
         config = await self._config_repo.get_by_campaign_id(campaign_id)
         if not config:
-            await self._fail_user_turn(user_turn.id)
+            await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield "[Generation failed: no LLM provider is configured for this campaign.]"
             return
 
@@ -86,8 +99,6 @@ class TurnRunner:
                 except LLMProviderError as exc:
                     last_provider_error = exc
                     if attempt_text.strip():
-                        # The client may already have seen this fragment. Preserve it
-                        # as an alternative for debugging, but never feed it to Scribe.
                         partial_turn = TurnCreate(
                             role="assistant",
                             content=attempt_text + " [generation interrupted]",
@@ -101,7 +112,7 @@ class TurnRunner:
                             partial_turn,
                         )
                         await self._turn_repo.mark_alternative(saved_partial.id)
-                        await self._fail_user_turn(user_turn.id)
+                        await self._fail_user_turn(user_turn.id, owns_user_turn)
                         yield f"\n[Generation interrupted: {exc}]"
                         return
 
@@ -109,7 +120,7 @@ class TurnRunner:
                     await asyncio.sleep(0.25)
 
             if not accumulated_text.strip():
-                await self._fail_user_turn(user_turn.id)
+                await self._fail_user_turn(user_turn.id, owns_user_turn)
                 detail = str(last_provider_error or "provider returned empty text")
                 yield f"[Generation failed after retry: {detail}]"
                 return
@@ -129,7 +140,6 @@ class TurnRunner:
             )
             await self._session.commit()
 
-            # Extract canon candidates only from a completed, non-empty DM result.
             from app.services.memory_scribe import MemoryScribe
 
             scribe = MemoryScribe(self._session)
@@ -174,11 +184,11 @@ class TurnRunner:
                 )
                 partial = await self._turn_repo.create(campaign_id, partial_turn)
                 await self._turn_repo.mark_alternative(partial.id)
-            await self._fail_user_turn(user_turn.id)
+            await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
         except Exception as exc:
             traceback.print_exc()
-            await self._fail_user_turn(user_turn.id)
+            await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
             if (
