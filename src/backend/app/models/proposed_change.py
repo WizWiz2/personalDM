@@ -2,7 +2,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict
+
 
 class ChangeType(str, Enum):
     FACT = "fact"
@@ -10,22 +12,27 @@ class ChangeType(str, Enum):
     RELATIONSHIP = "relationship"
     SCENE_THESIS = "scene_thesis"
     MOVEMENT = "movement"
+    KNOWLEDGE = "knowledge"
+    ITEM_TRANSFER = "item_transfer"
+
 
 class ProposedChangeCreate(BaseModel):
     change_type: ChangeType
     payload: dict
 
+
 class ProposedChangeRead(BaseModel):
     id: UUID
     turn_id: UUID
     change_type: str
-    payload: dict  # Parsed from JSON string
-    status: str  # 'proposed', 'accepted', 'rejected', 'edited'
-    user_edit: dict | None = None  # Parsed from JSON string
+    payload: dict
+    status: str
+    user_edit: dict | None = None
     created_at: datetime
     resolved_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class ProposalAction(BaseModel):
     status: Literal["accepted", "rejected", "edited"]
