@@ -1,12 +1,15 @@
+import json
+from uuid import UUID, uuid4
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
-from uuid import uuid4
 
 from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.db.tables import Entity, Item
 from app.models.belief import BeliefCreate
 from app.models.campaign import CampaignCreate
 from app.models.character import CharacterCreate
@@ -35,6 +38,11 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
             entity_type=EntityType.CHARACTER,
             canonical_name="Safira",
             description="A royal guard captain",
+            backstory_secret="Safira serves the hidden living King.",
+            custom_fields={
+                "capabilities": ["command royal guards"],
+                "limitations": ["cannot read ancient runes"],
+            },
         ),
     )
     liara = await entity_repo.create_character(
@@ -43,8 +51,28 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
             entity_type=EntityType.CHARACTER,
             canonical_name="Liara",
             description="A rebel commander",
+            values=["freedom"],
+            fears=["betrayal"],
+            current_intentions=["question Safira"],
+            custom_fields={
+                "capabilities": ["read ancient runes"],
+                "limitations": ["cannot cast healing magic"],
+            },
         ),
     )
+
+    lens_entity = Entity(
+        campaign_id=str(campaign_id),
+        entity_type="item",
+        canonical_name="Brass lens",
+        aliases=json.dumps([]),
+        status="active",
+        provenance="test",
+        version=1,
+    )
+    db_session.add(lens_entity)
+    await db_session.flush()
+    db_session.add(Item(entity_id=lens_entity.id, current_owner_id=str(liara.id)))
 
     secret_fact = await fact_repo.create(
         campaign_id,
@@ -79,7 +107,6 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
     liara_belief = await belief_repo.create(
         BeliefCreate(
             character_id=liara.id,
-            fact_id=None,
             proposition="The King is dead, killed in the coup",
             status="believed",
             visibility="character_only",
@@ -122,7 +149,11 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
     assert "The King is alive and hiding in the monastery" not in liara_context
     assert "alive_in_monastery" not in liara_context
     assert "The hidden crypt contains the living King" not in liara_context
-    assert "The courtyard is tense and rain-soaked" in liara_context
+    assert "Safira serves the hidden living King" not in liara_context
+    assert "command royal guards" not in liara_context
+    assert "read ancient runes" in liara_context
+    assert "cannot cast healing magic" in liara_context
+    assert "Brass lens" in liara_context
     assert "heavy rain" in liara_context
     assert liara_meta["actor_scope_strict"] is True
     assert str(secret_fact.id) not in liara_meta["included_fact_ids"]
@@ -131,6 +162,7 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
     assert str(safira_belief.id) not in liara_meta["included_belief_ids"]
     assert str(private_thesis.id) not in liara_meta["included_thesis_ids"]
     assert str(public_thesis.id) in liara_meta["included_thesis_ids"]
+    assert str(UUID(lens_entity.id)) in liara_meta["included_item_ids"]
 
     safira_messages, safira_meta = await compiler.compile_context(
         campaign_id=campaign_id,
@@ -142,6 +174,7 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
     assert "The King is alive and hiding in the monastery" in safira_context
     assert "The King is dead, killed in the coup" not in safira_context
     assert "alive_in_monastery" not in safira_context
+    assert "Safira serves the hidden living King" in safira_context
     assert str(safira_belief.id) in safira_meta["included_belief_ids"]
 
     narrator_messages, narrator_meta = await compiler.compile_context(
@@ -152,6 +185,10 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
     narrator_context = "\n".join(message.content for message in narrator_messages)
     assert "alive_in_monastery" in narrator_context
     assert "The hidden crypt contains the living King" in narrator_context
+    assert "Safira serves the hidden living King" in narrator_context
+    assert "command royal guards" in narrator_context
+    assert "read ancient runes" in narrator_context
+    assert "Brass lens" in narrator_context
     assert narrator_meta["actor_scope_strict"] is False
     assert str(secret_fact.id) in narrator_meta["included_fact_ids"]
     assert str(private_thesis.id) in narrator_meta["included_thesis_ids"]
