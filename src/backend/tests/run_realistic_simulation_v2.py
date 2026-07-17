@@ -1091,6 +1091,18 @@ async def run_realistic_simulation_v2() -> None:
                 state.logical_turn,
             )
 
+            if existing_assistant and existing_assistant.content.lstrip().startswith("[Generation failed"):
+                print(f"[simulation] Deleting failed logical turn {state.logical_turn} from DB to re-attempt.")
+                from sqlalchemy import delete as sql_delete
+                await session.execute(sql_delete(DBTurn).where(DBTurn.id == existing_assistant.id))
+                if existing_user:
+                    await session.execute(sql_delete(DBTurn).where(DBTurn.id == existing_user.id))
+                await session.commit()
+                existing_user = None
+                existing_assistant = None
+                state.consecutive_failures = 0
+                state.save(state_path)
+
             if existing_assistant and existing_assistant.status == "active":
                 decision = PlayerDecision(
                     target="narrator",
