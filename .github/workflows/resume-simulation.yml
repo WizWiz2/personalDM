@@ -1,0 +1,139 @@
+name: Resume simulation test
+
+on:
+  push:
+    branches:
+      - "agent/**"
+  pull_request:
+    paths:
+      - "src/backend/**"
+      - ".github/workflows/resume-simulation.yml"
+
+jobs:
+  resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+
+      - name: Install backend
+        run: python -m pip install -e "src/backend[dev]"
+
+      - name: Stop on a planned provider failure
+        working-directory: src/backend
+        env:
+          PYTHONPATH: "."
+          PDM_SIM_TURNS: "60"
+          PDM_SIM_DATA_DIR: "./data/ci-resume"
+          PDM_SIM_RESET: "1"
+          PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
+          PDM_MOCK_FAIL_DM_ATTEMPTS: "3"
+        run: python tests/run_ci_mock_simulation_v3.py
+
+      - name: Validate checkpoint before resume
+        working-directory: src/backend
+        run: |
+          python - <<'PY'
+          import json
+          import sqlite3
+          from pathlib import Path
+
+          root = Path("data/ci-resume")
+          state = json.loads((root / "realistic_simulation_state.json").read_text(encoding="utf-8"))
+          records = [json.loads(line) for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          assert state["logical_turn"] == 1, state
+          assert state["phase_index"] == 0, state
+          assert state["completed"] is False, state
+          assert len(records) == 1
+          assert records[0]["turn"] == 1
+          assert records[0]["generation_failed"] is True
+          original_intent = records[0]["player"]["intent"]
+          (root / "original_intent.txt").write_text(original_intent, encoding="utf-8")
+
+          db = sqlite3.connect(root / "realistic_simulation.db")
+          campaign_id = state["campaign_id"]
+          users = db.execute(
+              "SELECT COUNT(*) FROM turns WHERE campaign_id=? AND role='user'",
+              (campaign_id,),
+          ).fetchone()[0]
+          assistants = db.execute(
+              "SELECT COUNT(*) FROM turns WHERE campaign_id=? AND role='assistant' AND status='active'",
+              (campaign_id,),
+          ).fetchone()[0]
+          db.close()
+          assert users == 1, users
+          assert assistants == 0, assistants
+          PY
+
+      - name: Resume the same logical turn and finish campaign
+        working-directory: src/backend
+        env:
+          PYTHONPATH: "."
+          PDM_SIM_TURNS: "60"
+          PDM_SIM_DATA_DIR: "./data/ci-resume"
+          PDM_SIM_RESET: "0"
+          PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
+          PDM_MOCK_FAIL_DM_ATTEMPTS: "3"
+        run: python tests/run_ci_mock_simulation_v3.py
+
+      - name: Validate idempotent resume
+        working-directory: src/backend
+        run: |
+          python - <<'PY'
+          import json
+          import sqlite3
+          from pathlib import Path
+
+          root = Path("data/ci-resume")
+          state = json.loads((root / "realistic_simulation_state.json").read_text(encoding="utf-8"))
+          records = [json.loads(line) for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          original_intent = (root / "original_intent.txt").read_text(encoding="utf-8")
+
+          assert state["completed"] is True, state
+          assert state["phase_index"] == 10, state
+          assert len(records) == len({record["turn"] for record in records})
+          assert records[0]["turn"] == 1
+          assert records[0]["generation_failed"] is False
+          assert records[0]["player"]["intent"] == original_intent
+
+          db = sqlite3.connect(root / "realistic_simulation.db")
+          campaign_id = state["campaign_id"]
+          user_rows = db.execute(
+              "SELECT content FROM turns WHERE campaign_id=? AND role='user' ORDER BY created_at",
+              (campaign_id,),
+          ).fetchall()
+          assistant_count = db.execute(
+              "SELECT COUNT(*) FROM turns WHERE campaign_id=? AND role='assistant' AND status='active'",
+              (campaign_id,),
+          ).fetchone()[0]
+          duplicate_markers = db.execute(
+              """SELECT COUNT(*) FROM (
+                   SELECT json_extract(context_snapshot, '$.simulation.logical_turn'), COUNT(*) AS n
+                   FROM turns
+                   WHERE campaign_id=? AND role='user'
+                   GROUP BY json_extract(context_snapshot, '$.simulation.logical_turn')
+                   HAVING n > 1
+                 )""",
+              (campaign_id,),
+          ).fetchone()[0]
+          db.close()
+
+          assert len(user_rows) == len(records), (len(user_rows), len(records))
+          assert assistant_count == len(records), (assistant_count, len(records))
+          assert duplicate_markers == 0, duplicate_markers
+          assert original_intent in user_rows[0][0]
+          PY
+
+      - name: Upload resume evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: personaldm-v4-resume-simulation
+          path: src/backend/data/ci-resume/
+          retention-days: 7

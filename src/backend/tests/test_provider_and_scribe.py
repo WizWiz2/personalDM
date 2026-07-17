@@ -86,10 +86,14 @@ async def test_scribe_ignores_empty_dm_result(db_session: AsyncSession):
     assert proposals == []
 
 
-def test_scribe_rejects_scene_thesis_from_fallback_parser():
+def test_scribe_rejects_scene_thesis_from_parser():
     scribe = MemoryScribe(None)
     parsed = scribe._parse_response(
         '{"proposals":[{"change_type":"scene_thesis","payload":{"text":"stale"}}]}',
-        {},
+        known_entities={},
+        known_ids=set(),
+        acting_character_id=None,
+        player_character_id=None,
+        scene_participant_ids=[],
     )
     assert parsed == []

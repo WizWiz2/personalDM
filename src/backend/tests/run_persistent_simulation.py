@@ -1,4 +1,4 @@
-"""Compatibility entrypoint for the realistic autonomous campaign benchmark."""
+"""Compatibility entrypoint for the objective-driven autonomous campaign."""
 
 try:
     from .run_realistic_simulation import run_realistic_simulation

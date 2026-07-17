@@ -15,6 +15,7 @@ class EventRepository(BaseRepository):
         data: EventCreate,
         source_turns: list[UUID] | None = None,
     ) -> EventRead:
+        effective_sources = source_turns if source_turns is not None else data.source_turns
         db_event = Event(
             campaign_id=str(campaign_id),
             event_type=data.event_type,
@@ -22,7 +23,7 @@ class EventRepository(BaseRepository):
             world_time=data.world_time,
             location_id=str(data.location_id) if data.location_id else None,
             importance=data.importance,
-            source_turns=json.dumps([str(turn_id) for turn_id in source_turns or []]),
+            source_turns=json.dumps([str(turn_id) for turn_id in effective_sources]),
         )
         self._session.add(db_event)
         await self._session.flush()
@@ -55,7 +56,7 @@ class EventRepository(BaseRepository):
             for participant_id in participants_result.scalars().all()
         ]
 
-        source_turns = []
+        source_turns: list[UUID] = []
         if db_event.source_turns:
             try:
                 source_turns = [

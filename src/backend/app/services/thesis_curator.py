@@ -1,5 +1,7 @@
 import json
+import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from uuid import UUID
 
 from pydantic import BaseModel, Field, ValidationError
@@ -10,7 +12,7 @@ from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
 from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProvider
+from app.providers.llm_provider import LLMProvider, LLMProviderError
 
 
 class DesiredThesis(BaseModel):
@@ -19,6 +21,8 @@ class DesiredThesis(BaseModel):
     priority: int = Field(default=0, ge=-10, le=10)
     visibility: str = "dm"
     related_entity_ids: list[UUID] = Field(default_factory=list)
+    existing_thesis_id: UUID | None = None
+    semantic_key: str | None = Field(default=None, max_length=160)
 
 
 class CuratorResponse(BaseModel):
@@ -33,20 +37,13 @@ class ThesisReconcileResult:
     kept: int = 0
     pinned_conflicts: int = 0
     duplicate_scopes: int = 0
+    paraphrases_ignored: int = 0
 
 
 class ThesisCurator:
-    """Maintain one coherent, current working-memory snapshot for a scene.
+    """Maintain a coherent, current working-memory snapshot for one scene."""
 
-    Scene theses are operational memory, not immutable canon. After every usable
-    DM turn the curator proposes the complete desired set of *unpinned* active
-    theses. The reconciler keeps unchanged theses, supersedes changed theses and
-    resolves obsolete ones. User-pinned theses are authoritative and immutable.
-
-    A scope is `(thesis_type, sorted related_entity_ids)`. Only one active thesis
-    may occupy a scope. This gives each scene one global tension, one global
-    visual state, one current intention per character, and so on.
-    """
+    PARAPHRASE_SIMILARITY = 0.86
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -59,6 +56,47 @@ class ThesisCurator:
     def scope_key(thesis_type: str, related_entity_ids: list[UUID]) -> str:
         entity_scope = ",".join(sorted(str(value) for value in related_entity_ids))
         return f"{thesis_type}:{entity_scope or 'scene'}"
+
+    @staticmethod
+    def _normalized_text(value: str) -> str:
+        value = value.casefold().replace("ё", "е")
+        return " ".join(re.findall(r"[\w]+", value, flags=re.UNICODE))
+
+    @classmethod
+    def _similarity(cls, left: str, right: str) -> float:
+        return SequenceMatcher(
+            None,
+            cls._normalized_text(left),
+            cls._normalized_text(right),
+        ).ratio()
+
+    @staticmethod
+    def _choose_current(items):
+        return max(
+            items,
+            key=lambda item: (
+                int(item.pinned),
+                item.priority,
+                item.updated_at,
+                item.created_at,
+            ),
+        )
+
+    async def close_scene(self, scene_id: UUID) -> int:
+        """Resolve every operational thesis when a scene ends.
+
+        Durable consequences must already have been written as facts, events,
+        relationships or beliefs. A thesis is working memory and must not remain active
+        after its scene is completed, including pinned director instructions.
+        """
+        active = await self._scene_repo.list_theses_by_scene(scene_id, active_only=True)
+        for thesis in active:
+            await self._scene_repo.update_thesis(
+                thesis.id,
+                SceneThesisUpdate(status="resolved"),
+            )
+        await self._session.flush()
+        return len(active)
 
     async def curate_after_turn(
         self,
@@ -76,7 +114,7 @@ class ThesisCurator:
             return None
 
         scene = await self._scene_repo.get_by_id(scene_id)
-        if not scene:
+        if not scene or scene.status != "active":
             return None
 
         active = await self._scene_repo.list_theses_by_scene(scene_id, active_only=True)
@@ -88,75 +126,89 @@ class ThesisCurator:
 
         current_lines = []
         for thesis in active:
-            names = [entity_names.get(str(value), str(value)) for value in thesis.related_entity_ids]
+            names = [
+                entity_names.get(str(value), str(value))
+                for value in thesis.related_entity_ids
+            ]
             current_lines.append(
                 json.dumps(
                     {
                         "id": str(thesis.id),
-                        "scope": self.scope_key(thesis.thesis_type, thesis.related_entity_ids),
+                        "scope": self.scope_key(
+                            thesis.thesis_type,
+                            thesis.related_entity_ids,
+                        ),
                         "type": thesis.thesis_type,
                         "text": thesis.text,
                         "priority": thesis.priority,
                         "visibility": thesis.visibility,
                         "related_entities": names,
-                        "related_entity_ids": [str(value) for value in thesis.related_entity_ids],
+                        "related_entity_ids": [
+                            str(value) for value in thesis.related_entity_ids
+                        ],
                         "pinned": thesis.pinned,
                     },
                     ensure_ascii=False,
                 )
             )
 
-        entity_lines = [f"- {name}: {entity_id}" for entity_id, name in entity_names.items()]
-        prompt = f"""You are the Scene Thesis Curator for a long-running RPG.
-Return the COMPLETE desired set of current, unpinned scene theses after this turn.
+        entity_lines = [
+            f"- {name}: {entity_id}" for entity_id, name in entity_names.items()
+        ]
+        prompt = f"""Ты куратор живых тезисов сцены настольной RPG.
+Верни ПОЛНЫЙ желаемый набор актуальных незакреплённых тезисов после хода.
+Все тексты тезисов пиши только на русском языке.
 
-A thesis is short-lived working memory that the DM must actively remember now.
-It is not biography, inventory, permanent canon or a summary of old history.
+Тезис — краткоживущая рабочая память ДМа. Это не биография, не инвентарь,
+не вечный канон и не пересказ старой истории.
 
-RULES:
-- Return 5-12 theses when the scene is active enough to justify them; fewer is fine for a quiet scene.
-- The returned set must be internally consistent. Never keep mutually exclusive states.
-- Use exactly one thesis per scope: thesis_type + the same related_entity_ids.
-- Replace an old thesis by returning a new text in the same scope.
-- Omit obsolete or completed theses; the engine will resolve them.
-- Do not repeat pinned theses. They are authoritative and remain active automatically.
-- Do not contradict a pinned thesis. When a pinned thesis conflicts with the turn, keep the pinned truth and omit the conflicting candidate.
-- Prefer active intentions, tension, secrets affecting current choices, unresolved beats,
-  relationship dynamics, visible state and music mood.
-- Do not turn a player's attempted result into truth unless the DM confirmed it.
-- Use only listed entity UUIDs.
+ПРАВИЛА:
+- Обычно держи 4-10 тезисов, но не заполняй квоту искусственно.
+- Набор должен быть внутренне непротиворечивым.
+- Один смысловой слот: thesis_type + одинаковые related_entity_ids.
+- При сохранении смысла укажи existing_thesis_id и не перефразируй ради стиля.
+- Замени тезис только когда изменилось состояние мира, намерение или напряжение.
+- Оставь завершённые и устаревшие тезисы вне ответа.
+- Не повторяй pinned тезисы и не противоречь им.
+- Попытка игрока не становится правдой без подтверждения ДМа.
+- Используй только перечисленные UUID персонажей.
+- Не записывай запланированное событие как уже случившееся.
 
-Allowed thesis_type values:
+Допустимые thesis_type:
 canon, intention, relationship_dynamic, secret, tension, unresolved_beat,
 visual_state, music_mood
 
-Scene:
-{scene.title}
+Сцена: {scene.title}
 {scene.location_description or ''}
-Mood: {scene.mood or ''}; tension: {scene.tension or ''}
+Настроение: {scene.mood or ''}; напряжение: {scene.tension or ''}
 
-Known participants:
-{chr(10).join(entity_lines) or '- none'}
+Участники:
+{chr(10).join(entity_lines) or '- нет'}
 
-Current active theses:
-{chr(10).join(current_lines) or '- none'}
+Текущие тезисы:
+{chr(10).join(current_lines) or '- нет'}
 
-Completed turn:
-PLAYER ATTEMPT: {user_content}
-DM RESULT: {assistant_content}
+Завершённый ход:
+ПОПЫТКА ИГРОКА: {user_content}
+РЕЗУЛЬТАТ ДМА: {assistant_content}
 
-Return JSON only:
-{{"desired_active":[{{"thesis_type":"tension","text":"...","priority":5,"visibility":"dm","related_entity_ids":[]}}]}}
+Верни только JSON:
+{{"desired_active":[{{"thesis_type":"tension","text":"...","priority":5,"visibility":"dm","related_entity_ids":[],"existing_thesis_id":null,"semantic_key":"короткий стабильный ключ"}}]}}
 """
 
         api_key = await self._config_repo.get_decrypted_key(campaign_id)
         response_text = ""
-        async for token in self._llm_provider.generate_stream(
-            [ChatMessage(role="system", content=prompt)],
-            config,
-            api_key,
-        ):
-            response_text += token
+        try:
+            async for token in self._llm_provider.generate_stream(
+                [ChatMessage(role="system", content=prompt)],
+                config,
+                api_key,
+                max_tokens=900,
+                temperature=0.1,
+            ):
+                response_text += token
+        except LLMProviderError:
+            return None
 
         desired = self._parse_response(response_text, set(entity_names))
         if desired is None:
@@ -164,7 +216,10 @@ Return JSON only:
         return await self.reconcile(scene_id, source_turn_id, desired)
 
     @staticmethod
-    def _parse_response(text: str, allowed_entity_ids: set[str]) -> list[DesiredThesis] | None:
+    def _parse_response(
+        text: str,
+        allowed_entity_ids: set[str],
+    ) -> list[DesiredThesis] | None:
         clean = text.strip()
         if clean.startswith("```"):
             lines = clean.splitlines()
@@ -178,10 +233,23 @@ Return JSON only:
         for thesis in parsed.desired_active:
             if thesis.visibility not in {"dm", "public", "character_only"}:
                 continue
-            if any(str(entity_id) not in allowed_entity_ids for entity_id in thesis.related_entity_ids):
+            if any(
+                str(entity_id) not in allowed_entity_ids
+                for entity_id in thesis.related_entity_ids
+            ):
                 continue
             result.append(thesis)
         return result
+
+    async def _group_active(self, scene_id: UUID):
+        active = await self._scene_repo.list_theses_by_scene(scene_id, active_only=True)
+        groups: dict[str, list] = {}
+        for thesis in active:
+            groups.setdefault(
+                self.scope_key(thesis.thesis_type, thesis.related_entity_ids),
+                [],
+            ).append(thesis)
+        return groups
 
     async def reconcile(
         self,
@@ -190,17 +258,39 @@ Return JSON only:
         desired: list[DesiredThesis],
     ) -> ThesisReconcileResult:
         result = ThesisReconcileResult()
-        active = await self._scene_repo.list_theses_by_scene(scene_id, active_only=True)
-        pinned_by_scope = {
-            self.scope_key(item.thesis_type, item.related_entity_ids): item
-            for item in active
-            if item.pinned
-        }
-        mutable_by_scope = {
-            self.scope_key(item.thesis_type, item.related_entity_ids): item
-            for item in active
-            if not item.pinned
-        }
+        groups = await self._group_active(scene_id)
+
+        pinned_by_scope = {}
+        mutable_by_scope = {}
+        for scope, items in groups.items():
+            pinned = [item for item in items if item.pinned]
+            mutable = [item for item in items if not item.pinned]
+
+            if pinned:
+                keeper = self._choose_current(pinned)
+                pinned_by_scope[scope] = keeper
+                for duplicate in pinned:
+                    if duplicate.id == keeper.id:
+                        continue
+                    await self._scene_repo.update_thesis(
+                        duplicate.id,
+                        SceneThesisUpdate(status="resolved"),
+                    )
+                    result.duplicate_scopes += 1
+                    result.resolved += 1
+
+            if mutable:
+                keeper = self._choose_current(mutable)
+                mutable_by_scope[scope] = keeper
+                for duplicate in mutable:
+                    if duplicate.id == keeper.id:
+                        continue
+                    await self._scene_repo.update_thesis(
+                        duplicate.id,
+                        SceneThesisUpdate(status="superseded"),
+                    )
+                    result.duplicate_scopes += 1
+                    result.superseded += 1
 
         desired_by_scope: dict[str, DesiredThesis] = {}
         for item in sorted(desired, key=lambda value: value.priority, reverse=True):
@@ -210,7 +300,7 @@ Return JSON only:
                 continue
             if scope in pinned_by_scope:
                 pinned = pinned_by_scope[scope]
-                if pinned.text.strip() != item.text.strip():
+                if self._similarity(pinned.text, item.text) < self.PARAPHRASE_SIMILARITY:
                     result.pinned_conflicts += 1
                 else:
                     result.kept += 1
@@ -227,13 +317,23 @@ Return JSON only:
                 result.resolved += 1
                 continue
 
-            unchanged = (
-                old.text.strip() == new.text.strip()
-                and old.priority == new.priority
-                and old.visibility == new.visibility
-            )
-            if unchanged:
+            same_identity = new.existing_thesis_id in {None, old.id}
+            similarity = self._similarity(old.text, new.text)
+            semantically_same = same_identity and similarity >= self.PARAPHRASE_SIMILARITY
+            if semantically_same:
+                changes = {}
+                if old.priority != new.priority:
+                    changes["priority"] = new.priority
+                if old.visibility != new.visibility:
+                    changes["visibility"] = new.visibility
+                if changes:
+                    await self._scene_repo.update_thesis(
+                        old.id,
+                        SceneThesisUpdate(**changes),
+                    )
                 result.kept += 1
+                if old.text.strip() != new.text.strip():
+                    result.paraphrases_ignored += 1
                 desired_by_scope.pop(scope)
                 continue
 

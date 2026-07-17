@@ -1,4 +1,3 @@
-import json
 from uuid import UUID
 
 from sqlalchemy import select
@@ -14,7 +13,7 @@ from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import CharacterGoal, Entity, Item
-from app.models.turn import ChatMessage
+from app.models.turn import ChatMessage, TurnRead
 
 try:
     import tiktoken
@@ -31,6 +30,16 @@ except ImportError:
 
 
 class ContextCompiler:
+    """Build narrator or actor-scoped prompts with an auditable manifest.
+
+    Actor mode includes only the selected character's card, beliefs, public state and
+    that character's own recent conversation. It never imports another NPC's reply or
+    private belief merely because it happened in the same scene.
+    """
+
+    ACTOR_HISTORY_LIMIT = 8
+    NARRATOR_HISTORY_LIMIT = 24
+
     def __init__(self, session: AsyncSession):
         self._session = session
         self._campaign_repo = CampaignRepository(session)
@@ -108,6 +117,41 @@ class ContextCompiler:
             lines.append(f"Secret background: {character.backstory_secret}")
         return "\n".join(lines) + "\n"
 
+    @staticmethod
+    def _same_scene(turn: TurnRead, scene_id: UUID | None) -> bool:
+        return scene_id is None or turn.scene_id == scene_id
+
+    async def _history_records(
+        self,
+        campaign_id: UUID,
+        actor_mode: bool,
+        acting_character_id: UUID | None,
+        scene_id: UUID | None,
+        current_user_content: str | None,
+    ) -> list[TurnRead]:
+        records = await self._turn_repo.get_history(
+            campaign_id,
+            limit=80 if actor_mode else 40,
+            active_only=True,
+        )
+        records = [record for record in records if self._same_scene(record, scene_id)]
+        if not actor_mode:
+            return records[-self.NARRATOR_HISTORY_LIMIT :]
+
+        own_dialogue: list[TurnRead] = []
+        for record in records:
+            if record.acting_character_id != acting_character_id:
+                continue
+            if (
+                record.role == "user"
+                and current_user_content
+                and record.content == current_user_content
+                and record is records[-1]
+            ):
+                continue
+            own_dialogue.append(record)
+        return own_dialogue[-self.ACTOR_HISTORY_LIMIT :]
+
     async def compile_context(
         self,
         campaign_id: UUID,
@@ -133,14 +177,16 @@ class ContextCompiler:
             else ""
         )
         boundary = (
-            "\nYou are roleplaying one specific character. Use only the knowledge "
-            "present in this prompt. Do not infer hidden DM facts or other characters' "
-            "secrets. Do not use abilities or equipment absent from your card."
+            "\nYou are roleplaying one specific character. Continue the character's "
+            "own recent conversation naturally. Use only knowledge present in this "
+            "prompt. Do not infer hidden DM facts or other characters' secrets. Do not "
+            "speak or decide for the player. Do not use abilities or equipment absent "
+            "from your card."
             if actor_mode
             else "\nYou are the omniscient narrator. Respect every character card, "
-            "capability, limitation, owned item and current location. Do not invent a "
-            "successful ability, item or movement that is not represented in structured "
-            "state; narrate uncertainty or failure instead."
+            "capability, limitation, owned item and current location. Resolve the "
+            "player's attempted action with a concrete consequence. Do not invent a "
+            "successful ability, item or movement absent from structured state."
         )
         system_msg = ChatMessage(role="system", content=f"{system_instr}{style}{boundary}")
         current_budget_used = count_tokens(system_msg.content)
@@ -154,45 +200,46 @@ class ContextCompiler:
         included_character_ids: list[str] = []
         packages: list[str] = []
 
-        if scene_id:
-            scene = await self._scene_repo.get_by_id(scene_id)
-            if scene:
-                scene_info = f"[Current Scene: {scene.title}]\n"
-                if scene.location_description:
-                    scene_info += f"Location: {scene.location_description}\n"
-                if scene.mood:
-                    scene_info += f"Mood: {scene.mood}\n"
-                if scene.tension:
-                    scene_info += f"Tension: {scene.tension}\n"
+        scene = await self._scene_repo.get_by_id(scene_id) if scene_id else None
+        if scene:
+            scene_info = f"[Current Scene: {scene.title}]\n"
+            if scene.location_description:
+                scene_info += f"Location: {scene.location_description}\n"
+            if scene.mood:
+                scene_info += f"Mood: {scene.mood}\n"
+            if scene.tension:
+                scene_info += f"Tension: {scene.tension}\n"
 
-                visible_theses = []
-                for thesis in await self._scene_repo.list_theses_by_scene(
-                    scene_id,
-                    active_only=True,
+            visible_theses = []
+            for thesis in await self._scene_repo.list_theses_by_scene(
+                scene_id,
+                active_only=True,
+            ):
+                if not actor_mode or thesis.visibility == "public":
+                    visible_theses.append(thesis)
+                elif (
+                    thesis.visibility == "character_only"
+                    and acting_character_id in thesis.related_entity_ids
                 ):
-                    if not actor_mode:
-                        visible_theses.append(thesis)
-                    elif thesis.visibility == "public":
-                        visible_theses.append(thesis)
-                    elif (
-                        thesis.visibility == "character_only"
-                        and acting_character_id in thesis.related_entity_ids
-                    ):
-                        visible_theses.append(thesis)
-                if visible_theses:
-                    scene_info += "Active Scene Notes:\n"
-                    for thesis in visible_theses:
-                        scene_info += (
-                            f"- {thesis.text}"
-                            f"{' (Important)' if thesis.pinned else ''}\n"
-                        )
-                        included_thesis_ids.append(str(thesis.id))
+                    visible_theses.append(thesis)
+            if visible_theses:
+                scene_info += "Active Scene Notes:\n"
+                for thesis in sorted(
+                    visible_theses,
+                    key=lambda item: (item.priority, item.pinned),
+                    reverse=True,
+                ):
+                    scene_info += (
+                        f"- {thesis.text}"
+                        f"{' (Important)' if thesis.pinned else ''}\n"
+                    )
+                    included_thesis_ids.append(str(thesis.id))
 
-                scene_tokens = count_tokens(scene_info)
-                if current_budget_used + scene_tokens < max_budget:
-                    packages.append(scene_info)
-                    current_budget_used += scene_tokens
-                    included_layers.append("layer_1_scene")
+            scene_tokens = count_tokens(scene_info)
+            if current_budget_used + scene_tokens < max_budget:
+                packages.append(scene_info)
+                current_budget_used += scene_tokens
+                included_layers.append("layer_1_scene")
 
         scene_characters = (
             await self._entity_repo.get_characters_in_scene(scene_id)
@@ -220,9 +267,7 @@ class ContextCompiler:
                 if goals:
                     actor_package += "Goals:\n"
                     for goal in goals:
-                        actor_package += (
-                            f"- {goal.description} (Priority {goal.priority})\n"
-                        )
+                        actor_package += f"- {goal.description} (Priority {goal.priority})\n"
 
                 beliefs = await self._belief_repo.get_for_character(
                     acting_character_id,
@@ -238,9 +283,7 @@ class ContextCompiler:
                         included_belief_ids.append(str(belief.id))
 
                 other_ids = [
-                    item.id
-                    for item in scene_characters
-                    if item.id != acting_character_id
+                    item.id for item in scene_characters if item.id != acting_character_id
                 ]
                 if other_ids:
                     names = {item.id: item.canonical_name for item in scene_characters}
@@ -271,9 +314,7 @@ class ContextCompiler:
         if facts:
             fact_package = "[Campaign Facts & History]\n"
             for fact in facts:
-                fact_package += (
-                    f"- {fact.subject} {fact.predicate} {fact.object_value or ''}\n"
-                )
+                fact_package += f"- {fact.subject} {fact.predicate} {fact.object_value or ''}\n"
                 included_fact_ids.append(str(fact.id))
             fact_tokens = count_tokens(fact_package)
             if current_budget_used + fact_tokens < max_budget:
@@ -294,9 +335,7 @@ class ContextCompiler:
                         f"- {character.canonical_name} (Status: {character.status})\n"
                     )
                     if character.description:
-                        participant_package += (
-                            f"  Public description: {character.description}\n"
-                        )
+                        participant_package += f"  Public description: {character.description}\n"
                     if character.appearance:
                         participant_package += f"  Appearance: {character.appearance}\n"
                 else:
@@ -321,25 +360,28 @@ class ContextCompiler:
                 current_budget_used += participant_tokens
                 included_layers.append("layer_4_character_cards")
 
+        history_records = await self._history_records(
+            campaign_id,
+            actor_mode,
+            acting_character_id,
+            scene_id,
+            current_user_content,
+        )
         history_to_include: list[ChatMessage] = []
-        if not actor_mode:
-            history_records = await self._turn_repo.get_history(
-                campaign_id,
-                limit=30,
-                active_only=True,
+        for turn in reversed(history_records):
+            message_tokens = count_tokens(turn.content)
+            if current_budget_used + message_tokens >= max_budget:
+                break
+            current_budget_used += message_tokens
+            history_to_include.insert(
+                0,
+                ChatMessage(role=turn.role, content=turn.content),
             )
-            for turn in reversed(history_records):
-                message_tokens = count_tokens(turn.content)
-                if current_budget_used + message_tokens >= max_budget:
-                    break
-                current_budget_used += message_tokens
-                history_to_include.insert(
-                    0,
-                    ChatMessage(role=turn.role, content=turn.content),
-                )
-                included_turn_ids.insert(0, str(turn.id))
-            if history_to_include:
-                included_layers.append("layer_5_history")
+            included_turn_ids.insert(0, str(turn.id))
+        if history_to_include:
+            included_layers.append(
+                "layer_5_actor_dialogue_history" if actor_mode else "layer_5_history"
+            )
 
         system_content = system_msg.content
         for package in packages:
@@ -354,15 +396,13 @@ class ContextCompiler:
                     ChatMessage(role="user", content=current_user_content)
                 )
                 current_budget_used += user_tokens
-                included_layers.append("layer_5_current_user")
+                included_layers.append("layer_6_current_user")
 
         metadata = {
             "token_budget_max": max_budget,
             "token_budget_used": current_budget_used,
             "included_layers": included_layers,
-            "acting_character_id": (
-                str(acting_character_id) if acting_character_id else None
-            ),
+            "acting_character_id": str(acting_character_id) if acting_character_id else None,
             "scene_id": str(scene_id) if scene_id else None,
             "actor_scope_strict": actor_mode,
             "included_fact_ids": included_fact_ids,
