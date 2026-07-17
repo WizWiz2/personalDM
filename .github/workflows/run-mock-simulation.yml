@@ -1,0 +1,45 @@
+name: Run mock campaign simulation
+
+on:
+  push:
+    branches:
+      - agent/run-simulation-20260717
+
+jobs:
+  simulate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+
+      - name: Install backend
+        run: python -m pip install -e "src/backend[dev]"
+
+      - name: Run deterministic 100-turn simulation
+        working-directory: src/backend
+        env:
+          PDM_SIM_TURNS: "100"
+          PDM_SIM_DATA_DIR: "./data/mock-simulation"
+          PDM_SIM_RESET: "1"
+        run: python tests/run_ci_mock_simulation.py
+
+      - name: Show report
+        if: always()
+        run: cat src/backend/data/mock-simulation/realistic_simulation_report.md || true
+
+      - name: Upload simulation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: personaldm-mock-simulation
+          path: src/backend/data/mock-simulation/
+          if-no-files-found: error
+          retention-days: 7
