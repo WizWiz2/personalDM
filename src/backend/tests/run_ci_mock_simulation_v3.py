@@ -1,4 +1,4 @@
-"""Run the v3 campaign pipeline with a deterministic in-process provider."""
+"""Run the v4 campaign pipeline with a deterministic in-process provider."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ import json
 import os
 import re
 from collections import Counter
+from pathlib import Path
 
-from app.providers.llm_provider import LLMProvider
+from app.providers.llm_provider import LLMProvider, LLMProviderError
 
 CALLS: Counter[str] = Counter()
 
@@ -136,6 +137,22 @@ def _curator(prompt: str) -> str:
     )
 
 
+def _consume_dm_failure_budget() -> bool:
+    requested = max(0, int(os.getenv("PDM_MOCK_FAIL_DM_ATTEMPTS", "0")))
+    if requested <= 0:
+        return False
+    data_dir = Path(os.getenv("PDM_SIM_DATA_DIR", "./data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    budget_path = data_dir / "mock_dm_failure_budget.txt"
+    if not budget_path.exists():
+        budget_path.write_text(str(requested), encoding="utf-8")
+    remaining = int(budget_path.read_text(encoding="utf-8").strip() or "0")
+    if remaining <= 0:
+        return False
+    budget_path.write_text(str(remaining - 1), encoding="utf-8")
+    return True
+
+
 async def deterministic_generate_stream(
     self,
     messages,
@@ -159,6 +176,13 @@ async def deterministic_generate_stream(
         output = json.dumps({"proposals": []}, ensure_ascii=False)
     else:
         CALLS["dm"] += 1
+        if _consume_dm_failure_budget():
+            self.last_telemetry = {
+                "status": "transport_error",
+                "error": "planned mock provider failure",
+                "mock": True,
+            }
+            raise LLMProviderError("planned mock provider failure")
         output = (
             f"ДМ подтверждает конкретное последствие хода {CALLS['dm']}: группа получает "
             "новое наблюдаемое свидетельство, меняет подход и на шаг приближается к цели сцены."
@@ -178,10 +202,10 @@ async def deterministic_generate_stream(
 async def main() -> None:
     LLMProvider.generate_stream = deterministic_generate_stream
     try:
-        from .run_realistic_simulation_v3 import run_realistic_simulation_v3
+        from .run_realistic_simulation_v4 import run_realistic_simulation_v4
     except ImportError:
-        from run_realistic_simulation_v3 import run_realistic_simulation_v3
-    await run_realistic_simulation_v3()
+        from run_realistic_simulation_v4 import run_realistic_simulation_v4
+    await run_realistic_simulation_v4()
     print("MOCK_CALLS", json.dumps(CALLS, ensure_ascii=False, sort_keys=True))
 
 
