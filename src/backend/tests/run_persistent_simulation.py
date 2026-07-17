@@ -1,9 +1,9 @@
-"""Compatibility entrypoint for the objective-driven autonomous campaign v4."""
+"""Compatibility entrypoint for the objective-driven autonomous campaign."""
 
 try:
-    from .run_realistic_simulation_v4 import run_realistic_simulation_v4
+    from .run_realistic_simulation import run_realistic_simulation
 except ImportError:
-    from run_realistic_simulation_v4 import run_realistic_simulation_v4
+    from run_realistic_simulation import run_realistic_simulation
 
 
 if __name__ == "__main__":
@@ -12,4 +12,4 @@ if __name__ == "__main__":
 
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(run_realistic_simulation_v4())
+    asyncio.run(run_realistic_simulation())
