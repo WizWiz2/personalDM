@@ -30,6 +30,7 @@ jobs:
       - name: Run deterministic 100-turn simulation
         working-directory: src/backend
         env:
+          PYTHONPATH: "."
           PDM_SIM_TURNS: "100"
           PDM_SIM_DATA_DIR: "./data/mock-simulation"
           PDM_SIM_RESET: "1"
