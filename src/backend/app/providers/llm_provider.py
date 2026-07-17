@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -15,6 +16,9 @@ class LLMProviderError(RuntimeError):
 
 class LLMProvider:
     """Client for OpenAI-compatible and common Ollama-compatible chat APIs."""
+
+    def __init__(self):
+        self.last_telemetry: dict[str, Any] = {}
 
     @staticmethod
     def _content_to_text(content: Any) -> str:
@@ -34,7 +38,6 @@ class LLMProvider:
 
     @classmethod
     def _extract_content(cls, data: dict) -> str:
-        """Extract text from OpenAI SSE, non-streaming and Ollama JSON shapes."""
         choices = data.get("choices")
         if isinstance(choices, list) and choices:
             choice = choices[0] or {}
@@ -62,18 +65,44 @@ class LLMProvider:
                 return text
         return ""
 
+    @staticmethod
+    def _extract_finish_reason(data: dict) -> str | None:
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            reason = (choices[0] or {}).get("finish_reason")
+            if reason:
+                return str(reason)
+        reason = data.get("done_reason")
+        if reason:
+            return str(reason)
+        if data.get("done") is True:
+            return "stop"
+        return None
+
+    @staticmethod
+    def _extract_usage(data: dict) -> dict[str, int]:
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            return {
+                key: int(value)
+                for key, value in usage.items()
+                if isinstance(value, (int, float))
+            }
+        result = {}
+        if isinstance(data.get("prompt_eval_count"), int):
+            result["prompt_tokens"] = data["prompt_eval_count"]
+        if isinstance(data.get("eval_count"), int):
+            result["completion_tokens"] = data["eval_count"]
+        if result:
+            result["total_tokens"] = sum(result.values())
+        return result
+
     async def generate_stream(
         self,
         messages: list[ChatMessage],
         config: ProviderConfigRead,
         api_key: str | None = None,
     ) -> AsyncIterator[str]:
-        """Stream model text or raise LLMProviderError.
-
-        Provider failures are never yielded as narrative text. This prevents an
-        HTTP error string or an empty generation from entering campaign history
-        and being processed by Memory Scribe as canon.
-        """
         url = f"{config.base_url.rstrip('/')}/chat/completions"
         headers = {"Content-Type": "application/json"}
         if api_key:
@@ -81,20 +110,32 @@ class LLMProvider:
 
         payload = {
             "model": config.model_name,
-            "messages": [{"role": message.role, "content": message.content} for message in messages],
+            "messages": [
+                {"role": message.role, "content": message.content}
+                for message in messages
+            ],
             "stream": True,
             "max_tokens": settings.RESPONSE_RESERVE_TOKENS,
         }
 
+        started = time.monotonic()
         emitted_content = False
+        emitted_characters = 0
         parsed_frames = 0
         malformed_frames = 0
-        timeout = httpx.Timeout(120.0, connect=10.0)
+        finish_reason = None
+        usage: dict[str, int] = {}
+        http_status = None
+        self.last_telemetry = {
+            "model": config.model_name,
+            "url": url,
+            "status": "started",
+        }
 
         try:
             async with httpx.AsyncClient(
                 trust_env=False,
-                timeout=timeout,
+                timeout=httpx.Timeout(120.0, connect=10.0),
             ) as client:
                 async with client.stream(
                     "POST",
@@ -102,6 +143,7 @@ class LLMProvider:
                     headers=headers,
                     json=payload,
                 ) as response:
+                    http_status = response.status_code
                     if response.status_code != 200:
                         error_body = await response.aread()
                         detail = error_body.decode(errors="replace")[:2000]
@@ -112,11 +154,11 @@ class LLMProvider:
                     async for raw_line in response.aiter_lines():
                         if not raw_line:
                             continue
-
                         line = raw_line.strip()
                         if line.startswith("data:"):
                             line = line[5:].strip()
                         if line == "[DONE]":
+                            finish_reason = finish_reason or "stop"
                             break
                         if not line:
                             continue
@@ -134,20 +176,56 @@ class LLMProvider:
                                 f"LLM provider error: {provider_error}"
                             )
 
+                        finish_reason = self._extract_finish_reason(data) or finish_reason
+                        frame_usage = self._extract_usage(data)
+                        if frame_usage:
+                            usage = frame_usage
                         content = self._extract_content(data)
                         if content:
                             emitted_content = True
+                            emitted_characters += len(content)
                             yield content
 
         except httpx.RequestError as exc:
+            self.last_telemetry = {
+                "model": config.model_name,
+                "url": url,
+                "status": "transport_error",
+                "error": str(exc),
+                "duration_ms": round((time.monotonic() - started) * 1000),
+            }
             raise LLMProviderError(f"Failed to reach LLM provider: {exc}") from exc
+        except LLMProviderError as exc:
+            self.last_telemetry = {
+                "model": config.model_name,
+                "url": url,
+                "status": "provider_error",
+                "http_status": http_status,
+                "error": str(exc),
+                "parsed_frames": parsed_frames,
+                "malformed_frames": malformed_frames,
+                "response_characters": emitted_characters,
+                "duration_ms": round((time.monotonic() - started) * 1000),
+            }
+            raise
 
+        self.last_telemetry = {
+            "model": config.model_name,
+            "url": url,
+            "status": "completed" if emitted_content else "empty",
+            "http_status": http_status,
+            "finish_reason": finish_reason,
+            "usage": usage,
+            "parsed_frames": parsed_frames,
+            "malformed_frames": malformed_frames,
+            "response_characters": emitted_characters,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        }
         if not emitted_content:
-            frame_note = (
-                f"parsed_frames={parsed_frames}, malformed_frames={malformed_frames}"
-            )
             raise LLMProviderError(
-                f"LLM completed without usable text ({frame_note})"
+                "LLM completed without usable text "
+                f"(parsed_frames={parsed_frames}, malformed_frames={malformed_frames}, "
+                f"finish_reason={finish_reason!r})"
             )
 
     async def check_connection(
@@ -160,14 +238,12 @@ class LLMProvider:
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
-
         payload = {
             "model": model_name,
             "messages": [{"role": "user", "content": "ping"}],
             "max_tokens": 5,
             "stream": False,
         }
-
         try:
             async with httpx.AsyncClient(
                 trust_env=False,
