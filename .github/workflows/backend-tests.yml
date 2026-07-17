@@ -55,7 +55,7 @@ jobs:
 
       - name: Test dynamic scene theses
         working-directory: src/backend
-        run: pytest -q tests/test_thesis_curator.py --tb=short
+        run: pytest -q tests/test_thesis_curator.py tests/test_thesis_curator_lifecycle.py --tb=short
 
       - name: Test character cards and world state
         working-directory: src/backend
@@ -71,4 +71,9 @@ jobs:
 
       - name: Test provider and scribe
         working-directory: src/backend
-        run: pytest -q tests/test_provider_and_scribe.py --tb=short
+        run: >-
+          pytest -q
+          tests/test_provider_and_scribe.py
+          tests/test_llm_provider_resilience.py
+          tests/test_memory_scribe_aliases.py
+          --tb=short
