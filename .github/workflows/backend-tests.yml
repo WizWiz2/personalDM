@@ -14,7 +14,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -80,3 +80,83 @@ jobs:
       - name: Test Scribe alias resolution
         working-directory: src/backend
         run: pytest -q tests/test_memory_scribe_aliases.py --tb=short
+
+      - name: Run deterministic end-to-end campaign v3
+        working-directory: src/backend
+        env:
+          PYTHONPATH: "."
+          PDM_SIM_TURNS: "60"
+          PDM_SIM_DATA_DIR: "./data/ci-v3"
+          PDM_SIM_RESET: "1"
+          PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
+        run: python tests/run_ci_mock_simulation_v3.py
+
+      - name: Validate simulation invariants
+        working-directory: src/backend
+        run: |
+          python - <<'PY'
+          import json
+          import sqlite3
+          from collections import Counter
+          from pathlib import Path
+
+          root = Path("data/ci-v3")
+          state = json.loads((root / "realistic_simulation_state.json").read_text(encoding="utf-8"))
+          records = [json.loads(line) for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          report = (root / "realistic_simulation_report.md").read_text(encoding="utf-8")
+
+          assert state["completed"] is True, state
+          assert state["phase_index"] == 10, state
+          assert len(records) == len({record["turn"] for record in records})
+          assert all(not record.get("generation_failed") for record in records)
+          assert len({record["player"]["intent"] for record in records}) >= len(records) * 0.8
+          assert "Фаз завершено: 10/10" in report
+          assert "Active theses in completed scenes: 0" in report
+
+          db = sqlite3.connect(root / "realistic_simulation.db")
+          campaign_id = state["campaign_id"]
+          integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
+          fk_violations = db.execute("PRAGMA foreign_key_check").fetchall()
+          assert integrity == "ok"
+          assert fk_violations == []
+
+          characters = db.execute(
+              "SELECT COUNT(*) FROM entities WHERE campaign_id=? AND entity_type='character'",
+              (campaign_id,),
+          ).fetchone()[0]
+          outcomes = db.execute(
+              "SELECT COUNT(*) FROM events WHERE campaign_id=? AND event_type='scene_outcome'",
+              (campaign_id,),
+          ).fetchone()[0]
+          stale = db.execute(
+              """SELECT COUNT(*) FROM scene_theses st
+                 JOIN scenes s ON s.id=st.scene_id
+                 WHERE s.campaign_id=? AND s.status='completed' AND st.status='active'""",
+              (campaign_id,),
+          ).fetchone()[0]
+          duplicate_scopes = db.execute(
+              """SELECT COUNT(*) FROM (
+                   SELECT st.scene_id, st.thesis_type, COALESCE(st.related_entity_ids, ''), COUNT(*) AS n
+                   FROM scene_theses st
+                   JOIN scenes s ON s.id=st.scene_id
+                   WHERE s.campaign_id=? AND st.status='active'
+                   GROUP BY st.scene_id, st.thesis_type, COALESCE(st.related_entity_ids, '')
+                   HAVING n > 1
+                 )""",
+              (campaign_id,),
+          ).fetchone()[0]
+          db.close()
+
+          assert characters == 21, characters
+          assert outcomes == 10, outcomes
+          assert stale == 0, stale
+          assert duplicate_scopes == 0, duplicate_scopes
+          print("Validated", len(records), "logical turns across all phases")
+          PY
+
+      - name: Upload simulation evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: personaldm-v3-simulation
+          path: src/backend/data/ci-v3/
+          retention-days: 7
