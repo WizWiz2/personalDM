@@ -9,6 +9,7 @@ from app.api.entities import router as entities_router
 from app.api.memory import router as memory_router
 from app.api.scenes import router as scenes_router
 from app.api.turns import router as turns_router
+from app.api.world_state import router as world_state_router
 from app.config import settings
 
 
@@ -29,8 +30,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Local frontend/Tauri origins only. Wildcard origins combined with credentials
-# are both unnecessary for the local MVP and unsafe once LAN mode is enabled.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -49,6 +48,7 @@ app.include_router(turns_router)
 app.include_router(scenes_router)
 app.include_router(entities_router)
 app.include_router(memory_router)
+app.include_router(world_state_router)
 
 
 @app.get("/health")
