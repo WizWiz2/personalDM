@@ -6,23 +6,29 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.models.proposed_change import ChangeType
-from app.models.turn import TurnCreate
-from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.models.turn import ChatMessage, TurnCreate
+from app.providers.llm_provider import (
+    LLMProvider,
+    LLMProviderError,
+    LLMProviderTruncatedError,
+)
 
 active_tasks: dict[str, asyncio.Task] = {}
 
 
 class TurnRunner:
-    MAX_EMPTY_RESPONSE_ATTEMPTS = 2
+    MAX_GENERATION_ATTEMPTS = 3
 
     def __init__(self, session: AsyncSession):
         self._session = session
         self._campaign_repo = CampaignRepository(session)
         self._turn_repo = TurnRepository(session)
         self._config_repo = ProviderConfigRepository(session)
+        self._entity_repo = EntityRepository(session)
         self._llm_provider = LLMProvider()
 
     async def _fail_user_turn(self, user_turn_id: UUID, owned: bool) -> None:
@@ -30,14 +36,65 @@ class TurnRunner:
             await self._turn_repo.mark_failed(user_turn_id)
         await self._session.commit()
 
-    def _snapshot(self, base: dict, attempt: int) -> tuple[dict, int | None]:
+    @staticmethod
+    def _merge_continuation(prefix: str, continuation: str) -> str:
+        if not prefix:
+            return continuation
+        if not continuation:
+            return prefix
+        max_overlap = min(300, len(prefix), len(continuation))
+        for size in range(max_overlap, 15, -1):
+            if prefix[-size:].casefold() == continuation[:size].casefold():
+                return prefix + continuation[size:]
+        separator = "" if prefix.endswith((" ", "\n")) or continuation.startswith((" ", "\n")) else " "
+        return prefix + separator + continuation
+
+    @staticmethod
+    def _continuation_messages(messages: list[ChatMessage], partial_text: str) -> list[ChatMessage]:
+        tail = partial_text[-4000:]
+        return [
+            *messages,
+            ChatMessage(role="assistant", content=tail),
+            ChatMessage(
+                role="user",
+                content=(
+                    "Продолжи ответ ровно с места обрыва. Не повторяй уже написанное. "
+                    "Дай только завершение художественного ответа на русском языке, "
+                    "без рассуждений о процессе и без markdown-заголовков."
+                ),
+            ),
+        ]
+
+    def _snapshot(
+        self,
+        base: dict,
+        attempt: int,
+        attempt_telemetry: list[dict],
+    ) -> tuple[dict, int | None]:
         telemetry = dict(self._llm_provider.last_telemetry or {})
         usage = telemetry.get("usage") or {}
         completion_tokens = usage.get("completion_tokens")
         snapshot = dict(base)
         snapshot["provider_telemetry"] = telemetry
+        snapshot["provider_attempts"] = attempt_telemetry
         snapshot["generation_attempt"] = attempt
         return snapshot, completion_tokens
+
+    async def _infer_player_character_id(
+        self,
+        campaign_id: UUID,
+        acting_character_id: UUID | None,
+    ) -> UUID | None:
+        characters = await self._entity_repo.list_by_campaign(campaign_id, "character")
+        by_name = {
+            character.canonical_name.casefold(): character.id
+            for character in characters
+        }
+        for preferred in ("eldon", "player", "hero", "главный герой"):
+            candidate = by_name.get(preferred)
+            if candidate and candidate != acting_character_id:
+                return candidate
+        return None
 
     async def run_turn_stream(
         self,
@@ -81,59 +138,95 @@ class TurnRunner:
 
         accumulated_text = ""
         attempt_number = 0
+        attempt_telemetry: list[dict] = []
+        messages_for_attempt = messages
+        last_provider_error: LLMProviderError | None = None
+
         try:
-            last_provider_error: LLMProviderError | None = None
-            for attempt in range(self.MAX_EMPTY_RESPONSE_ATTEMPTS):
+            for attempt in range(self.MAX_GENERATION_ATTEMPTS):
                 attempt_number = attempt + 1
                 attempt_text = ""
                 try:
                     async for token in self._llm_provider.generate_stream(
-                        messages,
+                        messages_for_attempt,
                         config,
                         api_key,
+                        temperature=0.7 if attempt == 0 else 0.45,
                     ):
                         attempt_text += token
                         yield token
                         await asyncio.sleep(0.001)
-                    if attempt_text.strip():
-                        accumulated_text = attempt_text
-                        last_provider_error = None
-                        break
+                    accumulated_text = self._merge_continuation(
+                        accumulated_text,
+                        attempt_text,
+                    )
+                    attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
+                    last_provider_error = None
+                    break
+                except LLMProviderTruncatedError as exc:
+                    partial = attempt_text or exc.partial_text
+                    accumulated_text = self._merge_continuation(accumulated_text, partial)
+                    attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
+                    last_provider_error = exc
+                    if attempt + 1 < self.MAX_GENERATION_ATTEMPTS and accumulated_text.strip():
+                        messages_for_attempt = self._continuation_messages(
+                            messages,
+                            accumulated_text,
+                        )
+                        await asyncio.sleep(0.15)
+                        continue
                 except LLMProviderError as exc:
+                    attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
                     last_provider_error = exc
                     if attempt_text.strip():
-                        snapshot, token_count = self._snapshot(
-                            context_metadata,
-                            attempt_number,
+                        accumulated_text = self._merge_continuation(
+                            accumulated_text,
+                            attempt_text,
                         )
-                        partial_turn = TurnCreate(
-                            role="assistant",
-                            content=attempt_text + " [generation interrupted]",
-                            scene_id=turn_create.scene_id,
-                            acting_character_id=turn_create.acting_character_id,
-                            parent_turn_id=user_turn.id,
-                            model_name=config.model_name,
-                            context_snapshot=snapshot,
-                            token_count=token_count,
-                        )
-                        saved_partial = await self._turn_repo.create(
-                            campaign_id,
-                            partial_turn,
-                        )
-                        await self._turn_repo.mark_alternative(saved_partial.id)
-                        await self._fail_user_turn(user_turn.id, owns_user_turn)
-                        yield f"\n[Generation interrupted: {exc}]"
-                        return
-                if attempt + 1 < self.MAX_EMPTY_RESPONSE_ATTEMPTS:
-                    await asyncio.sleep(0.25)
+                    if attempt + 1 < self.MAX_GENERATION_ATTEMPTS:
+                        messages_for_attempt = [
+                            *messages,
+                            ChatMessage(
+                                role="user",
+                                content=(
+                                    "Ответь только финальным художественным текстом на русском языке. "
+                                    "Не выводи скрытые рассуждения. Заверши ответ полностью."
+                                ),
+                            ),
+                        ]
+                        await asyncio.sleep(0.25)
+                        continue
+                break
 
-            if not accumulated_text.strip():
+            if last_provider_error is not None or not accumulated_text.strip():
+                if accumulated_text.strip():
+                    snapshot, token_count = self._snapshot(
+                        context_metadata,
+                        attempt_number,
+                        attempt_telemetry,
+                    )
+                    partial_turn = TurnCreate(
+                        role="assistant",
+                        content=accumulated_text + " [generation interrupted]",
+                        scene_id=turn_create.scene_id,
+                        acting_character_id=turn_create.acting_character_id,
+                        parent_turn_id=user_turn.id,
+                        model_name=config.model_name,
+                        context_snapshot=snapshot,
+                        token_count=token_count,
+                    )
+                    saved_partial = await self._turn_repo.create(campaign_id, partial_turn)
+                    await self._turn_repo.mark_alternative(saved_partial.id)
                 await self._fail_user_turn(user_turn.id, owns_user_turn)
                 detail = str(last_provider_error or "provider returned empty text")
-                yield f"[Generation failed after retry: {detail}]"
+                yield f"\n[Generation failed after retry: {detail}]"
                 return
 
-            snapshot, token_count = self._snapshot(context_metadata, attempt_number)
+            snapshot, token_count = self._snapshot(
+                context_metadata,
+                attempt_number,
+                attempt_telemetry,
+            )
             saved_assistant = await self._turn_repo.create(
                 campaign_id,
                 TurnCreate(
@@ -167,11 +260,17 @@ class TurnRunner:
 
             from app.services.memory_scribe import MemoryScribe
 
+            player_character_id = await self._infer_player_character_id(
+                campaign_id,
+                turn_create.acting_character_id,
+            )
             proposals = await MemoryScribe(self._session).extract_proposals(
                 campaign_id=campaign_id,
                 scene_id=turn_create.scene_id,
                 user_content=turn_create.content,
                 assistant_content=accumulated_text,
+                acting_character_id=turn_create.acting_character_id,
+                player_character_id=player_character_id,
             )
             proposals = [
                 proposal
@@ -179,9 +278,7 @@ class TurnRunner:
                 if proposal.change_type != ChangeType.SCENE_THESIS
             ]
             if proposals:
-                from app.db.repositories.proposed_change_repo import (
-                    ProposedChangeRepository,
-                )
+                from app.db.repositories.proposed_change_repo import ProposedChangeRepository
                 from app.services.continuity_checker import ContinuityChecker
 
                 checker = ContinuityChecker(self._session)
@@ -205,6 +302,7 @@ class TurnRunner:
                 snapshot, token_count = self._snapshot(
                     context_metadata,
                     attempt_number,
+                    attempt_telemetry,
                 )
                 partial = await self._turn_repo.create(
                     campaign_id,
