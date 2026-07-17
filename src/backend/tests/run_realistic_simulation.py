@@ -474,27 +474,69 @@ async def run_realistic_simulation() -> None:
 
     async with factory() as session:
         campaigns = CampaignService(session)
-        campaign = await campaigns.create_campaign(
-            CampaignCreate(
-                name="Хроники Бездны: реалистичная автономная кампания",
-                description="Staged LLM-vs-LLM benchmark with gradual NPC entry and living theses.",
-                system_instructions=(
-                    "Ты приземленный Dungeon Master в жанре темного фэнтези. Описывай мир и веди диалоги "
-                    "исключительно на РУССКОМ языке. Игрок заявляет только намерения; ты решаешь исходы. Уважай "
-                    "карты NPC, инвентарь, способности, тайные знания и тезисы сцены. Используй мало активных NPC, "
-                    "продвигай сюжет решительно, закрывай разрешенные вопросы и не выдумывай бесконечные коридоры."
-                ),
-                narrative_style="Компактная проза, конкретные сенсорные детали и целенаправленные диалоги строго на РУССКОМ языке.",
+        
+        # Check if we should resume from existing campaign
+        should_reset = os.getenv("PDM_SIM_RESET", "1") == "1"
+        
+        from app.db.repositories.campaign_repo import CampaignRepository
+        campaign_repo = CampaignRepository(session)
+        existing_campaigns = await campaign_repo.list_all()
+        
+        campaign = None
+        if not should_reset and existing_campaigns:
+            campaign = existing_campaigns[0]
+            print(f"[simulation] Resuming existing campaign: '{campaign.name}' ({campaign.id})")
+        else:
+            print("[simulation] Creating new campaign...")
+            if database_path.exists() and should_reset:
+                # Close connections / delete old db
+                await engine.dispose()
+                try:
+                    database_path.unlink()
+                except Exception:
+                    pass
+                # Re-create engine and tables
+                engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+                factory = async_sessionmaker(engine, expire_on_commit=False)
+                async with engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+                session = factory()
+                campaigns = CampaignService(session)
+                campaign_repo = CampaignRepository(session)
+            
+            campaign = await campaigns.create_campaign(
+                CampaignCreate(
+                    name="Хроники Бездны: реалистичная автономная кампания",
+                    description="Staged LLM-vs-LLM benchmark with gradual NPC entry and living theses.",
+                    system_instructions=(
+                        "Ты приземленный Dungeon Master в жанре темного фэнтези. Описывай мир и веди диалоги "
+                        "исключительно на РУССКОМ языке. Игрок заявляет только намерения; ты решаешь исходы. Уважай "
+                        "карты NPC, инвентарь, способности, тайные знания и тезисы сцены. Используй мало активных NPC, "
+                        "продвигай сюжет решительно, закрывай разрешенные вопросы и не выдумывай бесконечные коридоры."
+                    ),
+                    narrative_style="Компактная проза, конкретные сенсорные детали и целенаправленные диалоги строго на РУССКОМ языке.",
+                )
             )
-        )
+
         campaign_id = campaign.id
         config = await campaigns.configure_provider(
             campaign_id,
             ProviderConfigCreate(base_url=base_url, model_name=model_name, context_window=context_window),
         )
         api_key = await ProviderConfigRepository(session).get_decrypted_key(campaign_id)
-        player = await create_character_from_draft(campaign_id, eldon_card(), session=session)
-        player_id = player.character.id
+        
+        # In resume mode, get player character from DB. Otherwise create new.
+        player_id = None
+        if not should_reset and existing_campaigns:
+            db_entities = await EntityRepository(session).list_by_campaign(campaign_id, "character")
+            eldon_ent = next((ent for ent in db_entities if ent.canonical_name == "Eldon"), None)
+            if eldon_ent:
+                player_id = eldon_ent.id
+                print(f"[simulation] Found existing player Eldon: {player_id}")
+        
+        if not player_id:
+            player = await create_character_from_draft(campaign_id, eldon_card(), session=session)
+            player_id = player.character.id
 
         director = ScenarioDirector(session, campaign_id, player_id)
         runner = TurnRunner(session)
@@ -506,10 +548,65 @@ async def run_realistic_simulation() -> None:
         stats = Counter()
         thesis_counts: list[int] = []
         started = time.time()
-        log_path.write_text("REALISTIC AUTONOMOUS CAMPAIGN\n\n", encoding="utf-8")
-        trace_path.write_text("", encoding="utf-8")
+        
+        history_all = await turns.get_history(campaign_id, limit=5000, active_only=False)
+        start_turn = 1
+        
+        if not should_reset and history_all:
+            # If the last turn in history was written by 'user', it is incomplete (DM didn't reply)
+            # Delete it to ensure clean state
+            if history_all[-1].role == "user":
+                from app.db.tables import Turn as DBTurn
+                from sqlalchemy import delete as sql_delete
+                print(f"[simulation] Deleting incomplete user turn {history_all[-1].id}")
+                await session.execute(sql_delete(DBTurn).where(DBTurn.id == str(history_all[-1].id)))
+                await session.commit()
+                # Reload history
+                history_all = await turns.get_history(campaign_id, limit=5000, active_only=False)
+            
+            start_turn = len(history_all) // 2 + 1
+            print(f"[simulation] Resuming from turn {start_turn}...")
+            
+            # Restore director characters
+            db_entities = await EntityRepository(session).list_by_campaign(campaign_id, "character")
+            for ent in db_entities:
+                director.characters[ent.canonical_name] = ent.id
+                
+            db_scenes = await SceneRepository(session).list_by_campaign(campaign_id)
+            director.transitions = len(db_scenes)
+            
+            # Reconstruct PhaseRuntime
+            if campaign.current_scene_id:
+                phase_idx = phase_index_for_turn(start_turn, turns_count)
+                phase = PHASES[phase_idx]
+                scene_participants = await SceneRepository(session).get_participants(campaign.current_scene_id)
+                active_chars = {}
+                for name, uuid in director.characters.items():
+                    if uuid in scene_participants:
+                        active_chars[name] = uuid
+                
+                player_char = await EntityRepository(session).get_character(player_id)
+                location_id = player_char.current_location_id if player_char else None
+                
+                progress = phase_progress(start_turn, turns_count, phase_idx)
+                fired = {pulse_idx for pulse_idx, pulse in enumerate(phase.pulses) if progress > pulse.at_fraction}
+                
+                director.current = PhaseRuntime(
+                    index=phase_idx,
+                    phase=phase,
+                    scene_id=campaign.current_scene_id,
+                    location_id=location_id,
+                    active_characters=active_chars,
+                    fired_pulses=fired
+                )
+                print(f"[simulation] Restored PhaseRuntime index={phase_idx}, scene_id={campaign.current_scene_id}")
 
-        for number in range(1, turns_count + 1):
+        if should_reset or not log_path.exists():
+            log_path.write_text("REALISTIC AUTONOMOUS CAMPAIGN\n\n", encoding="utf-8")
+        if should_reset or not trace_path.exists():
+            trace_path.write_text("", encoding="utf-8")
+
+        for number in range(start_turn, turns_count + 1):
             runtime = await director.ensure_turn(number, turns_count)
             history = await turns.get_history(campaign_id, limit=12, active_only=True)
             decision = await generate_player_decision(
