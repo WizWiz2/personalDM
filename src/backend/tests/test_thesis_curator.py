@@ -1,4 +1,4 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -13,9 +13,16 @@ from app.models.scene_thesis import SceneThesisCreate, ThesisType
 from app.services.thesis_curator import DesiredThesis, ThesisCurator
 
 
+async def create_campaign(db_session, name: str):
+    return await CampaignRepository(db_session).create(
+        uuid4(),
+        CampaignCreate(name=name),
+    )
+
+
 @pytest.mark.asyncio
 async def test_curator_supersedes_same_scope_and_resolves_obsolete(db_session):
-    campaign = await CampaignRepository(db_session).create(CampaignCreate(name="Dynamic theses"))
+    campaign = await create_campaign(db_session, "Dynamic theses")
     scene_repo = SceneRepository(db_session)
     scene = await scene_repo.create(campaign.id, SceneCreate(title="Vault"))
     actor = await EntityRepository(db_session).create_character(
@@ -72,7 +79,7 @@ async def test_curator_supersedes_same_scope_and_resolves_obsolete(db_session):
 
 @pytest.mark.asyncio
 async def test_pinned_thesis_wins_over_conflicting_automatic_candidate(db_session):
-    campaign = await CampaignRepository(db_session).create(CampaignCreate(name="Pinned truth"))
+    campaign = await create_campaign(db_session, "Pinned truth")
     scene_repo = SceneRepository(db_session)
     scene = await scene_repo.create(campaign.id, SceneCreate(title="Council"))
     pinned = await scene_repo.create_thesis(
@@ -107,7 +114,7 @@ async def test_pinned_thesis_wins_over_conflicting_automatic_candidate(db_sessio
 
 @pytest.mark.asyncio
 async def test_duplicate_scope_is_reduced_to_one_active_thesis(db_session):
-    campaign = await CampaignRepository(db_session).create(CampaignCreate(name="No conflicts"))
+    campaign = await create_campaign(db_session, "No conflicts")
     scene_repo = SceneRepository(db_session)
     scene = await scene_repo.create(campaign.id, SceneCreate(title="Bridge"))
     source_turn = UUID("00000000-0000-0000-0000-000000000001")
