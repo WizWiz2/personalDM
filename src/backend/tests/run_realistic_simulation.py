@@ -123,11 +123,11 @@ class PlayerPolicy:
     def fallback(self, active_npcs: list[str], mode: str) -> PlayerDecision:
         target = self.suggested_target(active_npcs, mode)
         variants = {
-            "question": f'"What concrete danger do you see here, {target}?"',
-            "dialogue": f'I tell {target}, "I need your honest read before we commit."',
-            "plan": "I compare the risks aloud and propose a cautious next step to the group.",
-            "decision": "I choose the least destructive available option and ask the group for one final objection.",
-            "action": "I inspect the immediate obstacle without touching it and look for an ordinary safe approach.",
+            "question": f'"Какую конкретную опасность ты здесь видишь, {target}?"',
+            "dialogue": f'Я говорю {target}: "Мне нужно твое честное мнение, прежде чем мы продолжим."',
+            "plan": "Я сопоставляю риски вслух и предлагаю группе осторожный следующий шаг.",
+            "decision": "Я выбираю наименее разрушительный вариант и прошу группу высказать последнее возражение.",
+            "action": "Я осматриваю препятствие, не прикасаясь к нему, и ищу безопасный проход.",
         }
         if target == "narrator" and mode in {"question", "dialogue"}:
             mode = "action"
@@ -375,6 +375,8 @@ async def generate_player_decision(
     system = f"""You simulate a real tabletop RPG player, not a novelist and not a co-GM.
 Return exactly one JSON object: {{"target":"narrator|ActiveNpc","mode":"action|dialogue|question|plan|decision","intent":"one to three sentences"}}.
 
+CRITICAL RULE: Write the 'intent' field strictly in RUSSIAN language. Eldon speaks, thinks, and acts in Russian.
+
 OBJECTIVE: {runtime.phase.objective}
 ACTIVE NPCS: {', '.join(active_npcs)}
 PREFERRED MODE: {preferred}
@@ -382,6 +384,7 @@ UNDERUSED TARGET: {suggested}
 
 Rules:
 - Describe only Eldon's speech, question, plan, decision or attempted action.
+- Write the 'intent' field strictly in Russian language.
 - Never declare success, discoveries, damage, reactions, opened doors or scene changes.
 - Use only knowledge, abilities and inventory in Eldon's trusted context.
 - React to the latest meaningful development and do not repeat recent actions.
@@ -476,12 +479,12 @@ async def run_realistic_simulation() -> None:
                 name="Хроники Бездны: реалистичная автономная кампания",
                 description="Staged LLM-vs-LLM benchmark with gradual NPC entry and living theses.",
                 system_instructions=(
-                    "You are a grounded dark-fantasy Dungeon Master. The player states only intentions; "
-                    "you decide outcomes. Honour NPC cards, inventory, capabilities, private knowledge and "
-                    "living theses. Use only a few active NPCs, advance the objective decisively, close resolved "
-                    "beats and do not invent endless corridors, technology, powers or items."
+                    "Ты приземленный Dungeon Master в жанре темного фэнтези. Описывай мир и веди диалоги "
+                    "исключительно на РУССКОМ языке. Игрок заявляет только намерения; ты решаешь исходы. Уважай "
+                    "карты NPC, инвентарь, способности, тайные знания и тезисы сцены. Используй мало активных NPC, "
+                    "продвигай сюжет решительно, закрывай разрешенные вопросы и не выдумывай бесконечные коридоры."
                 ),
-                narrative_style="Compact novel-like prose, concrete sensory detail and purposeful dialogue.",
+                narrative_style="Компактная проза, конкретные сенсорные детали и целенаправленные диалоги строго на РУССКОМ языке.",
             )
         )
         campaign_id = campaign.id
