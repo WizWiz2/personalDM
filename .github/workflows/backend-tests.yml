@@ -52,6 +52,10 @@ jobs:
         working-directory: src/backend
         run: pytest -q tests/test_proposals.py --tb=short
 
+      - name: Test dynamic scene theses
+        working-directory: src/backend
+        run: pytest -q tests/test_thesis_curator.py --tb=short
+
       - name: Test turn lifecycle
         working-directory: src/backend
         run: pytest -q tests/test_turns.py --tb=short
