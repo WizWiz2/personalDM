@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - "src/backend/tests/run_ci_mock_simulation.py"
+      - "src/backend/tests/run_ci_mock_simulation_fixed.py"
       - ".github/workflows/run-mock-simulation.yml"
 
 jobs:
@@ -37,7 +38,7 @@ jobs:
         run: |
           mkdir -p data/mock-simulation
           set +e
-          python tests/run_ci_mock_simulation.py > data/mock-simulation/ci-run.log 2>&1
+          python tests/run_ci_mock_simulation_fixed.py > data/mock-simulation/ci-run.log 2>&1
           status=$?
           cat data/mock-simulation/ci-run.log
           exit $status
