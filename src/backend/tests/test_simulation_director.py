@@ -1,3 +1,10 @@
+from pathlib import Path
+import sys
+
+TESTS_DIR = Path(__file__).resolve().parent
+if str(TESTS_DIR) not in sys.path:
+    sys.path.insert(0, str(TESTS_DIR))
+
 from run_realistic_simulation import PlayerDecision, PlayerPolicy, parse_player_decision
 from simulation_scenario import NPCS, PHASES, phase_index_for_turn, phase_progress
 
