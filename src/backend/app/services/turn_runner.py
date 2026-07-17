@@ -12,7 +12,6 @@ from app.models.proposed_change import ChangeType
 from app.models.turn import TurnCreate
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 
-# Global registry of active generation tasks: campaign_id -> asyncio.Task
 active_tasks: dict[str, asyncio.Task] = {}
 
 
@@ -31,13 +30,21 @@ class TurnRunner:
             await self._turn_repo.mark_failed(user_turn_id)
         await self._session.commit()
 
+    def _snapshot(self, base: dict, attempt: int) -> tuple[dict, int | None]:
+        telemetry = dict(self._llm_provider.last_telemetry or {})
+        usage = telemetry.get("usage") or {}
+        completion_tokens = usage.get("completion_tokens")
+        snapshot = dict(base)
+        snapshot["provider_telemetry"] = telemetry
+        snapshot["generation_attempt"] = attempt
+        return snapshot, completion_tokens
+
     async def run_turn_stream(
         self,
         campaign_id: UUID,
         turn_create: TurnCreate,
         existing_user_turn_id: UUID | None = None,
     ) -> AsyncIterator[str]:
-        """Run one context-aware turn and persist only usable model output."""
         owns_user_turn = existing_user_turn_id is None
         if existing_user_turn_id:
             user_turn = await self._turn_repo.get_by_id(existing_user_turn_id)
@@ -57,13 +64,11 @@ class TurnRunner:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield "[Generation failed: no LLM provider is configured for this campaign.]"
             return
-
         api_key = await self._config_repo.get_decrypted_key(campaign_id)
 
         from app.services.context_compiler import ContextCompiler
 
-        compiler = ContextCompiler(self._session)
-        messages, context_metadata = await compiler.compile_context(
+        messages, context_metadata = await ContextCompiler(self._session).compile_context(
             campaign_id=campaign_id,
             acting_character_id=turn_create.acting_character_id,
             scene_id=turn_create.scene_id,
@@ -75,9 +80,11 @@ class TurnRunner:
             active_tasks[campaign_key] = current_task
 
         accumulated_text = ""
+        attempt_number = 0
         try:
             last_provider_error: LLMProviderError | None = None
             for attempt in range(self.MAX_EMPTY_RESPONSE_ATTEMPTS):
+                attempt_number = attempt + 1
                 attempt_text = ""
                 try:
                     async for token in self._llm_provider.generate_stream(
@@ -88,7 +95,6 @@ class TurnRunner:
                         attempt_text += token
                         yield token
                         await asyncio.sleep(0.001)
-
                     if attempt_text.strip():
                         accumulated_text = attempt_text
                         last_provider_error = None
@@ -96,13 +102,19 @@ class TurnRunner:
                 except LLMProviderError as exc:
                     last_provider_error = exc
                     if attempt_text.strip():
+                        snapshot, token_count = self._snapshot(
+                            context_metadata,
+                            attempt_number,
+                        )
                         partial_turn = TurnCreate(
                             role="assistant",
                             content=attempt_text + " [generation interrupted]",
                             scene_id=turn_create.scene_id,
+                            acting_character_id=turn_create.acting_character_id,
                             parent_turn_id=user_turn.id,
                             model_name=config.model_name,
-                            context_snapshot=context_metadata,
+                            context_snapshot=snapshot,
+                            token_count=token_count,
                         )
                         saved_partial = await self._turn_repo.create(
                             campaign_id,
@@ -112,7 +124,6 @@ class TurnRunner:
                         await self._fail_user_turn(user_turn.id, owns_user_turn)
                         yield f"\n[Generation interrupted: {exc}]"
                         return
-
                 if attempt + 1 < self.MAX_EMPTY_RESPONSE_ATTEMPTS:
                     await asyncio.sleep(0.25)
 
@@ -122,30 +133,27 @@ class TurnRunner:
                 yield f"[Generation failed after retry: {detail}]"
                 return
 
-            assistant_turn = TurnCreate(
-                role="assistant",
-                content=accumulated_text,
-                scene_id=turn_create.scene_id,
-                acting_character_id=turn_create.acting_character_id,
-                parent_turn_id=user_turn.id,
-                model_name=config.model_name,
-                context_snapshot=context_metadata,
-            )
+            snapshot, token_count = self._snapshot(context_metadata, attempt_number)
             saved_assistant = await self._turn_repo.create(
                 campaign_id,
-                assistant_turn,
+                TurnCreate(
+                    role="assistant",
+                    content=accumulated_text,
+                    scene_id=turn_create.scene_id,
+                    acting_character_id=turn_create.acting_character_id,
+                    parent_turn_id=user_turn.id,
+                    model_name=config.model_name,
+                    context_snapshot=snapshot,
+                    token_count=token_count,
+                ),
             )
             await self._session.commit()
 
-            # Scene theses are living operational memory. A dedicated curator
-            # reconciles the complete active set after every successful turn.
-            # Failure here must not invalidate the already completed narrative turn.
             if turn_create.scene_id:
                 try:
                     from app.services.thesis_curator import ThesisCurator
 
-                    curator = ThesisCurator(self._session)
-                    await curator.curate_after_turn(
+                    await ThesisCurator(self._session).curate_after_turn(
                         campaign_id=campaign_id,
                         scene_id=turn_create.scene_id,
                         source_turn_id=saved_assistant.id,
@@ -159,22 +167,17 @@ class TurnRunner:
 
             from app.services.memory_scribe import MemoryScribe
 
-            scribe = MemoryScribe(self._session)
-            proposals = await scribe.extract_proposals(
+            proposals = await MemoryScribe(self._session).extract_proposals(
                 campaign_id=campaign_id,
                 scene_id=turn_create.scene_id,
                 user_content=turn_create.content,
                 assistant_content=accumulated_text,
             )
-            # Thesis lifecycle belongs exclusively to ThesisCurator. Keeping it
-            # out of Assisted Canon prevents two writers from fighting over the
-            # same operational state.
             proposals = [
                 proposal
                 for proposal in proposals
                 if proposal.change_type != ChangeType.SCENE_THESIS
             ]
-
             if proposals:
                 from app.db.repositories.proposed_change_repo import (
                     ProposedChangeRepository,
@@ -182,8 +185,6 @@ class TurnRunner:
                 from app.services.continuity_checker import ContinuityChecker
 
                 checker = ContinuityChecker(self._session)
-                proposed_repo = ProposedChangeRepository(self._session)
-
                 for proposal in proposals:
                     is_valid, warning = await checker.validate_change(
                         campaign_id,
@@ -193,21 +194,31 @@ class TurnRunner:
                         proposal.payload["_validation_error"] = (
                             warning or "Proposal failed deterministic validation"
                         )
-
-                await proposed_repo.create_batch(saved_assistant.id, proposals)
+                await ProposedChangeRepository(self._session).create_batch(
+                    saved_assistant.id,
+                    proposals,
+                )
                 await self._session.commit()
 
         except asyncio.CancelledError:
             if accumulated_text.strip():
-                partial_turn = TurnCreate(
-                    role="assistant",
-                    content=accumulated_text + " [generation interrupted]",
-                    scene_id=turn_create.scene_id,
-                    parent_turn_id=user_turn.id,
-                    model_name=config.model_name,
-                    context_snapshot=context_metadata,
+                snapshot, token_count = self._snapshot(
+                    context_metadata,
+                    attempt_number,
                 )
-                partial = await self._turn_repo.create(campaign_id, partial_turn)
+                partial = await self._turn_repo.create(
+                    campaign_id,
+                    TurnCreate(
+                        role="assistant",
+                        content=accumulated_text + " [generation interrupted]",
+                        scene_id=turn_create.scene_id,
+                        acting_character_id=turn_create.acting_character_id,
+                        parent_turn_id=user_turn.id,
+                        model_name=config.model_name,
+                        context_snapshot=snapshot,
+                        token_count=token_count,
+                    ),
+                )
                 await self._turn_repo.mark_alternative(partial.id)
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
