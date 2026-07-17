@@ -1,15 +1,19 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_session
+from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.event_repo import EventRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.db.tables import Item
+from app.models.belief import BeliefCreate
 from app.models.character import CharacterUpdate
 from app.models.event import EventCreate
 from app.models.fact import FactCreate
@@ -131,9 +135,24 @@ async def resolve_proposal(
             )
 
         elif change_type == ChangeType.MOVEMENT:
+            character_id = UUID(payload["character_id"])
+            location_id = UUID(payload["location_id"])
+            character = await EntityRepository(session).get_character(character_id)
+            location = await EntityRepository(session).get_by_id(location_id)
             await EntityRepository(session).update_character(
-                UUID(payload["character_id"]),
-                CharacterUpdate(current_location_id=UUID(payload["location_id"])),
+                character_id,
+                CharacterUpdate(current_location_id=location_id),
+            )
+            await EventRepository(session).create(
+                campaign_id,
+                EventCreate(
+                    event_type="movement",
+                    description=payload.get("description")
+                    or f"{character.canonical_name} moved to {location.canonical_name}",
+                    location_id=location_id,
+                    participant_ids=[character_id],
+                ),
+                source_turns=[proposal.turn_id],
             )
 
         elif change_type == ChangeType.RELATIONSHIP:
@@ -150,6 +169,60 @@ async def resolve_proposal(
                     provenance="extracted",
                     visibility=payload.get("visibility", "dm"),
                 ),
+            )
+
+        elif change_type == ChangeType.KNOWLEDGE:
+            fact_id = UUID(payload["fact_id"]) if payload.get("fact_id") else None
+            proposition = payload.get("proposition")
+            if fact_id and not proposition:
+                fact = await FactRepository(session).get_by_id(fact_id)
+                proposition = " ".join(
+                    part
+                    for part in (fact.subject, fact.predicate, fact.object_value)
+                    if part
+                )
+            await BeliefRepository(session).create(
+                BeliefCreate(
+                    character_id=UUID(payload["recipient_id"]),
+                    fact_id=fact_id,
+                    proposition=proposition,
+                    status=payload.get("status", "known"),
+                    confidence=payload.get("confidence", 1.0),
+                    source_turn_id=proposal.turn_id,
+                    source_character_id=(
+                        UUID(payload["source_character_id"])
+                        if payload.get("source_character_id")
+                        else None
+                    ),
+                    visibility="character_only",
+                )
+            )
+
+        elif change_type == ChangeType.ITEM_TRANSFER:
+            result = await session.execute(
+                select(Item).where(Item.entity_id == payload["item_id"])
+            )
+            item = result.scalar_one()
+            item.current_owner_id = payload.get("owner_id")
+            item.current_location_id = payload.get("location_id")
+            await EventRepository(session).create(
+                campaign_id,
+                EventCreate(
+                    event_type="item_transfer",
+                    description=payload.get("description")
+                    or "An item changed possession or location",
+                    location_id=(
+                        UUID(payload["location_id"])
+                        if payload.get("location_id")
+                        else None
+                    ),
+                    participant_ids=[
+                        UUID(value)
+                        for value in [payload.get("owner_id")]
+                        if value
+                    ],
+                ),
+                source_turns=[proposal.turn_id],
             )
 
         elif change_type == ChangeType.SCENE_THESIS:
