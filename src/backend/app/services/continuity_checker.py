@@ -1,106 +1,214 @@
 from uuid import UUID
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.models.proposed_change import ProposedChangeCreate, ChangeType
+from app.db.tables import Item
+from app.models.proposed_change import ChangeType, ProposedChangeCreate
+
 
 class ContinuityChecker:
-    """Performs deterministic semantic validation on proposed changes (ADR-007 / ADR-008)."""
-    
+    """Perform deterministic validation of structured canon changes."""
+
     def __init__(self, session: AsyncSession):
         self._session = session
         self._entity_repo = EntityRepository(session)
+        self._fact_repo = FactRepository(session)
         self._scene_repo = SceneRepository(session)
 
-    async def validate_change(self, campaign_id: UUID, change: ProposedChangeCreate) -> tuple[bool, str | None]:
-        """Validates a proposed change against current DB constraints and status.
+    @staticmethod
+    def _parse_uuid(value: object, field_name: str) -> tuple[UUID | None, str | None]:
+        if value is None or value == "":
+            return None, None
+        try:
+            return UUID(str(value)), None
+        except (ValueError, TypeError, AttributeError):
+            return None, f"{field_name} must be a UUID, got {value!r}"
 
-        Returns:
-            bool: True if valid, False if it violates continuity.
-            str | None: Warning message describing the violation, or None.
-        """
+    async def _entity(
+        self,
+        campaign_id: UUID,
+        value: object,
+        field_name: str,
+        expected_type: str | None = None,
+    ):
+        entity_id, error = self._parse_uuid(value, field_name)
+        if error:
+            return None, error
+        if not entity_id:
+            return None, f"{field_name} is required"
+        entity = await self._entity_repo.get_by_id(entity_id)
+        if not entity or entity.campaign_id != campaign_id:
+            return None, f"{field_name} references an entity outside the campaign"
+        if expected_type and entity.entity_type != expected_type:
+            return None, f"{field_name} must reference a {expected_type}"
+        if entity.status in {"dead", "destroyed"}:
+            return None, f"{field_name} references inactive entity {entity.canonical_name}"
+        return entity, None
+
+    async def validate_change(
+        self,
+        campaign_id: UUID,
+        change: ProposedChangeCreate,
+    ) -> tuple[bool, str | None]:
         payload = change.payload
         change_type = change.change_type
-        
-        try:
-            if change_type == ChangeType.FACT:
-                # payload: { "subject": "uuid or text", "predicate": "text", "object_value": "uuid or text" }
-                # In MVP, check if subject/object look like UUIDs, and if so, check if they exist and are active
-                subject_id = payload.get("subject")
-                object_id = payload.get("object_value")
-                
-                for id_candidate in [subject_id, object_id]:
-                    if id_candidate and self._is_uuid(id_candidate):
-                        entity = await self._entity_repo.get_by_id(UUID(id_candidate))
-                        if not entity:
-                            return False, f"Fact references missing entity ID: {id_candidate}"
-                        if entity.status in ["dead", "destroyed"]:
-                            return False, f"Fact references inactive/dead entity: {entity.canonical_name} ({entity.status})"
 
-            elif change_type == ChangeType.EVENT:
-                # payload: { "event_type": "text", "description": "text", "location_id": "uuid/none", "participant_ids": [...] }
-                loc_id = payload.get("location_id")
-                if loc_id:
-                    location = await self._entity_repo.get_by_id(UUID(loc_id))
-                    if not location:
-                        return False, f"Event references missing location ID: {loc_id}"
-                        
-                participant_ids = payload.get("participant_ids", [])
-                for p_id in participant_ids:
-                    participant = await self._entity_repo.get_by_id(UUID(p_id))
-                    if not participant:
-                        return False, f"Event references missing participant ID: {p_id}"
-                    if participant.status in ["dead", "destroyed"]:
-                        return False, f"Event participant is dead/destroyed: {participant.canonical_name}"
+        if change_type == ChangeType.FACT:
+            subject = payload.get("subject")
+            predicate = payload.get("predicate")
+            if not subject or not predicate:
+                return False, "Fact proposal requires subject and predicate"
+            for field_name in ("subject", "object_value"):
+                candidate = payload.get(field_name)
+                if not candidate:
+                    continue
+                try:
+                    candidate_id = UUID(str(candidate))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+                entity = await self._entity_repo.get_by_id(candidate_id)
+                if not entity or entity.campaign_id != campaign_id:
+                    return False, f"Fact {field_name} references another campaign"
+                if entity.status in {"dead", "destroyed"}:
+                    return False, f"Fact references inactive entity {entity.canonical_name}"
 
-            elif change_type == ChangeType.RELATIONSHIP:
-                # payload: { "subject_id": "uuid", "object_id": "uuid", "relation_type": "text", "description": "text" }
-                sub_id = payload.get("subject_id")
-                obj_id = payload.get("object_id")
-                if not sub_id or not obj_id:
-                    return False, "Relationship proposal missing subject_id or object_id"
-                if sub_id == obj_id:
-                    return False, "Entity cannot have a relationship with itself"
-                    
-                sub = await self._entity_repo.get_by_id(UUID(sub_id))
-                obj = await self._entity_repo.get_by_id(UUID(obj_id))
-                if not sub or not obj:
-                    return False, "Relationship references missing entities"
-                if sub.status in ["dead", "destroyed"] or obj.status in ["dead", "destroyed"]:
-                    return False, "Relationship references inactive or dead entities"
+        elif change_type == ChangeType.EVENT:
+            if not payload.get("description"):
+                return False, "Event proposal requires description"
+            if payload.get("location_id"):
+                _, error = await self._entity(
+                    campaign_id,
+                    payload.get("location_id"),
+                    "location_id",
+                    "location",
+                )
+                if error:
+                    return False, error
+            for participant in payload.get("participant_ids", []):
+                _, error = await self._entity(
+                    campaign_id,
+                    participant,
+                    "participant_id",
+                )
+                if error:
+                    return False, error
 
-            elif change_type == ChangeType.MOVEMENT:
-                # payload: { "character_id": "uuid", "location_id": "uuid" }
-                char_id = payload.get("character_id")
-                loc_id = payload.get("location_id")
-                if not char_id or not loc_id:
-                    return False, "Movement missing character_id or location_id"
-                    
-                char = await self._entity_repo.get_character(UUID(char_id))
-                loc = await self._entity_repo.get_by_id(UUID(loc_id))
-                if not char or not loc:
-                    return False, "Movement references missing character or location"
-                if char.status in ["dead", "destroyed"]:
-                    return False, f"Cannot move a dead character: {char.canonical_name}"
-                if loc.entity_type != "location":
-                    return False, f"Movement target is not a location type: {loc.canonical_name} ({loc.entity_type})"
+        elif change_type == ChangeType.RELATIONSHIP:
+            subject, error = await self._entity(
+                campaign_id,
+                payload.get("subject_id"),
+                "subject_id",
+            )
+            if error:
+                return False, error
+            object_entity, error = await self._entity(
+                campaign_id,
+                payload.get("object_id"),
+                "object_id",
+            )
+            if error:
+                return False, error
+            if subject.id == object_entity.id:
+                return False, "Entity cannot have a relationship with itself"
+            if not payload.get("relation_type") or not payload.get("description"):
+                return False, "Relationship requires relation_type and description"
 
-            elif change_type == ChangeType.SCENE_THESIS:
-                # payload: { "scene_id": "uuid", "thesis_type": "text", "text": "text" }
-                sc_id = payload.get("scene_id")
-                if sc_id:
-                    scene = await self._scene_repo.get_by_id(UUID(sc_id))
-                    if not scene:
-                        return False, f"Scene thesis references missing scene ID: {sc_id}"
+        elif change_type == ChangeType.MOVEMENT:
+            _, error = await self._entity(
+                campaign_id,
+                payload.get("character_id"),
+                "character_id",
+                "character",
+            )
+            if error:
+                return False, error
+            _, error = await self._entity(
+                campaign_id,
+                payload.get("location_id"),
+                "location_id",
+                "location",
+            )
+            if error:
+                return False, error
 
-            return True, None
-            
-        except Exception as e:
-            return False, f"Deterministic validation crashed: {str(e)}"
+        elif change_type == ChangeType.KNOWLEDGE:
+            _, error = await self._entity(
+                campaign_id,
+                payload.get("recipient_id"),
+                "recipient_id",
+                "character",
+            )
+            if error:
+                return False, error
+            if payload.get("source_character_id"):
+                _, error = await self._entity(
+                    campaign_id,
+                    payload.get("source_character_id"),
+                    "source_character_id",
+                    "character",
+                )
+                if error:
+                    return False, error
+            fact_id, fact_error = self._parse_uuid(payload.get("fact_id"), "fact_id")
+            if fact_error:
+                return False, fact_error
+            if fact_id:
+                fact = await self._fact_repo.get_by_id(fact_id)
+                if not fact or fact.campaign_id != campaign_id or not fact.is_current:
+                    return False, "Knowledge references a missing or stale fact"
+            if not fact_id and not payload.get("proposition"):
+                return False, "Knowledge requires fact_id or proposition"
+            confidence = payload.get("confidence", 1.0)
+            if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+                return False, "Knowledge confidence must be between 0 and 1"
 
-    def _is_uuid(self, val: str) -> bool:
-        try:
-            UUID(str(val))
-            return True
-        except ValueError:
-            return False
+        elif change_type == ChangeType.ITEM_TRANSFER:
+            item_entity, error = await self._entity(
+                campaign_id,
+                payload.get("item_id"),
+                "item_id",
+                "item",
+            )
+            if error:
+                return False, error
+            owner_id = payload.get("owner_id")
+            location_id = payload.get("location_id")
+            if owner_id and location_id:
+                return False, "Item can have an owner or a location, not both"
+            if owner_id:
+                _, error = await self._entity(campaign_id, owner_id, "owner_id")
+                if error:
+                    return False, error
+            if location_id:
+                _, error = await self._entity(
+                    campaign_id,
+                    location_id,
+                    "location_id",
+                    "location",
+                )
+                if error:
+                    return False, error
+            result = await self._session.execute(
+                select(Item).where(Item.entity_id == str(item_entity.id))
+            )
+            if not result.scalar_one_or_none():
+                return False, "Item has no item-state row"
+
+        elif change_type == ChangeType.SCENE_THESIS:
+            scene_id, scene_error = self._parse_uuid(
+                payload.get("scene_id"),
+                "scene_id",
+            )
+            if scene_error:
+                return False, scene_error
+            if not scene_id or not payload.get("text"):
+                return False, "Scene thesis requires scene_id and text"
+            scene = await self._scene_repo.get_by_id(scene_id)
+            if not scene or scene.campaign_id != campaign_id:
+                return False, "Scene thesis references another campaign"
+
+        return True, None

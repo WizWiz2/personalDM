@@ -1,0 +1,74 @@
+name: Backend tests
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  pull_request:
+    paths:
+      - "src/backend/**"
+      - "test/backend/tests/**"
+      - ".github/workflows/backend-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+
+      - name: Install backend and test dependencies
+        run: python -m pip install -e "src/backend[dev]"
+
+      - name: Compile Python sources
+        run: python -m compileall -q src/backend/app src/backend/tests test/backend/tests
+
+      - name: Validate database migrations
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+          alembic downgrade 293b3517b6ac
+          alembic upgrade head
+
+      - name: Test campaigns
+        working-directory: src/backend
+        run: pytest -q tests/test_campaign.py --tb=short
+
+      - name: Test context boundaries
+        working-directory: src/backend
+        run: pytest -q tests/test_context.py --tb=short
+
+      - name: Test canon proposals
+        working-directory: src/backend
+        run: pytest -q tests/test_proposals.py --tb=short
+
+      - name: Test dynamic scene theses
+        working-directory: src/backend
+        run: pytest -q tests/test_thesis_curator.py --tb=short
+
+      - name: Test character cards and world state
+        working-directory: src/backend
+        run: pytest -q tests/test_world_state.py --tb=short
+
+      - name: Test simulation director
+        working-directory: src/backend
+        run: pytest -q tests/test_simulation_director.py --tb=short
+
+      - name: Test turn lifecycle
+        working-directory: src/backend
+        run: pytest -q tests/test_turns.py --tb=short
+
+      - name: Test provider and scribe
+        working-directory: src/backend
+        run: pytest -q tests/test_provider_and_scribe.py --tb=short
