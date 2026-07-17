@@ -58,7 +58,10 @@ jobs:
 
       - name: Test character cards and world state
         working-directory: src/backend
-        run: pytest -q tests/test_world_state.py --tb=short
+        shell: bash
+        run: |
+          set -o pipefail
+          pytest -q tests/test_world_state.py --tb=long 2>&1 | tail -120
 
       - name: Test turn lifecycle
         working-directory: src/backend
