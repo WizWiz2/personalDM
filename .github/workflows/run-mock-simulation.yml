@@ -33,7 +33,13 @@ jobs:
           PDM_SIM_TURNS: "100"
           PDM_SIM_DATA_DIR: "./data/mock-simulation"
           PDM_SIM_RESET: "1"
-        run: python tests/run_ci_mock_simulation.py
+        run: |
+          mkdir -p data/mock-simulation
+          set +e
+          python tests/run_ci_mock_simulation.py > data/mock-simulation/ci-run.log 2>&1
+          status=$?
+          cat data/mock-simulation/ci-run.log
+          exit $status
 
       - name: Show report
         if: always()
