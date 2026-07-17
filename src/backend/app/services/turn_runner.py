@@ -168,13 +168,27 @@ class TurnRunner:
                     accumulated_text = self._merge_continuation(accumulated_text, partial)
                     attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
                     last_provider_error = exc
-                    if attempt + 1 < self.MAX_GENERATION_ATTEMPTS and accumulated_text.strip():
-                        messages_for_attempt = self._continuation_messages(
-                            messages,
-                            accumulated_text,
-                        )
-                        await asyncio.sleep(0.15)
-                        continue
+                    if attempt + 1 < self.MAX_GENERATION_ATTEMPTS:
+                        if accumulated_text.strip():
+                            messages_for_attempt = self._continuation_messages(
+                                messages,
+                                accumulated_text,
+                            )
+                            await asyncio.sleep(0.15)
+                            continue
+                        else:
+                            messages_for_attempt = [
+                                *messages,
+                                ChatMessage(
+                                    role="user",
+                                    content=(
+                                        "Ответь только финальным художественным текстом на русском языке. "
+                                        "Не выводи скрытые рассуждения. Заверши ответ полностью."
+                                    ),
+                                ),
+                            ]
+                            await asyncio.sleep(0.25)
+                            continue
                 except LLMProviderError as exc:
                     attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
                     last_provider_error = exc
