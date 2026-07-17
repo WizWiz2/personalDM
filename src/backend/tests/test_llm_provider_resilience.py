@@ -39,6 +39,10 @@ def test_reasoning_only_frame_has_no_usable_content():
 
 
 def test_completion_shape_detection():
-    assert LLMProvider._looks_complete("Гаррик показывает на западный овраг.") is True
-    assert LLMProvider._looks_complete("Гаррик показывает на западный") is False
+    assert LLMProvider._looks_complete(
+        "Гаррик показывает на западный овраг и велит группе держаться ниже гребня."
+    ) is True
+    assert LLMProvider._looks_complete(
+        "Гаррик показывает на западный овраг и велит группе держаться"
+    ) is False
     assert LLMProvider._looks_complete("коротко") is False
