@@ -56,6 +56,10 @@ jobs:
         working-directory: src/backend
         run: pytest -q tests/test_thesis_curator.py --tb=short
 
+      - name: Test character cards and world state
+        working-directory: src/backend
+        run: pytest -q tests/test_world_state.py --tb=short
+
       - name: Test turn lifecycle
         working-directory: src/backend
         run: pytest -q tests/test_turns.py --tb=short
