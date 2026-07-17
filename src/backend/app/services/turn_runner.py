@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.turn_repo import TurnRepository
+from app.models.proposed_change import ChangeType
 from app.models.turn import TurnCreate
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 
@@ -36,11 +37,7 @@ class TurnRunner:
         turn_create: TurnCreate,
         existing_user_turn_id: UUID | None = None,
     ) -> AsyncIterator[str]:
-        """Run one context-aware turn and persist only usable model output.
-
-        existing_user_turn_id is used by regeneration so a second copy of the
-        same user message is not inserted into the active history.
-        """
+        """Run one context-aware turn and persist only usable model output."""
         owns_user_turn = existing_user_turn_id is None
         if existing_user_turn_id:
             user_turn = await self._turn_repo.get_by_id(existing_user_turn_id)
@@ -140,6 +137,26 @@ class TurnRunner:
             )
             await self._session.commit()
 
+            # Scene theses are living operational memory. A dedicated curator
+            # reconciles the complete active set after every successful turn.
+            # Failure here must not invalidate the already completed narrative turn.
+            if turn_create.scene_id:
+                try:
+                    from app.services.thesis_curator import ThesisCurator
+
+                    curator = ThesisCurator(self._session)
+                    await curator.curate_after_turn(
+                        campaign_id=campaign_id,
+                        scene_id=turn_create.scene_id,
+                        source_turn_id=saved_assistant.id,
+                        user_content=turn_create.content,
+                        assistant_content=accumulated_text,
+                    )
+                    await self._session.commit()
+                except Exception:
+                    traceback.print_exc()
+                    await self._session.rollback()
+
             from app.services.memory_scribe import MemoryScribe
 
             scribe = MemoryScribe(self._session)
@@ -149,6 +166,14 @@ class TurnRunner:
                 user_content=turn_create.content,
                 assistant_content=accumulated_text,
             )
+            # Thesis lifecycle belongs exclusively to ThesisCurator. Keeping it
+            # out of Assisted Canon prevents two writers from fighting over the
+            # same operational state.
+            proposals = [
+                proposal
+                for proposal in proposals
+                if proposal.change_type != ChangeType.SCENE_THESIS
+            ]
 
             if proposals:
                 from app.db.repositories.proposed_change_repo import (
