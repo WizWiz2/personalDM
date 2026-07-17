@@ -57,21 +57,8 @@ jobs:
         run: pytest -q tests/test_thesis_curator.py --tb=short
 
       - name: Test character cards and world state
-        id: world_state
-        continue-on-error: true
         working-directory: src/backend
-        run: pytest -q tests/test_world_state.py --tb=long > world-state-test.log 2>&1
-
-      - name: Upload world-state traceback
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: world-state-test-log
-          path: src/backend/world-state-test.log
-
-      - name: Fail when world-state tests failed
-        if: steps.world_state.outcome == 'failure'
-        run: exit 1
+        run: pytest -q tests/test_world_state.py --tb=short
 
       - name: Test turn lifecycle
         working-directory: src/backend
