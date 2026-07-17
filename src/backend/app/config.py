@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = "http://localhost:11434/v1"
     LLM_MODEL: str = "gemma4:e4b"  # Gemma 4 (4B effective parameters)
     LLM_API_KEY: str | None = None
-    LLM_CONTEXT_WINDOW: int = 8192
+    LLM_CONTEXT_WINDOW: int = 4096
     RESPONSE_RESERVE_TOKENS: int = 1024
     SAFETY_MARGIN_PERCENT: float = 0.05
     
