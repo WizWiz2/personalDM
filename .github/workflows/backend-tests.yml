@@ -69,11 +69,14 @@ jobs:
         working-directory: src/backend
         run: pytest -q tests/test_turns.py --tb=short
 
-      - name: Test provider and scribe
+      - name: Test legacy provider and Scribe contracts
         working-directory: src/backend
-        run: >-
-          pytest -q
-          tests/test_provider_and_scribe.py
-          tests/test_llm_provider_resilience.py
-          tests/test_memory_scribe_aliases.py
-          --tb=short
+        run: pytest -q tests/test_provider_and_scribe.py --tb=short
+
+      - name: Test provider resilience
+        working-directory: src/backend
+        run: pytest -q tests/test_llm_provider_resilience.py --tb=short
+
+      - name: Test Scribe alias resolution
+        working-directory: src/backend
+        run: pytest -q tests/test_memory_scribe_aliases.py --tb=short
