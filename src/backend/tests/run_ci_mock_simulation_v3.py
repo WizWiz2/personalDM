@@ -1,4 +1,4 @@
-"""Run the v4 campaign pipeline with a deterministic in-process provider."""
+"""Run the campaign pipeline with a deterministic in-process provider."""
 
 from __future__ import annotations
 
@@ -202,10 +202,10 @@ async def deterministic_generate_stream(
 async def main() -> None:
     LLMProvider.generate_stream = deterministic_generate_stream
     try:
-        from .run_realistic_simulation_v4 import run_realistic_simulation_v4
+        from .run_realistic_simulation import run_realistic_simulation
     except ImportError:
-        from run_realistic_simulation_v4 import run_realistic_simulation_v4
-    await run_realistic_simulation_v4()
+        from run_realistic_simulation import run_realistic_simulation
+    await run_realistic_simulation()
     print("MOCK_CALLS", json.dumps(CALLS, ensure_ascii=False, sort_keys=True))
 
 
