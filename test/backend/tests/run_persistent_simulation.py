@@ -13,4 +13,5 @@ BACKEND_ROOT = REPOSITORY_ROOT / "src" / "backend"
 CANONICAL_SCRIPT = BACKEND_ROOT / "tests" / "run_persistent_simulation.py"
 
 sys.path.insert(0, str(BACKEND_ROOT))
+sys.path.insert(0, str(BACKEND_ROOT / "tests"))
 runpy.run_path(str(CANONICAL_SCRIPT), run_name="__main__")

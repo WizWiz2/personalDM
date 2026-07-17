@@ -299,7 +299,7 @@ async def create_character_from_draft(
         db_entity = Entity(
             campaign_id=str(campaign_id),
             entity_type=EntityType.ITEM.value,
-            canonical_name=item_name,
+            canonical_name=f"{item_name} ({draft.canonical_name})",
             description=f"Starting equipment of {draft.canonical_name}",
             status=EntityStatus.ACTIVE.value,
             provenance="character_builder",
