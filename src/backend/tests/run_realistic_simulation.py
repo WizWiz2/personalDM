@@ -235,7 +235,6 @@ class ScenarioDirector:
             )
         except Exception as exc:
             print(f"[director] Character Builder failed for {name}: {exc}; using fallback")
-            await self.session.rollback()
             card = fallback_npc_card(seed, location_id)
         built = await create_character_from_draft(
             self.campaign_id,
