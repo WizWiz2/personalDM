@@ -22,7 +22,6 @@ async def mock_generate_stream(*args, **kwargs):
 
 
 async def mock_extract_proposals(*args, **kwargs):
-    scene_id = kwargs.get("scene_id")
     return [
         ProposedChangeCreate(
             change_type=ChangeType.FACT,
@@ -32,10 +31,12 @@ async def mock_extract_proposals(*args, **kwargs):
                 "object_value": "quiet",
             },
         ),
+        # Even if an old or third-party Scribe still emits this type,
+        # TurnRunner must discard it. ThesisCurator is the sole writer.
         ProposedChangeCreate(
             change_type=ChangeType.SCENE_THESIS,
             payload={
-                "scene_id": str(scene_id),
+                "scene_id": str(kwargs.get("scene_id")),
                 "text": "Tension is high",
                 "thesis_type": "tension",
             },
@@ -51,6 +52,9 @@ def mock_llm_and_scribe():
     ), patch(
         "app.services.memory_scribe.MemoryScribe.extract_proposals",
         side_effect=mock_extract_proposals,
+    ), patch(
+        "app.services.thesis_curator.ThesisCurator.curate_after_turn",
+        return_value=None,
     ):
         yield
 
@@ -85,20 +89,12 @@ def test_proposed_changes_workflow(client: TestClient, mock_llm_and_scribe):
     proposals_res = client.get(f"/api/turns/{assistant_turn_id}/proposals")
     assert proposals_res.status_code == 200
     proposals = proposals_res.json()
-    assert len(proposals) == 2
-    assert all(proposal["status"] == "proposed" for proposal in proposals)
-
-    fact_proposal = next(
-        proposal for proposal in proposals if proposal["change_type"] == "fact"
-    )
-    thesis_proposal = next(
-        proposal
-        for proposal in proposals
-        if proposal["change_type"] == "scene_thesis"
-    )
+    assert len(proposals) == 1
+    assert proposals[0]["change_type"] == "fact"
+    assert proposals[0]["status"] == "proposed"
 
     resolve_res = client.put(
-        f"/api/proposals/{fact_proposal['id']}/resolve",
+        f"/api/proposals/{proposals[0]['id']}/resolve",
         json={"status": "accepted", "user_edit": None},
     )
     assert resolve_res.status_code == 200
@@ -111,24 +107,8 @@ def test_proposed_changes_workflow(client: TestClient, mock_llm_and_scribe):
     assert facts[0]["object_value"] == "quiet"
     assert facts[0]["source_turn_id"] == assistant_turn_id
 
-    resolve_res = client.put(
-        f"/api/proposals/{thesis_proposal['id']}/resolve",
-        json={
-            "status": "edited",
-            "user_edit": {
-                "scene_id": scene_id,
-                "thesis_type": "tension",
-                "text": "Tension is extremely high",
-            },
-        },
-    )
-    assert resolve_res.status_code == 200
-    assert resolve_res.json()["status"] == "edited"
-
-    theses = client.get(f"/api/scenes/{scene_id}/theses").json()
-    assert len(theses) == 1
-    assert theses[0]["text"] == "Tension is extremely high"
-    assert theses[0]["source_turn_id"] == assistant_turn_id
+    # Scene theses are not represented as Assisted Canon proposals anymore.
+    assert client.get(f"/api/scenes/{scene_id}/theses").json() == []
 
 
 @pytest.mark.asyncio
