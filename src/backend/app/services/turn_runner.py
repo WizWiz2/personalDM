@@ -65,6 +65,41 @@ class TurnRunner:
             ),
         ]
 
+    @staticmethod
+    def _reserve_current_user(
+        messages: list[ChatMessage],
+        metadata: dict,
+        content: str,
+    ) -> tuple[list[ChatMessage], dict]:
+        """Keep the addressed player's current message even when history fills the budget."""
+        if any(message.role == "user" and message.content == content for message in messages):
+            snapshot = dict(metadata)
+            snapshot["current_user_reserved"] = True
+            return messages, snapshot
+
+        from app.services.context_compiler import count_tokens
+
+        result = list(messages)
+        maximum = int(metadata.get("token_budget_max") or 0)
+        used = sum(count_tokens(message.content) for message in result)
+        required = count_tokens(content)
+        removed = 0
+        while len(result) > 1 and maximum and used + required >= maximum:
+            removed_message = result.pop(1)
+            used -= count_tokens(removed_message.content)
+            removed += 1
+
+        result.append(ChatMessage(role="user", content=content))
+        snapshot = dict(metadata)
+        snapshot["current_user_reserved"] = True
+        snapshot["history_messages_removed_for_current_user"] = removed
+        snapshot["token_budget_used"] = used + required
+        layers = list(snapshot.get("included_layers") or [])
+        if "layer_6_current_user" not in layers:
+            layers.append("layer_6_current_user")
+        snapshot["included_layers"] = layers
+        return result, snapshot
+
     def _snapshot(
         self,
         base: dict,
@@ -131,6 +166,12 @@ class TurnRunner:
             scene_id=turn_create.scene_id,
             current_user_content=turn_create.content,
         )
+        if turn_create.acting_character_id:
+            messages, context_metadata = self._reserve_current_user(
+                messages,
+                context_metadata,
+                turn_create.content,
+            )
 
         current_task = asyncio.current_task()
         if current_task is not None:
@@ -176,19 +217,18 @@ class TurnRunner:
                             )
                             await asyncio.sleep(0.15)
                             continue
-                        else:
-                            messages_for_attempt = [
-                                *messages,
-                                ChatMessage(
-                                    role="user",
-                                    content=(
-                                        "Ответь только финальным художественным текстом на русском языке. "
-                                        "Не выводи скрытые рассуждения. Заверши ответ полностью."
-                                    ),
+                        messages_for_attempt = [
+                            *messages,
+                            ChatMessage(
+                                role="user",
+                                content=(
+                                    "Ответь только финальным художественным текстом на русском языке. "
+                                    "Не выводи скрытые рассуждения. Заверши ответ полностью."
                                 ),
-                            ]
-                            await asyncio.sleep(0.25)
-                            continue
+                            ),
+                        ]
+                        await asyncio.sleep(0.25)
+                        continue
                 except LLMProviderError as exc:
                     attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
                     last_provider_error = exc
