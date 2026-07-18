@@ -137,6 +137,36 @@ def _curator(prompt: str) -> str:
     )
 
 
+def _scribe(prompt: str) -> str:
+    CALLS["scribe"] += 1
+    number = CALLS["scribe"]
+    actor_match = re.search(r"КТО ГОВОРИЛ В ОТВЕТЕ:\s*([^\n]+)", prompt)
+    player_match = re.search(r"ПЕРСОНАЖ ИГРОКА:\s*([^\n]+)", prompt)
+    actor = actor_match.group(1).strip() if actor_match else "narrator"
+    player = player_match.group(1).strip() if player_match else "Eldon"
+    if actor.casefold() != "narrator":
+        proposal = {
+            "change_type": "knowledge",
+            "payload": {
+                "recipient_id": player,
+                "fact_id": None,
+                "proposition": f"{actor} сообщил проверяемое наблюдение номер {number}.",
+                "source_character_id": actor,
+                "confidence": 0.9,
+            },
+        }
+    else:
+        proposal = {
+            "change_type": "fact",
+            "payload": {
+                "subject": "экспедиция",
+                "predicate": "получила_свидетельство",
+                "object_value": f"наблюдение номер {number}",
+            },
+        }
+    return json.dumps({"proposals": [proposal]}, ensure_ascii=False)
+
+
 def _consume_dm_failure_budget() -> bool:
     requested = max(0, int(os.getenv("PDM_MOCK_FAIL_DM_ATTEMPTS", "0")))
     if requested <= 0:
@@ -172,8 +202,7 @@ async def deterministic_generate_stream(
     elif "Ты куратор живых тезисов сцены" in prompt:
         output = _curator(prompt)
     elif "Ты Memory Scribe" in prompt:
-        CALLS["scribe"] += 1
-        output = json.dumps({"proposals": []}, ensure_ascii=False)
+        output = _scribe(prompt)
     else:
         CALLS["dm"] += 1
         if _consume_dm_failure_budget():
