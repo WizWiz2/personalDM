@@ -1,8 +1,9 @@
 """Production entrypoint for the objective-driven autonomous campaign benchmark.
 
-The large state machine lives in ``run_realistic_simulation_v2``. This facade adds
-resume-aware player decisions, persistent policy memory, Character Builder telemetry
-and an authoritative report calculated from SQLite plus the idempotent trace.
+The state machine lives in ``run_realistic_simulation_v2``. This facade installs a
+strict JSON control-plane, restores player policy across process restarts, preserves the
+exact resumed intent and writes an authoritative report from SQLite, trace, state and
+control-health evidence.
 """
 
 from __future__ import annotations
@@ -10,21 +11,29 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sqlite3
 from collections import Counter
 from pathlib import Path
 
 try:
     from . import run_realistic_simulation_v2 as runtime
+    from . import simulation_quality_controls as quality
 except ImportError:
     import run_realistic_simulation_v2 as runtime
+    import simulation_quality_controls as quality
 
+
+quality.install_quality_controls(runtime)
 
 _FALLBACK_FINGERPRINTS: set[str] = set()
+_RESUME_DECISION = None
 _BasePlayerPolicy = runtime.PlayerPolicy
 _BaseTraceStore = runtime.TraceStore
+_BasePlayerDecision = runtime.PlayerDecision
 _original_build_character_card = runtime.build_character_card
 _original_generate_player_decision = runtime.generate_player_decision
+_original_find_logical_pair = runtime.find_logical_pair
 
 
 class RestoredPlayerPolicy(_BasePlayerPolicy):
@@ -38,7 +47,7 @@ class RestoredPlayerPolicy(_BasePlayerPolicy):
         for turn_number in sorted(restored.records):
             player = restored.records[turn_number].get("player") or {}
             try:
-                decision = runtime.PlayerDecision(
+                decision = _BasePlayerDecision(
                     target=str(player.get("target", "narrator")),
                     mode=str(player.get("mode", "action")),
                     intent=str(player.get("intent", "")),
@@ -74,8 +83,73 @@ async def tracked_build_character_card(*args, **kwargs):
     return card.model_copy(update={"visual_profile": visual_profile}), source
 
 
-def _retry_decision_from_trace() -> runtime.PlayerDecision | None:
-    """Return the exact failed player intent instead of generating a new one on resume."""
+def _decision_from_trace(logical_turn: int):
+    data_dir = Path(os.getenv("PDM_SIM_DATA_DIR", "./data"))
+    trace = _BaseTraceStore(data_dir / "realistic_simulation_trace.jsonl")
+    record = trace.records.get(logical_turn) or {}
+    player = record.get("player") or {}
+    if not str(player.get("intent", "")).strip():
+        return None
+    try:
+        return _BasePlayerDecision(
+            target=str(player.get("target", "narrator")),
+            mode=str(player.get("mode", "action")),
+            intent=str(player.get("intent", "")),
+        )
+    except Exception:
+        return None
+
+
+def _infer_mode(intent: str, target: str) -> str:
+    folded = intent.casefold()
+    if "спрашива" in folded or intent.rstrip().endswith("?"):
+        return "question"
+    if "предлага" in folded or "сопоставляю" in folded:
+        return "plan"
+    if "выбираю" in folded or "формулирую" in folded or "решаю" in folded:
+        return "decision"
+    if target != "narrator" and any(word in folded for word in ("говорю", "объясняю", "прошу")):
+        return "dialogue"
+    return "action"
+
+
+def _decision_from_user_content(content: str):
+    match = re.match(r"^\s*\[/talk\s+([^\]]+)\]\s*(.*)$", content, flags=re.DOTALL)
+    if not match:
+        return None
+    target = match.group(1).strip()
+    intent = match.group(2).strip()
+    if not intent:
+        return None
+    return _BasePlayerDecision(
+        target=target,
+        mode=_infer_mode(intent, target),
+        intent=intent,
+    )
+
+
+async def tracked_find_logical_pair(session, campaign_id, run_id, logical_turn):
+    global _RESUME_DECISION
+    user, assistant = await _original_find_logical_pair(
+        session,
+        campaign_id,
+        run_id,
+        logical_turn,
+    )
+    decision = _decision_from_trace(logical_turn)
+    if decision is None and user is not None:
+        decision = _decision_from_user_content(user.content)
+    _RESUME_DECISION = decision
+    return user, assistant
+
+
+def resume_aware_player_decision(target: str, mode: str, intent: str):
+    if intent.startswith("Восстановленный после сбоя") and _RESUME_DECISION is not None:
+        return _RESUME_DECISION
+    return _BasePlayerDecision(target=target, mode=mode, intent=intent)
+
+
+def _retry_decision_from_trace():
     data_dir = Path(os.getenv("PDM_SIM_DATA_DIR", "./data"))
     state_path = data_dir / "realistic_simulation_state.json"
     trace_path = data_dir / "realistic_simulation_trace.jsonl"
@@ -84,12 +158,11 @@ def _retry_decision_from_trace() -> runtime.PlayerDecision | None:
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
         logical_turn = int(state["logical_turn"])
-        trace = _BaseTraceStore(trace_path)
-        record = trace.records.get(logical_turn)
+        record = _BaseTraceStore(trace_path).records.get(logical_turn)
         if not record or not record.get("generation_failed"):
             return None
         player = record.get("player") or {}
-        return runtime.PlayerDecision(
+        return _BasePlayerDecision(
             target=str(player["target"]),
             mode=str(player["mode"]),
             intent=str(player["intent"]),
@@ -124,9 +197,14 @@ def _scalar(connection: sqlite3.Connection, query: str, params=()) -> int:
 def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
     state_path = data_dir / "realistic_simulation_state.json"
     trace_path = data_dir / "realistic_simulation_trace.jsonl"
+    health_path = data_dir / "realistic_simulation_health.json"
     state = _safe_json(
         state_path.read_text(encoding="utf-8") if state_path.exists() else None,
         {},
+    )
+    health = _safe_json(
+        health_path.read_text(encoding="utf-8") if health_path.exists() else None,
+        quality.health_snapshot(),
     )
     campaign_id = state.get("campaign_id")
     if not database_path.exists() or not campaign_id:
@@ -143,7 +221,7 @@ def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
         for record in records
         if str((record.get("player") or {}).get("intent", "")).strip()
     }
-    failures = sum(bool(record.get("generation_failed")) for record in records)
+    trace_failures = sum(bool(record.get("generation_failed")) for record in records)
     fallbacks = sum(bool((record.get("player") or {}).get("fallback")) for record in records)
 
     connection = sqlite3.connect(database_path)
@@ -155,6 +233,21 @@ def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
     active_turns = _scalar(
         connection,
         "SELECT COUNT(*) FROM turns WHERE campaign_id=? AND status='active'",
+        (campaign_id,),
+    )
+    failed_users = _scalar(
+        connection,
+        "SELECT COUNT(*) FROM turns WHERE campaign_id=? AND role='user' AND status='failed'",
+        (campaign_id,),
+    )
+    alternative_assistants = _scalar(
+        connection,
+        "SELECT COUNT(*) FROM turns WHERE campaign_id=? AND role='assistant' AND status='alternative'",
+        (campaign_id,),
+    )
+    interrupted_assistants = _scalar(
+        connection,
+        "SELECT COUNT(*) FROM turns WHERE campaign_id=? AND role='assistant' AND content LIKE '%[generation interrupted]%'",
         (campaign_id,),
     )
     scenes = _scalar(connection, "SELECT COUNT(*) FROM scenes WHERE campaign_id=?", (campaign_id,))
@@ -195,6 +288,13 @@ def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
         """SELECT COUNT(*) FROM beliefs b
            JOIN entities e ON e.id=b.character_id
            WHERE e.campaign_id=?""",
+        (campaign_id,),
+    )
+    sourced_beliefs = _scalar(
+        connection,
+        """SELECT COUNT(*) FROM beliefs b
+           JOIN entities e ON e.id=b.character_id
+           WHERE e.campaign_id=? AND b.source_turn_id IS NOT NULL""",
         (campaign_id,),
     )
     goals = _scalar(
@@ -249,26 +349,68 @@ def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
             source = "fallback"
         builder_sources[source or "legacy_unknown"] += 1
 
+    actor_contexts = 0
+    actor_contexts_missing_current = 0
+    for acting_character_id, snapshot_raw in connection.execute(
+        """SELECT acting_character_id, context_snapshot FROM turns
+           WHERE campaign_id=? AND role='assistant' AND acting_character_id IS NOT NULL""",
+        (campaign_id,),
+    ):
+        snapshot = _safe_json(snapshot_raw, {})
+        actor_contexts += 1
+        if not snapshot.get("current_user_reserved"):
+            actor_contexts_missing_current += 1
+
     connection.close()
+
+    control_stats = health.get("control_stats") or {}
+    control_failures = list(health.get("control_failures") or [])
+    total_generation_failures = max(trace_failures, failed_users, alternative_assistants)
+    invalid_reasons: list[str] = []
+    if control_failures:
+        invalid_reasons.append("control-plane failures")
+    if quality.benchmark_mode() == "quality" and fallbacks:
+        invalid_reasons.append("player fallback used in quality mode")
+    if quality.benchmark_mode() == "quality" and builder_sources["fallback"]:
+        invalid_reasons.append("Character Builder fallback used in quality mode")
+    if total_generation_failures:
+        invalid_reasons.append("generation failures or partial alternatives exist")
+    if actor_contexts_missing_current:
+        invalid_reasons.append("actor context omitted current player message")
+    if completed_scene_active:
+        invalid_reasons.append("completed scenes retain active theses")
+    if quality.benchmark_mode() == "quality" and not control_stats.get("evaluator_success"):
+        invalid_reasons.append("Evaluator never completed successfully")
+    if quality.benchmark_mode() == "quality" and not control_stats.get("scribe_success"):
+        invalid_reasons.append("Memory Scribe never completed successfully")
+    benchmark_valid = not invalid_reasons
+
     return [
+        f"- Benchmark mode: `{quality.benchmark_mode()}`",
+        f"- Benchmark valid: **{benchmark_valid}**",
+        f"- Invalid reasons: {'; '.join(invalid_reasons) if invalid_reasons else 'none'}",
         f"- Run ID: `{state.get('run_id', 'unknown')}`",
         f"- Уникальных логических ходов: {len(records)}",
         f"- Следующий логический ход: {state.get('logical_turn', 1)}",
         f"- Фаз завершено: {state.get('phase_index', 0)}/10",
         f"- Кампания завершена: {bool(state.get('completed'))}",
-        f"- Ошибок генерации в уникальном trace: {failures}",
+        f"- Ошибок в trace/failed users/alternative assistants: {trace_failures}/{failed_users}/{alternative_assistants}",
+        f"- Interrupted assistant texts: {interrupted_assistants}",
         f"- Уникальных player intents: {len(unique_intents)}",
         f"- Player fallbacks: {fallbacks}",
         "- Режимы игрока: " + ", ".join(f"{name}={modes[name]}" for name in sorted(modes)),
         f"- Строк turns: {turns} (active={active_turns})",
+        f"- Actor contexts/current-message omissions: {actor_contexts}/{actor_contexts_missing_current}",
         f"- Сцен: {scenes} (completed={completed_scenes})",
         f"- Персонажей: {characters} (NPC={max(0, characters - 1)})",
         "- Character Builder model/repair/fallback/legacy: "
         f"{builder_sources['model']}/{builder_sources['repair']}/{builder_sources['fallback']}/{builder_sources['legacy_unknown']}",
+        f"- Control stats: `{json.dumps(control_stats, ensure_ascii=False, sort_keys=True)}`",
+        f"- Control failures: {len(control_failures)}",
         f"- Entities: {entities}",
         f"- Events: {events} (confirmed pulses={pulses}, scene outcomes={outcomes})",
         f"- Facts: {facts}",
-        f"- Beliefs: {beliefs}",
+        f"- Beliefs: {beliefs} (sourced from turns={sourced_beliefs})",
         f"- Goals: {goals}",
         f"- Relationships: {relationships}",
         f"- Thesis versions: {thesis_versions}",
@@ -287,13 +429,14 @@ def write_authoritative_report() -> None:
     lines = [
         "# Отчёт о реалистичной автономной кампании",
         "",
-        "Отчёт пересчитан из SQLite, idempotent JSONL и state-файла после завершения запуска.",
+        "Отчёт пересчитан из SQLite, idempotent JSONL, state и control-health файлов.",
         "In-memory счётчики не используются как источник истины.",
         "",
         *_campaign_report(database_path, data_dir),
         "",
         f"- SQLite: `{database_path}`",
         f"- State: `{data_dir / 'realistic_simulation_state.json'}`",
+        f"- Health: `{data_dir / 'realistic_simulation_health.json'}`",
         f"- Лог: `{data_dir / 'realistic_simulation_play.log'}`",
         f"- JSONL: `{data_dir / 'realistic_simulation_trace.jsonl'}`",
     ]
@@ -303,10 +446,15 @@ def write_authoritative_report() -> None:
 async def run_realistic_simulation() -> None:
     runtime.PlayerPolicy = RestoredPlayerPolicy
     runtime.TraceStore = TrackedTraceStore
+    runtime.PlayerDecision = resume_aware_player_decision
+    runtime.find_logical_pair = tracked_find_logical_pair
     runtime.build_character_card = tracked_build_character_card
     runtime.generate_player_decision = resumable_generate_player_decision
-    await runtime.run_realistic_simulation_v2()
-    write_authoritative_report()
+    try:
+        await runtime.run_realistic_simulation_v2()
+    finally:
+        quality._write_health()
+        write_authoritative_report()
 
 
 if __name__ == "__main__":
