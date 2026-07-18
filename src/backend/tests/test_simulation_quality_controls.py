@@ -4,6 +4,7 @@ import pytest
 
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider
+from app.services.turn_runner import TurnRunner
 from tests import run_realistic_simulation_v2 as runtime
 from tests import simulation_quality_controls as quality
 
@@ -54,6 +55,22 @@ def test_current_user_message_is_reserved_by_removing_old_history():
     )
     assert updated[-1].role == "user"
     assert updated[-1].content == "current question"
+    assert metadata["current_user_reserved"] is True
+    assert metadata["history_messages_removed_for_current_user"] >= 1
+
+
+def test_turn_runner_reserves_current_user_in_production_path():
+    messages = [
+        ChatMessage(role="system", content="system " * 30),
+        ChatMessage(role="user", content="old question " * 20),
+        ChatMessage(role="assistant", content="old answer " * 20),
+    ]
+    updated, metadata = TurnRunner._reserve_current_user(
+        messages,
+        {"token_budget_max": 80, "included_layers": ["layer_0_system"]},
+        "current question",
+    )
+    assert updated[-1] == ChatMessage(role="user", content="current question")
     assert metadata["current_user_reserved"] is True
     assert metadata["history_messages_removed_for_current_user"] >= 1
 
