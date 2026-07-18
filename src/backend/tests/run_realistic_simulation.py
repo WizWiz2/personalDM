@@ -19,11 +19,14 @@ from pathlib import Path
 try:
     from . import run_realistic_simulation_v2 as runtime
     from . import simulation_quality_controls as quality
+    from . import simulation_quality_transport_fix as transport_fix
 except ImportError:
     import run_realistic_simulation_v2 as runtime
     import simulation_quality_controls as quality
+    import simulation_quality_transport_fix as transport_fix
 
 
+transport_fix.install(quality)
 quality.install_quality_controls(runtime)
 
 _FALLBACK_FINGERPRINTS: set[str] = set()
