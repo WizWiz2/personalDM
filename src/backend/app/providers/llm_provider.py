@@ -27,12 +27,20 @@ class LLMProviderTruncatedError(LLMProviderError):
 class LLMProvider:
     """Client for OpenAI-compatible and common Ollama-compatible chat APIs.
 
-    Reasoning/thinking fields are deliberately never exposed as answer text. For local
-    Ollama endpoints thinking is disabled by default because otherwise small models can
-    spend the whole completion budget on hidden reasoning and return no usable content.
+    Narrative requests stream. Prompts that explicitly require a JSON object are routed
+    through a non-streaming structured request so control agents do not spend their output
+    budget on hidden reasoning, partial SSE frames or unfinished JSON.
     """
 
     COMPLETE_ENDINGS = (".", "!", "?", "…", ":", ";", "»", '"', "'", ")", "]", "}", "*")
+    JSON_MARKERS = (
+        "верни только json",
+        "верни один json",
+        "верни ровно один json",
+        "return exactly one json",
+        "return only json",
+        "return one json",
+    )
 
     def __init__(self):
         self.last_telemetry: dict[str, Any] = {}
@@ -144,9 +152,168 @@ class LLMProvider:
     @classmethod
     def _looks_complete(cls, text: str) -> bool:
         clean = text.rstrip()
-        if len(clean) < 40:
+        if len(clean) < 20:
             return False
         return clean.endswith(cls.COMPLETE_ENDINGS)
+
+    @classmethod
+    def _expects_json(cls, messages: list[ChatMessage]) -> bool:
+        text = "\n".join(message.content for message in messages).casefold()
+        return any(marker in text for marker in cls.JSON_MARKERS)
+
+    @staticmethod
+    def _parse_json_object(text: str) -> dict[str, Any]:
+        clean = text.strip()
+        if clean.startswith("```"):
+            lines = clean.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            clean = "\n".join(lines).strip()
+        try:
+            value = json.loads(clean)
+            if isinstance(value, dict):
+                return value
+        except Exception:
+            pass
+
+        start = clean.find("{")
+        if start < 0:
+            raise LLMProviderError("structured response does not contain a JSON object")
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(clean)):
+            char = clean[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        value = json.loads(clean[start : index + 1])
+                    except json.JSONDecodeError as exc:
+                        raise LLMProviderError(f"structured response contains invalid JSON: {exc}") from exc
+                    if not isinstance(value, dict):
+                        raise LLMProviderError("structured response JSON is not an object")
+                    return value
+        raise LLMProviderError("structured response contains incomplete JSON")
+
+    async def generate_json(
+        self,
+        messages: list[ChatMessage],
+        config: ProviderConfigRead,
+        api_key: str | None = None,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> dict[str, Any]:
+        """Return one validated JSON object using a non-streaming provider request."""
+        url = f"{config.base_url.rstrip('/')}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        completion_budget = max_tokens or settings.RESPONSE_RESERVE_TOKENS
+        base_messages = [
+            {"role": message.role, "content": message.content}
+            for message in messages
+        ]
+        started = time.monotonic()
+        last_error: Exception | None = None
+
+        for attempt in range(1, 3):
+            request_messages = list(base_messages)
+            if attempt == 2:
+                request_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Предыдущий ответ не был корректным JSON. Верни только один "
+                            "валидный JSON-объект строго по схеме, без markdown и пояснений."
+                        ),
+                    }
+                )
+            payload: dict[str, Any] = {
+                "model": config.model_name,
+                "messages": request_messages,
+                "stream": False,
+                "max_tokens": completion_budget,
+                "response_format": {"type": "json_object"},
+            }
+            if temperature is not None:
+                payload["temperature"] = temperature if attempt == 1 else 0.0
+            if self._is_ollama(config.base_url):
+                payload["think"] = False
+
+            try:
+                async with httpx.AsyncClient(
+                    trust_env=False,
+                    timeout=httpx.Timeout(180.0, connect=10.0),
+                ) as client:
+                    response = await client.post(url, headers=headers, json=payload)
+                    if response.status_code == 400:
+                        payload.pop("response_format", None)
+                        response = await client.post(url, headers=headers, json=payload)
+                    if response.status_code != 200:
+                        raise LLMProviderError(
+                            f"LLM returned HTTP {response.status_code}: {response.text[:2000]}"
+                        )
+                    data = response.json()
+
+                provider_error = data.get("error") if isinstance(data, dict) else None
+                if provider_error:
+                    raise LLMProviderError(f"LLM provider error: {provider_error}")
+                if isinstance(data, dict) and isinstance(data.get("response"), dict):
+                    parsed = data["response"]
+                    raw_text = json.dumps(parsed, ensure_ascii=False)
+                else:
+                    raw_text = self._extract_content(data) if isinstance(data, dict) else ""
+                    if not raw_text:
+                        raise LLMProviderError(
+                            "LLM completed without structured content "
+                            f"(finish_reason={self._extract_finish_reason(data)!r})"
+                        )
+                    parsed = self._parse_json_object(raw_text)
+
+                self.last_telemetry = {
+                    "model": config.model_name,
+                    "url": url,
+                    "status": "completed",
+                    "control_plane": True,
+                    "transport": "http_json",
+                    "attempt": attempt,
+                    "http_status": response.status_code,
+                    "finish_reason": self._extract_finish_reason(data),
+                    "usage": self._extract_usage(data),
+                    "response_characters": len(raw_text),
+                    "thinking_disabled": bool(payload.get("think") is False),
+                    "requested_max_tokens": completion_budget,
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                }
+                return parsed
+            except (httpx.RequestError, LLMProviderError, json.JSONDecodeError) as exc:
+                last_error = exc
+
+        self.last_telemetry = {
+            "model": config.model_name,
+            "url": url,
+            "status": "structured_error",
+            "error": str(last_error or "unknown structured response error"),
+            "requested_max_tokens": completion_budget,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        }
+        raise LLMProviderError(f"Failed to obtain valid JSON: {last_error}")
 
     async def generate_stream(
         self,
@@ -158,6 +325,17 @@ class LLMProvider:
         temperature: float | None = None,
         disable_thinking: bool = True,
     ) -> AsyncIterator[str]:
+        if self._expects_json(messages):
+            payload = await self.generate_json(
+                messages,
+                config,
+                api_key,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            yield json.dumps(payload, ensure_ascii=False)
+            return
+
         url = f"{config.base_url.rstrip('/')}/chat/completions"
         headers = {"Content-Type": "application/json"}
         if api_key:
