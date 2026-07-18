@@ -158,11 +158,14 @@ class ContextCompiler:
         acting_character_id: UUID | None = None,
         scene_id: UUID | None = None,
         current_user_content: str | None = None,
+        max_budget_override: int | None = None,
     ) -> tuple[list[ChatMessage], dict]:
         config = await self._config_repo.get_by_campaign_id(campaign_id)
         context_window = config.context_window if config else settings.LLM_CONTEXT_WINDOW
         safety_margin = int(context_window * settings.SAFETY_MARGIN_PERCENT)
         max_budget = context_window - settings.RESPONSE_RESERVE_TOKENS - safety_margin
+        if max_budget_override is not None:
+            max_budget = max_budget_override
         actor_mode = acting_character_id is not None
 
         campaign = await self._campaign_repo.get_by_id(campaign_id)

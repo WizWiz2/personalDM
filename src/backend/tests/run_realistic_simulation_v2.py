@@ -720,6 +720,7 @@ async def generate_player_decision(
         campaign_id=campaign_id,
         acting_character_id=player_id,
         scene_id=runtime.scene_id,
+        max_budget_override=1500,
     )
     trusted_context = messages[0].content if messages else ""
     recent = "\n".join(
@@ -727,7 +728,7 @@ async def generate_player_decision(
         for turn in history[-10:]
     )
     system = f"""Ты имитируешь живого игрока настольной RPG, а не второго ДМа.
-Верни один JSON: {{"target":"narrator|ActiveNpc","mode":"action|dialogue|question|plan|decision","intent":"1-3 предложения"}}.
+Верни один JSON: {{"target":"narrator" или конкретное имя из списка АКТИВНЫЕ NPC,"mode":"action|dialogue|question|plan|decision","intent":"1-3 предложения"}}.
 
 ЦЕЛЬ СЦЕНЫ: {runtime.phase.objective}
 АКТИВНЫЕ NPC: {', '.join(active_npcs)}
@@ -763,7 +764,7 @@ async def generate_player_decision(
                 ],
                 config,
                 api_key,
-                max_tokens=420,
+                max_tokens=1024,
                 temperature=0.75,
             ):
                 raw += token
