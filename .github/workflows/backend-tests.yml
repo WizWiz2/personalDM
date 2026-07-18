@@ -63,7 +63,7 @@ jobs:
 
       - name: Test simulation director
         working-directory: src/backend
-        run: pytest -q tests/test_simulation_director.py --tb=short
+        run: pytest -q tests/test_simulation_director.py tests/test_simulation_quality_controls.py --tb=short
 
       - name: Test turn lifecycle
         working-directory: src/backend
@@ -81,10 +81,11 @@ jobs:
         working-directory: src/backend
         run: pytest -q tests/test_memory_scribe_aliases.py --tb=short
 
-      - name: Run deterministic end-to-end campaign v3
+      - name: Run deterministic end-to-end campaign in quality mode
         working-directory: src/backend
         env:
           PYTHONPATH: "."
+          PDM_SIM_MODE: "quality"
           PDM_SIM_TURNS: "60"
           PDM_SIM_DATA_DIR: "./data/ci-v3"
           PDM_SIM_RESET: "1"
@@ -97,21 +98,30 @@ jobs:
           python - <<'PY'
           import json
           import sqlite3
-          from collections import Counter
           from pathlib import Path
 
           root = Path("data/ci-v3")
           state = json.loads((root / "realistic_simulation_state.json").read_text(encoding="utf-8"))
+          health = json.loads((root / "realistic_simulation_health.json").read_text(encoding="utf-8"))
           records = [json.loads(line) for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
           report = (root / "realistic_simulation_report.md").read_text(encoding="utf-8")
 
           assert state["completed"] is True, state
           assert state["phase_index"] == 10, state
+          assert health["mode"] == "quality", health
+          assert health["valid"] is True, health
+          assert health["control_stats"].get("player_success", 0) > 0, health
+          assert health["control_stats"].get("evaluator_success", 0) > 0, health
+          assert health["control_stats"].get("scribe_success", 0) > 0, health
+          assert health["control_stats"].get("curator_success", 0) > 0, health
           assert len(records) == len({record["turn"] for record in records})
           assert all(not record.get("generation_failed") for record in records)
+          assert all(not (record.get("player") or {}).get("fallback") for record in records)
           assert len({record["player"]["intent"] for record in records}) >= len(records) * 0.8
+          assert "Benchmark valid: **True**" in report
           assert "Фаз завершено: 10/10" in report
           assert "Active theses in completed scenes: 0" in report
+          assert "Actor contexts/current-message omissions:" in report
 
           db = sqlite3.connect(root / "realistic_simulation.db")
           campaign_id = state["campaign_id"]
@@ -121,42 +131,69 @@ jobs:
           assert fk_violations == []
 
           characters = db.execute(
-              "SELECT COUNT(*) FROM entities WHERE campaign_id=? AND entity_type='character'",
-              (campaign_id,),
+            "SELECT COUNT(*) FROM entities WHERE campaign_id=? AND entity_type='character'",
+            (campaign_id,),
           ).fetchone()[0]
           outcomes = db.execute(
-              "SELECT COUNT(*) FROM events WHERE campaign_id=? AND event_type='scene_outcome'",
-              (campaign_id,),
+            "SELECT COUNT(*) FROM events WHERE campaign_id=? AND event_type='scene_outcome'",
+            (campaign_id,),
+          ).fetchone()[0]
+          proposals = db.execute(
+            """SELECT COUNT(*) FROM proposed_changes pc
+               JOIN turns t ON t.id=pc.turn_id
+               WHERE t.campaign_id=?""",
+            (campaign_id,),
+          ).fetchone()[0]
+          sourced_beliefs = db.execute(
+            """SELECT COUNT(*) FROM beliefs b
+               JOIN entities e ON e.id=b.character_id
+               WHERE e.campaign_id=? AND b.source_turn_id IS NOT NULL""",
+            (campaign_id,),
           ).fetchone()[0]
           stale = db.execute(
-              """SELECT COUNT(*) FROM scene_theses st
-                 JOIN scenes s ON s.id=st.scene_id
-                 WHERE s.campaign_id=? AND s.status='completed' AND st.status='active'""",
-              (campaign_id,),
+            """SELECT COUNT(*) FROM scene_theses st
+               JOIN scenes s ON s.id=st.scene_id
+               WHERE s.campaign_id=? AND s.status='completed' AND st.status='active'""",
+            (campaign_id,),
           ).fetchone()[0]
           duplicate_scopes = db.execute(
-              """SELECT COUNT(*) FROM (
-                   SELECT st.scene_id, st.thesis_type, COALESCE(st.related_entity_ids, ''), COUNT(*) AS n
-                   FROM scene_theses st
-                   JOIN scenes s ON s.id=st.scene_id
-                   WHERE s.campaign_id=? AND st.status='active'
-                   GROUP BY st.scene_id, st.thesis_type, COALESCE(st.related_entity_ids, '')
-                   HAVING n > 1
-                 )""",
-              (campaign_id,),
+            """SELECT COUNT(*) FROM (
+                 SELECT st.scene_id, st.thesis_type, COALESCE(st.related_entity_ids, ''), COUNT(*) AS n
+                 FROM scene_theses st
+                 JOIN scenes s ON s.id=st.scene_id
+                 WHERE s.campaign_id=? AND st.status='active'
+                 GROUP BY st.scene_id, st.thesis_type, COALESCE(st.related_entity_ids, '')
+                 HAVING n > 1
+               )""",
+            (campaign_id,),
           ).fetchone()[0]
+          actor_missing = 0
+          actor_total = 0
+          for snapshot_raw, in db.execute(
+            """SELECT context_snapshot FROM turns
+               WHERE campaign_id=? AND role='assistant' AND acting_character_id IS NOT NULL""",
+            (campaign_id,),
+          ):
+            actor_total += 1
+            snapshot = json.loads(snapshot_raw or "{}")
+            if not snapshot.get("current_user_reserved"):
+              actor_missing += 1
           db.close()
 
           assert characters == 21, characters
           assert outcomes == 10, outcomes
+          assert proposals > 0, proposals
+          assert sourced_beliefs > 0, sourced_beliefs
           assert stale == 0, stale
           assert duplicate_scopes == 0, duplicate_scopes
-          print("Validated", len(records), "logical turns across all phases")
+          assert actor_total > 0, actor_total
+          assert actor_missing == 0, actor_missing
+          print("Validated", len(records), "quality logical turns across all phases")
           PY
 
       - name: Upload simulation evidence
         uses: actions/upload-artifact@v4
         with:
-          name: personaldm-v3-simulation
+          name: personaldm-quality-simulation
           path: src/backend/data/ci-v3/
           retention-days: 7

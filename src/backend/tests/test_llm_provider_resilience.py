@@ -1,3 +1,4 @@
+from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider
 
 
@@ -46,3 +47,24 @@ def test_completion_shape_detection():
         "Гаррик показывает на западный овраг и велит группе держаться"
     ) is False
     assert LLMProvider._looks_complete("коротко") is False
+
+
+def test_json_prompt_detection_is_explicit():
+    assert LLMProvider._expects_json(
+        [ChatMessage(role="system", content="Верни только JSON с ключом proposals.")]
+    ) is True
+    assert LLMProvider._expects_json(
+        [ChatMessage(role="system", content="Напиши художественный ответ на русском языке.")]
+    ) is False
+
+
+def test_balanced_json_parser_extracts_object_without_markdown_noise():
+    assert LLMProvider._parse_json_object(
+        'Пояснение до ответа {"proposals":[{"value":1}]} хвост'
+    ) == {"proposals": [{"value": 1}]}
+
+
+def test_balanced_json_parser_accepts_fenced_json():
+    assert LLMProvider._parse_json_object(
+        '```json\n{"desired_active":[]}\n```'
+    ) == {"desired_active": []}
