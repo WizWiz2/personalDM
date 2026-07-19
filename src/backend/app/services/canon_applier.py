@@ -19,6 +19,7 @@ from app.models.fact import FactCreate
 from app.models.proposed_change import ChangeType
 from app.models.relationship import RelationshipCreate
 from app.models.scene_thesis import SceneThesisCreate, ThesisType
+from app.services.initial_world_state import InitialWorldStateService
 
 
 class CanonApplier:
@@ -32,6 +33,7 @@ class CanonApplier:
         self._relationships = RelationshipRepository(session)
         self._events = EventRepository(session)
         self._scenes = SceneRepository(session)
+        self._initial_state = InitialWorldStateService(session)
 
     @staticmethod
     def _operation(payload: dict) -> str:
@@ -76,6 +78,7 @@ class CanonApplier:
             return
 
         if change_type == ChangeType.MOVEMENT:
+            await self._initial_state.ensure(campaign_id)
             character_id = UUID(payload["character_id"])
             location_id = UUID(payload["location_id"])
             character = await self._entities.get_character(character_id)
@@ -146,6 +149,7 @@ class CanonApplier:
             return
 
         if change_type == ChangeType.ITEM_TRANSFER:
+            await self._initial_state.ensure(campaign_id)
             result = await self._session.execute(
                 select(Item).where(Item.entity_id == payload["item_id"])
             )
