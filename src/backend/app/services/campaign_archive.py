@@ -259,7 +259,7 @@ class CampaignArchiveService:
             await self._session.execute(
                 select(Fact).where(
                     Fact.campaign_id == str(campaign_id),
-                    Fact.is_current == True,
+                    Fact.is_current.is_(True),
                 )
             )
         ).scalars().all()
@@ -269,7 +269,7 @@ class CampaignArchiveService:
                 .join(Entity, Entity.id == Belief.character_id)
                 .where(
                     Entity.campaign_id == str(campaign_id),
-                    Belief.is_current == True,
+                    Belief.is_current.is_(True),
                 )
             )
         ).scalars().all()
@@ -277,7 +277,7 @@ class CampaignArchiveService:
             await self._session.execute(
                 select(RelationshipAssertion).where(
                     RelationshipAssertion.campaign_id == str(campaign_id),
-                    RelationshipAssertion.is_current == True,
+                    RelationshipAssertion.is_current.is_(True),
                 )
             )
         ).scalars().all()
