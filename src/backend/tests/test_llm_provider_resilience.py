@@ -1,5 +1,61 @@
+import pytest
+
 from app.models.turn import ChatMessage
+from app.providers import llm_provider as llm_provider_module
 from app.providers.llm_provider import LLMProvider
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = ""
+
+    def json(self):
+        return self._payload
+
+
+class _FakeAsyncClient:
+    requests = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        self.requests.append({"url": url, "headers": headers, "json": json})
+        if len(self.requests) == 1:
+            return _FakeResponse(
+                {
+                    "message": {
+                        "thinking": "reasoning consumed the first budget",
+                        "content": "",
+                    },
+                    "done": True,
+                    "done_reason": "length",
+                    "prompt_eval_count": 700,
+                    "eval_count": 900,
+                }
+            )
+        return _FakeResponse(
+            {
+                "message": {"content": '{"desired_active":[]}'},
+                "done": True,
+                "done_reason": "stop",
+                "prompt_eval_count": 760,
+                "eval_count": 40,
+            }
+        )
+
+
+class _MockConfig:
+    base_url = "http://localhost:11434/v1"
+    model_name = "gemma4:e4b"
 
 
 def test_ollama_endpoint_detection():
@@ -123,3 +179,30 @@ def test_openai_compatibility_variants_remove_optional_flags():
     assert "reasoning_effort" not in variants[1]
     assert "chat_template_kwargs" not in variants[2]
     assert "response_format" not in variants[-1]
+
+
+@pytest.mark.asyncio
+async def test_native_ollama_json_retries_reasoning_only_length(monkeypatch):
+    _FakeAsyncClient.requests = []
+    monkeypatch.setattr(llm_provider_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    provider = LLMProvider()
+    result = await provider.generate_json(
+        [ChatMessage(role="system", content="Верни только JSON.")],
+        _MockConfig(),
+        max_tokens=900,
+        temperature=0.1,
+    )
+
+    assert result == {"desired_active": []}
+    assert len(_FakeAsyncClient.requests) == 2
+    first = _FakeAsyncClient.requests[0]
+    second = _FakeAsyncClient.requests[1]
+    assert first["url"] == "http://localhost:11434/api/chat"
+    assert first["json"]["think"] is False
+    assert first["json"]["format"] == "json"
+    assert first["json"]["options"]["num_predict"] == 900
+    assert second["json"]["options"]["num_predict"] == 1800
+    assert len(second["json"]["messages"]) == 2
+    assert provider.last_telemetry["attempt"] == 2
+    assert provider.last_telemetry["transport"] == "ollama_native_json"
