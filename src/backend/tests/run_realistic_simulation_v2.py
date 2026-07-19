@@ -1047,6 +1047,12 @@ async def run_realistic_simulation_v2() -> None:
         else:
             player_id = player_entity.id
 
+        if campaign.player_character_id != player_id:
+            campaign = await campaigns.update_campaign(
+                campaign_id, CampaignUpdate(player_character_id=player_id)
+            )
+            await session.commit()
+
         provider = LLMProvider()
         stats: Counter = Counter()
         director = ScenarioDirector(

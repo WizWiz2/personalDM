@@ -34,6 +34,11 @@ class Campaign(Base):
         ForeignKey("scenes.id", ondelete="SET NULL"),
         nullable=True,
     )
+    player_character_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("entities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -54,7 +59,12 @@ class Campaign(Base):
         cascade="all, delete-orphan",
         foreign_keys="Scene.campaign_id",
     )
-    entities = relationship("Entity", back_populates="campaign", cascade="all, delete-orphan")
+    entities = relationship(
+        "Entity",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        foreign_keys="Entity.campaign_id",
+    )
     facts = relationship("Fact", back_populates="campaign", cascade="all, delete-orphan")
     relationship_assertions = relationship(
         "RelationshipAssertion",
@@ -118,6 +128,53 @@ class Turn(Base):
         "ProposedChange",
         back_populates="turn",
         cascade="all, delete-orphan",
+    )
+
+
+class GenerationRun(Base):
+    __tablename__ = "generation_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    user_turn_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    assistant_turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(50), default="running", nullable=False)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class PostTurnJob(Base):
+    __tablename__ = "post_turn_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    assistant_turn_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="CASCADE"), nullable=False
+    )
+    job_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("assistant_turn_id", "job_type", name="uq_post_turn_job"),
     )
 
 
@@ -211,7 +268,9 @@ class Entity(Base):
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
-    campaign = relationship("Campaign", back_populates="entities")
+    campaign = relationship(
+        "Campaign", back_populates="entities", foreign_keys=[campaign_id]
+    )
     character_data = relationship(
         "Character",
         back_populates="base_entity",

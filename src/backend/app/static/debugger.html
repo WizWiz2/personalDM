@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PersonalDM Campaign Debugger</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    body { margin: 0; background: #11131a; color: #e9edf5; }
+    header { position: sticky; top: 0; z-index: 2; padding: 14px 20px; background: #181b25; border-bottom: 1px solid #303544; display: flex; gap: 12px; align-items: center; }
+    select, button { background: #252a38; color: inherit; border: 1px solid #41495d; border-radius: 8px; padding: 8px 10px; }
+    button { cursor: pointer; }
+    main { padding: 18px; display: grid; gap: 16px; }
+    .health { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 10px; }
+    .metric, section { background: #181b25; border: 1px solid #303544; border-radius: 12px; padding: 14px; }
+    .metric strong { display: block; font-size: 24px; }
+    section h2 { margin: 0 0 10px; font-size: 17px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-top: 1px solid #303544; padding: 8px; text-align: left; vertical-align: top; }
+    th { color: #aeb7ca; }
+    pre { white-space: pre-wrap; max-width: 780px; margin: 0; }
+    .ok { color: #7fe3a1; } .bad { color: #ff8d8d; } .muted { color: #98a2b8; }
+    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+<header>
+  <strong>Campaign Debugger</strong>
+  <select id="campaign"></select>
+  <button id="reload">Обновить</button>
+  <span id="status" class="muted"></span>
+</header>
+<main>
+  <div id="health" class="health"></div>
+  <section><h2>Post-turn jobs</h2><div id="jobs"></div></section>
+  <section><h2>Canon proposals и evidence</h2><div id="proposals"></div></section>
+  <section><h2>Текущий канон</h2><div class="tabs">
+    <button data-tab="facts">Facts</button><button data-tab="beliefs">Beliefs</button><button data-tab="relationships">Relationships</button><button data-tab="theses">Theses</button>
+  </div><div id="canon"></div></section>
+  <section><h2>Последние ходы</h2><div id="turns"></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let data = null, activeTab = 'facts';
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function table(rows, cols) {
+  if (!rows?.length) return '<p class="muted">Пусто</p>';
+  return `<table><thead><tr>${cols.map(c=>`<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${c[2] ? c[2](r[c[1]],r) : esc(r[c[1]])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+async function campaigns() {
+  const rows = await fetch('/api/campaigns').then(r=>r.json());
+  $('campaign').innerHTML = rows.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  if (rows.length) await load(); else $('status').textContent='Нет кампаний';
+}
+async function load() {
+  const id=$('campaign').value; if(!id)return;
+  $('status').textContent='Загрузка…';
+  data=await fetch(`/api/campaigns/${id}/debugger?turn_limit=120`).then(r=>r.json());
+  $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'}`;
+  $('health').innerHTML=Object.entries(data.health).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
+  $('jobs').innerHTML=table(data.post_turn_jobs,[['Тип','job_type'],['Статус','status'],['Попытки','attempts'],['Ошибка','error'],['Действие','id',(v,r)=>r.status==='completed'?'':`<button onclick="retryJob('${v}')">Повторить</button>`]]);
+  $('proposals').innerHTML=table(data.proposals,[['Тип','change_type'],['Статус','status'],['Payload / evidence','payload',(v)=>`<pre>${esc(JSON.stringify(v,null,2))}</pre>`],['Ход','turn_content']]);
+  renderCanon();
+  $('turns').innerHTML=table(data.turns,[['Роль','role'],['Актёр','actor_name'],['Текст','content',(v)=>`<pre>${esc(v)}</pre>`],['Статус','status']]);
+}
+function renderCanon(){
+  const configs={
+    facts:[['Subject','subject'],['Predicate','predicate'],['Value','object_value'],['Current','is_current'],['Source turn','source_turn_id']],
+    beliefs:[['Character','character_name'],['Proposition','proposition'],['Status','status'],['Current','is_current'],['Source turn','source_turn_id']],
+    relationships:[['From','subject_name'],['To','object_name'],['Type','relation_type'],['Description','description'],['Current','is_current']],
+    theses:[['Type','type'],['Text','text'],['Status','status'],['Visibility','visibility'],['Source turn','source_turn_id']]
+  };
+  $('canon').innerHTML=table(data?.[activeTab]||[],configs[activeTab]);
+}
+async function retryJob(id){ await fetch(`/api/post-turn-jobs/${id}/retry`,{method:'POST'}); await load(); }
+$('reload').onclick=load; $('campaign').onchange=load;
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{activeTab=b.dataset.tab;renderCanon();});
+campaigns();
+</script>
+</body>
+</html>
