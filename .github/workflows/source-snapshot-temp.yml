@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/source-snapshot-temp
+  pull_request:
+    branches:
+      - main
 
 jobs:
   snapshot:
