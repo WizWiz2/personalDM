@@ -1,0 +1,19 @@
+name: Source snapshot temp
+
+on:
+  push:
+    branches:
+      - agent/source-snapshot-temp
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: personaldm-source-snapshot
+          path: |
+            .
+            !.git
+          retention-days: 1
