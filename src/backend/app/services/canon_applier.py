@@ -19,6 +19,7 @@ from app.models.fact import FactCreate
 from app.models.proposed_change import ChangeType
 from app.models.relationship import RelationshipCreate
 from app.models.scene_thesis import SceneThesisCreate, ThesisType
+from app.services.initial_world_state import InitialWorldStateService
 
 
 class CanonApplier:
@@ -32,6 +33,7 @@ class CanonApplier:
         self._relationships = RelationshipRepository(session)
         self._events = EventRepository(session)
         self._scenes = SceneRepository(session)
+        self._initial_state = InitialWorldStateService(session)
 
     @staticmethod
     def _operation(payload: dict) -> str:
@@ -54,6 +56,12 @@ class CanonApplier:
     ) -> None:
         if change_type == ChangeType.CANON_GAP:
             raise ValueError("A canon gap is evidence of a missing delta and cannot be applied")
+
+        if change_type in {ChangeType.MOVEMENT, ChangeType.ITEM_TRANSFER}:
+            await self._initial_state.ensure_snapshot(
+                campaign_id,
+                exclude_turn_id=source_turn_id,
+            )
 
         operation = self._operation(payload)
 
