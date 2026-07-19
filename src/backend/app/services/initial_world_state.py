@@ -79,11 +79,35 @@ class InitialWorldStateService:
             "schema_version": row["schema_version"],
         }
 
+    @staticmethod
+    def _merge_missing(existing: dict, current: dict) -> dict:
+        merged = {
+            "schema_version": InitialWorldStateService.SCHEMA_VERSION,
+            "characters": list(existing.get("characters", [])),
+            "items": list(existing.get("items", [])),
+        }
+        character_ids = {row.get("entity_id") for row in merged["characters"]}
+        item_ids = {row.get("entity_id") for row in merged["items"]}
+        merged["characters"].extend(
+            row for row in current.get("characters", []) if row.get("entity_id") not in character_ids
+        )
+        merged["items"].extend(
+            row for row in current.get("items", []) if row.get("entity_id") not in item_ids
+        )
+        merged["characters"].sort(key=lambda row: row.get("entity_id") or "")
+        merged["items"].sort(key=lambda row: row.get("entity_id") or "")
+        return merged
+
     async def capture(self, campaign_id: UUID, *, replace: bool = False) -> dict:
         existing = await self.get(campaign_id)
+        current = await self.current_state(campaign_id)
         if existing and not replace:
-            return existing
-        snapshot = await self.current_state(campaign_id)
+            snapshot = self._merge_missing(existing["snapshot"], current)
+            if snapshot == existing["snapshot"]:
+                return existing
+        else:
+            snapshot = current
+
         snapshot_json = self._canonical_json(snapshot)
         snapshot_hash = self.fingerprint(snapshot)
         now = datetime.utcnow()
@@ -167,14 +191,3 @@ class InitialWorldStateService:
             )
         await self._session.flush()
         return stored
-
-    async def compare_current_to(self, expected: dict) -> dict:
-        current = await self.current_state(UUID(expected["campaign_id"]))
-        expected_state = expected["state"]
-        return {
-            "matches": current == expected_state,
-            "expected_hash": self.fingerprint(expected_state),
-            "current_hash": self.fingerprint(current),
-            "expected": expected_state,
-            "current": current,
-        }
