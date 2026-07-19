@@ -1,24 +1,62 @@
-name: Replay source snapshot
+name: Apply replay milestone
 
 on:
   push:
     branches:
       - "agent/full-canon-replay-roundtrip"
-  pull_request:
-    paths:
-      - ".github/workflows/source-snapshot-replay.yml"
+
+permissions:
+  contents: write
 
 jobs:
-  snapshot:
+  apply:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/upload-artifact@v4
         with:
-          name: personaldm-replay-source
-          path: |
-            .github
-            docs
-            src
-            README.md
-          retention-days: 1
+          ref: agent/full-canon-replay-roundtrip
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - name: Apply product patch
+        run: |
+          cat .github/replay-product.part* | base64 -d | gzip -d > /tmp/replay-product.patch
+          patch -p1 < /tmp/replay-product.patch
+          rm .github/replay-product.part*
+          rm .github/workflows/source-snapshot-replay.yml
+      - name: Install
+        run: python -m pip install -e "src/backend[dev]"
+      - name: Compile and lint
+        run: |
+          python -m compileall -q src/backend/app src/backend/tests
+          ruff check \
+            src/backend/alembic/versions/d2e3f4a5b6c7_initial_world_snapshot.py \
+            src/backend/app/api/archive.py \
+            src/backend/app/api/world_state.py \
+            src/backend/app/db/tables.py \
+            src/backend/app/main.py \
+            src/backend/app/services/campaign_archive.py \
+            src/backend/app/services/canon_applier.py \
+            src/backend/app/services/debugger_service.py \
+            src/backend/app/services/world_state_snapshot.py \
+            src/backend/tests/test_canon_replay_roundtrip.py
+      - name: Test
+        working-directory: src/backend
+        run: pytest -q --tb=short
+      - name: Migration cycle
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+          alembic downgrade c1a2b3c4d5e6
+          alembic upgrade head
+      - name: Commit product changes
+        run: |
+          git config user.name "OpenAI"
+          git config user.email "openai@users.noreply.github.com"
+          git add -A
+          git commit -m "Добавить полный replay канона и round-trip архив"
+          git push origin HEAD:agent/full-canon-replay-roundtrip
