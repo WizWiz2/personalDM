@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "feature/playable-debugger-foundation"
+      - "feature/full-canon-replay"
   pull_request:
     paths:
       - "src/backend/**"
@@ -30,13 +31,17 @@ jobs:
           alembic upgrade head
           alembic downgrade 7f4b8d2c91aa
           alembic upgrade head
-      - name: New milestone tests
+      - name: Milestone tests
         working-directory: src/backend
-        run: pytest -q tests/test_playable_debugger_foundation.py --tb=short
+        run: >-
+          pytest -q
+          tests/test_playable_debugger_foundation.py
+          tests/test_full_canon_replay.py
+          --tb=short
       - name: Full backend tests
         working-directory: src/backend
         run: pytest -q --tb=short
-      - name: Lint new milestone files
+      - name: Lint milestone files
         run: >-
           ruff check
           src/backend/app/api/archive.py
@@ -45,5 +50,7 @@ jobs:
           src/backend/app/models/jobs.py
           src/backend/app/services/campaign_archive.py
           src/backend/app/services/debugger_service.py
+          src/backend/app/services/initial_world_state.py
           src/backend/app/services/post_turn_processor.py
           src/backend/tests/test_playable_debugger_foundation.py
+          src/backend/tests/test_full_canon_replay.py
