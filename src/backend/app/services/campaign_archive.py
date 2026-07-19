@@ -132,7 +132,6 @@ class CampaignArchiveService:
                 continue
             if change_type in {ChangeType.MOVEMENT, ChangeType.ITEM_TRANSFER} and proposal.id in baseline_ids:
                 baseline_covered.append(proposal.id)
-                continue
             replayable.append((change_type, payload, UUID(turn.id), proposal.id))
 
         expected_projection = await self._canon_projection(campaign_id)
@@ -173,6 +172,7 @@ class CampaignArchiveService:
                     change_type=change_type,
                     payload=payload,
                     source_turn_id=source_turn_id,
+                    record_noop_events=True,
                 )
             await self._session.flush()
 
