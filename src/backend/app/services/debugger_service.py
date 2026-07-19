@@ -17,6 +17,7 @@ from app.db.tables import (
     Scene,
     SceneThesis,
     Turn,
+    WorldStateSnapshot,
 )
 
 
@@ -130,6 +131,11 @@ class DebuggerService:
                 .limit(100)
             )
         ).scalars().all()
+        initial_world = await self._session.scalar(
+            select(WorldStateSnapshot).where(
+                WorldStateSnapshot.campaign_id == str(campaign_id)
+            )
+        )
 
         turn_map = {row.id: row for row in turns}
         return {
@@ -270,6 +276,17 @@ class DebuggerService:
                 }
                 for row in jobs
             ],
+            "initial_world_state": (
+                {
+                    "schema_version": initial_world.schema_version,
+                    "digest": initial_world.digest,
+                    "snapshot": _json(initial_world.snapshot_json, {}),
+                    "created_at": initial_world.created_at.isoformat(),
+                    "updated_at": initial_world.updated_at.isoformat(),
+                }
+                if initial_world
+                else None
+            ),
             "generation_runs": [
                 {
                     "id": row.id,

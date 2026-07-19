@@ -178,6 +178,25 @@ class PostTurnJob(Base):
     )
 
 
+class WorldStateSnapshot(Base):
+    __tablename__ = "world_state_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("campaigns.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class Scene(Base):
     __tablename__ = "scenes"
 

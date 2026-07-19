@@ -11,11 +11,11 @@
 - Campaign Debugger API и локальная HTML-панель;
 - просмотр provenance, evidence, версий канона и ошибок обработки;
 - ручной retry post-turn jobs;
-- backup базы, JSON export и воспроизводимый rebuild поддерживаемых canon deltas.
+- backup базы, archive v2, import и полный replay принятых canon deltas.
 
-## Ограничения rebuild
+## Replay канона
 
-Rebuild безопасно воспроизводит facts, beliefs, relationships и обычные events из принятых proposals. Stateful deltas движения и владения предметами пока только диагностируются и пропускаются, потому что для их полного восстановления нужен отдельный начальный snapshot состояния мира.
+Initial world snapshot фиксирует исходные локации персонажей и положение предметов. Rebuild восстанавливает baseline и воспроизводит facts, beliefs, relationships, events, movement и item transfer. Подробный контракт описан в `CANON-REPLAY-ROUNDTRIP.md`.
 
 ## Проверка
 

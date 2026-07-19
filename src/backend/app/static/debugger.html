@@ -33,6 +33,7 @@
 </header>
 <main>
   <div id="health" class="health"></div>
+  <section><h2>Initial world snapshot</h2><div id="baseline"></div></section>
   <section><h2>Post-turn jobs</h2><div id="jobs"></div></section>
   <section><h2>Canon proposals и evidence</h2><div id="proposals"></div></section>
   <section><h2>Текущий канон</h2><div class="tabs">
@@ -59,6 +60,10 @@ async function load() {
   data=await fetch(`/api/campaigns/${id}/debugger?turn_limit=120`).then(r=>r.json());
   $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'}`;
   $('health').innerHTML=Object.entries(data.health).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
+  const baseline=data.initial_world_state;
+  $('baseline').innerHTML=baseline
+    ? `<p>Schema ${esc(baseline.schema_version)} · digest <code>${esc(baseline.digest)}</code></p><pre>${esc(JSON.stringify(baseline.snapshot,null,2))}</pre>`
+    : '<p class="muted">Ещё не создан. Он появится перед первой movement/item-transfer дельтой.</p>';
   $('jobs').innerHTML=table(data.post_turn_jobs,[['Тип','job_type'],['Статус','status'],['Попытки','attempts'],['Ошибка','error'],['Действие','id',(v,r)=>r.status==='completed'?'':`<button onclick="retryJob('${v}')">Повторить</button>`]]);
   $('proposals').innerHTML=table(data.proposals,[['Тип','change_type'],['Статус','status'],['Payload / evidence','payload',(v)=>`<pre>${esc(JSON.stringify(v,null,2))}</pre>`],['Ход','turn_content']]);
   renderCanon();

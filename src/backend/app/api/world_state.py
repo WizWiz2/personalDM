@@ -1,5 +1,5 @@
 import json
-from typing import Literal
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,14 +15,16 @@ from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.goal_repo import GoalRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import Entity, Item
+from app.db.tables import Entity, Item, ProposedChange
 from app.models.belief import BeliefCreate, BeliefRead
 from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
 from app.models.entity import EntityStatus, EntityType
 from app.models.event import EventCreate
+from app.models.proposed_change import ChangeType
 from app.models.goal import GoalCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.world_state_snapshot import WorldStateSnapshotService
 
 router = APIRouter(tags=["world-state"])
 
@@ -404,6 +406,35 @@ async def grant_event_knowledge(
     return created
 
 
+async def _record_stateful_proposal(
+    session: AsyncSession,
+    source_turn_id: UUID,
+    change_type: ChangeType,
+    payload: dict,
+) -> None:
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    existing = await session.scalar(
+        select(ProposedChange.id).where(
+            ProposedChange.turn_id == str(source_turn_id),
+            ProposedChange.change_type == change_type.value,
+            ProposedChange.payload == payload_json,
+            ProposedChange.status.in_(["accepted", "edited"]),
+        )
+    )
+    if existing is not None:
+        return
+    session.add(
+        ProposedChange(
+            turn_id=str(source_turn_id),
+            change_type=change_type.value,
+            payload=payload_json,
+            status="accepted",
+            resolved_at=datetime.utcnow(),
+        )
+    )
+    await session.flush()
+
+
 @router.post("/api/campaigns/{campaign_id}/characters/{character_id}/move")
 async def move_character(
     campaign_id: UUID,
@@ -424,21 +455,47 @@ async def move_character(
         EntityType.LOCATION.value,
     )
     await _validate_source_turn(session, campaign_id, command.source_turn_id)
+    snapshots = WorldStateSnapshotService(session)
+    if command.source_turn_id:
+        await snapshots.ensure_before_stateful_change(
+            campaign_id,
+            source_turn_id=command.source_turn_id,
+            character_id=character_id,
+        )
+    else:
+        try:
+            await snapshots.assert_manual_mutation_allowed(campaign_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     updated = await EntityRepository(session).update_character(
         character_id,
         CharacterUpdate(current_location_id=command.location_id),
+    )
+    description = command.description or (
+        f"{character.canonical_name} moved to {location.canonical_name}"
     )
     event = await EventRepository(session).create(
         campaign_id,
         EventCreate(
             event_type="movement",
-            description=command.description
-            or f"{character.canonical_name} moved to {location.canonical_name}",
+            description=description,
             location_id=command.location_id,
             participant_ids=[character_id],
         ),
         source_turns=[command.source_turn_id] if command.source_turn_id else [],
     )
+    if command.source_turn_id:
+        await _record_stateful_proposal(
+            session,
+            command.source_turn_id,
+            ChangeType.MOVEMENT,
+            {
+                "character_id": str(character_id),
+                "location_id": str(command.location_id),
+                "description": description,
+            },
+        )
     await session.commit()
     return {"character": updated, "event": event}
 
@@ -466,6 +523,18 @@ async def transfer_item(
             EntityType.LOCATION.value,
         )
     await _validate_source_turn(session, campaign_id, command.source_turn_id)
+    snapshots = WorldStateSnapshotService(session)
+    if command.source_turn_id:
+        await snapshots.ensure_before_stateful_change(
+            campaign_id,
+            source_turn_id=command.source_turn_id,
+            item_id=item_id,
+        )
+    else:
+        try:
+            await snapshots.assert_manual_mutation_allowed(campaign_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     result = await session.execute(select(Item).where(Item.entity_id == str(item_id)))
     db_item = result.scalar_one_or_none()
@@ -476,6 +545,31 @@ async def transfer_item(
         str(command.location_id) if command.location_id else None
     )
     await session.flush()
+    if command.source_turn_id:
+        description = "Item changed possession or location"
+        await EventRepository(session).create(
+            campaign_id,
+            EventCreate(
+                event_type="item_transfer",
+                description=description,
+                location_id=command.location_id,
+                participant_ids=[command.owner_id] if command.owner_id else [],
+            ),
+            source_turns=[command.source_turn_id],
+        )
+        await _record_stateful_proposal(
+            session,
+            command.source_turn_id,
+            ChangeType.ITEM_TRANSFER,
+            {
+                "item_id": str(item_id),
+                "owner_id": str(command.owner_id) if command.owner_id else None,
+                "location_id": (
+                    str(command.location_id) if command.location_id else None
+                ),
+                "description": description,
+            },
+        )
     await session.commit()
     return {
         "item_id": item_entity.id,

@@ -19,6 +19,7 @@ from app.models.fact import FactCreate
 from app.models.proposed_change import ChangeType
 from app.models.relationship import RelationshipCreate
 from app.models.scene_thesis import SceneThesisCreate, ThesisType
+from app.services.world_state_snapshot import WorldStateSnapshotService
 
 
 class CanonApplier:
@@ -77,6 +78,13 @@ class CanonApplier:
 
         if change_type == ChangeType.MOVEMENT:
             character_id = UUID(payload["character_id"])
+            await WorldStateSnapshotService(
+                self._session
+            ).ensure_before_stateful_change(
+                campaign_id,
+                source_turn_id=source_turn_id,
+                character_id=character_id,
+            )
             location_id = UUID(payload["location_id"])
             character = await self._entities.get_character(character_id)
             location = await self._entities.get_by_id(location_id)
@@ -146,6 +154,14 @@ class CanonApplier:
             return
 
         if change_type == ChangeType.ITEM_TRANSFER:
+            item_id = UUID(payload["item_id"])
+            await WorldStateSnapshotService(
+                self._session
+            ).ensure_before_stateful_change(
+                campaign_id,
+                source_turn_id=source_turn_id,
+                item_id=item_id,
+            )
             result = await self._session.execute(
                 select(Item).where(Item.entity_id == payload["item_id"])
             )
