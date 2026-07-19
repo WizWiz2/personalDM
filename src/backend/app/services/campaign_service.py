@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
+from app.db.repositories.entity_repo import EntityRepository
 from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
 from app.models.provider_config import ProviderConfigCreate, ProviderConfigRead
 from app.providers.llm_provider import LLMProvider
@@ -16,6 +17,7 @@ class CampaignService:
         self._session = session
         self._campaign_repo = CampaignRepository(session)
         self._config_repo = ProviderConfigRepository(session)
+        self._entity_repo = EntityRepository(session)
         self._llm_provider = LLMProvider()
 
     async def create_campaign(self, data: CampaignCreate) -> CampaignRead:
@@ -43,6 +45,12 @@ class CampaignService:
         campaign_id: UUID,
         data: CampaignUpdate,
     ) -> CampaignRead | None:
+        if data.player_character_id is not None:
+            entity = await self._entity_repo.get_by_id(data.player_character_id)
+            if not entity or entity.campaign_id != campaign_id:
+                raise ValueError("Player character must belong to this campaign")
+            if entity.entity_type != "character":
+                raise ValueError("Player character must reference a character entity")
         return await self._campaign_repo.update(campaign_id, data)
 
     async def delete_campaign(self, campaign_id: UUID) -> bool:
