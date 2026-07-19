@@ -19,6 +19,19 @@ class InitialWorldStateService:
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    async def _ensure_table(self) -> None:
+        await self._session.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS campaign_initial_states ("
+                "campaign_id VARCHAR(36) PRIMARY KEY NOT NULL, "
+                "schema_version INTEGER NOT NULL DEFAULT 1, "
+                "snapshot_json TEXT NOT NULL, "
+                "snapshot_hash VARCHAR(64) NOT NULL, "
+                "created_at DATETIME, updated_at DATETIME, "
+                "FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE)"
+            )
+        )
+
     @staticmethod
     def _canonical_json(snapshot: dict) -> str:
         return json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -61,6 +74,7 @@ class InitialWorldStateService:
         }
 
     async def get(self, campaign_id: UUID) -> dict | None:
+        await self._ensure_table()
         row = (
             await self._session.execute(
                 text(
@@ -99,6 +113,7 @@ class InitialWorldStateService:
         return merged
 
     async def capture(self, campaign_id: UUID, *, replace: bool = False) -> dict:
+        await self._ensure_table()
         existing = await self.get(campaign_id)
         current = await self.current_state(campaign_id)
         if existing and not replace:
