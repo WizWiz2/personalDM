@@ -13,7 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.tables import (
     Belief,
+    Entity,
     Event,
+    EventParticipant,
     Fact,
     ProposedChange,
     RelationshipAssertion,
@@ -60,6 +62,10 @@ class CampaignArchiveService:
     @classmethod
     def _digest(cls, value: object) -> str:
         return hashlib.sha256(cls._canonical_json(value).encode("utf-8")).hexdigest()
+
+    @classmethod
+    def _sorted_records(cls, records: list[dict]) -> list[dict]:
+        return sorted(records, key=cls._canonical_json)
 
     async def export_json(self, campaign_id: UUID) -> tuple[Path, dict]:
         snapshot = await DebuggerService(self._session).snapshot(campaign_id, turn_limit=100000)
@@ -260,10 +266,10 @@ class CampaignArchiveService:
         beliefs = (
             await self._session.execute(
                 select(Belief)
-                .join(Turn, Turn.id == Belief.source_turn_id, isouter=True)
+                .join(Entity, Entity.id == Belief.character_id)
                 .where(
+                    Entity.campaign_id == str(campaign_id),
                     Belief.is_current == True,
-                    (Turn.campaign_id == str(campaign_id)) | (Turn.campaign_id.is_(None)),
                 )
             )
         ).scalars().all()
@@ -280,52 +286,79 @@ class CampaignArchiveService:
                 select(Event).where(Event.campaign_id == str(campaign_id))
             )
         ).scalars().all()
+        event_ids = [row.id for row in events]
+        participants: dict[str, list[dict]] = {event_id: [] for event_id in event_ids}
+        if event_ids:
+            rows = (
+                await self._session.execute(
+                    select(EventParticipant).where(EventParticipant.event_id.in_(event_ids))
+                )
+            ).scalars().all()
+            for row in rows:
+                participants.setdefault(row.event_id, []).append(
+                    {"entity_id": row.entity_id, "role": row.role}
+                )
+
         return {
             "state": state,
-            "facts": sorted(
-                (
-                    row.subject,
-                    row.predicate,
-                    row.object_value,
-                    row.truth_status,
-                    row.visibility,
-                    row.source_turn_id,
-                )
-                for row in facts
+            "facts": self._sorted_records(
+                [
+                    {
+                        "subject": row.subject,
+                        "predicate": row.predicate,
+                        "object_value": row.object_value,
+                        "truth_status": row.truth_status,
+                        "confidence": row.confidence,
+                        "visibility": row.visibility,
+                        "source_turn_id": row.source_turn_id,
+                    }
+                    for row in facts
+                ]
             ),
-            "beliefs": sorted(
-                (
-                    row.character_id,
-                    row.proposition,
-                    row.status,
-                    round(float(row.confidence), 6),
-                    row.source_turn_id,
-                    row.source_character_id,
-                )
-                for row in beliefs
+            "beliefs": self._sorted_records(
+                [
+                    {
+                        "character_id": row.character_id,
+                        "fact_id": row.fact_id,
+                        "proposition": row.proposition,
+                        "status": row.status,
+                        "confidence": row.confidence,
+                        "source_turn_id": row.source_turn_id,
+                        "source_character_id": row.source_character_id,
+                        "visibility": row.visibility,
+                    }
+                    for row in beliefs
+                ]
             ),
-            "relationships": sorted(
-                (
-                    row.subject_id,
-                    row.object_id,
-                    row.relation_type,
-                    row.description,
-                    row.reason,
-                    row.intensity,
-                    row.source_turn_id,
-                )
-                for row in relationships
+            "relationships": self._sorted_records(
+                [
+                    {
+                        "subject_id": row.subject_id,
+                        "object_id": row.object_id,
+                        "relation_type": row.relation_type,
+                        "description": row.description,
+                        "reason": row.reason,
+                        "intensity": row.intensity,
+                        "source_turn_id": row.source_turn_id,
+                        "provenance": row.provenance,
+                        "visibility": row.visibility,
+                    }
+                    for row in relationships
+                ]
             ),
-            "events": sorted(
-                (
-                    row.event_type,
-                    row.description,
-                    row.world_time,
-                    row.location_id,
-                    row.importance,
-                    row.source_turns,
-                )
-                for row in events
+            "events": self._sorted_records(
+                [
+                    {
+                        "event_type": row.event_type,
+                        "description": row.description,
+                        "world_time": row.world_time,
+                        "location_id": row.location_id,
+                        "importance": row.importance,
+                        "source_turns": json.loads(row.source_turns or "[]"),
+                        "participants": self._sorted_records(participants.get(row.id, [])),
+                    }
+                    for row in events
+                ]
             ),
         }
 
