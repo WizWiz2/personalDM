@@ -2,6 +2,7 @@ import json
 import time
 from collections import Counter
 from collections.abc import AsyncIterator
+from copy import deepcopy
 from typing import Any
 from urllib.parse import urlparse
 
@@ -17,7 +18,7 @@ class LLMProviderError(RuntimeError):
 
 
 class LLMProviderTruncatedError(LLMProviderError):
-    """Raised when the provider exhausts its output budget before finishing."""
+    """Raised when a provider exhausts its output budget before finishing."""
 
     def __init__(self, message: str, partial_text: str = ""):
         super().__init__(message)
@@ -25,11 +26,12 @@ class LLMProviderTruncatedError(LLMProviderError):
 
 
 class LLMProvider:
-    """Client for OpenAI-compatible and common Ollama-compatible chat APIs.
+    """OpenAI-compatible client with a native Ollama fast path.
 
-    Narrative requests stream. Prompts that explicitly require a JSON object are routed
-    through a non-streaming structured request so control agents do not spend their output
-    budget on hidden reasoning, partial SSE frames or unfinished JSON.
+    Narrative requests stream. Explicit JSON requests use a non-streaming structured
+    transport with adaptive output budgets. Ollama is called through ``/api/chat`` so
+    ``think=false`` and ``format=json`` are applied by the native API instead of being
+    silently ignored by an OpenAI compatibility shim.
     """
 
     COMPLETE_ENDINGS = (".", "!", "?", "…", ":", ";", "»", '"', "'", ")", "]", "}", "*")
@@ -41,6 +43,7 @@ class LLMProvider:
         "return only json",
         "return one json",
     )
+    TRUNCATION_REASONS = {"length", "max_tokens", "max_token", "limit"}
 
     def __init__(self):
         self.last_telemetry: dict[str, Any] = {}
@@ -92,7 +95,7 @@ class LLMProvider:
 
     @classmethod
     def _reasoning_characters(cls, data: dict) -> int:
-        """Count hidden reasoning for diagnostics without surfacing its contents."""
+        """Count hidden reasoning for diagnostics without exposing it."""
         total = 0
         candidates: list[Any] = [data.get("thinking"), data.get("reasoning")]
         choices = data.get("choices")
@@ -106,6 +109,15 @@ class LLMProvider:
                     delta.get("thinking"),
                     message.get("reasoning_content"),
                     message.get("thinking"),
+                ]
+            )
+        message = data.get("message")
+        if isinstance(message, dict):
+            candidates.extend(
+                [
+                    message.get("thinking"),
+                    message.get("reasoning"),
+                    message.get("reasoning_content"),
                 ]
             )
         for value in candidates:
@@ -147,7 +159,15 @@ class LLMProvider:
     @staticmethod
     def _is_ollama(base_url: str) -> bool:
         parsed = urlparse(base_url)
-        return parsed.port == 11434 or "ollama" in parsed.hostname.lower() if parsed.hostname else False
+        hostname = (parsed.hostname or "").casefold()
+        return parsed.port == 11434 or "ollama" in hostname
+
+    @staticmethod
+    def _ollama_native_url(base_url: str) -> str:
+        parsed = urlparse(base_url)
+        scheme = parsed.scheme or "http"
+        netloc = parsed.netloc or parsed.path.split("/", 1)[0]
+        return f"{scheme}://{netloc}/api/chat"
 
     @classmethod
     def _looks_complete(cls, text: str) -> bool:
@@ -204,11 +224,90 @@ class LLMProvider:
                     try:
                         value = json.loads(clean[start : index + 1])
                     except json.JSONDecodeError as exc:
-                        raise LLMProviderError(f"structured response contains invalid JSON: {exc}") from exc
+                        raise LLMProviderError(
+                            f"structured response contains invalid JSON: {exc}"
+                        ) from exc
                     if not isinstance(value, dict):
                         raise LLMProviderError("structured response JSON is not an object")
                     return value
         raise LLMProviderError("structured response contains incomplete JSON")
+
+    @staticmethod
+    def _messages_payload(messages: list[ChatMessage]) -> list[dict[str, str]]:
+        return [{"role": message.role, "content": message.content} for message in messages]
+
+    @staticmethod
+    def _repair_instruction() -> dict[str, str]:
+        return {
+            "role": "user",
+            "content": (
+                "Не рассуждай вслух. Верни только один короткий валидный JSON-объект "
+                "строго по заданной схеме. Не используй markdown и пояснения."
+            ),
+        }
+
+    @staticmethod
+    def _adaptive_budget(base: int, attempt: int) -> int:
+        if attempt <= 1:
+            return base
+        ceiling = max(base, int(settings.LLM_CONTEXT_WINDOW * 0.5))
+        return min(ceiling, max(base + 512, base * 2))
+
+    @staticmethod
+    def _completion_tokens(usage: dict[str, int]) -> int:
+        return int(
+            usage.get("completion_tokens")
+            or usage.get("output_tokens")
+            or usage.get("eval_count")
+            or 0
+        )
+
+    @classmethod
+    def _budget_exhausted(
+        cls,
+        finish_reason: str | None,
+        usage: dict[str, int],
+        budget: int,
+    ) -> bool:
+        reason = (finish_reason or "").casefold()
+        if reason in cls.TRUNCATION_REASONS:
+            return True
+        completion_tokens = cls._completion_tokens(usage)
+        return bool(completion_tokens and completion_tokens >= max(1, int(budget * 0.97)))
+
+    @staticmethod
+    def _openai_no_reasoning_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        result = deepcopy(payload)
+        result["reasoning_effort"] = "none"
+        result["chat_template_kwargs"] = {"enable_thinking": False}
+        return result
+
+    @staticmethod
+    def _openai_compat_variants(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        variants = [deepcopy(payload)]
+        for key in ("reasoning_effort", "chat_template_kwargs", "response_format"):
+            previous = deepcopy(variants[-1])
+            previous.pop(key, None)
+            if previous not in variants:
+                variants.append(previous)
+        return variants
+
+    async def _post_openai_json(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> tuple[httpx.Response, dict[str, Any]]:
+        last_response: httpx.Response | None = None
+        candidate = payload
+        for candidate in self._openai_compat_variants(payload):
+            response = await client.post(url, headers=headers, json=candidate)
+            last_response = response
+            if response.status_code != 400:
+                return response, candidate
+        assert last_response is not None
+        return last_response, candidate
 
     async def generate_json(
         self,
@@ -219,101 +318,177 @@ class LLMProvider:
         max_tokens: int | None = None,
         temperature: float | None = None,
     ) -> dict[str, Any]:
-        """Return one validated JSON object using a non-streaming provider request."""
-        url = f"{config.base_url.rstrip('/')}/chat/completions"
+        """Return one validated JSON object with adaptive budget and repair."""
+        is_ollama = self._is_ollama(config.base_url)
+        url = (
+            self._ollama_native_url(config.base_url)
+            if is_ollama
+            else f"{config.base_url.rstrip('/')}/chat/completions"
+        )
         headers = {"Content-Type": "application/json"}
-        if api_key:
+        if api_key and not is_ollama:
             headers["Authorization"] = f"Bearer {api_key}"
-        completion_budget = max_tokens or settings.RESPONSE_RESERVE_TOKENS
-        base_messages = [
-            {"role": message.role, "content": message.content}
-            for message in messages
-        ]
+
+        base_budget = max_tokens or settings.CONTROL_RESPONSE_RESERVE_TOKENS
+        base_messages = self._messages_payload(messages)
         started = time.monotonic()
         last_error: Exception | None = None
+        attempt_telemetry: list[dict[str, Any]] = []
 
-        for attempt in range(1, 3):
-            request_messages = list(base_messages)
-            if attempt == 2:
-                request_messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Предыдущий ответ не был корректным JSON. Верни только один "
-                            "валидный JSON-объект строго по схеме, без markdown и пояснений."
-                        ),
+        async with httpx.AsyncClient(
+            trust_env=False,
+            timeout=httpx.Timeout(240.0, connect=10.0),
+        ) as client:
+            for attempt in range(1, 4):
+                budget = self._adaptive_budget(base_budget, attempt)
+                request_messages = list(base_messages)
+                if attempt > 1:
+                    request_messages.append(self._repair_instruction())
+
+                if is_ollama:
+                    payload: dict[str, Any] = {
+                        "model": config.model_name,
+                        "messages": request_messages,
+                        "stream": False,
+                        "format": "json",
+                        "think": False,
+                        "options": {"num_predict": budget},
                     }
-                )
-            payload: dict[str, Any] = {
-                "model": config.model_name,
-                "messages": request_messages,
-                "stream": False,
-                "max_tokens": completion_budget,
-                "response_format": {"type": "json_object"},
-            }
-            if temperature is not None:
-                payload["temperature"] = temperature if attempt == 1 else 0.0
-            if self._is_ollama(config.base_url):
-                payload["think"] = False
+                    if temperature is not None:
+                        payload["options"]["temperature"] = (
+                            temperature if attempt == 1 else 0.0
+                        )
+                else:
+                    payload = self._openai_no_reasoning_payload(
+                        {
+                            "model": config.model_name,
+                            "messages": request_messages,
+                            "stream": False,
+                            "max_tokens": budget,
+                            "response_format": {"type": "json_object"},
+                        }
+                    )
+                    if temperature is not None:
+                        payload["temperature"] = temperature if attempt == 1 else 0.0
 
-            try:
-                async with httpx.AsyncClient(
-                    trust_env=False,
-                    timeout=httpx.Timeout(180.0, connect=10.0),
-                ) as client:
-                    response = await client.post(url, headers=headers, json=payload)
-                    if response.status_code == 400:
-                        payload.pop("response_format", None)
+                try:
+                    if is_ollama:
                         response = await client.post(url, headers=headers, json=payload)
+                        used_payload = payload
+                    else:
+                        response, used_payload = await self._post_openai_json(
+                            client, url, headers, payload
+                        )
                     if response.status_code != 200:
                         raise LLMProviderError(
                             f"LLM returned HTTP {response.status_code}: {response.text[:2000]}"
                         )
                     data = response.json()
+                    if not isinstance(data, dict):
+                        raise LLMProviderError("LLM returned a non-object response")
+                    provider_error = data.get("error")
+                    if provider_error:
+                        raise LLMProviderError(f"LLM provider error: {provider_error}")
 
-                provider_error = data.get("error") if isinstance(data, dict) else None
-                if provider_error:
-                    raise LLMProviderError(f"LLM provider error: {provider_error}")
-                if isinstance(data, dict) and isinstance(data.get("response"), dict):
-                    parsed = data["response"]
-                    raw_text = json.dumps(parsed, ensure_ascii=False)
-                else:
-                    raw_text = self._extract_content(data) if isinstance(data, dict) else ""
-                    if not raw_text:
-                        raise LLMProviderError(
-                            "LLM completed without structured content "
-                            f"(finish_reason={self._extract_finish_reason(data)!r})"
-                        )
-                    parsed = self._parse_json_object(raw_text)
+                    finish_reason = self._extract_finish_reason(data)
+                    usage = self._extract_usage(data)
+                    reasoning_chars = self._reasoning_characters(data)
+                    raw_text = self._extract_content(data)
+                    if isinstance(data.get("response"), dict):
+                        parsed = data["response"]
+                        raw_text = json.dumps(parsed, ensure_ascii=False)
+                    else:
+                        if not raw_text:
+                            raise LLMProviderError(
+                                "LLM completed without structured content "
+                                f"(reasoning_chars={reasoning_chars}, "
+                                f"finish_reason={finish_reason!r}, budget={budget})"
+                            )
+                        parsed = self._parse_json_object(raw_text)
 
-                self.last_telemetry = {
-                    "model": config.model_name,
-                    "url": url,
-                    "status": "completed",
-                    "control_plane": True,
-                    "transport": "http_json",
-                    "attempt": attempt,
-                    "http_status": response.status_code,
-                    "finish_reason": self._extract_finish_reason(data),
-                    "usage": self._extract_usage(data),
-                    "response_characters": len(raw_text),
-                    "thinking_disabled": bool(payload.get("think") is False),
-                    "requested_max_tokens": completion_budget,
-                    "duration_ms": round((time.monotonic() - started) * 1000),
-                }
-                return parsed
-            except (httpx.RequestError, LLMProviderError, json.JSONDecodeError) as exc:
-                last_error = exc
+                    telemetry = {
+                        "attempt": attempt,
+                        "requested_max_tokens": budget,
+                        "finish_reason": finish_reason,
+                        "usage": usage,
+                        "reasoning_characters": reasoning_chars,
+                        "response_characters": len(raw_text),
+                        "http_status": response.status_code,
+                        "native_ollama": is_ollama,
+                        "thinking_disabled": bool(
+                            used_payload.get("think") is False
+                            or used_payload.get("reasoning_effort") == "none"
+                            or (
+                                used_payload.get("chat_template_kwargs") or {}
+                            ).get("enable_thinking") is False
+                        ),
+                    }
+                    attempt_telemetry.append(telemetry)
+                    self.last_telemetry = {
+                        "model": config.model_name,
+                        "url": url,
+                        "status": "completed",
+                        "control_plane": True,
+                        "transport": "ollama_native_json" if is_ollama else "http_json",
+                        "attempt": attempt,
+                        "attempts": attempt_telemetry,
+                        **telemetry,
+                        "duration_ms": round((time.monotonic() - started) * 1000),
+                    }
+                    return parsed
+                except (httpx.RequestError, LLMProviderError, json.JSONDecodeError) as exc:
+                    last_error = exc
+                    attempt_telemetry.append(
+                        {
+                            "attempt": attempt,
+                            "requested_max_tokens": budget,
+                            "status": "error",
+                            "error": str(exc),
+                        }
+                    )
 
         self.last_telemetry = {
             "model": config.model_name,
             "url": url,
             "status": "structured_error",
             "error": str(last_error or "unknown structured response error"),
-            "requested_max_tokens": completion_budget,
+            "attempts": attempt_telemetry,
             "duration_ms": round((time.monotonic() - started) * 1000),
         }
         raise LLMProviderError(f"Failed to obtain valid JSON: {last_error}")
+
+    async def _stream_once(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> AsyncIterator[dict[str, Any]]:
+        async with client.stream("POST", url, headers=headers, json=payload) as response:
+            if response.status_code != 200:
+                error_body = await response.aread()
+                detail = error_body.decode(errors="replace")[:2000]
+                raise LLMProviderError(
+                    f"LLM returned HTTP {response.status_code}: {detail}"
+                )
+            async for raw_line in response.aiter_lines():
+                if not raw_line:
+                    continue
+                line = raw_line.strip()
+                if line.startswith("data:"):
+                    line = line[5:].strip()
+                if line == "[DONE]":
+                    yield {"done": True, "done_reason": "stop"}
+                    break
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    yield {"_malformed": True}
+                    continue
+                if isinstance(data, dict):
+                    yield data
 
     async def generate_stream(
         self,
@@ -336,25 +511,40 @@ class LLMProvider:
             yield json.dumps(payload, ensure_ascii=False)
             return
 
-        url = f"{config.base_url.rstrip('/')}/chat/completions"
+        is_ollama = self._is_ollama(config.base_url)
+        url = (
+            self._ollama_native_url(config.base_url)
+            if is_ollama
+            else f"{config.base_url.rstrip('/')}/chat/completions"
+        )
         headers = {"Content-Type": "application/json"}
-        if api_key:
+        if api_key and not is_ollama:
             headers["Authorization"] = f"Bearer {api_key}"
 
         completion_budget = max_tokens or settings.RESPONSE_RESERVE_TOKENS
-        payload: dict[str, Any] = {
-            "model": config.model_name,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in messages
-            ],
-            "stream": True,
-            "max_tokens": completion_budget,
-        }
-        if temperature is not None:
-            payload["temperature"] = temperature
-        if disable_thinking and self._is_ollama(config.base_url):
-            payload["think"] = False
+        if is_ollama:
+            payload: dict[str, Any] = {
+                "model": config.model_name,
+                "messages": self._messages_payload(messages),
+                "stream": True,
+                "think": False if disable_thinking else True,
+                "options": {"num_predict": completion_budget},
+            }
+            if temperature is not None:
+                payload["options"]["temperature"] = temperature
+            payload_variants = [payload]
+        else:
+            payload = {
+                "model": config.model_name,
+                "messages": self._messages_payload(messages),
+                "stream": True,
+                "max_tokens": completion_budget,
+            }
+            if temperature is not None:
+                payload["temperature"] = temperature
+            if disable_thinking:
+                payload = self._openai_no_reasoning_payload(payload)
+            payload_variants = self._openai_compat_variants(payload)
 
         started = time.monotonic()
         emitted_parts: list[str] = []
@@ -363,71 +553,53 @@ class LLMProvider:
         reasoning_characters = 0
         finish_reason = None
         usage: dict[str, int] = {}
-        http_status = None
         frame_keys: Counter[str] = Counter()
-        self.last_telemetry = {
-            "model": config.model_name,
-            "url": url,
-            "status": "started",
-            "thinking_disabled": bool(payload.get("think") is False),
-            "requested_max_tokens": completion_budget,
-        }
+        used_payload = payload_variants[-1]
+        last_error: Exception | None = None
 
         try:
             async with httpx.AsyncClient(
                 trust_env=False,
-                timeout=httpx.Timeout(180.0, connect=10.0),
+                timeout=httpx.Timeout(240.0, connect=10.0),
             ) as client:
-                async with client.stream(
-                    "POST",
-                    url,
-                    headers=headers,
-                    json=payload,
-                ) as response:
-                    http_status = response.status_code
-                    if response.status_code != 200:
-                        error_body = await response.aread()
-                        detail = error_body.decode(errors="replace")[:2000]
-                        raise LLMProviderError(
-                            f"LLM returned HTTP {response.status_code}: {detail}"
-                        )
-
-                    async for raw_line in response.aiter_lines():
-                        if not raw_line:
-                            continue
-                        line = raw_line.strip()
-                        if line.startswith("data:"):
-                            line = line[5:].strip()
-                        if line == "[DONE]":
-                            finish_reason = finish_reason or "stop"
-                            break
-                        if not line:
-                            continue
-
-                        try:
-                            data = json.loads(line)
+                for candidate_index, candidate in enumerate(payload_variants):
+                    used_payload = candidate
+                    try:
+                        async for data in self._stream_once(
+                            client, url, headers, candidate
+                        ):
+                            if data.get("_malformed"):
+                                malformed_frames += 1
+                                continue
                             parsed_frames += 1
                             frame_keys.update(str(key) for key in data)
-                        except json.JSONDecodeError:
-                            malformed_frames += 1
-                            continue
-
-                        provider_error = data.get("error")
-                        if provider_error:
-                            raise LLMProviderError(
-                                f"LLM provider error: {provider_error}"
+                            provider_error = data.get("error")
+                            if provider_error:
+                                raise LLMProviderError(
+                                    f"LLM provider error: {provider_error}"
+                                )
+                            finish_reason = (
+                                self._extract_finish_reason(data) or finish_reason
                             )
-
-                        finish_reason = self._extract_finish_reason(data) or finish_reason
-                        frame_usage = self._extract_usage(data)
-                        if frame_usage:
-                            usage = frame_usage
-                        reasoning_characters += self._reasoning_characters(data)
-                        content = self._extract_content(data)
-                        if content:
-                            emitted_parts.append(content)
-                            yield content
-
+                            frame_usage = self._extract_usage(data)
+                            if frame_usage:
+                                usage = frame_usage
+                            reasoning_characters += self._reasoning_characters(data)
+                            content = self._extract_content(data)
+                            if content:
+                                emitted_parts.append(content)
+                                yield content
+                        last_error = None
+                        break
+                    except LLMProviderError as exc:
+                        last_error = exc
+                        if (
+                            "HTTP 400" in str(exc)
+                            and candidate_index + 1 < len(payload_variants)
+                            and not emitted_parts
+                        ):
+                            continue
+                        raise
         except httpx.RequestError as exc:
             self.last_telemetry = {
                 "model": config.model_name,
@@ -444,7 +616,6 @@ class LLMProvider:
                 "model": config.model_name,
                 "url": url,
                 "status": "provider_error",
-                "http_status": http_status,
                 "error": str(exc),
                 "parsed_frames": parsed_frames,
                 "malformed_frames": malformed_frames,
@@ -453,17 +624,32 @@ class LLMProvider:
                 "frame_keys": dict(frame_keys),
                 "duration_ms": round((time.monotonic() - started) * 1000),
                 "requested_max_tokens": completion_budget,
+                "native_ollama": is_ollama,
             }
             raise
 
+        if last_error is not None:
+            raise LLMProviderError(str(last_error))
+
         output = "".join(emitted_parts)
-        truncated = finish_reason in {"length", "max_tokens"}
+        budget_exhausted = self._budget_exhausted(
+            finish_reason, usage, completion_budget
+        )
+        incomplete = bool(output.strip()) and not self._looks_complete(output)
+        reasoning_only = bool(reasoning_characters and not output.strip())
+        truncated = budget_exhausted or incomplete or reasoning_only
         status = "truncated" if truncated else ("completed" if output.strip() else "empty")
+        thinking_disabled = bool(
+            used_payload.get("think") is False
+            or used_payload.get("reasoning_effort") == "none"
+            or (
+                used_payload.get("chat_template_kwargs") or {}
+            ).get("enable_thinking") is False
+        )
         self.last_telemetry = {
             "model": config.model_name,
             "url": url,
             "status": status,
-            "http_status": http_status,
             "finish_reason": finish_reason,
             "usage": usage,
             "parsed_frames": parsed_frames,
@@ -471,15 +657,20 @@ class LLMProvider:
             "reasoning_characters": reasoning_characters,
             "response_characters": len(output),
             "frame_keys": dict(frame_keys),
-            "thinking_disabled": bool(payload.get("think") is False),
+            "thinking_disabled": thinking_disabled,
             "requested_max_tokens": completion_budget,
+            "native_ollama": is_ollama,
             "duration_ms": round((time.monotonic() - started) * 1000),
         }
 
-        if truncated and (not output.strip() or not self._looks_complete(output)):
+        if truncated:
+            reason = "reasoning-only output" if reasoning_only else (
+                "completion budget exhausted" if budget_exhausted else "unfinished response"
+            )
             raise LLMProviderTruncatedError(
-                "LLM exhausted the completion budget before producing a complete answer "
-                f"(content_chars={len(output)}, reasoning_chars={reasoning_characters})",
+                f"LLM produced {reason} "
+                f"(content_chars={len(output)}, reasoning_chars={reasoning_characters}, "
+                f"finish_reason={finish_reason!r})",
                 partial_text=output,
             )
         if not output.strip():
@@ -495,18 +686,30 @@ class LLMProvider:
         model_name: str,
         api_key: str | None = None,
     ) -> bool:
-        url = f"{base_url.rstrip('/')}/chat/completions"
+        is_ollama = self._is_ollama(base_url)
+        url = (
+            self._ollama_native_url(base_url)
+            if is_ollama
+            else f"{base_url.rstrip('/')}/chat/completions"
+        )
         headers = {"Content-Type": "application/json"}
-        if api_key:
+        if api_key and not is_ollama:
             headers["Authorization"] = f"Bearer {api_key}"
-        payload: dict[str, Any] = {
-            "model": model_name,
-            "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 8,
-            "stream": False,
-        }
-        if self._is_ollama(base_url):
-            payload["think"] = False
+        if is_ollama:
+            payload: dict[str, Any] = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": False,
+                "think": False,
+                "options": {"num_predict": 8},
+            }
+        else:
+            payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 8,
+                "stream": False,
+            }
         try:
             async with httpx.AsyncClient(
                 trust_env=False,
@@ -516,6 +719,10 @@ class LLMProvider:
                 if response.status_code != 200:
                     return False
                 data = response.json()
-                return bool(self._extract_content(data)) or bool(data.get("choices"))
+                return isinstance(data, dict) and (
+                    bool(self._extract_content(data))
+                    or bool(data.get("choices"))
+                    or data.get("done") is True
+                )
         except Exception:
             return False
