@@ -10,7 +10,11 @@ from app.db.engine import get_session
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.turn import TurnCreate, TurnRead
+from app.services.memory_scribe_guard import install as install_memory_scribe_guard
 from app.services.turn_runner import TurnRunner
+
+
+install_memory_scribe_guard()
 
 router = APIRouter(prefix="/api/campaigns/{campaign_id}/turns", tags=["turns"])
 
@@ -33,7 +37,6 @@ async def send_turn(
         async for token in runner.run_turn_stream(campaign_id, data):
             yield token
 
-    # Tokens are streamed as plain text chunks, not SSE event frames.
     return StreamingResponse(
         token_generator(),
         media_type="text/plain; charset=utf-8",

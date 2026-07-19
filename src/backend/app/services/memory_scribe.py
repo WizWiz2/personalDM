@@ -5,11 +5,13 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.canon_semantics import CanonAudit, proposals_from_envelope
 
 
 PLACEHOLDER_SELF = {"self", "speaker", "acting_character", "acting_character_id"}
@@ -31,14 +33,16 @@ HTML_PATTERN = re.compile(r"<[^>]+>")
 
 
 class MemoryScribe:
-    """Extract durable canon candidates from one completed authoritative turn."""
+    """Extract evidence-backed durable canon candidates from one authoritative turn."""
 
     def __init__(self, session: AsyncSession):
         self._session = session
         self._entity_repo = EntityRepository(session)
         self._scene_repo = SceneRepository(session)
+        self._fact_repo = FactRepository(session)
         self._config_repo = ProviderConfigRepository(session)
         self._llm_provider = LLMProvider()
+        self.last_audit: dict = CanonAudit().model_dump()
 
     async def extract_proposals(
         self,
@@ -87,47 +91,81 @@ class MemoryScribe:
         participant_names = [
             display_by_id.get(entity_id, entity_id) for entity_id in scene_participant_ids
         ]
+        current_facts = await self._fact_repo.list_active(campaign_id)
+        fact_lines = [
+            f"- {fact.subject} | {fact.predicate} | {fact.object_value or 'null'} "
+            f"[{fact.truth_status}]"
+            for fact in current_facts[-40:]
+        ]
 
         system_prompt = f"""Ты Memory Scribe русскоязычной настольной RPG.
-Проанализируй один завершённый ход и предложи не более восьми устойчивых изменений.
-Верни только JSON. Все proposition, description, predicate и object_value пиши на русском.
+Сначала выдели подтверждённые последствия одного завершённого хода, затем предложи структурированные изменения канона.
+Верни только один JSON-объект. Все тексты пиши на русском.
 
 КТО ГОВОРИЛ В ОТВЕТЕ: {actor_name}
 ПЕРСОНАЖ ИГРОКА: {player_name}
 ПРИСУТСТВУЮТ В СЦЕНЕ: {', '.join(participant_names) or 'неизвестно'}
 
-КРИТИЧЕСКОЕ ПРАВИЛО ССЫЛОК:
-- Используй ТОЧНЫЕ ИМЕНА из списка ниже, а не UUID.
-- Никогда не пиши SELF, USER, PLAYER, all, N/A, null строкой или выдуманные ID.
-- Backend сам преобразует имена в UUID.
-
 ИЗВЕСТНЫЕ СУЩНОСТИ:
 {chr(10).join(entity_lines) or '- нет'}
 
-ПРАВИЛА АВТОРИТЕТА:
-- Сообщение игрока — намерение, вопрос, заявление или гипотеза.
-- Ответ ДМа — авторитетный результат.
-- Не превращай неподтверждённое намерение игрока в факт.
-- Диалог персонажа создаёт knowledge у слушателя, а не knowledge у самого говорящего.
-- Публичное наблюдение без конкретного рассказчика обычно является fact или event.
-- Временная атмосфера и повторение уже известного не являются долговременным каноном.
-- Scene Thesis обслуживается Thesis Curator и здесь запрещён.
-- Предпочитай пустой список слабой или дублирующей записи.
+ТЕКУЩИЕ ОБЪЕКТИВНЫЕ FACTS:
+{chr(10).join(fact_lines) or '- нет'}
 
-Типы и payload, ссылки задаются ИМЕНАМИ:
-1. fact: {{"subject":"имя или устойчивый объект","predicate":"краткая связь","object_value":"имя или текст"}}
-2. event: {{"event_type":"тип","description":"подтверждённое событие","location_id":"имя локации или null","participant_ids":["имена"]}}
-3. movement: {{"character_id":"имя","location_id":"имя локации","description":"необязательно"}}
-4. relationship: {{"subject_id":"имя","object_id":"имя","relation_type":"тип","description":"изменение","reason":"причина"}}
-5. knowledge: {{"recipient_id":"имя слушателя","fact_id":null,"proposition":"что именно стало известно","source_character_id":"имя говорящего или null","confidence":0.8}}
-6. item_transfer: {{"item_id":"точное имя предмета","owner_id":"имя владельца или null","location_id":"имя локации или null","description":"передача"}}
+КРИТИЧЕСКИЕ ПРАВИЛА:
+- Сообщение игрока является попыткой, вопросом или гипотезой, но не доказательством результата.
+- Авторитетным источником результата является только ответ ДМа.
+- Реплика NPC является character_claim: она создаёт knowledge слушателя, но не объективный fact.
+- Публично описанное ДМом наблюдение является public_observation.
+- Прямо подтверждённое ДМом изменение мира является dm_confirmed.
+- Не сохраняй атмосферу, намерения, планы и повтор уже известного.
+- Для evidence скопируй короткий точный фрагмент из ответа ДМа.
+- Используй точные ИМЕНА сущностей, не UUID и не SELF/USER/all/N/A.
+- Scene Thesis обслуживается отдельным Curator и запрещён.
 
-Верни {{"proposals":[]}}, если ничего устойчивого не подтверждено.
+ФОРМАТ:
+{{
+  "outcomes": [
+    {{
+      "id": "o1",
+      "kind": "world_state|event|knowledge_transfer|relationship_change|movement|item_transfer",
+      "description": "что устойчиво изменилось",
+      "evidence": "точная цитата из ответа ДМа",
+      "authority": "dm_confirmed|public_observation|character_claim|player_intent",
+      "durable": true
+    }}
+  ],
+  "proposals": [
+    {{
+      "outcome_id": "o1",
+      "change_type": "fact|event|relationship|movement|knowledge|item_transfer",
+      "operation": "assert|revise|retract|contradict",
+      "cardinality": "single|multi",
+      "payload": {{}}
+    }}
+  ]
+}}
+
+PAYLOAD:
+- fact: {{"subject":"устойчивый субъект","predicate":"стабильная связь","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public"}}
+- event: {{"event_type":"тип","description":"что произошло","location_id":"имя локации или null","participant_ids":["имена"]}}
+- movement: {{"character_id":"имя","location_id":"имя локации","description":"что переместилось"}}
+- relationship: {{"subject_id":"имя","object_id":"имя","relation_type":"стабильный тип","description":"новое состояние","reason":"подтверждённая причина","intensity":0.0}}
+- knowledge: {{"recipient_id":"имя слушателя","proposition":"что он узнал или услышал","source_character_id":"имя говорящего или null","confidence":0.8,"status":"known|believed|doubted","previous_proposition":"что исправляется или null"}}
+- item_transfer: {{"item_id":"точное имя предмета","owner_id":"имя владельца или null","location_id":"имя локации или null","description":"передача"}}
+
+FACT SEMANTICS:
+- assert: нового текущего значения ещё нет;
+- revise: прежнее текущее значение уточнено или заменено;
+- contradict: ДМ прямо опроверг прежнее текущее значение;
+- retract: прежнее значение больше не считается текущим;
+- cardinality=single, если одновременно допустимо только одно значение; multi, если значений может быть несколько.
+
+Каждый durable outcome должен иметь хотя бы один proposal. Если устойчивых изменений нет, верни пустые outcomes и proposals.
 """
 
-        response_text = ""
         try:
-            async for token in self._llm_provider.generate_stream(
+            data = await self._llm_provider.generate_json(
                 [
                     ChatMessage(role="system", content=system_prompt),
                     ChatMessage(
@@ -142,20 +180,24 @@ class MemoryScribe:
                 ],
                 config,
                 api_key,
-                max_tokens=900,
-                temperature=0.1,
-            ):
-                response_text += token
-        except LLMProviderError:
+                max_tokens=1400,
+                temperature=0.0,
+            )
+        except LLMProviderError as exc:
+            self.last_audit = CanonAudit(
+                envelope_valid=False,
+                error=str(exc),
+            ).model_dump()
             return []
 
-        return self._parse_response(
-            response_text,
-            known_entities,
-            set(display_by_id),
-            acting_character_id,
-            player_character_id,
-            scene_participant_ids,
+        return self._parse_data(
+            data,
+            authoritative_text=assistant_content,
+            known_entities=known_entities,
+            known_ids=set(display_by_id),
+            acting_character_id=acting_character_id,
+            player_character_id=player_character_id,
+            scene_participant_ids=scene_participant_ids,
         )
 
     def _parse_response(
@@ -166,6 +208,7 @@ class MemoryScribe:
         acting_character_id: UUID | None,
         player_character_id: UUID | None,
         scene_participant_ids: list[str],
+        authoritative_text: str = "",
     ) -> list[ProposedChangeCreate]:
         clean_text = text.strip()
         if clean_text.startswith("```"):
@@ -175,28 +218,45 @@ class MemoryScribe:
             if lines and lines[-1].startswith("```"):
                 lines = lines[:-1]
             clean_text = "\n".join(lines).strip()
-
         try:
             data = json.loads(clean_text)
         except Exception:
+            self.last_audit = CanonAudit(
+                envelope_valid=False,
+                error="Scribe returned invalid JSON",
+            ).model_dump()
             return []
+        return self._parse_data(
+            data,
+            authoritative_text,
+            known_entities,
+            known_ids,
+            acting_character_id,
+            player_character_id,
+            scene_participant_ids,
+        )
 
+    def _parse_data(
+        self,
+        data: dict,
+        authoritative_text: str,
+        known_entities: dict[str, str],
+        known_ids: set[str],
+        acting_character_id: UUID | None,
+        player_character_id: UUID | None,
+        scene_participant_ids: list[str],
+    ) -> list[ProposedChangeCreate]:
+        extracted, audit = proposals_from_envelope(data, authoritative_text)
         results: list[ProposedChangeCreate] = []
-        for proposal in data.get("proposals", [])[:8]:
-            value = proposal.get("change_type")
-            payload = proposal.get("payload", {})
-            if not value or not isinstance(payload, dict) or not payload:
+        for proposal in extracted:
+            if proposal.change_type == ChangeType.CANON_GAP:
+                results.append(proposal)
                 continue
-            try:
-                change_type = ChangeType(value)
-            except ValueError:
+            if proposal.change_type == ChangeType.SCENE_THESIS:
                 continue
-            if change_type == ChangeType.SCENE_THESIS:
-                continue
-
             normalized = self._normalize_payload(
-                change_type,
-                payload,
+                proposal.change_type,
+                proposal.payload,
                 known_entities,
                 known_ids,
                 acting_character_id,
@@ -206,10 +266,12 @@ class MemoryScribe:
             if normalized:
                 results.append(
                     ProposedChangeCreate(
-                        change_type=change_type,
+                        change_type=proposal.change_type,
                         payload=normalized,
                     )
                 )
+        audit.proposal_count = len(results)
+        self.last_audit = audit.model_dump()
         return results
 
     @staticmethod
@@ -237,25 +299,19 @@ class MemoryScribe:
             return candidate if candidate in known_ids else None
         if not isinstance(value, str):
             return None
-
         folded = value.casefold().strip()
         if folded in PLACEHOLDER_SELF:
             return str(acting_character_id) if acting_character_id else None
         if folded in PLACEHOLDER_PLAYER:
             return str(player_character_id) if player_character_id else None
-
         direct = known_entities.get(folded)
         if direct:
             return direct
-
         match = UUID_PATTERN.search(value)
         if match and match.group(0) in known_ids:
             return match.group(0)
-
         for alias, entity_id in sorted(
-            known_entities.items(),
-            key=lambda item: len(item[0]),
-            reverse=True,
+            known_entities.items(), key=lambda item: len(item[0]), reverse=True
         ):
             if alias and alias in folded:
                 return entity_id
@@ -309,8 +365,9 @@ class MemoryScribe:
         scene_participant_ids: list[str],
     ) -> dict | None:
         resolved = dict(payload)
+        canon_meta = resolved.get("_canon") if isinstance(resolved.get("_canon"), dict) else {}
 
-        reference_keys = (
+        for key in (
             "character_id",
             "location_id",
             "subject_id",
@@ -319,8 +376,7 @@ class MemoryScribe:
             "source_character_id",
             "item_id",
             "owner_id",
-        )
-        for key in reference_keys:
+        ):
             if key in resolved:
                 resolved[key] = self._resolve_reference(
                     resolved.get(key),
@@ -329,7 +385,6 @@ class MemoryScribe:
                     acting_character_id,
                     player_character_id,
                 )
-
         if "participant_ids" in resolved:
             resolved["participant_ids"] = self._resolve_list(
                 resolved.get("participant_ids"),
@@ -349,6 +404,7 @@ class MemoryScribe:
             "relation_type",
             "reason",
             "proposition",
+            "previous_proposition",
         ):
             if key in resolved:
                 resolved[key] = self._clean_text(resolved.get(key))
@@ -375,11 +431,10 @@ class MemoryScribe:
                     "recipient_id": recipient_id,
                     "source_character_id": source_id,
                     "confidence": min(1.0, max(0.2, confidence)),
+                    "status": resolved.get("status") or "known",
                 }
             )
-            if not resolved.get("fact_id"):
-                resolved["fact_id"] = None
-
+            resolved.setdefault("fact_id", None)
         elif change_type == ChangeType.MOVEMENT:
             if not resolved.get("character_id") or not resolved.get("location_id"):
                 return None
@@ -391,9 +446,7 @@ class MemoryScribe:
         elif change_type == ChangeType.ITEM_TRANSFER:
             if not resolved.get("item_id"):
                 return None
-            owner_id = resolved.get("owner_id")
-            location_id = resolved.get("location_id")
-            if bool(owner_id) == bool(location_id):
+            if bool(resolved.get("owner_id")) == bool(resolved.get("location_id")):
                 return None
         elif change_type == ChangeType.EVENT:
             if not resolved.get("event_type") or not resolved.get("description"):
@@ -402,5 +455,15 @@ class MemoryScribe:
         elif change_type == ChangeType.FACT:
             if not resolved.get("subject") or not resolved.get("predicate"):
                 return None
+            operation = str(resolved.get("operation") or canon_meta.get("operation") or "assert")
+            cardinality = str(resolved.get("cardinality") or canon_meta.get("cardinality") or "single")
+            if operation not in {"assert", "revise", "retract", "contradict"}:
+                operation = "assert"
+            if cardinality not in {"single", "multi"}:
+                cardinality = "single"
+            resolved["operation"] = operation
+            resolved["cardinality"] = cardinality
 
+        if canon_meta:
+            resolved["_canon"] = canon_meta
         return {key: value for key, value in resolved.items() if value is not None}
