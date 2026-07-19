@@ -55,7 +55,7 @@ jobs:
 
       - name: Test canon semantics and versioning
         working-directory: src/backend
-        run: pytest -q tests/test_canon_semantics.py tests/test_canon_versioning.py --tb=short
+        run: pytest -q tests/test_canon_semantics.py tests/test_canon_versioning.py tests/test_memory_scribe_guard.py --tb=short
 
       - name: Test dynamic scene theses
         working-directory: src/backend
