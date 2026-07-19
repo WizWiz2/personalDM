@@ -53,6 +53,8 @@ class CanonApplier:
         change_type: ChangeType,
         payload: dict,
         source_turn_id: UUID,
+        *,
+        record_noop_events: bool = False,
     ) -> None:
         if change_type == ChangeType.CANON_GAP:
             raise ValueError("A canon gap is evidence of a missing delta and cannot be applied")
@@ -88,12 +90,14 @@ class CanonApplier:
             location_id = UUID(payload["location_id"])
             character = await self._entities.get_character(character_id)
             location = await self._entities.get_by_id(location_id)
-            if character.current_location_id == location_id:
+            unchanged = character.current_location_id == location_id
+            if unchanged and not record_noop_events:
                 return
-            await self._entities.update_character(
-                character_id,
-                CharacterUpdate(current_location_id=location_id),
-            )
+            if not unchanged:
+                await self._entities.update_character(
+                    character_id,
+                    CharacterUpdate(current_location_id=location_id),
+                )
             await self._events.create(
                 campaign_id,
                 EventCreate(
@@ -160,10 +164,15 @@ class CanonApplier:
             item = result.scalar_one()
             owner_id = payload.get("owner_id")
             location_id = payload.get("location_id")
-            if item.current_owner_id == owner_id and item.current_location_id == location_id:
+            unchanged = (
+                item.current_owner_id == owner_id
+                and item.current_location_id == location_id
+            )
+            if unchanged and not record_noop_events:
                 return
-            item.current_owner_id = owner_id
-            item.current_location_id = location_id
+            if not unchanged:
+                item.current_owner_id = owner_id
+                item.current_location_id = location_id
             await self._events.create(
                 campaign_id,
                 EventCreate(
