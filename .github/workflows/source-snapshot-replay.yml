@@ -1,13 +1,9 @@
 name: Apply replay milestone
 
 on:
-  push:
-    branches:
-      - "agent/full-canon-replay-roundtrip"
   pull_request:
     paths:
       - ".github/workflows/source-snapshot-replay.yml"
-      - ".github/replay-product.part*"
 
 permissions:
   contents: write
@@ -29,8 +25,7 @@ jobs:
         run: |
           cat .github/replay-product.part* | base64 -d | gzip -d > /tmp/replay-product.patch
           patch -p1 < /tmp/replay-product.patch
-          rm .github/replay-product.part*
-          rm .github/workflows/source-snapshot-replay.yml
+          rm -f .github/workflows/canon-replay.yml
       - name: Install
         run: python -m pip install -e "src/backend[dev]"
       - name: Compile and lint
@@ -61,6 +56,6 @@ jobs:
         run: |
           git config user.name "OpenAI"
           git config user.email "openai@users.noreply.github.com"
-          git add -A
+          git add docs src
           git commit -m "Добавить полный replay канона и round-trip архив"
           git push origin HEAD:agent/full-canon-replay-roundtrip
