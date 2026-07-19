@@ -94,7 +94,13 @@ jobs:
           PDM_SIM_DATA_DIR: "./data/ci-v3"
           PDM_SIM_RESET: "1"
           PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
-        run: python tests/run_ci_mock_simulation_v3.py
+        run: |
+          mkdir -p data/ci-v3
+          set +e
+          python tests/run_ci_mock_simulation_v3.py > data/ci-v3/ci-output.log 2>&1
+          status=$?
+          cat data/ci-v3/ci-output.log
+          exit $status
 
       - name: Validate simulation invariants
         working-directory: src/backend
