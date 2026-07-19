@@ -44,8 +44,13 @@ async def send_turn(
 
 
 @router.post("/stop")
-async def stop_generation(campaign_id: UUID):
-    return {"success": TurnRunner.stop_generation(campaign_id)}
+async def stop_generation(
+    campaign_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    return {
+        "success": await TurnRunner.stop_generation(campaign_id, session)
+    }
 
 
 @router.get("", response_model=list[TurnRead])
