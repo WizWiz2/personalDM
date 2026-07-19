@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - "agent/full-canon-replay-roundtrip"
+  pull_request:
+    paths:
+      - ".github/workflows/source-snapshot-replay.yml"
 
 jobs:
   snapshot:
