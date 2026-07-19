@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.providers.llm_provider import LLMProvider
 from app.services.memory_scribe import MemoryScribe
+from app.services.memory_scribe_guard import install as install_memory_scribe_guard
 
 
 _INSTALLED = False
@@ -14,6 +15,7 @@ def install(quality_module) -> None:
         return
     _INSTALLED = True
 
+    install_memory_scribe_guard()
     original_uses_mock_stream = quality_module._uses_mock_stream
     original_mock_stream_json = quality_module._mock_stream_json
     original_scribe = MemoryScribe.extract_proposals
