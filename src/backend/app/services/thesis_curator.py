@@ -208,11 +208,11 @@ visual_state, music_mood
             ):
                 response_text += token
         except LLMProviderError:
-            return None
+            raise
 
         desired = self._parse_response(response_text, set(entity_names))
         if desired is None:
-            return None
+            raise LLMProviderError("Thesis Curator returned invalid structured output")
         return await self.reconcile(scene_id, source_turn_id, desired)
 
     @staticmethod

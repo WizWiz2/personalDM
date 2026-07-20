@@ -190,6 +190,12 @@ class ContextCompiler:
         )
         system_msg = ChatMessage(role="system", content=f"{system_instr}{style}{boundary}")
         current_budget_used = count_tokens(system_msg.content)
+        reserved_user_tokens = (
+            count_tokens(current_user_content)
+            if actor_mode and current_user_content
+            else 0
+        )
+        content_budget = max_budget - reserved_user_tokens
 
         included_layers = ["layer_0_system"]
         included_fact_ids: list[str] = []
@@ -233,12 +239,12 @@ class ContextCompiler:
                         f"- {thesis.text}"
                         f"{' (Important)' if thesis.pinned else ''}\n"
                     )
-                    included_thesis_ids.append(str(thesis.id))
-
+            scene_thesis_ids = [str(thesis.id) for thesis in visible_theses]
             scene_tokens = count_tokens(scene_info)
-            if current_budget_used + scene_tokens < max_budget:
+            if current_budget_used + scene_tokens < content_budget:
                 packages.append(scene_info)
                 current_budget_used += scene_tokens
+                included_thesis_ids.extend(scene_thesis_ids)
                 included_layers.append("layer_1_scene")
 
         scene_characters = (
@@ -250,12 +256,13 @@ class ContextCompiler:
         if acting_character_id:
             character = await self._entity_repo.get_character(acting_character_id)
             if character and character.campaign_id == campaign_id:
+                actor_item_ids: list[str] = []
+                actor_belief_ids: list[str] = []
                 actor_package = await self._full_character_profile(
                     character,
                     include_private=True,
-                    included_item_ids=included_item_ids,
+                    included_item_ids=actor_item_ids,
                 )
-                included_character_ids.append(str(character.id))
 
                 goals_result = await self._session.execute(
                     select(CharacterGoal).where(
@@ -280,7 +287,7 @@ class ContextCompiler:
                             f"- {belief.proposition} "
                             f"(Confidence: {belief.confidence})\n"
                         )
-                        included_belief_ids.append(str(belief.id))
+                        actor_belief_ids.append(str(belief.id))
 
                 other_ids = [
                     item.id for item in scene_characters if item.id != acting_character_id
@@ -302,9 +309,12 @@ class ContextCompiler:
                             )
 
                 actor_tokens = count_tokens(actor_package)
-                if current_budget_used + actor_tokens < max_budget:
+                if current_budget_used + actor_tokens < content_budget:
                     packages.append(actor_package)
                     current_budget_used += actor_tokens
+                    included_character_ids.append(str(character.id))
+                    included_item_ids.extend(actor_item_ids)
+                    included_belief_ids.extend(actor_belief_ids)
                     included_layers.append("layer_2_actor")
 
         facts = await self._fact_repo.list_active(
@@ -313,23 +323,28 @@ class ContextCompiler:
         )
         if facts:
             fact_package = "[Campaign Facts & History]\n"
+            fact_ids: list[str] = []
             for fact in facts:
                 fact_package += f"- {fact.subject} {fact.predicate} {fact.object_value or ''}\n"
-                included_fact_ids.append(str(fact.id))
+                fact_ids.append(str(fact.id))
             fact_tokens = count_tokens(fact_package)
-            if current_budget_used + fact_tokens < max_budget:
+            if current_budget_used + fact_tokens < content_budget:
                 packages.append(fact_package)
                 current_budget_used += fact_tokens
+                included_fact_ids.extend(fact_ids)
                 included_layers.append("layer_3_facts")
 
         if scene_characters:
             participant_package = (
                 "[Other Present NPCs]\n" if actor_mode else "[Present Character Cards]\n"
             )
+            participant_character_ids: list[str] = []
+            participant_belief_ids: list[str] = []
+            participant_item_ids: list[str] = []
             for character in scene_characters:
                 if actor_mode and character.id == acting_character_id:
                     continue
-                included_character_ids.append(str(character.id))
+                participant_character_ids.append(str(character.id))
                 if actor_mode:
                     participant_package += (
                         f"- {character.canonical_name} (Status: {character.status})\n"
@@ -342,7 +357,7 @@ class ContextCompiler:
                     participant_package += await self._full_character_profile(
                         character,
                         include_private=True,
-                        included_item_ids=included_item_ids,
+                        included_item_ids=participant_item_ids,
                     )
                     beliefs = await self._belief_repo.get_for_character(
                         character.id,
@@ -352,12 +367,15 @@ class ContextCompiler:
                         participant_package += "Private knowledge:\n"
                         for belief in beliefs:
                             participant_package += f"- {belief.proposition}\n"
-                            included_belief_ids.append(str(belief.id))
+                            participant_belief_ids.append(str(belief.id))
 
             participant_tokens = count_tokens(participant_package)
-            if current_budget_used + participant_tokens < max_budget:
+            if current_budget_used + participant_tokens < content_budget:
                 packages.append(participant_package)
                 current_budget_used += participant_tokens
+                included_character_ids.extend(participant_character_ids)
+                included_belief_ids.extend(participant_belief_ids)
+                included_item_ids.extend(participant_item_ids)
                 included_layers.append("layer_4_character_cards")
 
         history_records = await self._history_records(
@@ -370,7 +388,7 @@ class ContextCompiler:
         history_to_include: list[ChatMessage] = []
         for turn in reversed(history_records):
             message_tokens = count_tokens(turn.content)
-            if current_budget_used + message_tokens >= max_budget:
+            if current_budget_used + message_tokens >= content_budget:
                 break
             current_budget_used += message_tokens
             history_to_include.insert(
@@ -390,13 +408,9 @@ class ContextCompiler:
         final_messages.extend(history_to_include)
 
         if actor_mode and current_user_content:
-            user_tokens = count_tokens(current_user_content)
-            if current_budget_used + user_tokens < max_budget:
-                final_messages.append(
-                    ChatMessage(role="user", content=current_user_content)
-                )
-                current_budget_used += user_tokens
-                included_layers.append("layer_6_current_user")
+            final_messages.append(ChatMessage(role="user", content=current_user_content))
+            current_budget_used += reserved_user_tokens
+            included_layers.append("layer_6_current_user")
 
         metadata = {
             "token_budget_max": max_budget,
@@ -412,5 +426,6 @@ class ContextCompiler:
             "included_item_ids": list(dict.fromkeys(included_item_ids)),
             "included_character_ids": list(dict.fromkeys(included_character_ids)),
             "history_turns_count": len(history_to_include),
+            "current_user_reserved": bool(actor_mode and current_user_content),
         }
         return final_messages, metadata
