@@ -3,13 +3,12 @@ import traceback
 from collections.abc import AsyncIterator
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.repositories.campaign_repo import CampaignRepository
-from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
+from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.models.proposed_change import ChangeType
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import (
     LLMProvider,
@@ -28,7 +27,7 @@ class TurnRunner:
         self._campaign_repo = CampaignRepository(session)
         self._turn_repo = TurnRepository(session)
         self._config_repo = ProviderConfigRepository(session)
-        self._entity_repo = EntityRepository(session)
+        self._generation_runs = GenerationRunRepository(session)
         self._llm_provider = LLMProvider()
 
     async def _fail_user_turn(self, user_turn_id: UUID, owned: bool) -> None:
@@ -115,21 +114,18 @@ class TurnRunner:
         snapshot["generation_attempt"] = attempt
         return snapshot, completion_tokens
 
-    async def _infer_player_character_id(
-        self,
-        campaign_id: UUID,
-        acting_character_id: UUID | None,
-    ) -> UUID | None:
-        characters = await self._entity_repo.list_by_campaign(campaign_id, "character")
-        by_name = {
-            character.canonical_name.casefold(): character.id
-            for character in characters
-        }
-        for preferred in ("eldon", "player", "hero", "главный герой"):
-            candidate = by_name.get(preferred)
-            if candidate and candidate != acting_character_id:
-                return candidate
-        return None
+    async def _player_character_id(self, campaign_id: UUID) -> UUID | None:
+        campaign = await self._campaign_repo.get_by_id(campaign_id)
+        return campaign.player_character_id if campaign else None
+
+    async def _cancel_requested(self, run_id: UUID) -> bool:
+        factory = async_sessionmaker(
+            bind=self._session.bind,
+            expire_on_commit=False,
+            autoflush=False,
+        )
+        async with factory() as session:
+            return await GenerationRunRepository(session).is_cancel_requested(run_id)
 
     async def run_turn_stream(
         self,
@@ -146,6 +142,11 @@ class TurnRunner:
         else:
             user_turn = await self._turn_repo.create(campaign_id, turn_create)
 
+        generation_run = await self._generation_runs.start_or_resume(
+            campaign_id, user_turn.id
+        )
+        await self._session.commit()
+
         campaign_key = str(campaign_id)
         if campaign_key in active_tasks:
             active_tasks[campaign_key].cancel()
@@ -153,6 +154,11 @@ class TurnRunner:
 
         config = await self._config_repo.get_by_campaign_id(campaign_id)
         if not config:
+            await self._generation_runs.set_status(
+                generation_run.id,
+                "failed",
+                error="No LLM provider is configured for this campaign",
+            )
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield "[Generation failed: no LLM provider is configured for this campaign.]"
             return
@@ -194,6 +200,8 @@ class TurnRunner:
                         api_key,
                         temperature=0.7 if attempt == 0 else 0.45,
                     ):
+                        if await self._cancel_requested(generation_run.id):
+                            raise asyncio.CancelledError
                         attempt_text += token
                         yield token
                         await asyncio.sleep(0.001)
@@ -271,8 +279,11 @@ class TurnRunner:
                     )
                     saved_partial = await self._turn_repo.create(campaign_id, partial_turn)
                     await self._turn_repo.mark_alternative(saved_partial.id)
-                await self._fail_user_turn(user_turn.id, owns_user_turn)
                 detail = str(last_provider_error or "provider returned empty text")
+                await self._generation_runs.set_status(
+                    generation_run.id, "failed", error=detail
+                )
+                await self._fail_user_turn(user_turn.id, owns_user_turn)
                 yield f"\n[Generation failed after retry: {detail}]"
                 return
 
@@ -294,62 +305,25 @@ class TurnRunner:
                     token_count=token_count,
                 ),
             )
+            await self._generation_runs.set_status(
+                generation_run.id,
+                "completed",
+                assistant_turn_id=saved_assistant.id,
+            )
+
+            from app.services.post_turn_processor import PostTurnProcessor
+
+            processor = PostTurnProcessor(self._session)
+            await processor.enqueue(campaign_id, saved_assistant.id)
             await self._session.commit()
 
-            if turn_create.scene_id:
-                try:
-                    from app.services.thesis_curator import ThesisCurator
+            # Keep the first local response useful while preserving durable retry state.
+            # A failed job never invalidates or deletes the narrative turn.
+            try:
+                await processor.process_turn(saved_assistant.id)
+            except Exception:
+                traceback.print_exc()
 
-                    await ThesisCurator(self._session).curate_after_turn(
-                        campaign_id=campaign_id,
-                        scene_id=turn_create.scene_id,
-                        source_turn_id=saved_assistant.id,
-                        user_content=turn_create.content,
-                        assistant_content=accumulated_text,
-                    )
-                    await self._session.commit()
-                except Exception:
-                    traceback.print_exc()
-                    await self._session.rollback()
-
-            from app.services.memory_scribe import MemoryScribe
-
-            player_character_id = await self._infer_player_character_id(
-                campaign_id,
-                turn_create.acting_character_id,
-            )
-            proposals = await MemoryScribe(self._session).extract_proposals(
-                campaign_id=campaign_id,
-                scene_id=turn_create.scene_id,
-                user_content=turn_create.content,
-                assistant_content=accumulated_text,
-                acting_character_id=turn_create.acting_character_id,
-                player_character_id=player_character_id,
-            )
-            proposals = [
-                proposal
-                for proposal in proposals
-                if proposal.change_type != ChangeType.SCENE_THESIS
-            ]
-            if proposals:
-                from app.db.repositories.proposed_change_repo import ProposedChangeRepository
-                from app.services.continuity_checker import ContinuityChecker
-
-                checker = ContinuityChecker(self._session)
-                for proposal in proposals:
-                    is_valid, warning = await checker.validate_change(
-                        campaign_id,
-                        proposal,
-                    )
-                    if not is_valid:
-                        proposal.payload["_validation_error"] = (
-                            warning or "Proposal failed deterministic validation"
-                        )
-                await ProposedChangeRepository(self._session).create_batch(
-                    saved_assistant.id,
-                    proposals,
-                )
-                await self._session.commit()
 
         except asyncio.CancelledError:
             if accumulated_text.strip():
@@ -372,10 +346,16 @@ class TurnRunner:
                     ),
                 )
                 await self._turn_repo.mark_alternative(partial.id)
+            await self._generation_runs.set_status(
+                generation_run.id, "cancelled", error="Cancellation requested"
+            )
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
         except Exception as exc:
             traceback.print_exc()
+            await self._generation_runs.set_status(
+                generation_run.id, "failed", error=str(exc)[:4000]
+            )
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
@@ -386,9 +366,14 @@ class TurnRunner:
                 del active_tasks[campaign_key]
 
     @staticmethod
-    def stop_generation(campaign_id: UUID) -> bool:
+    async def stop_generation(
+        campaign_id: UUID, session: AsyncSession
+    ) -> bool:
+        requested = await GenerationRunRepository(session).request_cancel(campaign_id)
+        await session.commit()
+
         campaign_key = str(campaign_id)
-        if campaign_key in active_tasks:
-            active_tasks[campaign_key].cancel()
-            return True
-        return False
+        task = active_tasks.get(campaign_key)
+        if task:
+            task.cancel()
+        return bool(requested or task)

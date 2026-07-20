@@ -78,10 +78,7 @@ def _player_decision(prompt: str) -> str:
             f"Я использую фонарь и обычные навыки руиниста, чтобы на ходе {number} "
             "осмотреть конкретные следы и крепления, не касаясь магических элементов."
         )
-    return json.dumps(
-        {"target": target, "mode": mode, "intent": intent},
-        ensure_ascii=False,
-    )
+    return json.dumps({"target": target, "mode": mode, "intent": intent}, ensure_ascii=False)
 
 
 def _objective(prompt: str) -> str:
@@ -144,9 +141,22 @@ def _scribe(prompt: str) -> str:
     player_match = re.search(r"ПЕРСОНАЖ ИГРОКА:\s*([^\n]+)", prompt)
     actor = actor_match.group(1).strip() if actor_match else "narrator"
     player = player_match.group(1).strip() if player_match else "Eldon"
+    authoritative = prompt.split("АВТОРИТЕТНЫЙ РЕЗУЛЬТАТ ДМА:\n")[-1].strip()
+    evidence = authoritative[:600]
     if actor.casefold() != "narrator":
+        outcome = {
+            "id": "o1",
+            "kind": "knowledge_transfer",
+            "description": f"{player} услышал подтверждённое заявление {actor}.",
+            "evidence": evidence,
+            "authority": "character_claim",
+            "durable": True,
+        }
         proposal = {
+            "outcome_id": "o1",
             "change_type": "knowledge",
+            "operation": "assert",
+            "cardinality": "multi",
             "payload": {
                 "recipient_id": player,
                 "fact_id": None,
@@ -156,15 +166,42 @@ def _scribe(prompt: str) -> str:
             },
         }
     else:
+        outcome = {
+            "id": "o1",
+            "kind": "world_state",
+            "description": "Экспедиция получила новое наблюдаемое свидетельство.",
+            "evidence": evidence,
+            "authority": "dm_confirmed",
+            "durable": True,
+        }
         proposal = {
+            "outcome_id": "o1",
             "change_type": "fact",
+            "operation": "assert",
+            "cardinality": "multi",
             "payload": {
                 "subject": "экспедиция",
                 "predicate": "получила_свидетельство",
                 "object_value": f"наблюдение номер {number}",
             },
         }
-    return json.dumps({"proposals": [proposal]}, ensure_ascii=False)
+    return json.dumps({"outcomes": [outcome], "proposals": [proposal]}, ensure_ascii=False)
+
+
+def _dispatch_json(prompt: str) -> str:
+    if "Создай различимую карточку NPC" in prompt:
+        CALLS["builder"] += 1
+        return _json_character(prompt)
+    if "Ты имитируешь живого игрока" in prompt:
+        return _player_decision(prompt)
+    if "Ты проверяешь фактическое состояние цели сцены" in prompt:
+        CALLS["evaluator"] += 1
+        return _objective(prompt)
+    if "Ты куратор живых тезисов сцены" in prompt:
+        return _curator(prompt)
+    if "Ты Memory Scribe" in prompt:
+        return _scribe(prompt)
+    return "{}"
 
 
 def _consume_dm_failure_budget() -> bool:
@@ -183,26 +220,33 @@ def _consume_dm_failure_budget() -> bool:
     return True
 
 
-async def deterministic_generate_stream(
-    self,
-    messages,
-    config,
-    api_key=None,
-    **kwargs,
-):
+async def deterministic_generate_json(self, messages, config, api_key=None, **kwargs):
+    output = _dispatch_json(_all_text(messages))
+    self.last_telemetry = {
+        "status": "completed",
+        "finish_reason": "stop",
+        "response_characters": len(output),
+        "reasoning_characters": 0,
+        "usage": {"completion_tokens": max(1, len(output) // 4)},
+        "mock": True,
+        "control_plane": True,
+    }
+    return json.loads(output)
+
+
+async def deterministic_generate_stream(self, messages, config, api_key=None, **kwargs):
     prompt = _all_text(messages)
-    if "Создай различимую карточку NPC" in prompt:
-        CALLS["builder"] += 1
-        output = _json_character(prompt)
-    elif "Ты имитируешь живого игрока" in prompt:
-        output = _player_decision(prompt)
-    elif "Ты проверяешь фактическое состояние цели сцены" in prompt:
-        CALLS["evaluator"] += 1
-        output = _objective(prompt)
-    elif "Ты куратор живых тезисов сцены" in prompt:
-        output = _curator(prompt)
-    elif "Ты Memory Scribe" in prompt:
-        output = _scribe(prompt)
+    if any(
+        marker in prompt
+        for marker in (
+            "Создай различимую карточку NPC",
+            "Ты имитируешь живого игрока",
+            "Ты проверяешь фактическое состояние цели сцены",
+            "Ты куратор живых тезисов сцены",
+            "Ты Memory Scribe",
+        )
+    ):
+        output = _dispatch_json(prompt)
     else:
         CALLS["dm"] += 1
         if _consume_dm_failure_budget():
@@ -216,7 +260,6 @@ async def deterministic_generate_stream(
             f"ДМ подтверждает конкретное последствие хода {CALLS['dm']}: группа получает "
             "новое наблюдаемое свидетельство, меняет подход и на шаг приближается к цели сцены."
         )
-
     self.last_telemetry = {
         "status": "completed",
         "finish_reason": "stop",
@@ -230,6 +273,7 @@ async def deterministic_generate_stream(
 
 async def main() -> None:
     LLMProvider.generate_stream = deterministic_generate_stream
+    LLMProvider.generate_json = deterministic_generate_json
     try:
         from .run_realistic_simulation import run_realistic_simulation
     except ImportError:

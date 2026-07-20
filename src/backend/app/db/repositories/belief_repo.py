@@ -8,6 +8,10 @@ from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
 
 
 class BeliefRepository(BaseRepository):
+    @staticmethod
+    def normalize(value: object) -> str:
+        return " ".join(str(value or "").casefold().split())
+
     async def create(self, data: BeliefCreate) -> BeliefRead:
         db_belief = Belief(
             character_id=str(data.character_id),
@@ -15,9 +19,7 @@ class BeliefRepository(BaseRepository):
             proposition=data.proposition,
             status=data.status,
             confidence=data.confidence,
-            source_turn_id=(
-                str(data.source_turn_id) if data.source_turn_id else None
-            ),
+            source_turn_id=(str(data.source_turn_id) if data.source_turn_id else None),
             source_character_id=(
                 str(data.source_character_id) if data.source_character_id else None
             ),
@@ -59,14 +61,12 @@ class BeliefRepository(BaseRepository):
         db_belief = result.scalar_one_or_none()
         if not db_belief:
             return None
-
         update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
             if key in {"fact_id", "source_character_id", "superseded_by"} and value is not None:
                 setattr(db_belief, key, str(value))
             else:
                 setattr(db_belief, key, value)
-
         await self._session.flush()
         return BeliefRead.model_validate(db_belief)
 
@@ -81,9 +81,65 @@ class BeliefRepository(BaseRepository):
         old_belief = result.scalar_one_or_none()
         if not old_belief:
             raise ValueError(f"Belief {belief_id} not found")
-
         created_new = await self.create(new_belief)
         old_belief.is_current = False
         old_belief.superseded_by = str(created_new.id)
         await self._session.flush()
         return created_new
+
+    async def apply_change(
+        self,
+        data: BeliefCreate,
+        *,
+        operation: str = "assert",
+        previous_proposition: str | None = None,
+    ) -> BeliefRead | None:
+        """Deduplicate beliefs and preserve explicit corrections as versions."""
+        operation = operation if operation in {"assert", "revise", "retract", "contradict"} else "assert"
+        current = await self.get_for_character(data.character_id)
+        proposition_key = self.normalize(data.proposition)
+        exact = [
+            belief
+            for belief in current
+            if self.normalize(belief.proposition) == proposition_key
+            and belief.fact_id == data.fact_id
+        ]
+        previous_key = self.normalize(previous_proposition)
+
+        if operation == "retract":
+            targets = exact
+            if previous_key:
+                targets = [
+                    belief
+                    for belief in current
+                    if self.normalize(belief.proposition) == previous_key
+                ]
+            elif data.fact_id:
+                targets = [belief for belief in current if belief.fact_id == data.fact_id]
+            for belief in targets:
+                await self.update(belief.id, BeliefUpdate(is_current=False))
+            return None
+
+        if exact and operation == "assert":
+            return exact[0]
+
+        created = await self.create(data)
+        targets: list[BeliefRead] = []
+        if operation in {"revise", "contradict"}:
+            if previous_key:
+                targets = [
+                    belief
+                    for belief in current
+                    if self.normalize(belief.proposition) == previous_key
+                ]
+            elif data.fact_id:
+                targets = [belief for belief in current if belief.fact_id == data.fact_id]
+
+        for belief in targets:
+            if belief.id == created.id:
+                continue
+            await self.update(
+                belief.id,
+                BeliefUpdate(is_current=False, superseded_by=created.id),
+            )
+        return created

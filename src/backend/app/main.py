@@ -1,16 +1,21 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.archive import router as archive_router
 from app.api.campaigns import router as campaigns_router
+from app.api.debugger import router as debugger_router
 from app.api.entities import router as entities_router
 from app.api.memory import router as memory_router
 from app.api.scenes import router as scenes_router
 from app.api.turns import router as turns_router
 from app.api.world_state import router as world_state_router
 from app.config import settings
+from app.db.engine import get_session
+from app.services.post_turn_processor import PostTurnWorker
 
 
 @asynccontextmanager
@@ -19,8 +24,19 @@ async def lifespan(app: FastAPI):
     print("[personalDM] Starting backend server")
     print(f"[personalDM] Data dir: {settings.DATA_DIR}")
     print(f"[personalDM] Default local LLM: {settings.LLM_MODEL}")
-    yield
-    print("[personalDM] Shutting down backend server")
+    worker = None
+    worker_task = None
+    if get_session not in app.dependency_overrides:
+        worker = PostTurnWorker()
+        worker_task = asyncio.create_task(worker.run(), name="post-turn-worker")
+        app.state.post_turn_worker = worker
+    try:
+        yield
+    finally:
+        if worker and worker_task:
+            worker.stop()
+            await worker_task
+        print("[personalDM] Shutting down backend server")
 
 
 app = FastAPI(
@@ -49,6 +65,8 @@ app.include_router(scenes_router)
 app.include_router(entities_router)
 app.include_router(memory_router)
 app.include_router(world_state_router)
+app.include_router(debugger_router)
+app.include_router(archive_router)
 
 
 @app.get("/health")

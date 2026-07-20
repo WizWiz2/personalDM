@@ -49,6 +49,28 @@ class ContinuityChecker:
             return None, f"{field_name} references inactive entity {entity.canonical_name}"
         return entity, None
 
+    @staticmethod
+    def _canon_metadata(payload: dict) -> tuple[dict, str | None]:
+        metadata = payload.get("_canon")
+        if metadata is None:
+            return {}, None
+        if not isinstance(metadata, dict):
+            return {}, "_canon must be an object"
+        authority = metadata.get("authority")
+        if authority not in {
+            "dm_confirmed",
+            "public_observation",
+            "character_claim",
+            "player_intent",
+        }:
+            return metadata, "_canon.authority is invalid"
+        if not metadata.get("outcome_id") or not metadata.get("evidence"):
+            return metadata, "_canon requires outcome_id and evidence"
+        operation = metadata.get("operation", payload.get("operation", "assert"))
+        if operation not in {"assert", "revise", "retract", "contradict"}:
+            return metadata, "_canon.operation is invalid"
+        return metadata, None
+
     async def validate_change(
         self,
         campaign_id: UUID,
@@ -57,11 +79,30 @@ class ContinuityChecker:
         payload = change.payload
         change_type = change.change_type
 
+        if change_type == ChangeType.CANON_GAP:
+            return False, payload.get("_validation_error") or "Uncovered durable canon outcome"
+
+        canon, canon_error = self._canon_metadata(payload)
+        if canon_error:
+            return False, canon_error
+        if canon.get("authority") == "player_intent":
+            return False, "Player intent cannot directly create durable canon"
+        if canon.get("authority") == "character_claim" and change_type != ChangeType.KNOWLEDGE:
+            return False, "Character claims may create knowledge, not objective world canon"
+
         if change_type == ChangeType.FACT:
             subject = payload.get("subject")
             predicate = payload.get("predicate")
             if not subject or not predicate:
                 return False, "Fact proposal requires subject and predicate"
+            operation = payload.get("operation", canon.get("operation", "assert"))
+            cardinality = payload.get("cardinality", canon.get("cardinality", "single"))
+            if operation not in {"assert", "revise", "retract", "contradict"}:
+                return False, "Fact operation must be assert, revise, retract or contradict"
+            if cardinality not in {"single", "multi"}:
+                return False, "Fact cardinality must be single or multi"
+            if operation != "retract" and payload.get("object_value") is None:
+                return False, "Non-retraction fact requires object_value"
             for field_name in ("subject", "object_value"):
                 candidate = payload.get(field_name)
                 if not candidate:
@@ -89,11 +130,7 @@ class ContinuityChecker:
                 if error:
                     return False, error
             for participant in payload.get("participant_ids", []):
-                _, error = await self._entity(
-                    campaign_id,
-                    participant,
-                    "participant_id",
-                )
+                _, error = await self._entity(campaign_id, participant, "participant_id")
                 if error:
                     return False, error
 
@@ -136,7 +173,7 @@ class ContinuityChecker:
                 return False, error
 
         elif change_type == ChangeType.KNOWLEDGE:
-            _, error = await self._entity(
+            recipient, error = await self._entity(
                 campaign_id,
                 payload.get("recipient_id"),
                 "recipient_id",
@@ -144,8 +181,9 @@ class ContinuityChecker:
             )
             if error:
                 return False, error
+            source = None
             if payload.get("source_character_id"):
-                _, error = await self._entity(
+                source, error = await self._entity(
                     campaign_id,
                     payload.get("source_character_id"),
                     "source_character_id",
@@ -153,6 +191,8 @@ class ContinuityChecker:
                 )
                 if error:
                     return False, error
+            if source and source.id == recipient.id:
+                return False, "Character cannot learn a claim from itself"
             fact_id, fact_error = self._parse_uuid(payload.get("fact_id"), "fact_id")
             if fact_error:
                 return False, fact_error
@@ -163,8 +203,8 @@ class ContinuityChecker:
             if not fact_id and not payload.get("proposition"):
                 return False, "Knowledge requires fact_id or proposition"
             confidence = payload.get("confidence", 1.0)
-            if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
-                return False, "Knowledge confidence must be between 0 and 1"
+            if not isinstance(confidence, (int, float)) or not 0 < confidence <= 1:
+                return False, "Knowledge confidence must be greater than 0 and at most 1"
 
         elif change_type == ChangeType.ITEM_TRANSFER:
             item_entity, error = await self._entity(
@@ -199,10 +239,7 @@ class ContinuityChecker:
                 return False, "Item has no item-state row"
 
         elif change_type == ChangeType.SCENE_THESIS:
-            scene_id, scene_error = self._parse_uuid(
-                payload.get("scene_id"),
-                "scene_id",
-            )
+            scene_id, scene_error = self._parse_uuid(payload.get("scene_id"), "scene_id")
             if scene_error:
                 return False, scene_error
             if not scene_id or not payload.get("text"):

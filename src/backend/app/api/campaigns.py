@@ -29,7 +29,10 @@ async def get_campaign(campaign_id: UUID, session: AsyncSession = Depends(get_se
 @router.put("/{campaign_id}", response_model=CampaignRead)
 async def update_campaign(campaign_id: UUID, data: CampaignUpdate, session: AsyncSession = Depends(get_session)):
     service = CampaignService(session)
-    campaign = await service.update_campaign(campaign_id, data)
+    try:
+        campaign = await service.update_campaign(campaign_id, data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     return campaign

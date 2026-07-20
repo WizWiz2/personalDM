@@ -11,7 +11,8 @@ class CampaignRepository(BaseRepository):
             name=data.name,
             description=data.description,
             system_instructions=data.system_instructions,
-            narrative_style=data.narrative_style
+            narrative_style=data.narrative_style,
+            player_character_id=(str(data.player_character_id) if data.player_character_id else None),
         )
         self._session.add(db_campaign)
         await self._session.flush()
@@ -43,7 +44,7 @@ class CampaignRepository(BaseRepository):
             
         update_data = data.model_dump(exclude_unset=True)
         for key, value in update_data.items():
-            if key == "current_scene_id" and value is not None:
+            if key in {"current_scene_id", "player_character_id"} and value is not None:
                 setattr(db_campaign, key, str(value))
             else:
                 setattr(db_campaign, key, value)
