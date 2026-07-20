@@ -11,12 +11,20 @@
 - Campaign Debugger API и локальная HTML-панель;
 - просмотр provenance, evidence, версий канона и ошибок обработки;
 - ручной retry post-turn jobs;
-- backup базы, JSON export и воспроизводимый rebuild поддерживаемых canon deltas.
+- backup базы и JSON archive v2 без provider secret;
+- checkpoint начального состояния персонажей и предметов;
+- полный replay facts, beliefs, relationships, events, movement и item transfer;
+- сравнение семантической проекции до и после rebuild;
+- автоматический rollback при любом расхождении.
 
-## Ограничения rebuild
+## Старые кампании
 
-Rebuild безопасно воспроизводит facts, beliefs, relationships и обычные events из принятых proposals. Stateful deltas движения и владения предметами пока только диагностируются и пропускаются, потому что для их полного восстановления нужен отдельный начальный snapshot состояния мира.
+Для кампании, созданной до появления checkpoint, первое сохранение состояния становится безопасной baseline-точкой. В snapshot записывается список уже учтённых accepted proposals. Они повторяются при rebuild для восстановления provenance events, но итоговое состояние обязано совпасть с baseline и последующими дельтами.
+
+## Archive v2
+
+Экспорт содержит debugger snapshot, initial world state, текущую каноническую проекцию и SHA-256 хеши. Это позволяет проверить целостность архива и доказать, что rebuild вернул тот же наблюдаемый канон.
 
 ## Проверка
 
-Новый workflow выполняет compile, полный Alembic cycle, milestone tests, весь backend pytest и targeted Ruff для новых файлов.
+Workflow выполняет compile, полный Alembic cycle, отдельные round-trip tests, весь backend pytest и targeted Ruff для milestone-файлов.

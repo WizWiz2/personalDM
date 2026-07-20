@@ -19,6 +19,7 @@ from app.models.fact import FactCreate
 from app.models.proposed_change import ChangeType
 from app.models.relationship import RelationshipCreate
 from app.models.scene_thesis import SceneThesisCreate, ThesisType
+from app.services.initial_world_state import InitialWorldStateService
 
 
 class CanonApplier:
@@ -32,6 +33,7 @@ class CanonApplier:
         self._relationships = RelationshipRepository(session)
         self._events = EventRepository(session)
         self._scenes = SceneRepository(session)
+        self._initial_state = InitialWorldStateService(session)
 
     @staticmethod
     def _operation(payload: dict) -> str:
@@ -51,9 +53,17 @@ class CanonApplier:
         change_type: ChangeType,
         payload: dict,
         source_turn_id: UUID,
+        *,
+        record_noop_events: bool = False,
     ) -> None:
         if change_type == ChangeType.CANON_GAP:
             raise ValueError("A canon gap is evidence of a missing delta and cannot be applied")
+
+        if change_type in {ChangeType.MOVEMENT, ChangeType.ITEM_TRANSFER}:
+            await self._initial_state.ensure_snapshot(
+                campaign_id,
+                exclude_turn_id=source_turn_id,
+            )
 
         operation = self._operation(payload)
 
@@ -80,12 +90,14 @@ class CanonApplier:
             location_id = UUID(payload["location_id"])
             character = await self._entities.get_character(character_id)
             location = await self._entities.get_by_id(location_id)
-            if character.current_location_id == location_id:
+            unchanged = character.current_location_id == location_id
+            if unchanged and not record_noop_events:
                 return
-            await self._entities.update_character(
-                character_id,
-                CharacterUpdate(current_location_id=location_id),
-            )
+            if not unchanged:
+                await self._entities.update_character(
+                    character_id,
+                    CharacterUpdate(current_location_id=location_id),
+                )
             await self._events.create(
                 campaign_id,
                 EventCreate(
@@ -152,10 +164,15 @@ class CanonApplier:
             item = result.scalar_one()
             owner_id = payload.get("owner_id")
             location_id = payload.get("location_id")
-            if item.current_owner_id == owner_id and item.current_location_id == location_id:
+            unchanged = (
+                item.current_owner_id == owner_id
+                and item.current_location_id == location_id
+            )
+            if unchanged and not record_noop_events:
                 return
-            item.current_owner_id = owner_id
-            item.current_location_id = location_id
+            if not unchanged:
+                item.current_owner_id = owner_id
+                item.current_location_id = location_id
             await self._events.create(
                 campaign_id,
                 EventCreate(

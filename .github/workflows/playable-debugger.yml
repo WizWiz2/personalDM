@@ -1,9 +1,10 @@
-name: Playable debugger milestone
+name: Campaign integrity milestones
 
 on:
   push:
     branches:
       - "feature/playable-debugger-foundation"
+      - "feature/canon-replay-roundtrip"
   pull_request:
     paths:
       - "src/backend/**"
@@ -30,20 +31,28 @@ jobs:
           alembic upgrade head
           alembic downgrade 7f4b8d2c91aa
           alembic upgrade head
-      - name: New milestone tests
+      - name: Milestone tests
         working-directory: src/backend
-        run: pytest -q tests/test_playable_debugger_foundation.py --tb=short
+        run: >-
+          pytest -q
+          tests/test_playable_debugger_foundation.py
+          tests/test_canon_replay_roundtrip.py
+          --tb=short
       - name: Full backend tests
         working-directory: src/backend
         run: pytest -q --tb=short
-      - name: Lint new milestone files
+      - name: Lint milestone files
         run: >-
           ruff check
           src/backend/app/api/archive.py
           src/backend/app/api/debugger.py
+          src/backend/app/db/initial_state_table.py
           src/backend/app/db/repositories/job_repo.py
           src/backend/app/models/jobs.py
           src/backend/app/services/campaign_archive.py
+          src/backend/app/services/canon_applier.py
           src/backend/app/services/debugger_service.py
+          src/backend/app/services/initial_world_state.py
           src/backend/app/services/post_turn_processor.py
           src/backend/tests/test_playable_debugger_foundation.py
+          src/backend/tests/test_canon_replay_roundtrip.py
