@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -104,3 +105,22 @@ def test_resume_parser_preserves_target_and_intent():
 
 def test_health_snapshot_is_json_serializable():
     json.dumps(quality.health_snapshot(), ensure_ascii=False)
+
+
+def test_evaluator_history_drops_duplicate_current_assistant_result():
+    history = [
+        SimpleNamespace(role="user", content="Проверяю дверь"),
+        SimpleNamespace(role="assistant", content="Дверь открылась"),
+    ]
+    selected = quality.evaluator_history_without_duplicate(
+        history,
+        "Дверь открылась",
+    )
+    assert [item.content for item in selected] == ["Проверяю дверь"]
+
+
+def test_player_decision_schema_rejects_unknown_mode():
+    with pytest.raises(Exception):
+        quality.PlayerDecisionPayload.model_validate(
+            {"target": "narrator", "mode": "observe_forever", "intent": "Смотрю"}
+        )

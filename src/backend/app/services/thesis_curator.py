@@ -197,36 +197,31 @@ visual_state, music_mood
 """
 
         api_key = await self._config_repo.get_decrypted_key(campaign_id)
-        response_text = ""
         try:
-            async for token in self._llm_provider.generate_stream(
+            response_data = await self._llm_provider.generate_json(
                 [ChatMessage(role="system", content=prompt)],
                 config,
                 api_key,
                 max_tokens=900,
                 temperature=0.1,
-            ):
-                response_text += token
+                response_model=CuratorResponse,
+            )
         except LLMProviderError:
             raise
 
-        desired = self._parse_response(response_text, set(entity_names))
+        desired = self._validate_response(response_data, set(entity_names))
         if desired is None:
             raise LLMProviderError("Thesis Curator returned invalid structured output")
         return await self.reconcile(scene_id, source_turn_id, desired)
 
     @staticmethod
-    def _parse_response(
-        text: str,
+    def _validate_response(
+        data: dict,
         allowed_entity_ids: set[str],
     ) -> list[DesiredThesis] | None:
-        clean = text.strip()
-        if clean.startswith("```"):
-            lines = clean.splitlines()
-            clean = "\n".join(lines[1:-1]).strip()
         try:
-            parsed = CuratorResponse.model_validate(json.loads(clean))
-        except (json.JSONDecodeError, ValidationError, TypeError):
+            parsed = CuratorResponse.model_validate(data)
+        except (ValidationError, TypeError):
             return None
 
         result = []
@@ -240,6 +235,22 @@ visual_state, music_mood
                 continue
             result.append(thesis)
         return result
+
+    @classmethod
+    def _parse_response(
+        cls,
+        text: str,
+        allowed_entity_ids: set[str],
+    ) -> list[DesiredThesis] | None:
+        clean = text.strip()
+        if clean.startswith("```"):
+            lines = clean.splitlines()
+            clean = "\n".join(lines[1:-1]).strip()
+        try:
+            data = json.loads(clean)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return cls._validate_response(data, allowed_entity_ids)
 
     async def _group_active(self, scene_id: UUID):
         active = await self._scene_repo.list_theses_by_scene(scene_id, active_only=True)

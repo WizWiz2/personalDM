@@ -1,4 +1,6 @@
 import pytest
+from pydantic import BaseModel
+from typing import Literal
 
 from app.models.turn import ChatMessage
 from app.providers import llm_provider as llm_provider_module
@@ -51,6 +53,11 @@ class _FakeAsyncClient:
                 "eval_count": 40,
             }
         )
+
+
+class _EvaluationPayload(BaseModel):
+    status: Literal["progressing", "resolved"]
+    evidence: str
 
 
 class _MockConfig:
@@ -206,3 +213,67 @@ async def test_native_ollama_json_retries_reasoning_only_length(monkeypatch):
     assert len(second["json"]["messages"]) == 2
     assert provider.last_telemetry["attempt"] == 2
     assert provider.last_telemetry["transport"] == "ollama_native_json"
+
+
+class _SchemaRepairClient:
+    requests = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        self.requests.append({"url": url, "headers": headers, "json": json})
+        if len(self.requests) == 1:
+            return _FakeResponse(
+                {
+                    "message": {
+                        "content": '{"status":"awaiting_schema","evidence":"x"}'
+                    },
+                    "done": True,
+                    "done_reason": "stop",
+                }
+            )
+        return _FakeResponse(
+            {
+                "message": {
+                    "content": '{"status":"progressing","evidence":"исправлено"}'
+                },
+                "done": True,
+                "done_reason": "stop",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_native_ollama_uses_schema_and_repairs_validation_error(monkeypatch):
+    _SchemaRepairClient.requests = []
+    monkeypatch.setattr(llm_provider_module.httpx, "AsyncClient", _SchemaRepairClient)
+
+    provider = LLMProvider()
+    result = await provider.generate_json(
+        [ChatMessage(role="system", content="Верни только JSON.")],
+        _MockConfig(),
+        max_tokens=400,
+        temperature=0.0,
+        response_model=_EvaluationPayload,
+    )
+
+    assert result == {"status": "progressing", "evidence": "исправлено"}
+    assert len(_SchemaRepairClient.requests) == 2
+    first_payload = _SchemaRepairClient.requests[0]["json"]
+    second_payload = _SchemaRepairClient.requests[1]["json"]
+    assert first_payload["format"]["properties"]["status"]["enum"] == [
+        "progressing",
+        "resolved",
+    ]
+    repair_text = second_payload["messages"][-1]["content"]
+    assert "awaiting_schema" in repair_text
+    assert "validation" in repair_text
+    assert provider.last_telemetry["schema_enforced"] is True
+    assert provider.last_telemetry["response_model"] == "_EvaluationPayload"
