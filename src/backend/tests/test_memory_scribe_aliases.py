@@ -46,7 +46,7 @@ def test_embedded_known_uuid_is_recovered_but_unknown_uuid_is_rejected():
     ) is None
 
 
-def test_direct_npc_knowledge_goes_to_player_not_speaker():
+def test_knowledge_with_speaker_as_recipient_is_rejected():
     actor, player, _, _, known, known_ids = setup_entities()
     scribe = MemoryScribe(None)
     payload = scribe._normalize_payload(
@@ -64,10 +64,7 @@ def test_direct_npc_knowledge_goes_to_player_not_speaker():
         [str(actor), str(player)],
     )
 
-    assert payload is not None
-    assert payload["recipient_id"] == str(player)
-    assert payload["source_character_id"] == str(actor)
-    assert payload["confidence"] == 0.2
+    assert payload is None
 
 
 def test_public_event_expands_witnesses_and_discards_unknown_names():
