@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from pydantic import BaseModel, ValidationError
 
 from app.config import settings
 from app.models.provider_config import ProviderConfigRead
@@ -237,14 +238,23 @@ class LLMProvider:
         return [{"role": message.role, "content": message.content} for message in messages]
 
     @staticmethod
-    def _repair_instruction() -> dict[str, str]:
-        return {
-            "role": "user",
-            "content": (
-                "Не рассуждай вслух. Верни только один короткий валидный JSON-объект "
-                "строго по заданной схеме. Не используй markdown и пояснения."
-            ),
-        }
+    def _repair_instruction(
+        error: Exception | str | None = None,
+        previous_response: str = "",
+    ) -> dict[str, str]:
+        parts = [
+            "Не рассуждай вслух. Верни только один короткий валидный JSON-объект "
+            "строго по заданной схеме. Не используй markdown и пояснения."
+        ]
+        if error:
+            parts.append(f"Ошибка предыдущего ответа: {str(error)[:1800]}")
+        previous = previous_response.strip()
+        if previous:
+            parts.append(
+                "Предыдущий ответ, который нужно исправить, а не расширять:\n"
+                + previous[:4000]
+            )
+        return {"role": "user", "content": "\n\n".join(parts)}
 
     @staticmethod
     def _adaptive_budget(base: int, attempt: int) -> int:
@@ -317,8 +327,9 @@ class LLMProvider:
         *,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        response_model: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
-        """Return one validated JSON object with adaptive budget and repair."""
+        """Return one schema-validated JSON object with adaptive budget and repair."""
         is_ollama = self._is_ollama(config.base_url)
         url = (
             self._ollama_native_url(config.base_url)
@@ -331,8 +342,10 @@ class LLMProvider:
 
         base_budget = max_tokens or settings.CONTROL_RESPONSE_RESERVE_TOKENS
         base_messages = self._messages_payload(messages)
+        response_schema = response_model.model_json_schema() if response_model else None
         started = time.monotonic()
         last_error: Exception | None = None
+        last_raw_text = ""
         attempt_telemetry: list[dict[str, Any]] = []
 
         async with httpx.AsyncClient(
@@ -343,14 +356,16 @@ class LLMProvider:
                 budget = self._adaptive_budget(base_budget, attempt)
                 request_messages = list(base_messages)
                 if attempt > 1:
-                    request_messages.append(self._repair_instruction())
+                    request_messages.append(
+                        self._repair_instruction(last_error, last_raw_text)
+                    )
 
                 if is_ollama:
                     payload: dict[str, Any] = {
                         "model": config.model_name,
                         "messages": request_messages,
                         "stream": False,
-                        "format": "json",
+                        "format": response_schema or "json",
                         "think": False,
                         "options": {"num_predict": budget},
                     }
@@ -404,7 +419,22 @@ class LLMProvider:
                                 f"(reasoning_chars={reasoning_chars}, "
                                 f"finish_reason={finish_reason!r}, budget={budget})"
                             )
+                        last_raw_text = raw_text
                         parsed = self._parse_json_object(raw_text)
+
+                    if response_model is not None:
+                        try:
+                            parsed = response_model.model_validate(parsed).model_dump(
+                                mode="json"
+                            )
+                        except ValidationError as exc:
+                            last_raw_text = raw_text or json.dumps(
+                                parsed, ensure_ascii=False
+                            )
+                            raise LLMProviderError(
+                                f"structured response failed {response_model.__name__} "
+                                f"validation: {exc}"
+                            ) from exc
 
                     telemetry = {
                         "attempt": attempt,
@@ -415,6 +445,10 @@ class LLMProvider:
                         "response_characters": len(raw_text),
                         "http_status": response.status_code,
                         "native_ollama": is_ollama,
+                        "response_model": (
+                            response_model.__name__ if response_model else None
+                        ),
+                        "schema_enforced": bool(is_ollama and response_schema),
                         "thinking_disabled": bool(
                             used_payload.get("think") is False
                             or used_payload.get("reasoning_effort") == "none"

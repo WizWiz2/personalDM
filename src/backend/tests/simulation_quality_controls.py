@@ -2,22 +2,17 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from uuid import UUID
+from typing import Any, Literal
 
-import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.providers.llm_provider import LLMProvider
 from app.services.context_compiler import ContextCompiler, count_tokens
 from app.services.memory_scribe import MemoryScribe
-from app.services.thesis_curator import ThesisCurator
 
 
 class BenchmarkControlError(RuntimeError):
@@ -29,6 +24,12 @@ class ControlJSONResult:
     data: dict[str, Any]
     attempt: int
     transport: str
+
+
+class PlayerDecisionPayload(BaseModel):
+    target: str = Field(min_length=1, max_length=120)
+    mode: Literal["action", "dialogue", "question", "plan", "decision"]
+    intent: str = Field(min_length=2, max_length=1200)
 
 
 CONTROL_STATS: Counter[str] = Counter()
@@ -158,68 +159,6 @@ async def _mock_stream_json(
     return _balanced_json_object(raw), "mock_stream"
 
 
-async def _http_json(
-    provider: LLMProvider,
-    messages: list[ChatMessage],
-    config,
-    api_key: str | None,
-    max_tokens: int,
-    temperature: float,
-) -> tuple[dict[str, Any], str]:
-    url = f"{config.base_url.rstrip('/')}/chat/completions"
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    payload: dict[str, Any] = {
-        "model": config.model_name,
-        "messages": [
-            {"role": message.role, "content": message.content}
-            for message in messages
-        ],
-        "stream": False,
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "response_format": {"type": "json_object"},
-    }
-    if provider._is_ollama(config.base_url):
-        payload["think"] = False
-
-    started = time.monotonic()
-    async with httpx.AsyncClient(
-        trust_env=False,
-        timeout=httpx.Timeout(180.0, connect=10.0),
-    ) as client:
-        response = await client.post(url, headers=headers, json=payload)
-        if response.status_code == 400:
-            payload.pop("response_format", None)
-            response = await client.post(url, headers=headers, json=payload)
-        if response.status_code != 200:
-            raise LLMProviderError(
-                f"control request returned HTTP {response.status_code}: {response.text[:1500]}"
-            )
-        data = response.json()
-
-    content = provider._extract_content(data)
-    if not content and isinstance(data, dict) and isinstance(data.get("response"), dict):
-        return data["response"], "http_json"
-    if not content:
-        raise LLMProviderError(
-            "control request completed without JSON content "
-            f"(finish_reason={provider._extract_finish_reason(data)!r})"
-        )
-    provider.last_telemetry = {
-        "status": "completed",
-        "control_plane": True,
-        "transport": "http_json",
-        "finish_reason": provider._extract_finish_reason(data),
-        "usage": provider._extract_usage(data),
-        "response_characters": len(content),
-        "duration_ms": round((time.monotonic() - started) * 1000),
-        "thinking_disabled": bool(payload.get("think") is False),
-    }
-    return _balanced_json_object(content), "http_json"
-
-
 async def generate_control_json(
     provider: LLMProvider,
     messages: list[ChatMessage],
@@ -229,6 +168,7 @@ async def generate_control_json(
     label: str,
     max_tokens: int,
     temperature: float,
+    response_model: type[BaseModel] | None = None,
 ) -> ControlJSONResult | None:
     CONTROL_STATS[f"{label}_calls"] += 1
     last_error: Exception | None = None
@@ -240,8 +180,10 @@ async def generate_control_json(
                 ChatMessage(
                     role="user",
                     content=(
-                        "Предыдущий ответ не был корректным JSON. Верни только один валидный JSON-объект "
-                        "строго по указанной схеме, без markdown и пояснений."
+                        "Предыдущий ответ не прошёл проверку: "
+                        f"{str(last_error)[:1800]}. Исправь его и верни только один "
+                        "валидный JSON-объект строго по указанной схеме, без markdown "
+                        "и пояснений."
                     ),
                 )
             )
@@ -256,14 +198,19 @@ async def generate_control_json(
                     temperature if attempt == 1 else 0.0,
                 )
             else:
-                data, transport = await _http_json(
-                    provider,
+                data = await provider.generate_json(
                     request_messages,
                     config,
                     api_key,
-                    max_tokens,
-                    temperature if attempt == 1 else 0.0,
+                    max_tokens=max_tokens,
+                    temperature=temperature if attempt == 1 else 0.0,
+                    response_model=response_model,
                 )
+                telemetry = dict(provider.last_telemetry or {})
+                transport = str(telemetry.get("transport") or "provider_json")
+                attempt = int(telemetry.get("attempt") or attempt)
+            if response_model is not None:
+                data = response_model.model_validate(data).model_dump(mode="json")
             CONTROL_STATS[f"{label}_success"] += 1
             if attempt > 1:
                 CONTROL_STATS[f"{label}_repair_success"] += 1
@@ -312,6 +259,23 @@ def ensure_current_user_message(
     return result, metadata
 
 
+def evaluator_history_without_duplicate(
+    recent_history,
+    assistant_content: str,
+    *,
+    limit: int = 6,
+):
+    records = list(recent_history)
+    if (
+        records
+        and getattr(records[-1], "role", None) == "assistant"
+        and str(getattr(records[-1], "content", "")).strip()
+        == assistant_content.strip()
+    ):
+        records.pop()
+    return records[-limit:]
+
+
 def install_quality_controls(runtime) -> None:
     global _INSTALLED
     if _INSTALLED:
@@ -320,7 +284,6 @@ def install_quality_controls(runtime) -> None:
 
     original_compile_context = ContextCompiler.compile_context
     original_scribe = MemoryScribe.extract_proposals
-    original_curate = ThesisCurator.curate_after_turn
     base_policy = runtime.PlayerPolicy
 
     async def reserved_compile_context(self, *args, **kwargs):
@@ -420,6 +383,7 @@ def install_quality_controls(runtime) -> None:
                 label="player",
                 max_tokens=420,
                 temperature=0.7 if semantic_attempt == 0 else 0.2,
+                response_model=PlayerDecisionPayload,
             )
             if result is None:
                 break
@@ -478,9 +442,13 @@ def install_quality_controls(runtime) -> None:
             f"{index}: {phase_runtime.phase.pulses[index].event}"
             for index in pending_indexes
         ]
+        evaluator_history = evaluator_history_without_duplicate(
+            recent_history,
+            assistant_content,
+        )
         recent = "\n".join(
             f"{'ДМ' if turn.role == 'assistant' else 'ИГРОК'}: {turn.content}"
-            for turn in recent_history[-8:]
+            for turn in evaluator_history
         )
         prompt = f"""Ты проверяешь фактическое состояние цели сцены RPG.
 Верни только JSON:
@@ -507,6 +475,7 @@ Resolved только если цель действительно достиг�
             label="evaluator",
             max_tokens=360,
             temperature=0.0,
+            response_model=runtime.ObjectiveEvaluation,
         )
         if result is None:
             return runtime.ObjectiveEvaluation(
@@ -565,6 +534,7 @@ initial_beliefs, visual_profile.
                 label="builder",
                 max_tokens=1600,
                 temperature=0.35 if attempt == 0 else 0.0,
+                response_model=runtime.CharacterDraft,
             )
             if result is None:
                 break
@@ -582,26 +552,7 @@ initial_beliefs, visual_profile.
 
     async def strict_scribe(self, *args, **kwargs):
         global _SCRIBE_EMPTY_STREAK
-        original_generate_stream = self._llm_provider.generate_stream
-
-        async def json_stream(messages, config, api_key=None, **generation_kwargs):
-            result = await generate_control_json(
-                self._llm_provider,
-                messages,
-                config,
-                api_key,
-                label="scribe",
-                max_tokens=int(generation_kwargs.get("max_tokens") or 900),
-                temperature=float(generation_kwargs.get("temperature") or 0.0),
-            )
-            payload = result.data if result is not None else {"proposals": []}
-            yield json.dumps(payload, ensure_ascii=False)
-
-        self._llm_provider.generate_stream = json_stream
-        try:
-            proposals = await original_scribe(self, *args, **kwargs)
-        finally:
-            self._llm_provider.generate_stream = original_generate_stream
+        proposals = await original_scribe(self, *args, **kwargs)
 
         assistant_content = str(kwargs.get("assistant_content") or "")
         if len(assistant_content.strip()) >= 180:
@@ -618,33 +569,9 @@ initial_beliefs, visual_profile.
                 raise BenchmarkControlError(CONTROL_FAILURES[-1])
         return proposals
 
-    async def strict_curator(self, *args, **kwargs):
-        original_generate_stream = self._llm_provider.generate_stream
-
-        async def json_stream(messages, config, api_key=None, **generation_kwargs):
-            result = await generate_control_json(
-                self._llm_provider,
-                messages,
-                config,
-                api_key,
-                label="curator",
-                max_tokens=int(generation_kwargs.get("max_tokens") or 900),
-                temperature=float(generation_kwargs.get("temperature") or 0.0),
-            )
-            payload = result.data if result is not None else {"desired_active": []}
-            yield json.dumps(payload, ensure_ascii=False)
-
-        self._llm_provider.generate_stream = json_stream
-        try:
-            return await original_curate(self, *args, **kwargs)
-        except BenchmarkControlError:
-            raise
-        finally:
-            self._llm_provider.generate_stream = original_generate_stream
 
     runtime.generate_player_decision = strict_player
     runtime.evaluate_objective = strict_evaluator
     runtime.build_character_card = strict_builder
     MemoryScribe.extract_proposals = strict_scribe
-    ThesisCurator.curate_after_turn = strict_curator
     _write_health()

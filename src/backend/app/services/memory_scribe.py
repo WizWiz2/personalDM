@@ -11,7 +11,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services.canon_semantics import CanonAudit, proposals_from_envelope
+from app.services.canon_semantics import CanonAudit, CanonEnvelope, proposals_from_envelope
 
 
 PLACEHOLDER_SELF = {"self", "speaker", "acting_character", "acting_character_id"}
@@ -182,6 +182,7 @@ FACT SEMANTICS:
                 api_key,
                 max_tokens=1400,
                 temperature=0.0,
+                response_model=CanonEnvelope,
             )
         except LLMProviderError as exc:
             self.last_audit = CanonAudit(

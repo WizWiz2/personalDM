@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -33,10 +33,17 @@ class FactCardinality(str, Enum):
 
 
 class OutcomeAtom(BaseModel):
-    id: str
-    kind: str
-    description: str
-    evidence: str
+    id: str = Field(min_length=1, max_length=40)
+    kind: Literal[
+        "world_state",
+        "event",
+        "knowledge_transfer",
+        "relationship_change",
+        "movement",
+        "item_transfer",
+    ]
+    description: str = Field(min_length=3, max_length=600)
+    evidence: str = Field(min_length=1, max_length=600)
     authority: CanonAuthority
     durable: bool = True
 
@@ -50,8 +57,8 @@ class ProposalAtom(BaseModel):
 
 
 class CanonEnvelope(BaseModel):
-    outcomes: list[OutcomeAtom] = Field(default_factory=list)
-    proposals: list[ProposalAtom] = Field(default_factory=list)
+    outcomes: list[OutcomeAtom] = Field(default_factory=list, max_length=10)
+    proposals: list[ProposalAtom] = Field(default_factory=list, max_length=12)
 
 
 class CanonAudit(BaseModel):

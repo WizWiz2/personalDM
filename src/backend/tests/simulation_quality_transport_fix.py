@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.providers.llm_provider import LLMProvider
 from app.services.memory_scribe import MemoryScribe
+from app.services.thesis_curator import ThesisCurator
 from app.services.memory_scribe_guard import install as install_memory_scribe_guard
 
 
@@ -19,6 +20,7 @@ def install(quality_module) -> None:
     original_uses_mock_stream = quality_module._uses_mock_stream
     original_mock_stream_json = quality_module._mock_stream_json
     original_scribe = MemoryScribe.extract_proposals
+    original_curator = ThesisCurator.curate_after_turn
 
     def underlying_class_method(provider):
         return getattr(type(provider), "generate_stream", LLMProvider.generate_stream)
@@ -83,6 +85,7 @@ def install(quality_module) -> None:
         label,
         max_tokens,
         temperature,
+        response_model=None,
     ):
         quality_module.CONTROL_STATS[f"{label}_calls"] += 1
         budget = control_budget(label, max_tokens)
@@ -97,6 +100,8 @@ def install(quality_module) -> None:
                     budget,
                     temperature,
                 )
+                if response_model is not None:
+                    data = response_model.model_validate(data).model_dump(mode="json")
                 attempt = 1
             else:
                 data = await provider.generate_json(
@@ -105,6 +110,7 @@ def install(quality_module) -> None:
                     api_key,
                     max_tokens=budget,
                     temperature=temperature,
+                    response_model=response_model,
                 )
                 telemetry = dict(provider.last_telemetry or {})
                 transport = str(telemetry.get("transport") or "provider_json")
@@ -160,7 +166,23 @@ def install(quality_module) -> None:
             quality_module._write_health()
         return proposals
 
+    async def audited_curator(self, *args, **kwargs):
+        quality_module.CONTROL_STATS["curator_calls"] += 1
+        try:
+            result = await original_curator(self, *args, **kwargs)
+        except Exception as exc:
+            quality_module.record_control_failure("curator", exc)
+            if quality_module.quality_mode():
+                raise quality_module.BenchmarkControlError(
+                    f"Curator unavailable: {exc}"
+                ) from exc
+            return None
+        quality_module.CONTROL_STATS["curator_success"] += 1
+        quality_module._write_health()
+        return result
+
     quality_module._uses_mock_stream = uses_mock_stream
     quality_module._mock_stream_json = mock_stream_json
     quality_module.generate_control_json = generate_control_json
     MemoryScribe.extract_proposals = audited_scribe
+    ThesisCurator.curate_after_turn = audited_curator
