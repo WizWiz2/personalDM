@@ -1,5 +1,4 @@
 import json
-from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -105,8 +104,9 @@ class ItemTransferCommand(BaseModel):
 
     @model_validator(mode="after")
     def one_destination(self):
-        if self.owner_id and self.location_id:
-            raise ValueError("item can have an owner or a location, not both")
+        destinations = int(self.owner_id is not None) + int(self.location_id is not None)
+        if destinations != 1:
+            raise ValueError("item must have exactly one owner or location")
         return self
 
 

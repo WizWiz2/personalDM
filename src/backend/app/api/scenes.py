@@ -78,8 +78,12 @@ async def add_participant(
     entity_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    await SceneRepository(session).add_participant(scene_id, entity_id)
-    await session.commit()
+    try:
+        await SceneRepository(session).add_participant(scene_id, entity_id)
+        await session.commit()
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"success": True}
 
 

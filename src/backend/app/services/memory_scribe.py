@@ -188,7 +188,7 @@ FACT SEMANTICS:
                 envelope_valid=False,
                 error=str(exc),
             ).model_dump()
-            return []
+            raise
 
         return self._parse_data(
             data,
@@ -411,15 +411,10 @@ FACT SEMANTICS:
 
         if change_type == ChangeType.KNOWLEDGE:
             actor_id = str(acting_character_id) if acting_character_id else None
-            player_id = str(player_character_id) if player_character_id else None
             source_id = resolved.get("source_character_id") or actor_id
             recipient_id = resolved.get("recipient_id")
-            if not recipient_id and source_id and player_id and source_id != player_id:
-                recipient_id = player_id
-            if recipient_id == source_id and player_id and source_id != player_id:
-                recipient_id = player_id
             proposition = resolved.get("proposition")
-            if not recipient_id or not proposition:
+            if not recipient_id or recipient_id == source_id or not proposition:
                 return None
             confidence = resolved.get("confidence", 0.8)
             try:

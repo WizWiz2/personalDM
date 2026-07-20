@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import delete, select
 
 from app.db.repositories.base import BaseRepository
-from app.db.tables import Scene, SceneParticipant, SceneThesis
+from app.db.tables import Entity, Scene, SceneParticipant, SceneThesis
 from app.models.scene import SceneCreate, SceneRead, SceneUpdate
 from app.models.scene_thesis import (
     SceneThesisCreate,
@@ -81,6 +81,22 @@ class SceneRepository(BaseRepository):
         return True
 
     async def add_participant(self, scene_id: UUID, entity_id: UUID) -> bool:
+        scene_result = await self._session.execute(
+            select(Scene).where(Scene.id == str(scene_id))
+        )
+        scene = scene_result.scalar_one_or_none()
+        if not scene:
+            raise ValueError("Scene not found")
+
+        entity_result = await self._session.execute(
+            select(Entity).where(Entity.id == str(entity_id))
+        )
+        entity = entity_result.scalar_one_or_none()
+        if not entity or entity.campaign_id != scene.campaign_id:
+            raise ValueError("Participant must belong to the same campaign as the scene")
+        if entity.entity_type != "character":
+            raise ValueError("Only character entities may participate in a scene")
+
         result = await self._session.execute(
             select(SceneParticipant).where(
                 SceneParticipant.scene_id == str(scene_id),
