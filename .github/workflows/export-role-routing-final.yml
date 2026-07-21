@@ -119,4 +119,5 @@ jobs:
         with:
           name: role-routing-final-files
           path: /tmp/role-routing-final/
+          include-hidden-files: true
           retention-days: 2
