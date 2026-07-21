@@ -1,5 +1,4 @@
 import json
-from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -23,6 +22,7 @@ from app.models.event import EventCreate
 from app.models.goal import GoalCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.role_model_router import ModelRole, RoleModelRouter
 
 router = APIRouter(tags=["world-state"])
 
@@ -162,8 +162,11 @@ async def draft_character(
     session: AsyncSession = Depends(get_session),
 ):
     config_repo = ProviderConfigRepository(session)
-    config = await config_repo.get_by_campaign_id(campaign_id)
-    if not config:
+    selection = await RoleModelRouter(config_repo).resolve(
+        campaign_id,
+        ModelRole.CHARACTER_BUILDER,
+    )
+    if selection is None:
         raise HTTPException(status_code=400, detail="LLM provider is not configured")
 
     prompt = """You create reviewable NPC cards for a long-running tabletop RPG.
@@ -186,32 +189,23 @@ Keep each list between one and five entries. Avoid generic filler."""
         f"Tone: {request.tone or 'match the campaign'}"
     )
     provider = LLMProvider()
-    response = ""
+    router = RoleModelRouter(config_repo)
     try:
-        async for token in provider.generate_stream(
+        payload = await router.generate_json(
+            provider,
+            selection,
             [
                 ChatMessage(role="system", content=prompt),
                 ChatMessage(role="user", content=user_text),
             ],
-            config,
-            await config_repo.get_decrypted_key(campaign_id),
-        ):
-            response += token
-    except LLMProviderError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-    clean = response.strip()
-    if clean.startswith("```"):
-        clean = "\n".join(clean.splitlines()[1:-1]).strip()
-    try:
-        payload = json.loads(clean)
+            max_tokens=1600,
+            temperature=0.45,
+            response_model=CharacterDraft,
+        )
         payload["current_location_id"] = request.current_location_id
         return CharacterDraft.model_validate(payload)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="Character Builder returned invalid JSON",
-        ) from exc
+    except LLMProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post(
