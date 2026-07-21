@@ -44,7 +44,7 @@ from app.models.event import EventCreate
 from app.models.proposed_change import ProposalAction
 from app.models.provider_config import ProviderConfigCreate
 from app.models.scene import SceneCreate, SceneUpdate
-from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
+from app.models.scene_thesis import SceneThesisCreate, ThesisType
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.campaign_service import CampaignService
