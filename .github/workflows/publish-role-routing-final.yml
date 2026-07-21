@@ -1,0 +1,79 @@
+name: Publish clean role routing branch
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.head_ref == 'agent/route-models-by-role'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Build clean validated tree
+        shell: bash
+        run: |
+          python .github/finalize_role_routing.py
+          rm -f .github/finalize_role_routing.py
+          rm -f .github/role-routing-script.gz.b64
+          rm -f .github/role-routing-ruff.txt
+          rm -f .github/workflows/apply-role-routing.yml
+          rm -f .github/workflows/fix-role-routing-lint.yml
+          rm -f .github/workflows/fix-role-routing-correctness.yml
+          rm -f .github/workflows/export-role-routing-final.yml
+          rm -f .github/workflows/publish-role-routing-final.yml
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install and validate
+        run: |
+          python -m pip install -e 'src/backend[dev]'
+          python -m compileall -q src/backend/app src/backend/tests
+          cd src/backend
+          pytest -q \
+            tests/test_role_model_router.py \
+            tests/test_post_turn_scheduling.py \
+            tests/test_simulation_quality_controls.py \
+            tests/test_turns.py \
+            tests/test_provider_and_scribe.py \
+            tests/test_memory_scribe_guard.py \
+            tests/test_thesis_curator.py \
+            tests/test_thesis_curator_lifecycle.py \
+            tests/test_llm_provider_resilience.py \
+            --tb=short
+
+      - name: Lint
+        run: >-
+          ruff check
+          src/backend/app/config.py
+          src/backend/app/services/role_model_router.py
+          src/backend/app/services/memory_scribe.py
+          src/backend/app/services/thesis_curator.py
+          src/backend/app/services/post_turn_processor.py
+          src/backend/app/db/repositories/turn_repo.py
+          src/backend/app/api/world_state.py
+          src/backend/tests/run_realistic_simulation.py
+          src/backend/tests/run_realistic_simulation_v2.py
+          src/backend/tests/simulation_quality_controls.py
+          src/backend/tests/test_role_model_router.py
+          src/backend/tests/test_post_turn_scheduling.py
+          src/backend/tests/test_simulation_quality_controls.py
+
+      - name: Create clean commit and branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git reset --soft ${{ github.event.pull_request.base.sha }}
+          git add -A
+          git commit -m "Распределить LLM-роли между Gemma и Qwen"
+          git push --force origin HEAD:agent/route-models-by-role-final
