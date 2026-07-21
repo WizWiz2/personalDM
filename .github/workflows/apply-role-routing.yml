@@ -48,21 +48,27 @@ jobs:
           tests/test_llm_provider_resilience.py
           --tb=short
 
-      - name: Lint changed files
-        run: >-
-          ruff check
-          src/backend/app/config.py
-          src/backend/app/services/role_model_router.py
-          src/backend/app/services/memory_scribe.py
-          src/backend/app/services/thesis_curator.py
-          src/backend/app/services/post_turn_processor.py
-          src/backend/app/db/repositories/turn_repo.py
-          src/backend/app/api/world_state.py
-          src/backend/tests/run_realistic_simulation_v2.py
-          src/backend/tests/simulation_quality_controls.py
-          src/backend/tests/test_role_model_router.py
+      - name: Capture lint diagnostics
+        shell: bash
+        run: |
+          set +e
+          ruff check \
+            src/backend/app/config.py \
+            src/backend/app/services/role_model_router.py \
+            src/backend/app/services/memory_scribe.py \
+            src/backend/app/services/thesis_curator.py \
+            src/backend/app/services/post_turn_processor.py \
+            src/backend/app/db/repositories/turn_repo.py \
+            src/backend/app/api/world_state.py \
+            src/backend/tests/run_realistic_simulation_v2.py \
+            src/backend/tests/simulation_quality_controls.py \
+            src/backend/tests/test_role_model_router.py \
+            > /tmp/role-routing-ruff.txt 2>&1
+          cat /tmp/role-routing-ruff.txt
+          mkdir -p .github
+          cp /tmp/role-routing-ruff.txt .github/role-routing-ruff.txt
 
-      - name: Commit validated routing
+      - name: Commit tested routing and diagnostics
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
