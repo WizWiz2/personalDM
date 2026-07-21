@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.engine import AsyncSessionLocal
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
@@ -13,6 +14,11 @@ from app.models.proposed_change import ChangeType
 from app.services.continuity_checker import ContinuityChecker
 from app.services.memory_scribe import MemoryScribe
 from app.services.thesis_curator import ThesisCurator
+
+
+def should_run_periodic_job(turn_number: int, interval: int) -> bool:
+    interval = max(1, int(interval))
+    return turn_number <= 1 or turn_number % interval == 0
 
 
 class PostTurnProcessor:
@@ -61,13 +67,20 @@ class PostTurnProcessor:
             campaign_id = UUID(row.campaign_id)
             if row.job_type == "thesis_curator":
                 if assistant.scene_id:
-                    await ThesisCurator(self._session).curate_after_turn(
-                        campaign_id=campaign_id,
-                        scene_id=assistant.scene_id,
-                        source_turn_id=assistant.id,
-                        user_content=user_turn.content,
-                        assistant_content=assistant.content,
+                    scene_turn = await self._turns.count_assistant_turns_in_scene(
+                        assistant.scene_id
                     )
+                    if should_run_periodic_job(
+                        scene_turn,
+                        settings.CURATOR_INTERVAL_TURNS,
+                    ):
+                        await ThesisCurator(self._session).curate_after_turn(
+                            campaign_id=campaign_id,
+                            scene_id=assistant.scene_id,
+                            source_turn_id=assistant.id,
+                            user_content=user_turn.content,
+                            assistant_content=assistant.content,
+                        )
             elif row.job_type == "memory_scribe":
                 existing = await ProposedChangeRepository(self._session).get_for_turn(
                     assistant.id

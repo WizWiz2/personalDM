@@ -1,7 +1,7 @@
 import json
 from uuid import UUID
 
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Turn
@@ -56,6 +56,18 @@ class TurnRepository(BaseRepository):
         result = await self._session.execute(query)
         turns = result.scalars().all()
         return [TurnRead.model_validate(turn) for turn in reversed(turns)]
+
+    async def count_assistant_turns_in_scene(self, scene_id: UUID) -> int:
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(Turn)
+            .where(
+                Turn.scene_id == str(scene_id),
+                Turn.role == "assistant",
+                Turn.status == "active",
+            )
+        )
+        return int(result.scalar_one())
 
     async def get_sliding_window(
         self,

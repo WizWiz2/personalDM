@@ -1,0 +1,34 @@
+F401 [*] `typing.Literal` imported but unused
+ --> src/backend/app/api/world_state.py:2:20
+  |
+1 | import json
+2 | from typing import Literal
+  |                    ^^^^^^^
+3 | from uuid import UUID
+  |
+help: Remove unused import: `typing.Literal`
+
+F401 [*] `os` imported but unused
+ --> src/backend/app/config.py:1:8
+  |
+1 | import os
+  |        ^^
+2 |
+3 | from pydantic_settings import BaseSettings, SettingsConfigDict
+  |
+help: Remove unused import: `os`
+
+F401 [*] `app.models.scene_thesis.SceneThesisUpdate` imported but unused
+  --> src/backend/tests/run_realistic_simulation_v2.py:47:56
+   |
+45 | from app.models.provider_config import ProviderConfigCreate
+46 | from app.models.scene import SceneCreate, SceneUpdate
+47 | from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
+   |                                                        ^^^^^^^^^^^^^^^^^
+48 | from app.models.turn import ChatMessage, TurnCreate
+49 | from app.providers.llm_provider import LLMProvider, LLMProviderError
+   |
+help: Remove unused import: `app.models.scene_thesis.SceneThesisUpdate`
+
+Found 3 errors.
+[*] 3 fixable with the `--fix` option.
