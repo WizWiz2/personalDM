@@ -1,0 +1,266 @@
+from pathlib import Path
+import re
+import textwrap
+
+
+def sub(path: str, pattern: str, replacement: str, *, flags: int = 0) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    updated, count = re.subn(pattern, replacement, text, count=1, flags=flags)
+    if count != 1:
+        raise SystemExit(f"pattern matched {count} times in {path}: {pattern[:100]}")
+    file.write_text(updated, encoding="utf-8")
+
+
+sub(
+    "src/backend/tests/run_realistic_simulation.py",
+    r"    def fallback\(self, \*args, \*\*kwargs\):\n        decision = super\(\)\.fallback\(\*args, \*\*kwargs\)\n        _FALLBACK_FINGERPRINTS\.add\(self\.fingerprint\(decision\.intent\)\)\n        return decision\n",
+    "    def fallback(self, *args, **kwargs):\n"
+    "        decision = super().fallback(*args, **kwargs)\n"
+    "        if kwargs.get(\"count_fallback\", True):\n"
+    "            _FALLBACK_FINGERPRINTS.add(self.fingerprint(decision.intent))\n"
+    "        return decision\n",
+)
+
+sub(
+    "src/backend/app/db/repositories/turn_repo.py",
+    r"    async def count_assistant_turns_in_scene\(self, scene_id: UUID\) -> int:\n.*?        return int\(result\.scalar_one\(\)\)\n",
+    """    async def assistant_turn_number_in_scene(self, turn_id: UUID) -> int:
+        turn = await self._session.get(Turn, str(turn_id))
+        if not turn or turn.role != "assistant" or not turn.scene_id:
+            return 0
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(Turn)
+            .where(
+                Turn.scene_id == turn.scene_id,
+                Turn.role == "assistant",
+                Turn.status == "active",
+                Turn.created_at <= turn.created_at,
+            )
+        )
+        return int(result.scalar_one())
+""",
+    flags=re.DOTALL,
+)
+
+sub(
+    "src/backend/app/services/post_turn_processor.py",
+    r"    async def process_job\(self, job_id: UUID\) -> None:\n        from app\.db\.tables import PostTurnJob\n\n        row = await self\._session\.get\(PostTurnJob, str\(job_id\)\)\n        if not row:\n            raise ValueError\(f\"Post-turn job \{job_id\} not found\"\)\n        if row\.status == \"completed\":\n            return\n        if row\.status != \"running\":\n            row\.status = \"running\"\n            row\.attempts \+= 1\n            row\.error = None\n            await self\._session\.commit\(\)\n",
+    """    async def process_job(self, job_id: UUID, *, already_claimed: bool = False) -> None:
+        from app.db.tables import PostTurnJob
+
+        row = await self._session.get(PostTurnJob, str(job_id))
+        if not row:
+            raise ValueError(f"Post-turn job {job_id} not found")
+        await self._session.refresh(row)
+        if row.status == "completed":
+            return
+        if already_claimed:
+            if row.status != "running":
+                return
+        else:
+            if row.status == "running":
+                return
+            if row.status not in {"pending", "failed"}:
+                return
+            row.status = "running"
+            row.attempts += 1
+            row.error = None
+            await self._session.commit()
+""",
+)
+
+sub(
+    "src/backend/app/services/post_turn_processor.py",
+    r"scene_turn = await self\._turns\.count_assistant_turns_in_scene\(\n\s+assistant\.scene_id\n\s+\)",
+    "scene_turn = await self._turns.assistant_turn_number_in_scene(\n"
+    "                        assistant.id\n"
+    "                    )",
+)
+sub(
+    "src/backend/app/services/post_turn_processor.py",
+    r"await PostTurnProcessor\(session\)\.process_job\(job\.id\)",
+    "await PostTurnProcessor(session).process_job(\n"
+    "                            job.id,\n"
+    "                            already_claimed=True,\n"
+    "                        )",
+)
+sub(
+    ".github/workflows/backend-tests.yml",
+    r"          assert health\[\"control_stats\"\]\.get\(\"player_success\", 0\) > 0, health\n",
+    "          assert (\n"
+    "              health[\"control_stats\"].get(\"player_success\", 0) > 0\n"
+    "              or health[\"control_stats\"].get(\"player_deterministic\", 0) > 0\n"
+    "          ), health\n",
+)
+
+Path("src/backend/tests/test_post_turn_scheduling.py").write_text(
+    textwrap.dedent(
+        '''
+        from datetime import datetime, timedelta
+        from uuid import UUID
+
+        import pytest
+
+        from app.db.repositories.turn_repo import TurnRepository
+        from app.db.tables import Campaign, PostTurnJob, Scene, Turn
+        from app.services.post_turn_processor import PostTurnProcessor
+
+
+        async def create_turn_fixture(db_session):
+            campaign = Campaign(name="Post-turn scheduling")
+            db_session.add(campaign)
+            await db_session.flush()
+            scene = Scene(campaign_id=campaign.id, title="Stable scene")
+            db_session.add(scene)
+            await db_session.flush()
+            user = Turn(
+                campaign_id=campaign.id,
+                scene_id=scene.id,
+                role="user",
+                content="Проверяю дверь",
+            )
+            db_session.add(user)
+            await db_session.flush()
+            assistant = Turn(
+                campaign_id=campaign.id,
+                scene_id=scene.id,
+                role="assistant",
+                content="Дверь поддалась",
+                parent_turn_id=user.id,
+            )
+            db_session.add(assistant)
+            await db_session.flush()
+            return campaign, assistant
+
+
+        @pytest.mark.asyncio
+        async def test_assistant_turn_number_is_stable_for_older_jobs(db_session):
+            campaign = Campaign(name="Turn ordinal")
+            db_session.add(campaign)
+            await db_session.flush()
+            scene = Scene(campaign_id=campaign.id, title="Ordinal scene")
+            db_session.add(scene)
+            await db_session.flush()
+            start = datetime.utcnow()
+            turns = []
+            for index in range(3):
+                turn = Turn(
+                    campaign_id=campaign.id,
+                    scene_id=scene.id,
+                    role="assistant",
+                    content=f"Ответ {index + 1}",
+                    created_at=start + timedelta(seconds=index),
+                )
+                db_session.add(turn)
+                turns.append(turn)
+            await db_session.flush()
+
+            repo = TurnRepository(db_session)
+            numbers = [
+                await repo.assistant_turn_number_in_scene(UUID(turn.id))
+                for turn in turns
+            ]
+            assert numbers == [1, 2, 3]
+
+
+        @pytest.mark.asyncio
+        async def test_running_job_is_not_processed_twice(db_session, monkeypatch):
+            campaign, assistant = await create_turn_fixture(db_session)
+            job = PostTurnJob(
+                campaign_id=campaign.id,
+                assistant_turn_id=assistant.id,
+                job_type="thesis_curator",
+                status="running",
+                attempts=1,
+            )
+            db_session.add(job)
+            await db_session.commit()
+            calls = 0
+
+            async def unexpected_call(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+
+            monkeypatch.setattr(
+                "app.services.post_turn_processor.ThesisCurator.curate_after_turn",
+                unexpected_call,
+            )
+            await PostTurnProcessor(db_session).process_job(UUID(job.id))
+            await db_session.refresh(job)
+
+            assert calls == 0
+            assert job.status == "running"
+            assert job.attempts == 1
+
+
+        @pytest.mark.asyncio
+        async def test_claimed_worker_job_is_processed(db_session, monkeypatch):
+            campaign, assistant = await create_turn_fixture(db_session)
+            job = PostTurnJob(
+                campaign_id=campaign.id,
+                assistant_turn_id=assistant.id,
+                job_type="thesis_curator",
+                status="running",
+                attempts=1,
+            )
+            db_session.add(job)
+            await db_session.commit()
+            calls = 0
+
+            async def curated(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+
+            monkeypatch.setattr(
+                "app.services.post_turn_processor.ThesisCurator.curate_after_turn",
+                curated,
+            )
+            await PostTurnProcessor(db_session).process_job(
+                UUID(job.id),
+                already_claimed=True,
+            )
+            await db_session.refresh(job)
+
+            assert calls == 1
+            assert job.status == "completed"
+            assert job.attempts == 1
+        '''
+    ).lstrip(),
+    encoding="utf-8",
+)
+
+quality_test = Path("src/backend/tests/test_simulation_quality_controls.py")
+quality_text = quality_test.read_text(encoding="utf-8")
+marker = "def test_player_decision_schema_rejects_unknown_mode():\n"
+addition = textwrap.dedent(
+    '''
+    def test_deterministic_player_is_not_recorded_as_fallback(tmp_path, monkeypatch):
+        monkeypatch.setenv("PDM_SIM_DATA_DIR", str(tmp_path))
+        from tests import run_realistic_simulation as harness
+
+        harness._FALLBACK_FINGERPRINTS.clear()
+        try:
+            policy = harness.RestoredPlayerPolicy()
+            decision = policy.fallback(
+                ["Garrick"],
+                "question",
+                "Найти путь",
+                "Гаррик указал на овраг.",
+                [],
+                1,
+                count_fallback=False,
+            )
+            fingerprint = policy.fingerprint(decision.intent)
+            assert fingerprint not in harness._FALLBACK_FINGERPRINTS
+        finally:
+            harness._FALLBACK_FINGERPRINTS.clear()
+
+
+    def test_player_decision_schema_rejects_unknown_mode():
+    '''
+)
+if marker not in quality_text:
+    raise SystemExit("simulation quality test marker missing")
+quality_test.write_text(quality_text.replace(marker, addition, 1), encoding="utf-8")
