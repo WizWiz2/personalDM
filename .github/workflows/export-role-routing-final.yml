@@ -1,0 +1,122 @@
+name: Export final role routing
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate-and-export:
+    if: github.head_ref == 'agent/route-models-by-role'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply final transform
+        run: python .github/finalize_role_routing.py
+
+      - name: Install backend dependencies
+        run: python -m pip install -e 'src/backend[dev]'
+
+      - name: Compile backend
+        run: python -m compileall -q src/backend/app src/backend/tests
+
+      - name: Run focused tests
+        working-directory: src/backend
+        run: >-
+          pytest -q
+          tests/test_role_model_router.py
+          tests/test_post_turn_scheduling.py
+          tests/test_simulation_quality_controls.py
+          tests/test_turns.py
+          tests/test_provider_and_scribe.py
+          tests/test_memory_scribe_guard.py
+          tests/test_thesis_curator.py
+          tests/test_thesis_curator_lifecycle.py
+          tests/test_llm_provider_resilience.py
+          --tb=short
+
+      - name: Run deterministic quality campaign
+        working-directory: src/backend
+        env:
+          PYTHONPATH: "."
+          PDM_SIM_MODE: quality
+          PDM_SIM_TURNS: "60"
+          PDM_SIM_DATA_DIR: ./data/role-routing-final
+          PDM_SIM_RESET: "1"
+          PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
+        run: python tests/run_ci_mock_simulation_v3.py
+
+      - name: Validate deterministic routing results
+        working-directory: src/backend
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('data/role-routing-final')
+          state = json.loads((root / 'realistic_simulation_state.json').read_text())
+          health = json.loads((root / 'realistic_simulation_health.json').read_text())
+          records = [json.loads(line) for line in (root / 'realistic_simulation_trace.jsonl').read_text().splitlines() if line]
+          stats = health['control_stats']
+          assert state['completed'] is True, state
+          assert state['phase_index'] == 10, state
+          assert health['valid'] is True, health
+          assert stats.get('player_deterministic', 0) == len(records), stats
+          assert stats.get('player_calls', 0) == 0, stats
+          assert stats.get('scribe_success', 0) == len(records), stats
+          assert stats.get('curator_calls', 0) < len(records), stats
+          assert stats.get('evaluator_calls', 0) < len(records), stats
+          assert all(not (record.get('player') or {}).get('fallback') for record in records)
+          print('ROLE_ROUTING_STATS', json.dumps(stats, ensure_ascii=False, sort_keys=True))
+          PY
+
+      - name: Lint changed files
+        run: >-
+          ruff check
+          src/backend/app/config.py
+          src/backend/app/services/role_model_router.py
+          src/backend/app/services/memory_scribe.py
+          src/backend/app/services/thesis_curator.py
+          src/backend/app/services/post_turn_processor.py
+          src/backend/app/db/repositories/turn_repo.py
+          src/backend/app/api/world_state.py
+          src/backend/tests/run_realistic_simulation.py
+          src/backend/tests/run_realistic_simulation_v2.py
+          src/backend/tests/simulation_quality_controls.py
+          src/backend/tests/test_role_model_router.py
+          src/backend/tests/test_post_turn_scheduling.py
+          src/backend/tests/test_simulation_quality_controls.py
+
+      - name: Stage final files
+        run: |
+          mkdir -p /tmp/role-routing-final
+          cp --parents \
+            .github/workflows/backend-tests.yml \
+            docs/model-role-routing.md \
+            src/backend/app/api/world_state.py \
+            src/backend/app/config.py \
+            src/backend/app/db/repositories/turn_repo.py \
+            src/backend/app/services/memory_scribe.py \
+            src/backend/app/services/post_turn_processor.py \
+            src/backend/app/services/role_model_router.py \
+            src/backend/app/services/thesis_curator.py \
+            src/backend/tests/run_realistic_simulation.py \
+            src/backend/tests/run_realistic_simulation_v2.py \
+            src/backend/tests/simulation_quality_controls.py \
+            src/backend/tests/test_role_model_router.py \
+            src/backend/tests/test_post_turn_scheduling.py \
+            src/backend/tests/test_simulation_quality_controls.py \
+            /tmp/role-routing-final/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: role-routing-final-files
+          path: /tmp/role-routing-final/
+          retention-days: 2
