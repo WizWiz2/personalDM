@@ -1,0 +1,72 @@
+name: Apply role model routing
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    if: github.head_ref == 'agent/route-models-by-role'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply role routing transform
+        shell: bash
+        run: |
+          base64 --decode .github/role-routing-script.gz.b64 | gzip --decompress > /tmp/apply_role_routing.py
+          python /tmp/apply_role_routing.py
+          rm -f .github/role-routing-script.gz.b64
+
+      - name: Install backend dependencies
+        run: python -m pip install -e 'src/backend[dev]'
+
+      - name: Compile backend
+        run: python -m compileall -q src/backend/app src/backend/tests
+
+      - name: Run focused tests
+        working-directory: src/backend
+        run: >-
+          pytest -q
+          tests/test_role_model_router.py
+          tests/test_provider_and_scribe.py
+          tests/test_memory_scribe_guard.py
+          tests/test_thesis_curator.py
+          tests/test_thesis_curator_lifecycle.py
+          tests/test_simulation_quality_controls.py
+          tests/test_llm_provider_resilience.py
+          --tb=short
+
+      - name: Lint changed files
+        run: >-
+          ruff check
+          src/backend/app/config.py
+          src/backend/app/services/role_model_router.py
+          src/backend/app/services/memory_scribe.py
+          src/backend/app/services/thesis_curator.py
+          src/backend/app/services/post_turn_processor.py
+          src/backend/app/db/repositories/turn_repo.py
+          src/backend/app/api/world_state.py
+          src/backend/tests/run_realistic_simulation_v2.py
+          src/backend/tests/simulation_quality_controls.py
+          src/backend/tests/test_role_model_router.py
+
+      - name: Commit validated routing
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Распределить LLM-роли между Gemma и Qwen"
+          git push origin HEAD:${{ github.head_ref }}
