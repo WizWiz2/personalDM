@@ -44,11 +44,12 @@ from app.models.event import EventCreate
 from app.models.proposed_change import ProposalAction
 from app.models.provider_config import ProviderConfigCreate
 from app.models.scene import SceneCreate, SceneUpdate
-from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
+from app.models.scene_thesis import SceneThesisCreate, ThesisType
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
+from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.thesis_curator import ThesisCurator
 from app.services.turn_runner import TurnRunner
 
@@ -247,8 +248,11 @@ class PlayerPolicy:
         latest_result: str,
         active_theses: list[str],
         turn_number: int,
+        *,
+        count_fallback: bool = True,
     ) -> PlayerDecision:
-        self.fallbacks += 1
+        if count_fallback:
+            self.fallbacks += 1
         target = self.suggested_target(active_npcs, mode)
         hook = next((value for value in reversed(active_theses) if value.strip()), objective)
         hook = " ".join(hook.split())[:180]
@@ -1030,7 +1034,21 @@ async def run_realistic_simulation_v2() -> None:
                 context_window=context_window,
             ),
         )
-        api_key = await ProviderConfigRepository(session).get_decrypted_key(campaign_id)
+        config_repo = ProviderConfigRepository(session)
+        api_key = await config_repo.get_decrypted_key(campaign_id)
+        role_router = RoleModelRouter(config_repo)
+        builder_selection = await role_router.resolve(
+            campaign_id,
+            ModelRole.CHARACTER_BUILDER,
+            config,
+        )
+        evaluator_selection = await role_router.resolve(
+            campaign_id,
+            ModelRole.EVALUATOR,
+            config,
+        )
+        if builder_selection is None or evaluator_selection is None:
+            raise RuntimeError("Role model routing requires a configured campaign provider")
         entities = EntityRepository(session)
         characters = await entities.list_by_campaign(campaign_id, "character")
         player_entity = next(
@@ -1060,8 +1078,8 @@ async def run_realistic_simulation_v2() -> None:
             campaign_id,
             player_id,
             provider,
-            config,
-            api_key,
+            builder_selection.config,
+            builder_selection.api_key,
             stats,
         )
         await director.restore_characters()
@@ -1226,8 +1244,8 @@ async def run_realistic_simulation_v2() -> None:
             recent_history = await turns.get_history(campaign_id, limit=12, active_only=True)
             evaluation = await evaluate_objective(
                 provider,
-                config,
-                api_key,
+                evaluator_selection.config,
+                evaluator_selection.api_key,
                 runtime,
                 recent_history,
                 dm_text,

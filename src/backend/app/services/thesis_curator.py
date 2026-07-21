@@ -13,6 +13,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.role_model_router import ModelRole, RoleModelRouter
 
 
 class DesiredThesis(BaseModel):
@@ -50,6 +51,7 @@ class ThesisCurator:
         self._scene_repo = SceneRepository(session)
         self._entity_repo = EntityRepository(session)
         self._config_repo = ProviderConfigRepository(session)
+        self._model_router = RoleModelRouter(self._config_repo)
         self._llm_provider = LLMProvider()
 
     @staticmethod
@@ -109,8 +111,8 @@ class ThesisCurator:
         if not scene_id or not assistant_content.strip():
             return None
 
-        config = await self._config_repo.get_by_campaign_id(campaign_id)
-        if not config:
+        selection = await self._model_router.resolve(campaign_id, ModelRole.CURATOR)
+        if selection is None:
             return None
 
         scene = await self._scene_repo.get_by_id(scene_id)
@@ -196,12 +198,11 @@ visual_state, music_mood
 {{"desired_active":[{{"thesis_type":"tension","text":"...","priority":5,"visibility":"dm","related_entity_ids":[],"existing_thesis_id":null,"semantic_key":"короткий стабильный ключ"}}]}}
 """
 
-        api_key = await self._config_repo.get_decrypted_key(campaign_id)
         try:
-            response_data = await self._llm_provider.generate_json(
+            response_data = await self._model_router.generate_json(
+                self._llm_provider,
+                selection,
                 [ChatMessage(role="system", content=prompt)],
-                config,
-                api_key,
                 max_tokens=900,
                 temperature=0.1,
                 response_model=CuratorResponse,
