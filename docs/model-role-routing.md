@@ -14,7 +14,9 @@ PDM_SIM_EVALUATOR_INTERVAL_TURNS=2
 ```
 
 Основная модель кампании остаётся Narrator и Character Builder. `Memory Scribe`,
-`Thesis Curator`, benchmark Evaluator и structured repair используют control-модель.
+`Thesis Curator` и benchmark Evaluator используют control-модель. Поэтому schema repair
+этих управляющих ролей также выполняет Qwen внутри их structured-вызова.
+
 Для отдельных ролей модель можно переопределить:
 
 ```env
@@ -31,6 +33,11 @@ endpoint задаются `PDM_CONTROL_LLM_BASE_URL`, `PDM_CONTROL_LLM_API_KEY` 
 
 Если control-модель недоступна, production Scribe и Curator один раз переходят на
 основную модель кампании. Телеметрия помечает такой вызов `role_router_fallback=true`.
+
+Отдельная передача невалидного `CharacterDraft` от Gemma в Qwen в этом изменении не
+включена: Character Builder сохраняет одну творческую модель и её собственный schema
+repair. Cross-model normalization карточек лучше добавлять отдельным этапом, чтобы не
+подменять придуманного Gemma персонажа заново сгенерированным персонажем Qwen.
 
 В автономном benchmark игрок по умолчанию детерминированный и не расходует LLM-запрос.
 Evaluator запускается раз в два хода после минимальной длины сцены. Curator в обычной
