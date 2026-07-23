@@ -4,12 +4,16 @@ on:
   push:
     branches:
       - agent/gemma-narrator-stability-work
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   build-test-publish:
+    if: github.head_ref == 'agent/gemma-narrator-stability-work' || github.ref_name == 'agent/gemma-narrator-stability-work'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
