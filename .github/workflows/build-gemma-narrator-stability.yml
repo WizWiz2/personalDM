@@ -1,0 +1,79 @@
+name: Build Gemma narrator stability
+
+on:
+  push:
+    branches:
+      - agent/gemma-narrator-stability-work
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/gemma-narrator-stability-work
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply narrator stability changes
+        run: python .github/gemma_stability_transform.py
+
+      - name: Install backend dependencies
+        run: python -m pip install -e 'src/backend[dev]'
+
+      - name: Compile
+        run: python -m compileall -q src/backend/app src/backend/tests
+
+      - name: Focused tests
+        working-directory: src/backend
+        run: >-
+          pytest -q
+          tests/test_context.py
+          tests/test_narrator_stability.py
+          tests/test_turns.py
+          tests/test_memory_scribe_guard.py
+          tests/test_role_model_router.py
+          --tb=short
+
+      - name: Full backend tests
+        working-directory: src/backend
+        run: pytest -q --tb=short
+
+      - name: Lint
+        run: >-
+          ruff check
+          src/backend/app/config.py
+          src/backend/app/services/context_compiler.py
+          src/backend/tests/test_narrator_stability.py
+
+      - name: Publish clean branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/gemma-stability-final
+          mkdir -p /tmp/gemma-stability-final
+          cp --parents \
+            docs/gemma-narrator-stability.md \
+            src/backend/app/config.py \
+            src/backend/app/services/context_compiler.py \
+            src/backend/tests/test_narrator_stability.py \
+            /tmp/gemma-stability-final/
+
+          git fetch origin main
+          git checkout -B agent/gemma-narrator-stability origin/main
+          cp -a /tmp/gemma-stability-final/. .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            docs/gemma-narrator-stability.md \
+            src/backend/app/config.py \
+            src/backend/app/services/context_compiler.py \
+            src/backend/tests/test_narrator_stability.py
+          git commit -m "Стабилизировать Narrator на Gemma"
+          git push --force origin HEAD:agent/gemma-narrator-stability
