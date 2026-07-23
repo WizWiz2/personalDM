@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     SIM_EVALUATOR_INTERVAL_TURNS: int = 2
     SIM_PLAYER_MODE: str = "deterministic"
 
+    # Keep small narrators focused on current scene state instead of long prose tails.
+    NARRATOR_HISTORY_LIMIT: int = 12
+    NARRATOR_STAGNATION_TURNS: int = 2
+    NARRATOR_RECEIPT_MAX_ITEMS: int = 6
+
     # Narrative and structured control calls have different completion needs.
     RESPONSE_RESERVE_TOKENS: int = 1536
     CONTROL_RESPONSE_RESERVE_TOKENS: int = 1600
