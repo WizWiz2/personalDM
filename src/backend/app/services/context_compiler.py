@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 from sqlalchemy import select
@@ -12,7 +13,7 @@ from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import CharacterGoal, Entity, Item
+from app.db.tables import CharacterGoal, Entity, Item, ProposedChange, Turn
 from app.models.turn import ChatMessage, TurnRead
 
 try:
@@ -38,7 +39,7 @@ class ContextCompiler:
     """
 
     ACTOR_HISTORY_LIMIT = 8
-    NARRATOR_HISTORY_LIMIT = 24
+    RECEIPT_TURN_LIMIT = 4
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -121,6 +122,121 @@ class ContextCompiler:
     def _same_scene(turn: TurnRead, scene_id: UUID | None) -> bool:
         return scene_id is None or turn.scene_id == scene_id
 
+    @staticmethod
+    def _short(value: object, limit: int = 240) -> str:
+        clean = " ".join(str(value or "").split())
+        return clean if len(clean) <= limit else clean[: limit - 1].rstrip() + "…"
+
+    @classmethod
+    def _proposal_summary(
+        cls,
+        change_type: str,
+        payload: dict,
+        entity_names: dict[str, str],
+    ) -> str | None:
+        def display(value: object) -> str:
+            raw = str(value or "").strip()
+            return entity_names.get(raw, raw)
+
+        if change_type == "event":
+            return cls._short(payload.get("description")) or None
+        if change_type == "fact":
+            subject = display(payload.get("subject"))
+            predicate = cls._short(payload.get("predicate"), 90)
+            value = cls._short(payload.get("object_value"), 140)
+            return cls._short(f"{subject}: {predicate} — {value}".strip(" —")) or None
+        if change_type == "movement":
+            character = display(payload.get("character_id"))
+            location = display(payload.get("location_id"))
+            return cls._short(f"{character} переместился: {location}") or None
+        if change_type == "relationship":
+            subject = display(payload.get("subject_id"))
+            target = display(payload.get("object_id"))
+            relation = cls._short(payload.get("relation_type"), 80)
+            description = cls._short(payload.get("description"), 140)
+            return cls._short(
+                f"{subject} → {target}: {relation}; {description}".strip("; ")
+            ) or None
+        if change_type == "knowledge":
+            recipient = display(payload.get("recipient_id"))
+            proposition = cls._short(payload.get("proposition"), 190)
+            return cls._short(f"{recipient} узнал: {proposition}") or None
+        if change_type == "item_transfer":
+            item = display(payload.get("item_id"))
+            owner = display(payload.get("owner_id"))
+            location = display(payload.get("location_id"))
+            destination = owner or location
+            return cls._short(f"{item} теперь у/в: {destination}") or None
+        return None
+
+    async def _scene_progress_receipt(
+        self,
+        campaign_id: UUID,
+        scene_id: UUID,
+    ) -> tuple[list[str], bool, int]:
+        stagnation_window = max(1, int(settings.NARRATOR_STAGNATION_TURNS))
+        turn_limit = max(self.RECEIPT_TURN_LIMIT, stagnation_window)
+        result = await self._session.execute(
+            select(Turn.id)
+            .where(
+                Turn.scene_id == str(scene_id),
+                Turn.role == "assistant",
+                Turn.status == "active",
+            )
+            .order_by(Turn.created_at.desc())
+            .limit(turn_limit)
+        )
+        recent_turn_ids = [str(value) for value in result.scalars().all()]
+        if not recent_turn_ids:
+            return [], False, 0
+
+        result = await self._session.execute(
+            select(ProposedChange)
+            .where(
+                ProposedChange.turn_id.in_(recent_turn_ids),
+                ProposedChange.status.in_(("proposed", "accepted", "edited")),
+                ProposedChange.change_type.notin_(("scene_thesis", "canon_gap")),
+            )
+            .order_by(ProposedChange.created_at.asc())
+        )
+        proposals = result.scalars().all()
+        entity_names = {
+            str(entity.id): entity.canonical_name
+            for entity in await self._entity_repo.list_by_campaign(campaign_id)
+        }
+        by_turn: dict[str, list[str]] = {turn_id: [] for turn_id in recent_turn_ids}
+        for proposal in proposals:
+            raw_payload = (
+                proposal.user_edit
+                if proposal.status == "edited" and proposal.user_edit
+                else proposal.payload
+            )
+            try:
+                payload = json.loads(raw_payload or "{}")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(payload, dict) or payload.get("_validation_error"):
+                continue
+            summary = self._proposal_summary(
+                proposal.change_type,
+                payload,
+                entity_names,
+            )
+            if summary and summary not in by_turn[proposal.turn_id]:
+                by_turn[proposal.turn_id].append(summary)
+
+        receipt: list[str] = []
+        for turn_id in reversed(recent_turn_ids):
+            receipt.extend(by_turn[turn_id])
+        max_items = max(1, int(settings.NARRATOR_RECEIPT_MAX_ITEMS))
+        receipt = receipt[-max_items:]
+
+        watched = recent_turn_ids[:stagnation_window]
+        stagnant = len(watched) == stagnation_window and all(
+            not by_turn[turn_id] for turn_id in watched
+        )
+        return receipt, stagnant, len(recent_turn_ids)
+
     async def _history_records(
         self,
         campaign_id: UUID,
@@ -136,7 +252,8 @@ class ContextCompiler:
         )
         records = [record for record in records if self._same_scene(record, scene_id)]
         if not actor_mode:
-            return records[-self.NARRATOR_HISTORY_LIMIT :]
+            history_limit = max(4, int(settings.NARRATOR_HISTORY_LIMIT))
+            return records[-history_limit:]
 
         own_dialogue: list[TurnRead] = []
         for record in records:
@@ -186,7 +303,11 @@ class ContextCompiler:
             else "\nYou are the omniscient narrator. Respect every character card, "
             "capability, limitation, owned item and current location. Resolve the "
             "player's attempted action with a concrete consequence. Do not invent a "
-            "successful ability, item or movement absent from structured state."
+            "successful ability, item or movement absent from structured state.\n"
+            "Контракт прогрессии: прямо разреши текущую попытку; покажи хотя бы одно "
+            "наблюдаемое последствие, новую конкретную информацию или изменившееся "
+            "препятствие; закончи ситуацией, на которую игрок может осмысленно "
+            "ответить. Не пересказывай уже установленное и не управляй героем игрока."
         )
         system_msg = ChatMessage(role="system", content=f"{system_instr}{style}{boundary}")
         current_budget_used = count_tokens(system_msg.content)
@@ -205,6 +326,9 @@ class ContextCompiler:
         included_item_ids: list[str] = []
         included_character_ids: list[str] = []
         packages: list[str] = []
+        scene_receipt_items = 0
+        stagnation_detected = False
+        recent_scene_turns = 0
 
         scene = await self._scene_repo.get_by_id(scene_id) if scene_id else None
         if scene:
@@ -239,6 +363,28 @@ class ContextCompiler:
                         f"- {thesis.text}"
                         f"{' (Important)' if thesis.pinned else ''}\n"
                     )
+            receipt_items_candidate = 0
+            stagnation_candidate = False
+            recent_turns_candidate = 0
+            if not actor_mode:
+                receipt, stagnation_candidate, recent_turns_candidate = (
+                    await self._scene_progress_receipt(campaign_id, scene_id)
+                )
+                receipt_items_candidate = len(receipt)
+                if receipt:
+                    scene_info += (
+                        "Recent authoritative scene progress:\n"
+                        + "".join(f"- {item}\n" for item in receipt)
+                        + "Continue from these consequences; do not retell them.\n"
+                    )
+                if stagnation_candidate:
+                    scene_info += (
+                        "[Progress Watchdog] Последние ходы не дали нового "
+                        "устойчивого последствия. В этом ответе сдвинь сцену: "
+                        "раскрой конкретный факт, измени опасность, позицию или "
+                        "отношение, либо дай явное последствие текущей попытки. "
+                        "Не повторяй прежний вопрос или обсуждение.\n"
+                    )
             scene_thesis_ids = [str(thesis.id) for thesis in visible_theses]
             scene_tokens = count_tokens(scene_info)
             if current_budget_used + scene_tokens < content_budget:
@@ -246,6 +392,9 @@ class ContextCompiler:
                 current_budget_used += scene_tokens
                 included_thesis_ids.extend(scene_thesis_ids)
                 included_layers.append("layer_1_scene")
+                scene_receipt_items = receipt_items_candidate
+                stagnation_detected = stagnation_candidate
+                recent_scene_turns = recent_turns_candidate
 
         scene_characters = (
             await self._entity_repo.get_characters_in_scene(scene_id)
@@ -427,5 +576,11 @@ class ContextCompiler:
             "included_character_ids": list(dict.fromkeys(included_character_ids)),
             "history_turns_count": len(history_to_include),
             "current_user_reserved": bool(actor_mode and current_user_content),
+            "narrator_history_limit": (
+                max(4, int(settings.NARRATOR_HISTORY_LIMIT)) if not actor_mode else None
+            ),
+            "scene_receipt_items": scene_receipt_items,
+            "recent_scene_turns_checked": recent_scene_turns,
+            "stagnation_detected": stagnation_detected,
         }
         return final_messages, metadata
