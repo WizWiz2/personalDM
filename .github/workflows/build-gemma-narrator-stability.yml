@@ -34,7 +34,26 @@ jobs:
         run: python -m pip install -e 'src/backend[dev]'
 
       - name: Compile
-        run: python -m compileall -q src/backend/app src/backend/tests
+        id: compile
+        continue-on-error: true
+        run: python -m compileall -q src/backend/app src/backend/tests > /tmp/compile.log 2>&1
+
+      - name: Upload generated diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemma-stability-generated
+          path: |
+            /tmp/compile.log
+            src/backend/app/services/context_compiler.py
+            src/backend/tests/test_narrator_stability.py
+          retention-days: 2
+
+      - name: Stop after compile failure
+        if: steps.compile.outcome == 'failure'
+        run: |
+          cat /tmp/compile.log
+          exit 1
 
       - name: Focused tests
         working-directory: src/backend
