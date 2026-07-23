@@ -3,7 +3,7 @@ from pathlib import Path
 
 path = Path("src/backend/app/services/context_compiler.py")
 text = path.read_text(encoding="utf-8")
-old = '''            if not actor_mode:
+old = r'''            if not actor_mode:
                 receipt, stagnation_detected, recent_scene_turns = (
                     await self._scene_progress_receipt(campaign_id, scene_id)
                 )
@@ -30,7 +30,7 @@ old = '''            if not actor_mode:
                 included_thesis_ids.extend(scene_thesis_ids)
                 included_layers.append("layer_1_scene")
 '''
-new = '''            receipt_items_candidate = 0
+new = r'''            receipt_items_candidate = 0
             stagnation_candidate = False
             recent_turns_candidate = 0
             if not actor_mode:
@@ -84,7 +84,7 @@ async def test_receipt_manifest_only_reports_content_that_was_sent(
     )
     scene = await SceneRepository(db_session).create(
         campaign_id,
-        SceneCreate(title="Очень длинная сцена " + "x" * 3000),
+        SceneCreate(title="Tight Budget Scene"),
     )
     await add_pair(
         db_session,
