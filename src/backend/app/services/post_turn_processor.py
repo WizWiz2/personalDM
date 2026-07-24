@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db.engine import AsyncSessionLocal
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
@@ -13,6 +14,11 @@ from app.models.proposed_change import ChangeType
 from app.services.continuity_checker import ContinuityChecker
 from app.services.memory_scribe import MemoryScribe
 from app.services.thesis_curator import ThesisCurator
+
+
+def should_run_periodic_job(turn_number: int, interval: int) -> bool:
+    interval = max(1, int(interval))
+    return turn_number <= 1 or turn_number % interval == 0
 
 
 class PostTurnProcessor:
@@ -34,15 +40,23 @@ class PostTurnProcessor:
             if job.status in {"pending", "failed"}:
                 await self.process_job(job.id)
 
-    async def process_job(self, job_id: UUID) -> None:
+    async def process_job(self, job_id: UUID, *, already_claimed: bool = False) -> None:
         from app.db.tables import PostTurnJob
 
         row = await self._session.get(PostTurnJob, str(job_id))
         if not row:
             raise ValueError(f"Post-turn job {job_id} not found")
+        await self._session.refresh(row)
         if row.status == "completed":
             return
-        if row.status != "running":
+        if already_claimed:
+            if row.status != "running":
+                return
+        else:
+            if row.status == "running":
+                return
+            if row.status not in {"pending", "failed"}:
+                return
             row.status = "running"
             row.attempts += 1
             row.error = None
@@ -61,13 +75,20 @@ class PostTurnProcessor:
             campaign_id = UUID(row.campaign_id)
             if row.job_type == "thesis_curator":
                 if assistant.scene_id:
-                    await ThesisCurator(self._session).curate_after_turn(
-                        campaign_id=campaign_id,
-                        scene_id=assistant.scene_id,
-                        source_turn_id=assistant.id,
-                        user_content=user_turn.content,
-                        assistant_content=assistant.content,
+                    scene_turn = await self._turns.assistant_turn_number_in_scene(
+                        assistant.id
                     )
+                    if should_run_periodic_job(
+                        scene_turn,
+                        settings.CURATOR_INTERVAL_TURNS,
+                    ):
+                        await ThesisCurator(self._session).curate_after_turn(
+                            campaign_id=campaign_id,
+                            scene_id=assistant.scene_id,
+                            source_turn_id=assistant.id,
+                            user_content=user_turn.content,
+                            assistant_content=assistant.content,
+                        )
             elif row.job_type == "memory_scribe":
                 existing = await ProposedChangeRepository(self._session).get_for_turn(
                     assistant.id
@@ -145,7 +166,10 @@ class PostTurnWorker:
                     if job:
                         await session.commit()
                         processed = True
-                        await PostTurnProcessor(session).process_job(job.id)
+                        await PostTurnProcessor(session).process_job(
+                            job.id,
+                            already_claimed=True,
+                        )
             except Exception:
                 traceback.print_exc()
             if not processed:

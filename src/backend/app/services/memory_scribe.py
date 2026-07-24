@@ -12,6 +12,7 @@ from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import CanonAudit, CanonEnvelope, proposals_from_envelope
+from app.services.role_model_router import ModelRole, RoleModelRouter
 
 
 PLACEHOLDER_SELF = {"self", "speaker", "acting_character", "acting_character_id"}
@@ -41,6 +42,7 @@ class MemoryScribe:
         self._scene_repo = SceneRepository(session)
         self._fact_repo = FactRepository(session)
         self._config_repo = ProviderConfigRepository(session)
+        self._model_router = RoleModelRouter(self._config_repo)
         self._llm_provider = LLMProvider()
         self.last_audit: dict = CanonAudit().model_dump()
 
@@ -60,10 +62,9 @@ class MemoryScribe:
         if "[generation interrupted]" in assistant_content:
             return []
 
-        config = await self._config_repo.get_by_campaign_id(campaign_id)
-        if not config:
+        selection = await self._model_router.resolve(campaign_id, ModelRole.SCRIBE)
+        if selection is None:
             return []
-        api_key = await self._config_repo.get_decrypted_key(campaign_id)
 
         known_entities: dict[str, str] = {}
         display_by_id: dict[str, str] = {}
@@ -165,7 +166,9 @@ FACT SEMANTICS:
 """
 
         try:
-            data = await self._llm_provider.generate_json(
+            data = await self._model_router.generate_json(
+                self._llm_provider,
+                selection,
                 [
                     ChatMessage(role="system", content=system_prompt),
                     ChatMessage(
@@ -178,8 +181,6 @@ FACT SEMANTICS:
                         ),
                     ),
                 ],
-                config,
-                api_key,
                 max_tokens=1400,
                 temperature=0.0,
                 response_model=CanonEnvelope,

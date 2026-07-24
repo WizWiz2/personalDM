@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.config import settings
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider
 from app.services.context_compiler import ContextCompiler, count_tokens
@@ -305,6 +306,8 @@ def install_quality_controls(runtime) -> None:
             latest_result,
             active_theses,
             turn_number,
+            *,
+            count_fallback=True,
         ):
             # DM-only theses are deliberately discarded. Smoke fallback may use only the
             # public objective and the latest authoritative result visible to Eldon.
@@ -315,6 +318,7 @@ def install_quality_controls(runtime) -> None:
                 latest_result,
                 [],
                 turn_number,
+                count_fallback=count_fallback,
             )
 
     runtime.PlayerPolicy = SafePlayerPolicy
@@ -336,6 +340,25 @@ def install_quality_controls(runtime) -> None:
         active_npcs = list(phase_runtime.phase.active_npcs)
         preferred = policy.preferred_mode(turn_number)
         suggested = policy.suggested_target(active_npcs, preferred)
+        if settings.SIM_PLAYER_MODE.casefold() == "deterministic":
+            latest_result = next(
+                (turn.content for turn in reversed(history) if turn.role == "assistant"),
+                "",
+            )
+            decision = policy.fallback(
+                active_npcs,
+                preferred,
+                phase_runtime.phase.objective,
+                latest_result,
+                [],
+                turn_number,
+                count_fallback=False,
+            )
+            policy.remember(decision)
+            CONTROL_STATS["player_deterministic"] += 1
+            CONTROL_STATS["player_success"] += 1
+            _write_health()
+            return decision
         context_messages, _ = await compiler.compile_context(
             campaign_id=campaign_id,
             acting_character_id=player_id,
@@ -433,6 +456,15 @@ def install_quality_controls(runtime) -> None:
                 evidence=(
                     f"Минимальная длина сцены ещё не достигнута: "
                     f"{phase_runtime.phase_turn}/{minimum_turns}"
+                ),
+            )
+        interval = max(1, int(settings.SIM_EVALUATOR_INTERVAL_TURNS))
+        if interval > 1 and (phase_runtime.phase_turn - minimum_turns) % interval:
+            return runtime.ObjectiveEvaluation(
+                status="progressing",
+                evidence=(
+                    "Evaluator пропущен по cadence: "
+                    f"каждые {interval} хода после минимальной длины сцены."
                 ),
             )
         pending_indexes = sorted(

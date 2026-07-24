@@ -119,6 +119,29 @@ def test_evaluator_history_drops_duplicate_current_assistant_result():
     assert [item.content for item in selected] == ["Проверяю дверь"]
 
 
+
+def test_deterministic_player_is_not_recorded_as_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("PDM_SIM_DATA_DIR", str(tmp_path))
+    from tests import run_realistic_simulation as harness
+
+    harness._FALLBACK_FINGERPRINTS.clear()
+    try:
+        policy = harness.RestoredPlayerPolicy()
+        decision = policy.fallback(
+            ["Garrick"],
+            "question",
+            "Найти путь",
+            "Гаррик указал на овраг.",
+            [],
+            1,
+            count_fallback=False,
+        )
+        fingerprint = policy.fingerprint(decision.intent)
+        assert fingerprint not in harness._FALLBACK_FINGERPRINTS
+    finally:
+        harness._FALLBACK_FINGERPRINTS.clear()
+
+
 def test_player_decision_schema_rejects_unknown_mode():
     with pytest.raises(Exception):
         quality.PlayerDecisionPayload.model_validate(

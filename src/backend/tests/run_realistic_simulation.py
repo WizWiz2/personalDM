@@ -65,7 +65,8 @@ class RestoredPlayerPolicy(_BasePlayerPolicy):
 
     def fallback(self, *args, **kwargs):
         decision = super().fallback(*args, **kwargs)
-        _FALLBACK_FINGERPRINTS.add(self.fingerprint(decision.intent))
+        if kwargs.get("count_fallback", True):
+            _FALLBACK_FINGERPRINTS.add(self.fingerprint(decision.intent))
         return decision
 
 
