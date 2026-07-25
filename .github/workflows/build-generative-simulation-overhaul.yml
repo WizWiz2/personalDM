@@ -10,8 +10,6 @@ on:
 
 permissions:
   contents: write
-  issues: write
-  pull-requests: write
 
 jobs:
   build-test-publish:
@@ -36,17 +34,14 @@ jobs:
 
       - name: Stop after transform failure
         if: steps.transform.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          {
-            echo '### Generative simulation transform failure'
-            echo '```text'
-            cat transform.log
-            echo '```'
-          } > /tmp/transform-comment.md
-          gh pr comment 21 --body-file /tmp/transform-comment.md
           cat transform.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B agent/generative-simulation-overhaul-debug
+          git add -f transform.log
+          git commit -m "Сохранить ошибку transform"
+          git push --force origin HEAD:agent/generative-simulation-overhaul-debug
           exit 1
 
       - name: Install backend
