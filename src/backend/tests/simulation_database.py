@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from alembic import command
@@ -39,9 +40,14 @@ def _upgrade_simulation_database_sync(path: Path) -> str:
         return str(row[0])
 
 
-async def upgrade_simulation_database(path: Path) -> str:
-    """Run the real Alembic chain without nesting event loops."""
-    return await asyncio.to_thread(_upgrade_simulation_database_sync, path)
+def upgrade_simulation_database(path: Path) -> str:
+    """Run the real Alembic chain even when the caller already owns an event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _upgrade_simulation_database_sync(path)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="pdm-alembic") as pool:
+        return pool.submit(_upgrade_simulation_database_sync, path).result()
 
 
 def current_revision(path: Path) -> str | None:
