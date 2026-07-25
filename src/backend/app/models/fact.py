@@ -1,7 +1,8 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class FactCreate(BaseModel):
@@ -12,6 +13,16 @@ class FactCreate(BaseModel):
     confidence: float = 1.0
     visibility: str = "dm"
     source_turn_id: UUID | None = None
+    scope: Literal["campaign", "scene"] = "campaign"
+    scene_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        if self.scope == "scene" and self.scene_id is None:
+            raise ValueError("scene-scoped fact requires scene_id")
+        if self.scope == "campaign":
+            self.scene_id = None
+        return self
 
 
 class FactRead(BaseModel):
@@ -24,6 +35,8 @@ class FactRead(BaseModel):
     source_turn_id: UUID | None
     confidence: float
     visibility: str
+    scope: Literal["campaign", "scene"]
+    scene_id: UUID | None
     is_current: bool
     superseded_by: UUID | None
     created_at: datetime
@@ -37,5 +50,7 @@ class FactUpdate(BaseModel):
     truth_status: str | None = None
     confidence: float | None = None
     visibility: str | None = None
+    scope: Literal["campaign", "scene"] | None = None
+    scene_id: UUID | None = None
     is_current: bool | None = None
     superseded_by: UUID | None = None
