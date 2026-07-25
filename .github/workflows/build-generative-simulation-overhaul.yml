@@ -30,21 +30,21 @@ jobs:
         continue-on-error: true
         run: |
           python .github/fix_generative_transform.py
-          python .github/generative_simulation_transform.py > .github/transform.log 2>&1
+          python .github/generative_simulation_transform.py > transform.log 2>&1
 
       - name: Upload transform diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: generative-simulation-transform
-          path: .github/transform.log
+          path: transform.log
           if-no-files-found: error
           retention-days: 2
 
       - name: Stop after transform failure
         if: steps.transform.outcome == 'failure'
         run: |
-          cat .github/transform.log
+          cat transform.log
           exit 1
 
       - name: Install backend
