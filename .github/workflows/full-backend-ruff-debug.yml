@@ -1,4 +1,4 @@
-name: Full backend Ruff debug
+name: Clean diff Ruff debug
 
 on:
   pull_request:
@@ -15,32 +15,43 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: agent/generative-simulation-overhaul-work
+          ref: agent/generative-simulation-overhaul
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Apply generated output
-        run: |
-          python .github/fix_generative_transform.py
-          python .github/generative_simulation_transform.py
-          python .github/fix_generative_strict_lint.py
-          python .github/fix_ci_mock_dynamic_campaign.py
       - name: Install backend
         run: python -m pip install -e 'src/backend[dev]'
-      - name: Run full Ruff
+      - name: Run Ruff on changed Python files
         id: ruff
         continue-on-error: true
-        run: ruff check src/backend > full-ruff.log 2>&1
+        shell: bash
+        run: |
+          git fetch origin main
+          mapfile -t files < <(git diff --name-only origin/main...HEAD -- '*.py')
+          printf '%s\n' "${files[@]}" > changed-python-files.log
+          if ((${#files[@]})); then
+            ruff check "${files[@]}" > clean-diff-ruff.log 2>&1
+          else
+            echo 'No changed Python files' > clean-diff-ruff.log
+          fi
       - name: Publish Ruff log
         if: always()
         run: |
-          echo "ruff_outcome=${{ steps.ruff.outcome }}" >> full-ruff.log
+          {
+            echo 'FILES:'
+            cat changed-python-files.log
+            echo
+            echo 'RUFF:'
+            cat clean-diff-ruff.log
+            echo
+            echo "ruff_outcome=${{ steps.ruff.outcome }}"
+          } > clean-diff-ruff-report.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -f -B agent/generative-simulation-overhaul-ruff-debug
-          git add -f full-ruff.log
-          git commit -m "Сохранить полный Ruff log"
+          git add -f clean-diff-ruff-report.log
+          git commit -m "Сохранить Ruff clean diff log"
           git push --force origin HEAD:agent/generative-simulation-overhaul-ruff-debug
       - name: Fail when Ruff fails
         if: steps.ruff.outcome == 'failure'
