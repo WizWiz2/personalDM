@@ -7,8 +7,8 @@ Create Date: 2026-07-25
 
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision: str = "e3c4d5e6f7a8"
 down_revision: str | None = "d2b3c4d5e6f7"
@@ -19,7 +19,12 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     with op.batch_alter_table("facts") as batch:
         batch.add_column(
-            sa.Column("scope", sa.String(length=50), nullable=False, server_default="campaign")
+            sa.Column(
+                "scope",
+                sa.String(length=50),
+                nullable=False,
+                server_default="campaign",
+            )
         )
         batch.add_column(sa.Column("scene_id", sa.String(length=36), nullable=True))
         batch.create_foreign_key(
@@ -31,9 +36,13 @@ def upgrade() -> None:
         )
         batch.create_check_constraint(
             "ck_fact_scope_scene",
-            "(scope = 'campaign' AND scene_id IS NULL) OR (scope = 'scene' AND scene_id IS NOT NULL)",
+            "(scope = 'campaign' AND scene_id IS NULL) OR "
+            "(scope = 'scene' AND scene_id IS NOT NULL)",
         )
-        batch.create_index("ix_facts_scope_scene", ["campaign_id", "scope", "scene_id"])
+        batch.create_index(
+            "ix_facts_scope_scene",
+            ["campaign_id", "scope", "scene_id"],
+        )
 
 
 def downgrade() -> None:
