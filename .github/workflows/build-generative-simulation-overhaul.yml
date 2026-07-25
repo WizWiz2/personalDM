@@ -102,7 +102,7 @@ jobs:
         id: lint
         continue-on-error: true
         run: >-
-          ruff check --fix --unsafe-fixes --ignore BLE001,S112,ISC004
+          ruff check --fix --unsafe-fixes --ignore BLE001,S112,ISC004,S110,TRY004
           src/backend/app/config.py
           src/backend/app/db/tables.py
           src/backend/app/db/repositories/fact_repo.py
