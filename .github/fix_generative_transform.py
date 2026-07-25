@@ -18,6 +18,12 @@ if text.count(visibility_anchor) != 2:
     )
 text = text.replace(visibility_anchor, visibility_replacement)
 
+# The runtime only needs conversion helpers, not the catalog type itself.
+catalog_import = "        CampaignCatalog,\n"
+if text.count(catalog_import) != 2:
+    raise SystemExit(f"CampaignCatalog import count={text.count(catalog_import)}")
+text = text.replace(catalog_import, "")
+
 
 def remove_replace_once(marker: str) -> None:
     global text
