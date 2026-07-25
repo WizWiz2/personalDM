@@ -28,7 +28,9 @@ jobs:
       - name: Apply overhaul
         id: transform
         continue-on-error: true
-        run: python .github/generative_simulation_transform.py > /tmp/transform.log 2>&1
+        run: |
+          python .github/fix_generative_transform.py
+          python .github/generative_simulation_transform.py > /tmp/transform.log 2>&1
 
       - name: Upload transform diagnostics
         if: always()
