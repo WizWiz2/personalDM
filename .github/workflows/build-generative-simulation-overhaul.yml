@@ -83,6 +83,31 @@ jobs:
           assert {'scope', 'scene_id'} <= columns, columns
           PY
 
+      - name: Exercise generative mock checkpoint
+        id: mock_checkpoint
+        continue-on-error: true
+        working-directory: src/backend
+        env:
+          PYTHONPATH: "."
+          PDM_SIM_TURNS: "20"
+          PDM_SIM_DATA_DIR: "./data/ci-generative-mock"
+          PDM_SIM_RESET: "1"
+          PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
+          PDM_MOCK_FAIL_DM_ATTEMPTS: "3"
+        run: python tests/run_ci_mock_simulation_v3.py > ../../mock-resume.log 2>&1
+
+      - name: Stop after mock checkpoint failure
+        if: steps.mock_checkpoint.outcome == 'failure'
+        run: |
+          cat mock-resume.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B agent/generative-simulation-overhaul-debug
+          git add -f mock-resume.log
+          git commit -m "Сохранить ошибку generative mock"
+          git push --force origin HEAD:agent/generative-simulation-overhaul-debug
+          exit 1
+
       - name: Full backend tests
         id: full_tests
         continue-on-error: true
