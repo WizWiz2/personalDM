@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Literal
@@ -90,8 +89,7 @@ class GeneratedPhase(BaseModel):
 
     @model_validator(mode="after")
     def validate_turn_window(self):
-        if self.max_turns < self.min_turns + 4:
-            self.max_turns = self.min_turns + 4
+        self.max_turns = max(self.max_turns, self.min_turns + 4)
         keys = [item.key for item in self.completion_criteria]
         if len(keys) != len(set(keys)):
             raise ValueError("completion criterion keys must be unique within a phase")
@@ -108,7 +106,7 @@ class GeneratedArc(BaseModel):
     @model_validator(mode="after")
     def validate_references(self):
         names = [item.name for item in self.npcs]
-        if len(names) != len(set(name.casefold() for name in names)):
+        if len(names) != len({name.casefold() for name in names}):
             raise ValueError("NPC names must be unique within an arc")
         known = {name.casefold() for name in names}
         for phase in self.phases:
@@ -125,7 +123,7 @@ class CampaignCatalog(BaseModel):
     arcs: list[GeneratedArc] = Field(default_factory=list)
 
     @classmethod
-    def load(cls, path: Path) -> "CampaignCatalog | None":
+    def load(cls, path: Path) -> CampaignCatalog | None:
         if not path.exists():
             return None
         try:
@@ -146,6 +144,17 @@ class CampaignCatalog(BaseModel):
     @property
     def phase_slugs(self) -> set[str]:
         return {phase.slug for arc in self.arcs for phase in arc.phases}
+
+    @property
+    def phase_titles(self) -> set[str]:
+        return {phase.title.casefold() for arc in self.arcs for phase in arc.phases}
+
+    def canonical_npc_names(self) -> dict[str, str]:
+        return {
+            npc.name.casefold(): npc.name
+            for arc in self.arcs
+            for npc in arc.npcs
+        }
 
     def runtime_npcs(self) -> dict[str, NpcConcept]:
         result: dict[str, NpcConcept] = {}
@@ -214,6 +223,85 @@ class CampaignCatalog(BaseModel):
         return result
 
 
+def _canonicalize_related_names(
+    values: list[str],
+    canonical: dict[str, str],
+    active: set[str],
+    *,
+    location: str,
+) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        folded = value.casefold()
+        if folded not in canonical:
+            raise ValueError(f"{location} references unknown NPC {value!r}")
+        if folded not in active:
+            raise ValueError(f"{location} references inactive NPC {value!r}")
+        result.append(canonical[folded])
+    return list(dict.fromkeys(result))
+
+
+def normalize_arc_references(catalog: CampaignCatalog, arc: GeneratedArc) -> GeneratedArc:
+    """Canonicalize generated names and reject references that would crash a phase."""
+    existing = catalog.canonical_npc_names()
+    new_names = {npc.name.casefold(): npc.name for npc in arc.npcs}
+    duplicates = sorted(set(existing) & set(new_names))
+    if duplicates:
+        raise ValueError(f"generated arc reused existing NPC names: {duplicates}")
+
+    canonical = {**existing, **new_names}
+    introduced = set(existing)
+    used_titles = set(catalog.phase_titles)
+    arc_titles: set[str] = set()
+
+    for phase in arc.phases:
+        title_key = phase.title.casefold()
+        if title_key in used_titles or title_key in arc_titles:
+            raise ValueError(f"generated arc reused phase title {phase.title!r}")
+        arc_titles.add(title_key)
+
+        normalized_introduced: list[str] = []
+        for raw_name in phase.introduced_npcs:
+            folded = raw_name.casefold()
+            if folded not in new_names:
+                raise ValueError(
+                    f"phase {phase.slug} introduces unknown or old NPC {raw_name!r}"
+                )
+            normalized_introduced.append(canonical[folded])
+            introduced.add(folded)
+        phase.introduced_npcs = list(dict.fromkeys(normalized_introduced))
+
+        normalized_active: list[str] = []
+        for raw_name in phase.active_npcs:
+            folded = raw_name.casefold()
+            if folded not in canonical:
+                raise ValueError(f"phase {phase.slug} activates unknown NPC {raw_name!r}")
+            if folded not in introduced:
+                raise ValueError(
+                    f"phase {phase.slug} activates {raw_name!r} before introduction"
+                )
+            normalized_active.append(canonical[folded])
+        phase.active_npcs = list(dict.fromkeys(normalized_active))
+        active = {name.casefold() for name in phase.active_npcs}
+
+        for index, thesis in enumerate(phase.opening_theses):
+            thesis.related_names = _canonicalize_related_names(
+                thesis.related_names,
+                canonical,
+                active,
+                location=f"phase {phase.slug} opening_theses[{index}]",
+            )
+        for index, pulse in enumerate(phase.pulses):
+            pulse.thesis.related_names = _canonicalize_related_names(
+                pulse.thesis.related_names,
+                canonical,
+                active,
+                location=f"phase {phase.slug} pulses[{index}]",
+            )
+
+    return arc
+
+
 def _compact_previous_outcomes(outcomes: list[str]) -> str:
     cleaned = [" ".join(str(item).split())[:500] for item in outcomes if str(item).strip()]
     return "\n".join(f"- {item}" for item in cleaned[-12:]) or "- это первый акт"
@@ -232,6 +320,7 @@ async def generate_arc(
     premise_hint = os.getenv("PDM_SIM_PREMISE", "").strip()
     existing_names = ", ".join(sorted(catalog.npc_names)) or "нет"
     existing_slugs = ", ".join(sorted(catalog.phase_slugs)) or "нет"
+    existing_titles = ", ".join(sorted(catalog.phase_titles)) or "нет"
     continuation = _compact_previous_outcomes(previous_outcomes)
     prompt = f"""Ты проектируешь новый акт автономной кампании для проверки RPG-движка.
 Верни только JSON по схеме GeneratedArc. Язык всех игровых текстов — русский.
@@ -245,10 +334,14 @@ SEED: {catalog.seed}
 
 УЖЕ ИСПОЛЬЗОВАННЫЕ ИМЕНА NPC: {existing_names}
 УЖЕ ИСПОЛЬЗОВАННЫЕ SLUG: {existing_slugs}
+УЖЕ ИСПОЛЬЗОВАННЫЕ НАЗВАНИЯ СЦЕН: {existing_titles}
 
 Создай {phase_count} связанные, но различающиеся сцены и 2-8 новых NPC.
 Требования:
-- Не используй существующие имена и slug повторно.
+- Не используй существующие имена, slug и названия сцен повторно.
+- Во всех ссылках пиши имя NPC точно так же, как в npcs.name.
+- Новый NPC должен появиться в introduced_npcs до первого появления в active_npcs.
+- related_names содержит только NPC, активных в этой сцене.
 - Каждый NPC имеет профессиональную роль, личную цель, ограничение и секрет, влияющий на выборы.
 - Каждая сцена имеет конкретную достижимую цель, 2-4 машинно проверяемых completion_criteria и 2-4 осложнения.
 - Критерий описывает наблюдаемое изменение канона, а не настроение, разговор или план.
@@ -256,7 +349,7 @@ SEED: {catalog.seed}
 - min_turns 5-10, max_turns 12-24. Не растягивай дверную загадку на весь акт.
 - Пульсы должны менять ситуацию, а не только добавлять атмосферу.
 - Последняя сцена акта даёт итог и крючок продолжения. terminal=true только если это действительно финал всей кампании, а не акта.
-- Active NPC должны быть либо новыми NPC этого акта, либо явно упомянутыми в предыдущих итогах.
+- Active NPC должны быть либо уже существующими NPC кампании, либо новыми NPC этого акта.
 """
     payload = await router.generate_json(
         provider,
@@ -266,10 +359,7 @@ SEED: {catalog.seed}
         temperature=0.65,
         response_model=GeneratedArc,
     )
-    arc = GeneratedArc.model_validate(payload)
-    used_names = catalog.npc_names
-    if any(npc.name.casefold() in used_names for npc in arc.npcs):
-        raise ValueError("generated arc reused an existing NPC name")
+    arc = normalize_arc_references(catalog, GeneratedArc.model_validate(payload))
     used_slugs = catalog.phase_slugs
     if any(phase.slug in used_slugs for phase in arc.phases):
         raise ValueError("generated arc reused an existing phase slug")
