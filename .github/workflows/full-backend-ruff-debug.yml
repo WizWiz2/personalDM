@@ -38,10 +38,10 @@ jobs:
           echo "ruff_outcome=${{ steps.ruff.outcome }}" >> full-ruff.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -f -B agent/generative-simulation-overhaul-debug
+          git checkout -f -B agent/generative-simulation-overhaul-ruff-debug
           git add -f full-ruff.log
           git commit -m "Сохранить полный Ruff log"
-          git push --force origin HEAD:agent/generative-simulation-overhaul-debug
+          git push --force origin HEAD:agent/generative-simulation-overhaul-ruff-debug
       - name: Fail when Ruff fails
         if: steps.ruff.outcome == 'failure'
         run: exit 1
