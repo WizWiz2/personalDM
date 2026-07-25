@@ -3,6 +3,7 @@ from pathlib import Path
 path = Path(".github/generative_simulation_transform.py")
 text = path.read_text(encoding="utf-8")
 
+# Keep Fact.confidence in both the old and new source snippets.
 visibility_anchor = (
     "    '''    visibility: Mapped[str] = mapped_column(String(50), "
     "default=\"dm\", nullable=False)"
@@ -17,24 +18,61 @@ if text.count(visibility_anchor) != 2:
     )
 text = text.replace(visibility_anchor, visibility_replacement)
 
-helper_anchor = '''    count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"{path}: expected one match, found {count}: {old[:120]!r}")
+
+def remove_replace_once(marker: str) -> None:
+    global text
+    marker_index = text.find(marker)
+    if marker_index < 0:
+        raise SystemExit(f"memory-scribe transform marker missing: {marker[:100]!r}")
+    start = text.rfind("replace_once(\n", 0, marker_index)
+    if start < 0:
+        raise SystemExit(f"replace_once start missing for: {marker[:100]!r}")
+    end = text.find("\n)\n", marker_index)
+    if end < 0:
+        raise SystemExit(f"replace_once end missing for: {marker[:100]!r}")
+    text = text[:start] + text[end + 3 :]
+
+
+# Do not thread scene_id through private parsing helpers: tests and extensions
+# intentionally wrap these stable signatures.
+for marker in (
+    "'''            scene_participant_ids=scene_participant_ids,",
+    "'''        authoritative_text: str = \"\",",
+    "'''            player_character_id,\n            scene_participant_ids,",
+    "'''        scene_participant_ids: list[str],\n    ) -> list[ProposedChangeCreate]:",
+    "'''                player_character_id,\n                scene_participant_ids,",
+    "'''        scene_participant_ids: list[str],\n    ) -> dict | None:",
+):
+    remove_replace_once(marker)
+
+# Fact normalization reads the scene captured by the production processing call.
+fact_scope_old = '''            if scope == "scene" and scene_id is not None:
+                resolved["scope"] = "scene"
+                resolved["scene_id"] = str(scene_id)
 '''
-helper_replacement = '''    count = text.count(old)
-    if (
-        path.endswith("memory_scribe.py")
-        and "player_character_id" in old
-        and "scene_participant_ids" in old
-        and count == 2
-    ):
-        target.write_text(text.replace(old, new), encoding="utf-8")
-        return
-    if count != 1:
-        raise SystemExit(f"{path}: expected one match, found {count}: {old[:120]!r}")
+fact_scope_new = '''            current_scene_id = getattr(self, "_current_scene_id", None)
+            if scope == "scene" and current_scene_id is not None:
+                resolved["scope"] = "scene"
+                resolved["scene_id"] = str(current_scene_id)
 '''
-if text.count(helper_anchor) != 1:
-    raise SystemExit(f"replace_once helper anchor count={text.count(helper_anchor)}")
-text = text.replace(helper_anchor, helper_replacement)
+if text.count(fact_scope_old) != 1:
+    raise SystemExit(f"fact scene-context anchor count={text.count(fact_scope_old)}")
+text = text.replace(fact_scope_old, fact_scope_new)
+
+# Add one narrow runtime patch without changing _parse_response/_parse_data signatures.
+text += '''
+replace_once(
+    "src/backend/app/services/memory_scribe.py",
+    \'\'\'        return self._parse_data(
+            data,
+            authoritative_text=assistant_content,
+\'\'\',
+    \'\'\'        self._current_scene_id = scene_id
+        return self._parse_data(
+            data,
+            authoritative_text=assistant_content,
+\'\'\',
+)
+'''
 
 path.write_text(text, encoding="utf-8")
