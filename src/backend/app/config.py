@@ -20,12 +20,16 @@ class Settings(BaseSettings):
     SCRIBE_LLM_MODEL: str | None = None
     CURATOR_LLM_MODEL: str | None = None
     EVALUATOR_LLM_MODEL: str | None = None
+    PLAYER_LLM_MODEL: str | None = None
+    SCENARIO_BUILDER_LLM_MODEL: str | None = None
     CHARACTER_BUILDER_LLM_MODEL: str | None = None
 
     # Expensive maintenance agents do not need to run after every narrative turn.
     CURATOR_INTERVAL_TURNS: int = 3
     SIM_EVALUATOR_INTERVAL_TURNS: int = 2
-    SIM_PLAYER_MODE: str = "deterministic"
+    # Real benchmarks use an actor-scoped LLM player. Deterministic mode remains an
+    # explicit fixture option for fast CI and focused tests only.
+    SIM_PLAYER_MODE: str = "llm"
 
     # Keep small narrators focused on current scene state instead of long prose tails.
     NARRATOR_HISTORY_LIMIT: int = 12

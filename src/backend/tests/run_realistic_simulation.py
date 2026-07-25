@@ -49,14 +49,11 @@ class RestoredPlayerPolicy(_BasePlayerPolicy):
         restored = _BaseTraceStore(trace_path)
         for turn_number in sorted(restored.records):
             player = restored.records[turn_number].get("player") or {}
-            try:
-                decision = _BasePlayerDecision(
-                    target=str(player.get("target", "narrator")),
-                    mode=str(player.get("mode", "action")),
-                    intent=str(player.get("intent", "")),
-                )
-            except Exception:
-                continue
+            decision = _BasePlayerDecision(
+                target=str(player.get("target", "narrator")),
+                mode=str(player.get("mode", "action")),
+                intent=str(player.get("intent", "")),
+            )
             if decision.intent.strip():
                 self.remember(decision)
             if player.get("fallback"):
@@ -94,14 +91,11 @@ def _decision_from_trace(logical_turn: int):
     player = record.get("player") or {}
     if not str(player.get("intent", "")).strip():
         return None
-    try:
-        return _BasePlayerDecision(
-            target=str(player.get("target", "narrator")),
-            mode=str(player.get("mode", "action")),
-            intent=str(player.get("intent", "")),
-        )
-    except Exception:
-        return None
+    return _BasePlayerDecision(
+        target=str(player.get("target", "narrator")),
+        mode=str(player.get("mode", "action")),
+        intent=str(player.get("intent", "")),
+    )
 
 
 def _infer_mode(intent: str, target: str) -> str:
@@ -171,7 +165,7 @@ def _retry_decision_from_trace():
             mode=str(player["mode"]),
             intent=str(player["intent"]),
         )
-    except Exception:
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
 
@@ -189,7 +183,7 @@ def _safe_json(value, default):
         return value
     try:
         return json.loads(value)
-    except Exception:
+    except (json.JSONDecodeError, TypeError):
         return default
 
 
@@ -396,7 +390,7 @@ def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
         f"- Run ID: `{state.get('run_id', 'unknown')}`",
         f"- Уникальных логических ходов: {len(records)}",
         f"- Следующий логический ход: {state.get('logical_turn', 1)}",
-        f"- Фаз завершено: {state.get('phase_index', 0)}/10",
+        f"- Фаз завершено: {state.get('phase_index', 0)} (динамический каталог)",
         f"- Кампания завершена: {bool(state.get('completed'))}",
         f"- Ошибок в trace/failed users/alternative assistants: {trace_failures}/{failed_users}/{alternative_assistants}",
         f"- Interrupted assistant texts: {interrupted_assistants}",
@@ -407,8 +401,8 @@ def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
         f"- Actor contexts/current-message omissions: {actor_contexts}/{actor_contexts_missing_current}",
         f"- Сцен: {scenes} (completed={completed_scenes})",
         f"- Персонажей: {characters} (NPC={max(0, characters - 1)})",
-        "- Character Builder model/repair/fallback/legacy: "
-        f"{builder_sources['model']}/{builder_sources['repair']}/{builder_sources['fallback']}/{builder_sources['legacy_unknown']}",
+        ("- Character Builder model/repair/fallback/legacy: "
+        f"{builder_sources['model']}/{builder_sources['repair']}/{builder_sources['fallback']}/{builder_sources['legacy_unknown']}"),
         f"- Control stats: `{json.dumps(control_stats, ensure_ascii=False, sort_keys=True)}`",
         f"- Control failures: {len(control_failures)}",
         f"- Entities: {entities}",
@@ -440,6 +434,7 @@ def write_authoritative_report() -> None:
         "",
         f"- SQLite: `{database_path}`",
         f"- State: `{data_dir / 'realistic_simulation_state.json'}`",
+        f"- Scenario: `{data_dir / 'realistic_simulation_scenario.json'}`",
         f"- Health: `{data_dir / 'realistic_simulation_health.json'}`",
         f"- Лог: `{data_dir / 'realistic_simulation_play.log'}`",
         f"- JSONL: `{data_dir / 'realistic_simulation_trace.jsonl'}`",

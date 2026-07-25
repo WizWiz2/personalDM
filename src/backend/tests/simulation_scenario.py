@@ -30,6 +30,13 @@ class ScenarioPulse:
 
 
 @dataclass(frozen=True)
+class ObjectiveCriterion:
+    key: str
+    description: str
+    allowed_change_types: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ScenarioPhase:
     slug: str
     title: str
@@ -42,6 +49,10 @@ class ScenarioPhase:
     opening_theses: tuple[ThesisSeed, ...]
     pulses: tuple[ScenarioPulse, ...]
     director_note: str
+    completion_criteria: tuple[ObjectiveCriterion, ...] = ()
+    min_turns: int = 6
+    max_turns: int = 18
+    arc_index: int = 0
 
 
 NPCS: dict[str, NpcConcept] = {

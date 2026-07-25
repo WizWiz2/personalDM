@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.api.memory import resolve_proposal
 from app.api.world_state import CharacterDraft, create_character_from_draft
-from app.db.engine import Base
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.event_repo import EventRepository
@@ -35,6 +34,8 @@ from app.db.tables import (
     RelationshipAssertion,
     Scene,
     SceneThesis,
+)
+from app.db.tables import (
     Turn as DBTurn,
 )
 from app.models.campaign import CampaignCreate, CampaignUpdate
@@ -54,8 +55,18 @@ from app.services.thesis_curator import ThesisCurator
 from app.services.turn_runner import TurnRunner
 
 try:
+    from .simulation_database import upgrade_simulation_database
+    from .simulation_dynamic_campaign import (
+        catalog_summary,
+        ensure_phase_available,
+    )
     from .simulation_scenario import NPCS, PHASES, NpcConcept, ScenarioPhase
 except ImportError:
+    from simulation_database import upgrade_simulation_database
+    from simulation_dynamic_campaign import (
+        catalog_summary,
+        ensure_phase_available,
+    )
     from simulation_scenario import NPCS, PHASES, NpcConcept, ScenarioPhase
 
 
@@ -74,6 +85,8 @@ class ObjectiveEvaluation(BaseModel):
     evidence: str = ""
     outcome_summary: str | None = None
     confirmed_pulses: list[int] = Field(default_factory=list)
+    criteria_met: list[str] = Field(default_factory=list)
+    criterion_evidence: dict[str, str] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -96,6 +109,8 @@ class PhaseRuntime:
     phase_turn: int = 0
     injected_pulses: set[int] = field(default_factory=set)
     confirmed_pulses: set[int] = field(default_factory=set)
+    criteria_met: set[str] = field(default_factory=set)
+    durable_changes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -107,16 +122,19 @@ class SimulationState:
     phase_turn: int = 0
     injected_pulses: list[int] = field(default_factory=list)
     confirmed_pulses: list[int] = field(default_factory=list)
+    criteria_met: list[str] = field(default_factory=list)
+    durable_changes: list[str] = field(default_factory=list)
+    player_journal: list[str] = field(default_factory=list)
     consecutive_failures: int = 0
     completed: bool = False
 
     @classmethod
-    def load(cls, path: Path) -> "SimulationState | None":
+    def load(cls, path: Path) -> SimulationState | None:
         if not path.exists():
             return None
         try:
             return cls(**json.loads(path.read_text(encoding="utf-8")))
-        except Exception:
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
             return None
 
     def save(self, path: Path) -> None:
@@ -134,7 +152,7 @@ class TraceStore:
                 try:
                     record = json.loads(line)
                     self.records[int(record["turn"])] = record
-                except Exception:
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                     continue
 
     def upsert(self, record: dict) -> None:
@@ -317,16 +335,16 @@ def parse_json_object(raw: str) -> dict:
         clean = "\n".join(lines[1:-1]).strip()
     try:
         value = json.loads(clean)
-        if isinstance(value, dict):
-            return value
-    except Exception:
-        pass
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        return value
     match = JSON_OBJECT_PATTERN.search(clean)
     if not match:
         raise ValueError("response does not contain a JSON object")
     value = json.loads(match.group(0))
     if not isinstance(value, dict):
-        raise ValueError("response JSON is not an object")
+        raise TypeError("response JSON is not an object")
     return value
 
 
@@ -445,7 +463,13 @@ initial_beliefs, visual_profile.
         payload["current_location_id"] = location_id
         card = CharacterDraft.model_validate(payload)
         return card, "model"
-    except Exception as first_error:
+    except (
+        LLMProviderError,
+        ValidationError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as first_error:
         repair_prompt = f"""Исправь JSON карточки NPC {seed.name}.
 Верни только валидный JSON для CharacterDraft, без markdown. Все поля на русском.
 Ошибка проверки: {first_error}
@@ -466,7 +490,13 @@ initial_beliefs, visual_profile.
             payload["current_location_id"] = location_id
             card = CharacterDraft.model_validate(payload)
             return card, "repair"
-        except Exception:
+        except (
+            LLMProviderError,
+            ValidationError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ):
             return deterministic_fallback_card(seed, location_id), "fallback"
 
 
@@ -578,7 +608,7 @@ class ScenarioDirector:
                 custom_fields={"scenario_phase": phase.slug},
             ),
         )
-        for name in phase.introduced_npcs:
+        for name in dict.fromkeys((*phase.introduced_npcs, *phase.active_npcs)):
             await self.ensure_npc(name, location.id)
         active = {name: self.characters[name] for name in phase.active_npcs}
         active["Eldon"] = self.player_id
@@ -824,6 +854,8 @@ async def evaluate_objective(
 
 ЦЕЛЬ: {runtime.phase.objective}
 ХОДОВ В СЦЕНЕ: {runtime.phase_turn}
+КРИТЕРИИ: {chr(10).join(f"- {item.key}: {item.description}" for item in runtime.phase.completion_criteria) or '- нет'}
+DURABLE CHANGES: {chr(10).join(runtime.durable_changes[-50:]) or '- нет'}
 АКТИВНЫЕ ТЕЗИСЫ: {' | '.join(active_theses)}
 ОЖИДАЮЩИЕ ОСЛОЖНЕНИЯ:
 {chr(10).join(pending) or '- нет'}
@@ -850,7 +882,13 @@ Blocked, если нужен новый подход, но сцена ещё п�
         ):
             raw += token
         return ObjectiveEvaluation.model_validate(parse_json_object(raw))
-    except Exception:
+    except (
+        LLMProviderError,
+        ValidationError,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ):
         return ObjectiveEvaluation(
             status="progressing",
             evidence="Evaluator недоступен; цель не считается выполненной без доказательства.",
@@ -878,7 +916,9 @@ async def resolve_turn_proposals(
                 session=session,
             )
             accepted.append(f"{proposal.change_type}: {proposal.payload}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Proposal application is an isolation boundary: one malformed semantic
+            # change must be rejected without aborting the whole benchmark turn.
             await session.rollback()
             rejected.append(f"{proposal.change_type}: {exc}")
     await session.commit()
@@ -903,7 +943,7 @@ async def find_logical_pair(
             continue
         try:
             snapshot = json.loads(row.context_snapshot)
-        except Exception:
+        except (json.JSONDecodeError, TypeError):
             continue
         marker = snapshot.get("simulation") or {}
         if marker.get("run_id") != run_id or marker.get("logical_turn") != logical_turn:
@@ -947,6 +987,7 @@ async def count_campaign_rows(session, model, campaign_id: UUID) -> int:
 
 
 async def run_realistic_simulation_v2() -> None:
+    global NPCS, PHASES
     data_dir = Path(os.getenv("PDM_SIM_DATA_DIR", "./data"))
     data_dir.mkdir(parents=True, exist_ok=True)
     database_path = Path(os.getenv("PDM_SIM_DB", str(data_dir / "realistic_simulation.db")))
@@ -954,6 +995,7 @@ async def run_realistic_simulation_v2() -> None:
     trace_path = data_dir / "realistic_simulation_trace.jsonl"
     report_path = data_dir / "realistic_simulation_report.md"
     state_path = data_dir / "realistic_simulation_state.json"
+    scenario_path = data_dir / "realistic_simulation_scenario.json"
 
     should_reset = os.getenv("PDM_SIM_RESET", "1") == "1"
     if should_reset:
@@ -965,6 +1007,7 @@ async def run_realistic_simulation_v2() -> None:
             trace_path,
             report_path,
             state_path,
+            scenario_path,
         ):
             if path.exists():
                 path.unlink()
@@ -974,19 +1017,15 @@ async def run_realistic_simulation_v2() -> None:
     base_url = os.getenv("PDM_SIM_BASE_URL", "http://127.0.0.1:11434/v1")
     context_window = int(os.getenv("PDM_SIM_CONTEXT_WINDOW", "8192"))
     stop_on_failure = os.getenv("PDM_SIM_STOP_ON_PROVIDER_FAILURE", "1") == "1"
-    phase_budget = max(10, turns_limit // len(PHASES))
-    minimum_phase_turns = max(4, phase_budget // 3)
-    hard_phase_limit = phase_budget + 4
 
     state = SimulationState.load(state_path)
     if not state:
         state = SimulationState(run_id=os.getenv("PDM_SIM_RUN_ID", str(uuid4())))
     trace = TraceStore(trace_path)
 
+    alembic_revision = upgrade_simulation_database(database_path)
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
 
     async with factory() as session:
         campaigns = CampaignService(session)
@@ -1035,8 +1074,9 @@ async def run_realistic_simulation_v2() -> None:
             ),
         )
         config_repo = ProviderConfigRepository(session)
-        api_key = await config_repo.get_decrypted_key(campaign_id)
+        await config_repo.get_decrypted_key(campaign_id)
         role_router = RoleModelRouter(config_repo)
+        provider = LLMProvider()
         builder_selection = await role_router.resolve(
             campaign_id,
             ModelRole.CHARACTER_BUILDER,
@@ -1047,7 +1087,25 @@ async def run_realistic_simulation_v2() -> None:
             ModelRole.EVALUATOR,
             config,
         )
-        if builder_selection is None or evaluator_selection is None:
+        player_selection = await role_router.resolve(
+            campaign_id,
+            ModelRole.PLAYER,
+            config,
+        )
+        scenario_selection = await role_router.resolve(
+            campaign_id,
+            ModelRole.SCENARIO_BUILDER,
+            config,
+        )
+        if any(
+            selection is None
+            for selection in (
+                builder_selection,
+                evaluator_selection,
+                player_selection,
+                scenario_selection,
+            )
+        ):
             raise RuntimeError("Role model routing requires a configured campaign provider")
         entities = EntityRepository(session)
         characters = await entities.list_by_campaign(campaign_id, "character")
@@ -1071,7 +1129,18 @@ async def run_realistic_simulation_v2() -> None:
             )
             await session.commit()
 
-        provider = LLMProvider()
+        catalog = await ensure_phase_available(
+            path=scenario_path,
+            reset=should_reset,
+            phase_index=state.phase_index,
+            provider=provider,
+            router=role_router,
+            selection=scenario_selection,
+            previous_outcomes=state.player_journal,
+        )
+        NPCS = catalog.runtime_npcs()
+        PHASES = catalog.runtime_phases()
+
         stats: Counter = Counter()
         director = ScenarioDirector(
             session,
@@ -1090,15 +1159,32 @@ async def run_realistic_simulation_v2() -> None:
         policy = PlayerPolicy()
         started = time.time()
 
-        while (
-            state.logical_turn <= turns_limit
-            and state.phase_index < len(PHASES)
-            and not state.completed
-        ):
+        while state.logical_turn <= turns_limit and not state.completed:
+            if state.phase_index >= len(PHASES):
+                catalog = await ensure_phase_available(
+                    path=scenario_path,
+                    reset=False,
+                    phase_index=state.phase_index,
+                    provider=provider,
+                    router=role_router,
+                    selection=scenario_selection,
+                    previous_outcomes=state.player_journal,
+                )
+                NPCS = catalog.runtime_npcs()
+                PHASES = catalog.runtime_phases()
+                await director.restore_characters()
+
             runtime = await director.enter_phase(state.phase_index, state)
             runtime.phase_turn = state.phase_turn
             runtime.injected_pulses = set(state.injected_pulses)
             runtime.confirmed_pulses = set(state.confirmed_pulses)
+            runtime.criteria_met = set(state.criteria_met)
+            runtime.durable_changes = list(state.durable_changes)
+            minimum_phase_turns = max(4, int(runtime.phase.min_turns))
+            hard_phase_limit = max(
+                minimum_phase_turns + 4,
+                int(runtime.phase.max_turns),
+            )
             await director.inject_due_pulses(runtime, hard_phase_limit)
 
             active_theses_rows = await scenes.list_theses_by_scene(
@@ -1140,8 +1226,8 @@ async def run_realistic_simulation_v2() -> None:
             else:
                 decision = await generate_player_decision(
                     provider,
-                    config,
-                    api_key,
+                    player_selection.config,
+                    player_selection.api_key,
                     compiler,
                     campaign_id,
                     runtime,
@@ -1235,6 +1321,10 @@ async def run_realistic_simulation_v2() -> None:
                     session,
                     assistant_turn_id,
                 )
+                for change in accepted:
+                    if change not in runtime.durable_changes:
+                        runtime.durable_changes.append(change)
+                runtime.durable_changes = runtime.durable_changes[-80:]
 
             active_theses_rows = await scenes.list_theses_by_scene(
                 runtime.scene_id,
@@ -1304,6 +1394,8 @@ async def run_realistic_simulation_v2() -> None:
             state.phase_turn = runtime.phase_turn
             state.injected_pulses = sorted(runtime.injected_pulses)
             state.confirmed_pulses = sorted(runtime.confirmed_pulses)
+            state.criteria_met = sorted(runtime.criteria_met)
+            state.durable_changes = list(runtime.durable_changes)
 
             if phase_finished:
                 await director.close_current(
@@ -1311,13 +1403,19 @@ async def run_realistic_simulation_v2() -> None:
                     evaluation.outcome_summary or evaluation.evidence,
                     assistant_turn_id,
                 )
+                state.player_journal.append(
+                    evaluation.outcome_summary
+                    or evaluation.evidence
+                    or f"Сцена {runtime.phase.title} завершена со статусом {evaluation.status}."
+                )
+                state.player_journal = state.player_journal[-24:]
                 state.phase_index += 1
                 state.phase_turn = 0
                 state.injected_pulses = []
                 state.confirmed_pulses = []
+                state.criteria_met = []
+                state.durable_changes = []
                 director.current = None
-                if state.phase_index >= len(PHASES):
-                    state.completed = True
             state.save(state_path)
 
             if state.logical_turn % 5 == 0:
@@ -1326,6 +1424,10 @@ async def run_realistic_simulation_v2() -> None:
                     f"phase_turn={runtime.phase_turn}; status={evaluation.status}; "
                     f"{(time.time() - started) / max(1, state.logical_turn - 1):.2f}s/turn"
                 )
+
+        if state.logical_turn > turns_limit:
+            state.completed = True
+            state.save(state_path)
 
         all_turns = await turns.get_history(campaign_id, limit=turns_limit * 4, active_only=False)
         active_theses = await session.execute(
@@ -1365,6 +1467,8 @@ async def run_realistic_simulation_v2() -> None:
             "# Отчёт о реалистичной автономной кампании v2",
             "",
             f"- Run ID: `{state.run_id}`",
+            f"- Alembic revision: `{alembic_revision}`",
+            f"- Generated scenario: `{json.dumps(catalog_summary(catalog), ensure_ascii=False)}`",
             f"- Кампания: {campaign.name}",
             f"- Запланированный предел ходов: {turns_limit}",
             f"- Уникальных логических ходов: {len(logical_records)}",
