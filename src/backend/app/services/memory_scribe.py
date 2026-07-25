@@ -14,7 +14,6 @@ from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import CanonAudit, CanonEnvelope, proposals_from_envelope
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
-
 PLACEHOLDER_SELF = {"self", "speaker", "acting_character", "acting_character_id"}
 PLACEHOLDER_PLAYER = {
     "player",
@@ -92,7 +91,10 @@ class MemoryScribe:
         participant_names = [
             display_by_id.get(entity_id, entity_id) for entity_id in scene_participant_ids
         ]
-        current_facts = await self._fact_repo.list_active(campaign_id)
+        current_facts = await self._fact_repo.list_active(
+            campaign_id,
+            scene_id=scene_id,
+        )
         fact_lines = [
             f"- {fact.subject} | {fact.predicate} | {fact.object_value or 'null'} "
             f"[{fact.truth_status}]"
@@ -148,7 +150,9 @@ class MemoryScribe:
 }}
 
 PAYLOAD:
-- fact: {{"subject":"устойчивый субъект","predicate":"стабильная связь","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public"}}
+- fact: {{"subject":"устойчивый субъект","predicate":"стабильная связь","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public","scope":"scene|campaign"}}
+- scope=scene для следов, положения, состояния двери, локальной находки и любых наблюдений, истинных только здесь.
+- scope=campaign только для личности, происхождения, владения, глобального лора или устойчивого состояния, которое должно пережить смену сцены.
 - event: {{"event_type":"тип","description":"что произошло","location_id":"имя локации или null","participant_ids":["имена"]}}
 - movement: {{"character_id":"имя","location_id":"имя локации","description":"что переместилось"}}
 - relationship: {{"subject_id":"имя","object_id":"имя","relation_type":"стабильный тип","description":"новое состояние","reason":"подтверждённая причина","intensity":0.0}}
@@ -192,6 +196,7 @@ FACT SEMANTICS:
             ).model_dump()
             raise
 
+        self._current_scene_id = scene_id
         return self._parse_data(
             data,
             authoritative_text=assistant_content,
@@ -222,7 +227,7 @@ FACT SEMANTICS:
             clean_text = "\n".join(lines).strip()
         try:
             data = json.loads(clean_text)
-        except Exception:
+        except json.JSONDecodeError:
             self.last_audit = CanonAudit(
                 envelope_valid=False,
                 error="Scribe returned invalid JSON",
@@ -460,6 +465,16 @@ FACT SEMANTICS:
                 cardinality = "single"
             resolved["operation"] = operation
             resolved["cardinality"] = cardinality
+            scope = str(resolved.get("scope") or "scene").casefold()
+            if scope not in {"campaign", "scene"}:
+                scope = "scene"
+            current_scene_id = getattr(self, "_current_scene_id", None)
+            if scope == "scene" and current_scene_id is not None:
+                resolved["scope"] = "scene"
+                resolved["scene_id"] = str(current_scene_id)
+            else:
+                resolved["scope"] = "campaign"
+                resolved.pop("scene_id", None)
 
         if canon_meta:
             resolved["_canon"] = canon_meta

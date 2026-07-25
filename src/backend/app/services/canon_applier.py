@@ -78,6 +78,12 @@ class CanonApplier:
                     confidence=payload.get("confidence", 1.0),
                     visibility=payload.get("visibility", "dm"),
                     source_turn_id=source_turn_id,
+                    scope=payload.get("scope", "campaign"),
+                    scene_id=(
+                        UUID(payload["scene_id"])
+                        if payload.get("scene_id")
+                        else None
+                    ),
                 ),
                 operation=operation,
                 cardinality=self._cardinality(payload),
