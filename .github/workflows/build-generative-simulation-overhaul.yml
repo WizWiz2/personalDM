@@ -81,8 +81,22 @@ jobs:
           PY
 
       - name: Full backend tests
+        id: full_tests
+        continue-on-error: true
         working-directory: src/backend
-        run: pytest -q --tb=short
+        run: pytest -q --tb=short > ../../full-tests.log 2>&1
+
+      - name: Stop after full test failure
+        if: steps.full_tests.outcome == 'failure'
+        run: |
+          cat full-tests.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B agent/generative-simulation-overhaul-debug
+          git add -f full-tests.log
+          git commit -m "Сохранить ошибку полного pytest"
+          git push --force origin HEAD:agent/generative-simulation-overhaul-debug
+          exit 1
 
       - name: Lint changed files
         run: >-
