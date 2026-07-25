@@ -32,6 +32,7 @@ jobs:
           : > transform.log
           python .github/fix_generative_transform.py >> transform.log 2>&1
           python .github/generative_simulation_transform.py >> transform.log 2>&1
+          python .github/fix_generative_strict_lint.py >> transform.log 2>&1
 
       - name: Stop after transform failure
         if: steps.transform.outcome == 'failure'
