@@ -16,6 +16,8 @@ class ModelRole(str, Enum):
     SCRIBE = "scribe"
     CURATOR = "curator"
     EVALUATOR = "evaluator"
+    PLAYER = "player"
+    SCENARIO_BUILDER = "scenario_builder"
     CHARACTER_BUILDER = "character_builder"
     STRUCTURED_REPAIR = "structured_repair"
 
@@ -24,6 +26,8 @@ CONTROL_ROLES = {
     ModelRole.SCRIBE,
     ModelRole.CURATOR,
     ModelRole.EVALUATOR,
+    ModelRole.PLAYER,
+    ModelRole.SCENARIO_BUILDER,
     ModelRole.STRUCTURED_REPAIR,
 }
 
@@ -62,6 +66,8 @@ class RoleModelRouter:
             ModelRole.SCRIBE: settings.SCRIBE_LLM_MODEL,
             ModelRole.CURATOR: settings.CURATOR_LLM_MODEL,
             ModelRole.EVALUATOR: settings.EVALUATOR_LLM_MODEL,
+            ModelRole.PLAYER: settings.PLAYER_LLM_MODEL,
+            ModelRole.SCENARIO_BUILDER: settings.SCENARIO_BUILDER_LLM_MODEL,
             ModelRole.CHARACTER_BUILDER: settings.CHARACTER_BUILDER_LLM_MODEL,
             ModelRole.STRUCTURED_REPAIR: settings.CONTROL_LLM_MODEL,
         }.get(role)

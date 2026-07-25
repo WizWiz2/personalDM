@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.config import settings
 from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProvider
+from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.context_compiler import ContextCompiler, count_tokens
 from app.services.memory_scribe import MemoryScribe
 
@@ -99,10 +99,10 @@ def _balanced_json_object(text: str) -> dict[str, Any]:
         clean = "\n".join(lines).strip()
     try:
         value = json.loads(clean)
-        if isinstance(value, dict):
-            return value
-    except Exception:
-        pass
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        return value
 
     start = clean.find("{")
     if start < 0:
@@ -217,7 +217,13 @@ async def generate_control_json(
                 CONTROL_STATS[f"{label}_repair_success"] += 1
             _write_health()
             return ControlJSONResult(data=data, attempt=attempt, transport=transport)
-        except Exception as exc:
+        except (
+            LLMProviderError,
+            ValidationError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
             last_error = exc
 
     record_control_failure(label, last_error or "unknown JSON control error")
@@ -258,6 +264,55 @@ def ensure_current_user_message(
         layers.append("layer_6_current_user")
     metadata["included_layers"] = layers
     return result, metadata
+
+
+def _normalized(value: object) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def enforce_objective_contract(evaluation, phase_runtime):
+    criteria = {item.key: item for item in phase_runtime.phase.completion_criteria}
+    if not criteria:
+        return evaluation
+
+    ledger = list(phase_runtime.durable_changes)
+    supported: set[str] = set(phase_runtime.criteria_met)
+    accepted_evidence: dict[str, str] = {}
+    for key in evaluation.criteria_met:
+        criterion = criteria.get(key)
+        evidence = str(evaluation.criterion_evidence.get(key) or "").strip()
+        if criterion is None or not evidence:
+            continue
+        evidence_norm = _normalized(evidence)
+        for change in ledger:
+            change_type = change.split(":", 1)[0].strip()
+            if change_type not in criterion.allowed_change_types:
+                continue
+            change_norm = _normalized(change)
+            if evidence_norm in change_norm or change_norm in evidence_norm:
+                supported.add(key)
+                accepted_evidence[key] = change
+                break
+
+    phase_runtime.criteria_met = supported
+    evaluation.criteria_met = sorted(supported)
+    evaluation.criterion_evidence = {
+        key: accepted_evidence.get(key, evaluation.criterion_evidence.get(key, ""))
+        for key in sorted(supported)
+    }
+    missing = sorted(set(criteria) - supported)
+    if missing:
+        if evaluation.status == "resolved":
+            evaluation.status = "progressing"
+        evaluation.evidence = (
+            f"Не подтверждены критерии: {', '.join(missing)}. "
+            + (evaluation.evidence or "")
+        ).strip()
+    elif evaluation.status not in {"failed", "blocked"}:
+        evaluation.status = "resolved"
+        if not evaluation.outcome_summary:
+            evaluation.outcome_summary = "Все формальные критерии сцены подтверждены каноном."
+    return evaluation
 
 
 def evaluator_history_without_duplicate(
@@ -419,7 +474,7 @@ def install_quality_controls(runtime) -> None:
                 if valid:
                     policy.remember(decision)
                     return decision
-            except Exception as exc:
+            except (ValidationError, TypeError, ValueError) as exc:
                 error = str(exc)
         if quality_mode():
             record_control_failure("player_semantics", error or "invalid player decision")
@@ -488,6 +543,11 @@ def install_quality_controls(runtime) -> None:
 
 ЦЕЛЬ: {phase_runtime.phase.objective}
 ХОДОВ В СЦЕНЕ: {phase_runtime.phase_turn}
+КРИТЕРИИ ЗАВЕРШЕНИЯ:
+{chr(10).join(f"- {item.key}: {item.description}; допустимые изменения: {', '.join(item.allowed_change_types)}" for item in phase_runtime.phase.completion_criteria) or '- legacy phase without formal criteria'}
+УЖЕ ПОДТВЕРЖДЕНЫ: {', '.join(sorted(phase_runtime.criteria_met)) or 'нет'}
+ПРИНЯТЫЕ DURABLE CHANGES ЭТОЙ СЦЕНЫ:
+{chr(10).join(phase_runtime.durable_changes[-50:]) or '- нет'}
 АКТИВНЫЕ ТЕЗИСЫ: {' | '.join(active_theses)}
 ОЖИДАЮЩИЕ ОСЛОЖНЕНИЯ:
 {chr(10).join(pending) or '- нет'}
@@ -498,7 +558,9 @@ def install_quality_controls(runtime) -> None:
 ПОСЛЕДНИЙ РЕЗУЛЬТАТ ДМА:
 {assistant_content}
 
-Resolved только если цель действительно достигнута. Не считай план или тезис событием."""
+Для criteria_met верни только ключи критериев, подтверждённых строкой из DURABLE CHANGES.
+В criterion_evidence скопируй точную строку durable change для каждого ключа.
+Resolved только если подтверждены все критерии. Не считай план, тезис или красивое наблюдение событием."""
         result = await generate_control_json(
             provider,
             [ChatMessage(role="system", content=prompt)],
@@ -526,6 +588,7 @@ Resolved только если цель действительно достиг�
             for index in evaluation.confirmed_pulses
             if index in pending_indexes
         ]
+        evaluation = enforce_objective_contract(evaluation, phase_runtime)
         if evaluation.status in {"resolved", "failed"} and not evaluation.evidence.strip():
             record_control_failure("evaluator_evidence", "terminal status without evidence")
             if quality_mode():
