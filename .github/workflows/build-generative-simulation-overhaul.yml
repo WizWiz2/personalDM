@@ -56,6 +56,7 @@ jobs:
         run: >-
           pytest -q
           tests/test_generative_simulation_overhaul.py
+          tests/test_dynamic_campaign_references.py
           tests/test_simulation_quality_controls.py
           tests/test_role_model_router.py
           tests/test_context.py
@@ -118,6 +119,7 @@ jobs:
           src/backend/tests/simulation_quality_controls.py
           src/backend/tests/simulation_scenario.py
           src/backend/tests/test_generative_simulation_overhaul.py
+          src/backend/tests/test_dynamic_campaign_references.py
           > lint.log 2>&1
 
       - name: Stop after lint failure
@@ -158,6 +160,7 @@ jobs:
             src/backend/tests/simulation_quality_controls.py \
             src/backend/tests/simulation_scenario.py \
             src/backend/tests/test_generative_simulation_overhaul.py \
+            src/backend/tests/test_dynamic_campaign_references.py \
             /tmp/generative-simulation-final/
 
           git fetch origin main
@@ -181,6 +184,7 @@ jobs:
             src/backend/tests/simulation_dynamic_campaign.py \
             src/backend/tests/simulation_quality_controls.py \
             src/backend/tests/simulation_scenario.py \
-            src/backend/tests/test_generative_simulation_overhaul.py
+            src/backend/tests/test_generative_simulation_overhaul.py \
+            src/backend/tests/test_dynamic_campaign_references.py
           git commit -m "Сделать симуляцию генеративной и production-like"
           git push --force origin HEAD:agent/generative-simulation-overhaul
