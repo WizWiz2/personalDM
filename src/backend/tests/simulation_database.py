@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 
@@ -13,8 +14,7 @@ def database_url(path: Path) -> str:
     return f"sqlite+aiosqlite:///{path.resolve().as_posix()}"
 
 
-def upgrade_simulation_database(path: Path) -> str:
-    """Create or upgrade the benchmark DB through the real Alembic chain."""
+def _upgrade_simulation_database_sync(path: Path) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     backend_root = Path(__file__).resolve().parents[1]
     alembic_ini = backend_root / "alembic.ini"
@@ -37,6 +37,11 @@ def upgrade_simulation_database(path: Path) -> str:
         if not row or not row[0]:
             raise RuntimeError("Alembic upgrade completed without alembic_version")
         return str(row[0])
+
+
+async def upgrade_simulation_database(path: Path) -> str:
+    """Run the real Alembic chain without nesting event loops."""
+    return await asyncio.to_thread(_upgrade_simulation_database_sync, path)
 
 
 def current_revision(path: Path) -> str | None:
