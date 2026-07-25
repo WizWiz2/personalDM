@@ -1,0 +1,54 @@
+name: Debug generative mock
+
+on:
+  push:
+    branches:
+      - agent/generative-simulation-overhaul-work
+
+permissions:
+  contents: write
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/generative-simulation-overhaul-work
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply clean output
+        run: |
+          python .github/fix_generative_transform.py
+          python .github/generative_simulation_transform.py
+          python .github/fix_generative_strict_lint.py
+          python .github/fix_ci_mock_dynamic_campaign.py
+      - name: Install backend
+        run: python -m pip install -e 'src/backend[dev]'
+      - name: Run planned failure
+        id: mock
+        continue-on-error: true
+        working-directory: src/backend
+        env:
+          PYTHONPATH: "."
+          PDM_SIM_TURNS: "60"
+          PDM_SIM_DATA_DIR: "./data/ci-resume-debug"
+          PDM_SIM_RESET: "1"
+          PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
+          PDM_MOCK_FAIL_DM_ATTEMPTS: "3"
+        run: python tests/run_ci_mock_simulation_v3.py > ../../mock-resume.log 2>&1
+      - name: Publish debug log
+        if: always()
+        run: |
+          echo "mock_outcome=${{ steps.mock.outcome }}" >> mock-resume.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -f -B agent/generative-simulation-overhaul-debug
+          git add -f mock-resume.log
+          git commit -m "Сохранить лог generative mock"
+          git push --force origin HEAD:agent/generative-simulation-overhaul-debug
+      - name: Fail if mock failed
+        if: steps.mock.outcome == 'failure'
+        run: exit 1
