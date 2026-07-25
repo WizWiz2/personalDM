@@ -65,7 +65,7 @@ if text.count(fact_scope_old) != 1:
     raise SystemExit(f"fact scene-context anchor count={text.count(fact_scope_old)}")
 text = text.replace(fact_scope_old, fact_scope_new)
 
-# Add one narrow runtime patch without changing _parse_response/_parse_data signatures.
+# Add narrow runtime patches without changing stable private parsing signatures.
 text += '''
 replace_once(
     "src/backend/app/services/memory_scribe.py",
@@ -77,6 +77,18 @@ replace_once(
         return self._parse_data(
             data,
             authoritative_text=assistant_content,
+\'\'\',
+)
+
+replace_once(
+    "src/backend/tests/run_realistic_simulation_v2.py",
+    \'\'\'        for name in phase.introduced_npcs:
+            await self.ensure_npc(name, location.id)
+        active = {name: self.characters[name] for name in phase.active_npcs}
+\'\'\',
+    \'\'\'        for name in dict.fromkeys((*phase.introduced_npcs, *phase.active_npcs)):
+            await self.ensure_npc(name, location.id)
+        active = {name: self.characters[name] for name in phase.active_npcs}
 \'\'\',
 )
 '''
