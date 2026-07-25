@@ -1,0 +1,137 @@
+name: Build generative simulation overhaul
+
+on:
+  push:
+    branches:
+      - agent/generative-simulation-overhaul-work
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-test-publish:
+    if: github.head_ref == 'agent/generative-simulation-overhaul-work' || github.ref_name == 'agent/generative-simulation-overhaul-work'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/generative-simulation-overhaul-work
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply overhaul
+        run: python .github/generative_simulation_transform.py
+
+      - name: Install backend
+        run: python -m pip install -e 'src/backend[dev]'
+
+      - name: Compile
+        run: python -m compileall -q src/backend/app src/backend/tests src/backend/alembic
+
+      - name: Focused tests
+        working-directory: src/backend
+        run: >-
+          pytest -q
+          tests/test_generative_simulation_overhaul.py
+          tests/test_simulation_quality_controls.py
+          tests/test_role_model_router.py
+          tests/test_context.py
+          tests/test_canon_semantics.py
+          --tb=short
+
+      - name: Migration cycle
+        working-directory: src/backend
+        env:
+          PDM_DATABASE_URL: sqlite+aiosqlite:////tmp/generative-simulation-migrations.db
+        run: |
+          rm -f /tmp/generative-simulation-migrations.db
+          alembic upgrade head
+          alembic downgrade d2b3c4d5e6f7
+          alembic upgrade head
+          python - <<'PY'
+          import sqlite3
+          con = sqlite3.connect('/tmp/generative-simulation-migrations.db')
+          revision = con.execute('select version_num from alembic_version').fetchone()[0]
+          columns = {row[1] for row in con.execute('pragma table_info(facts)')}
+          assert revision == 'e3c4d5e6f7a8', revision
+          assert {'scope', 'scene_id'} <= columns, columns
+          PY
+
+      - name: Full backend tests
+        working-directory: src/backend
+        run: pytest -q --tb=short
+
+      - name: Lint changed files
+        run: >-
+          ruff check
+          src/backend/app/config.py
+          src/backend/app/db/tables.py
+          src/backend/app/db/repositories/fact_repo.py
+          src/backend/app/models/fact.py
+          src/backend/app/services/canon_applier.py
+          src/backend/app/services/context_compiler.py
+          src/backend/app/services/memory_scribe.py
+          src/backend/app/services/role_model_router.py
+          src/backend/tests/run_realistic_simulation.py
+          src/backend/tests/run_realistic_simulation_v2.py
+          src/backend/tests/simulation_database.py
+          src/backend/tests/simulation_dynamic_campaign.py
+          src/backend/tests/simulation_quality_controls.py
+          src/backend/tests/simulation_scenario.py
+          src/backend/tests/test_generative_simulation_overhaul.py
+
+      - name: Publish clean branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/generative-simulation-final
+          mkdir -p /tmp/generative-simulation-final
+          cp --parents \
+            src/backend/alembic/versions/e3c4d5e6f7a8_fact_scope.py \
+            src/backend/app/config.py \
+            src/backend/app/db/tables.py \
+            src/backend/app/db/repositories/fact_repo.py \
+            src/backend/app/models/fact.py \
+            src/backend/app/services/canon_applier.py \
+            src/backend/app/services/context_compiler.py \
+            src/backend/app/services/memory_scribe.py \
+            src/backend/app/services/role_model_router.py \
+            src/backend/tests/run_realistic_simulation.py \
+            src/backend/tests/run_realistic_simulation_v2.py \
+            src/backend/tests/simulation_database.py \
+            src/backend/tests/simulation_dynamic_campaign.py \
+            src/backend/tests/simulation_quality_controls.py \
+            src/backend/tests/simulation_scenario.py \
+            src/backend/tests/test_generative_simulation_overhaul.py \
+            /tmp/generative-simulation-final/
+
+          git fetch origin main
+          git checkout -B agent/generative-simulation-overhaul origin/main
+          cp -a /tmp/generative-simulation-final/. .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            src/backend/alembic/versions/e3c4d5e6f7a8_fact_scope.py \
+            src/backend/app/config.py \
+            src/backend/app/db/tables.py \
+            src/backend/app/db/repositories/fact_repo.py \
+            src/backend/app/models/fact.py \
+            src/backend/app/services/canon_applier.py \
+            src/backend/app/services/context_compiler.py \
+            src/backend/app/services/memory_scribe.py \
+            src/backend/app/services/role_model_router.py \
+            src/backend/tests/run_realistic_simulation.py \
+            src/backend/tests/run_realistic_simulation_v2.py \
+            src/backend/tests/simulation_database.py \
+            src/backend/tests/simulation_dynamic_campaign.py \
+            src/backend/tests/simulation_quality_controls.py \
+            src/backend/tests/simulation_scenario.py \
+            src/backend/tests/test_generative_simulation_overhaul.py
+          git commit -m "Сделать симуляцию генеративной и production-like"
+          git push --force origin HEAD:agent/generative-simulation-overhaul
