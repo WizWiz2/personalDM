@@ -179,6 +179,19 @@ replace_once(
 
 replace_once(
     "src/backend/tests/simulation_dynamic_campaign.py",
+    '''from pydantic import BaseModel, Field, field_validator, model_validator
+''',
+    '''from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+''',
+)
+replace_once(
+    "src/backend/tests/simulation_dynamic_campaign.py",
     '''        except Exception:
             return None
 ''',
