@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   build-test-publish:
@@ -34,7 +36,16 @@ jobs:
 
       - name: Stop after transform failure
         if: steps.transform.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          {
+            echo '### Generative simulation transform failure'
+            echo '```text'
+            cat transform.log
+            echo '```'
+          } > /tmp/transform-comment.md
+          gh pr comment 21 --body-file /tmp/transform-comment.md
           cat transform.log
           exit 1
 
