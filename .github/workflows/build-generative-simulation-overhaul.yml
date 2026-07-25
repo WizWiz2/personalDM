@@ -99,6 +99,8 @@ jobs:
           exit 1
 
       - name: Lint changed files
+        id: lint
+        continue-on-error: true
         run: >-
           ruff check
           src/backend/app/config.py
@@ -116,6 +118,19 @@ jobs:
           src/backend/tests/simulation_quality_controls.py
           src/backend/tests/simulation_scenario.py
           src/backend/tests/test_generative_simulation_overhaul.py
+          > lint.log 2>&1
+
+      - name: Stop after lint failure
+        if: steps.lint.outcome == 'failure'
+        run: |
+          cat lint.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B agent/generative-simulation-overhaul-debug
+          git add -f lint.log
+          git commit -m "Сохранить ошибку Ruff"
+          git push --force origin HEAD:agent/generative-simulation-overhaul-debug
+          exit 1
 
       - name: Publish clean branch
         shell: bash
