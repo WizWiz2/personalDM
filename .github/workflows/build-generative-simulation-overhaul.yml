@@ -161,7 +161,7 @@ jobs:
             /tmp/generative-simulation-final/
 
           git fetch origin main
-          git checkout -B agent/generative-simulation-overhaul origin/main
+          git checkout -f -B agent/generative-simulation-overhaul origin/main
           cp -a /tmp/generative-simulation-final/. .
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
