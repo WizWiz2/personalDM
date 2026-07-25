@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Fact
@@ -22,6 +22,8 @@ class FactRepository(BaseRepository):
             source_turn_id=(str(data.source_turn_id) if data.source_turn_id else None),
             confidence=data.confidence,
             visibility=data.visibility,
+            scope=data.scope,
+            scene_id=str(data.scene_id) if data.scene_id else None,
             is_current=True,
         )
         self._session.add(db_fact)
@@ -39,6 +41,7 @@ class FactRepository(BaseRepository):
         self,
         campaign_id: UUID,
         visibility: str | None = None,
+        scene_id: UUID | None = None,
     ) -> list[FactRead]:
         query = select(Fact).where(
             Fact.campaign_id == str(campaign_id),
@@ -46,6 +49,13 @@ class FactRepository(BaseRepository):
         )
         if visibility:
             query = query.where(Fact.visibility == visibility)
+        if scene_id is not None:
+            query = query.where(
+                or_(
+                    Fact.scope == "campaign",
+                    (Fact.scope == "scene") & (Fact.scene_id == str(scene_id)),
+                )
+            )
         result = await self._session.execute(query)
         return [FactRead.model_validate(item) for item in result.scalars().all()]
 
@@ -54,14 +64,20 @@ class FactRepository(BaseRepository):
         campaign_id: UUID,
         subject: str,
         predicate: str,
+        *,
+        scope: str = "campaign",
+        scene_id: UUID | None = None,
     ) -> list[FactRead]:
         subject_key = self.normalize(subject)
         predicate_key = self.normalize(predicate)
+        candidates = await self.list_active(campaign_id)
         return [
             fact
-            for fact in await self.list_active(campaign_id)
+            for fact in candidates
             if self.normalize(fact.subject) == subject_key
             and self.normalize(fact.predicate) == predicate_key
+            and fact.scope == scope
+            and fact.scene_id == scene_id
         ]
 
     async def update(
@@ -74,7 +90,7 @@ class FactRepository(BaseRepository):
         if not db_fact:
             return None
         for key, value in data.model_dump(exclude_unset=True).items():
-            if key == "superseded_by" and value is not None:
+            if key in {"superseded_by", "scene_id"} and value is not None:
                 setattr(db_fact, key, str(value))
             else:
                 setattr(db_fact, key, value)
@@ -108,7 +124,13 @@ class FactRepository(BaseRepository):
         """Apply assert/revise/contradict/retract while preserving history."""
         operation = operation if operation in {"assert", "revise", "retract", "contradict"} else "assert"
         cardinality = cardinality if cardinality in {"single", "multi"} else "single"
-        current = await self.find_current_by_key(campaign_id, data.subject, data.predicate)
+        current = await self.find_current_by_key(
+            campaign_id,
+            data.subject,
+            data.predicate,
+            scope=data.scope,
+            scene_id=data.scene_id,
+        )
         object_key = self.normalize(data.object_value)
         truth_key = self.normalize(data.truth_status)
 
