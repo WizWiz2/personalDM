@@ -205,6 +205,9 @@ class ContextCompiler:
             for entity in await self._entity_repo.list_by_campaign(campaign_id)
         }
         by_turn: dict[str, list[str]] = {turn_id: [] for turn_id in recent_turn_ids}
+        progress_by_turn: dict[str, bool] = {
+            turn_id: False for turn_id in recent_turn_ids
+        }
         for proposal in proposals:
             raw_payload = (
                 proposal.user_edit
@@ -224,6 +227,14 @@ class ContextCompiler:
             )
             if summary and summary not in by_turn[proposal.turn_id]:
                 by_turn[proposal.turn_id].append(summary)
+            if proposal.change_type in {
+                "fact",
+                "event",
+                "relationship",
+                "movement",
+                "item_transfer",
+            }:
+                progress_by_turn[proposal.turn_id] = True
 
         receipt: list[str] = []
         for turn_id in reversed(recent_turn_ids):
@@ -233,7 +244,7 @@ class ContextCompiler:
 
         watched = recent_turn_ids[:stagnation_window]
         stagnant = len(watched) == stagnation_window and all(
-            not by_turn[turn_id] for turn_id in watched
+            not progress_by_turn[turn_id] for turn_id in watched
         )
         return receipt, stagnant, len(recent_turn_ids)
 
@@ -348,9 +359,7 @@ class ContextCompiler:
                 scene_id,
                 active_only=True,
             ):
-                if not actor_mode or thesis.visibility == "public":
-                    visible_theses.append(thesis)
-                elif (
+                if not actor_mode or thesis.visibility == "public" or (
                     thesis.visibility == "character_only"
                     and acting_character_id in thesis.related_entity_ids
                 ):
@@ -472,6 +481,7 @@ class ContextCompiler:
         facts = await self._fact_repo.list_active(
             campaign_id,
             visibility="public" if actor_mode else None,
+            scene_id=scene_id,
         )
         if facts:
             fact_package = "[Campaign Facts & History]\n"

@@ -489,6 +489,10 @@ class Fact(Base):
     )
     confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     visibility: Mapped[str] = mapped_column(String(50), default="dm", nullable=False)
+    scope: Mapped[str] = mapped_column(String(50), default="campaign", nullable=False)
+    scene_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("scenes.id", ondelete="CASCADE"), nullable=True
+    )
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     superseded_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("facts.id", ondelete="SET NULL"), nullable=True
@@ -500,6 +504,14 @@ class Fact(Base):
 
     campaign = relationship("Campaign", back_populates="facts")
     beliefs = relationship("Belief", back_populates="fact", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'campaign' AND scene_id IS NULL) OR "
+            "(scope = 'scene' AND scene_id IS NOT NULL)",
+            name="ck_fact_scope_scene",
+        ),
+    )
 
 
 class Belief(Base):
