@@ -1,0 +1,11 @@
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 293b3517b6ac, Initial schema
+INFO  [alembic.runtime.migration] Running upgrade 293b3517b6ac -> 7f4b8d2c91aa, Add turn UUID provenance and acting-character audit fields.
+INFO  [alembic.runtime.migration] Running upgrade 7f4b8d2c91aa -> c1a2b3c4d5e6, Add player role, persistent generation runs and post-turn jobs.
+INFO  [alembic.runtime.migration] Running upgrade c1a2b3c4d5e6 -> d2b3c4d5e6f7, Add replay checkpoint for stateful canon.
+INFO  [alembic.runtime.migration] Running upgrade d2b3c4d5e6f7 -> e3c4d5e6f7a8, Add scene scope to durable facts.
+[simulation] Provider failure on logical turn 1; state saved for idempotent resume.
+=== REALISTIC AUTONOMOUS CAMPAIGN V2 FINISHED ===
+MOCK_CALLS {"builder": 1, "dm": 3, "player": 1, "scenario": 1}
+mock_outcome=success
