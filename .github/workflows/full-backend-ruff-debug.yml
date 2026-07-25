@@ -1,0 +1,47 @@
+name: Full backend Ruff debug
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  ruff:
+    if: github.head_ref == 'agent/generative-simulation-overhaul-work'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/generative-simulation-overhaul-work
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Apply generated output
+        run: |
+          python .github/fix_generative_transform.py
+          python .github/generative_simulation_transform.py
+          python .github/fix_generative_strict_lint.py
+          python .github/fix_ci_mock_dynamic_campaign.py
+      - name: Install backend
+        run: python -m pip install -e 'src/backend[dev]'
+      - name: Run full Ruff
+        id: ruff
+        continue-on-error: true
+        run: ruff check src/backend > full-ruff.log 2>&1
+      - name: Publish Ruff log
+        if: always()
+        run: |
+          echo "ruff_outcome=${{ steps.ruff.outcome }}" >> full-ruff.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -f -B agent/generative-simulation-overhaul-debug
+          git add -f full-ruff.log
+          git commit -m "Сохранить полный Ruff log"
+          git push --force origin HEAD:agent/generative-simulation-overhaul-debug
+      - name: Fail when Ruff fails
+        if: steps.ruff.outcome == 'failure'
+        run: exit 1
