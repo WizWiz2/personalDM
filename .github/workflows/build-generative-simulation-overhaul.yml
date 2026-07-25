@@ -33,6 +33,7 @@ jobs:
           python .github/fix_generative_transform.py >> transform.log 2>&1
           python .github/generative_simulation_transform.py >> transform.log 2>&1
           python .github/fix_generative_strict_lint.py >> transform.log 2>&1
+          python .github/fix_ci_mock_dynamic_campaign.py >> transform.log 2>&1
 
       - name: Stop after transform failure
         if: steps.transform.outcome == 'failure'
@@ -113,6 +114,7 @@ jobs:
           src/backend/app/services/context_compiler.py
           src/backend/app/services/memory_scribe.py
           src/backend/app/services/role_model_router.py
+          src/backend/tests/run_ci_mock_simulation_v3.py
           src/backend/tests/run_realistic_simulation.py
           src/backend/tests/run_realistic_simulation_v2.py
           src/backend/tests/simulation_database.py
@@ -154,6 +156,7 @@ jobs:
             src/backend/app/services/context_compiler.py \
             src/backend/app/services/memory_scribe.py \
             src/backend/app/services/role_model_router.py \
+            src/backend/tests/run_ci_mock_simulation_v3.py \
             src/backend/tests/run_realistic_simulation.py \
             src/backend/tests/run_realistic_simulation_v2.py \
             src/backend/tests/simulation_database.py \
@@ -179,6 +182,7 @@ jobs:
             src/backend/app/services/context_compiler.py \
             src/backend/app/services/memory_scribe.py \
             src/backend/app/services/role_model_router.py \
+            src/backend/tests/run_ci_mock_simulation_v3.py \
             src/backend/tests/run_realistic_simulation.py \
             src/backend/tests/run_realistic_simulation_v2.py \
             src/backend/tests/simulation_database.py \
