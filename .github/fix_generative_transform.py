@@ -91,6 +91,58 @@ replace_once(
         active = {name: self.characters[name] for name in phase.active_npcs}
 \'\'\',
 )
+
+replace_once(
+    "src/backend/tests/run_realistic_simulation_v2.py",
+    \'\'\'    try:
+        value = json.loads(clean)
+        if isinstance(value, dict):
+            return value
+    except Exception:
+        pass
+    match = JSON_OBJECT_PATTERN.search(clean)
+\'\'\',
+    \'\'\'    try:
+        value = json.loads(clean)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        return value
+    match = JSON_OBJECT_PATTERN.search(clean)
+\'\'\',
+)
+
+replace_once(
+    "src/backend/tests/run_realistic_simulation_v2.py",
+    \'\'\'    if not isinstance(value, dict):
+        raise ValueError("response JSON is not an object")
+\'\'\',
+    \'\'\'    if not isinstance(value, dict):
+        raise TypeError("response JSON is not an object")
+\'\'\',
+)
+
+replace_once(
+    "src/backend/tests/simulation_quality_controls.py",
+    \'\'\'    try:
+        value = json.loads(clean)
+        if isinstance(value, dict):
+            return value
+    except Exception:
+        pass
+
+    start = clean.find("{")
+\'\'\',
+    \'\'\'    try:
+        value = json.loads(clean)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, dict):
+        return value
+
+    start = clean.find("{")
+\'\'\',
+)
 '''
 
 path.write_text(text, encoding="utf-8")
