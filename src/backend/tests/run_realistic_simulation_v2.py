@@ -1078,9 +1078,24 @@ async def run_realistic_simulation_v2() -> None:
         await config_repo.get_decrypted_key(campaign_id)
         role_router = RoleModelRouter(config_repo)
         provider = LLMProvider()
+        narrator_selection = await role_router.resolve(
+            campaign_id,
+            ModelRole.NARRATOR,
+            config,
+        )
         builder_selection = await role_router.resolve(
             campaign_id,
             ModelRole.CHARACTER_BUILDER,
+            config,
+        )
+        scribe_selection = await role_router.resolve(
+            campaign_id,
+            ModelRole.SCRIBE,
+            config,
+        )
+        curator_selection = await role_router.resolve(
+            campaign_id,
+            ModelRole.CURATOR,
             config,
         )
         evaluator_selection = await role_router.resolve(
@@ -1101,7 +1116,10 @@ async def run_realistic_simulation_v2() -> None:
         if any(
             selection is None
             for selection in (
+                narrator_selection,
                 builder_selection,
+                scribe_selection,
+                curator_selection,
                 evaluator_selection,
                 player_selection,
                 scenario_selection,
@@ -1460,6 +1478,20 @@ async def run_realistic_simulation_v2() -> None:
         }
         logical_records = list(trace.records.values())
         generation_failures = sum(bool(item.get("generation_failed")) for item in logical_records)
+        assistant_model_counts = Counter(
+            str(turn.model_name or "unknown")
+            for turn in all_turns
+            if turn.role == "assistant" and turn.status == "active"
+        )
+        model_routing = {
+            "Narrator (DM prose)": narrator_selection,
+            "Character Builder": builder_selection,
+            "Memory Scribe": scribe_selection,
+            "Thesis Curator": curator_selection,
+            "Evaluator": evaluator_selection,
+            "Player Simulator": player_selection,
+            "Scenario Builder": scenario_selection,
+        }
         builder_total = sum(
             stats[key]
             for key in ("character_builder_model", "character_builder_repair", "character_builder_fallback")
@@ -1470,6 +1502,18 @@ async def run_realistic_simulation_v2() -> None:
             f"- Run ID: `{state.run_id}`",
             f"- Alembic revision: `{alembic_revision}`",
             f"- Generated scenario: `{json.dumps(catalog_summary(catalog), ensure_ascii=False)}`",
+            "",
+            "## Маршрутизация моделей",
+            *(
+                f"- {label}: `{selection.config.model_name}` ({selection.source})"
+                for label, selection in model_routing.items()
+            ),
+            "- Фактические модели сохранённых ответов ДМа: "
+            + ", ".join(
+                f"`{model}` — {count}"
+                for model, count in sorted(assistant_model_counts.items())
+            ),
+            "",
             f"- Кампания: {campaign.name}",
             f"- Запланированный предел ходов: {turns_limit}",
             f"- Уникальных логических ходов: {len(logical_records)}",

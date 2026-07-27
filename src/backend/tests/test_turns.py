@@ -48,6 +48,8 @@ def test_turns_flow(client: TestClient, mock_llm):
     assert history[0]["role"] == "user"
     assert history[1]["role"] == "assistant"
     assert history[1]["parent_turn_id"] == history[0]["id"]
+    provider = client.get(f"/api/campaigns/{campaign_id}/provider").json()
+    assert history[1]["model_name"] == provider["model_name"]
 
     undo_res = client.post(f"/api/campaigns/{campaign_id}/turns/undo")
     assert undo_res.status_code == 200
