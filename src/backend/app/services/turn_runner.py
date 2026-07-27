@@ -16,6 +16,7 @@ from app.providers.llm_provider import (
     LLMProviderError,
     LLMProviderTruncatedError,
 )
+from app.services.role_model_router import ModelRole, RoleModelRouter
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -30,6 +31,18 @@ class TurnRunner:
         self._config_repo = ProviderConfigRepository(session)
         self._generation_runs = GenerationRunRepository(session)
         self._llm_provider = LLMProvider()
+
+    def _annotate_model_role(self, selection) -> None:
+        telemetry = dict(self._llm_provider.last_telemetry or {})
+        telemetry.update(
+            {
+                "model_role": selection.role.value,
+                "role_model_source": selection.source,
+                "role_router_fallback": False,
+                "resolved_model": selection.config.model_name,
+            }
+        )
+        self._llm_provider.last_telemetry = telemetry
 
     async def _fail_user_turn(self, user_turn_id: UUID, owned: bool) -> None:
         if owned:
@@ -153,8 +166,8 @@ class TurnRunner:
             active_tasks[campaign_key].cancel()
             del active_tasks[campaign_key]
 
-        config = await self._config_repo.get_by_campaign_id(campaign_id)
-        if not config:
+        primary_config = await self._config_repo.get_by_campaign_id(campaign_id)
+        if not primary_config:
             await self._generation_runs.set_status(
                 generation_run.id,
                 "failed",
@@ -163,7 +176,22 @@ class TurnRunner:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield "[Generation failed: no LLM provider is configured for this campaign.]"
             return
-        api_key = await self._config_repo.get_decrypted_key(campaign_id)
+        narrator_selection = await RoleModelRouter(self._config_repo).resolve(
+            campaign_id,
+            ModelRole.NARRATOR,
+            primary_config,
+        )
+        if narrator_selection is None:
+            await self._generation_runs.set_status(
+                generation_run.id,
+                "failed",
+                error="Narrator model routing did not return a provider",
+            )
+            await self._fail_user_turn(user_turn.id, owns_user_turn)
+            yield "[Generation failed: narrator model routing is unavailable.]"
+            return
+        config = narrator_selection.config
+        api_key = narrator_selection.api_key
 
         from app.services.context_compiler import ContextCompiler
 
@@ -214,12 +242,14 @@ class TurnRunner:
                         accumulated_text,
                         attempt_text,
                     )
+                    self._annotate_model_role(narrator_selection)
                     attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
                     last_provider_error = None
                     break
                 except LLMProviderTruncatedError as exc:
                     partial = attempt_text or exc.partial_text
                     accumulated_text = self._merge_continuation(accumulated_text, partial)
+                    self._annotate_model_role(narrator_selection)
                     attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
                     last_provider_error = exc
                     if attempt + 1 < self.MAX_GENERATION_ATTEMPTS:
@@ -243,6 +273,7 @@ class TurnRunner:
                         await asyncio.sleep(0.25)
                         continue
                 except LLMProviderError as exc:
+                    self._annotate_model_role(narrator_selection)
                     attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
                     last_provider_error = exc
                     if attempt_text.strip():
