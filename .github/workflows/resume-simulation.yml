@@ -47,7 +47,13 @@ jobs:
 
           root = Path("data/ci-resume")
           state = json.loads((root / "realistic_simulation_state.json").read_text(encoding="utf-8"))
-          records = [json.loads(line) for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          scenario = json.loads((root / "realistic_simulation_scenario.json").read_text(encoding="utf-8"))
+          records = [
+              json.loads(line)
+              for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          assert scenario.get("arcs"), scenario
           assert state["logical_turn"] == 1, state
           assert state["phase_index"] == 0, state
           assert state["completed"] is False, state
@@ -72,7 +78,7 @@ jobs:
           assert assistants == 0, assistants
           PY
 
-      - name: Resume the same logical turn and finish campaign
+      - name: Resume the same logical turn and finish generated campaign
         working-directory: src/backend
         env:
           PYTHONPATH: "."
@@ -93,11 +99,20 @@ jobs:
 
           root = Path("data/ci-resume")
           state = json.loads((root / "realistic_simulation_state.json").read_text(encoding="utf-8"))
-          records = [json.loads(line) for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          scenario = json.loads((root / "realistic_simulation_scenario.json").read_text(encoding="utf-8"))
+          records = [
+              json.loads(line)
+              for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
           original_intent = (root / "original_intent.txt").read_text(encoding="utf-8")
 
+          arcs = scenario.get("arcs") or []
+          phases = [phase for arc in arcs for phase in (arc.get("phases") or [])]
+          assert arcs and phases, scenario
+          assert arcs[-1].get("terminal") is True, arcs[-1]
           assert state["completed"] is True, state
-          assert state["phase_index"] == 10, state
+          assert state["phase_index"] == len(phases), (state, len(phases))
           assert len(records) == len({record["turn"] for record in records})
           assert records[0]["turn"] == 1
           assert records[0]["generation_failed"] is False
@@ -129,6 +144,7 @@ jobs:
           assert assistant_count == len(records), (assistant_count, len(records))
           assert duplicate_markers == 0, duplicate_markers
           assert original_intent in user_rows[0][0]
+          print("Resumed one logical turn and completed", len(phases), "generated phases")
           PY
 
       - name: Upload resume evidence
