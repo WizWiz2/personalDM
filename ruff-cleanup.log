@@ -1,0 +1,1903 @@
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/archive.py:25:29
+   |
+23 | async def export_campaign(
+24 |     campaign_id: UUID,
+25 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+26 | ):
+27 |     try:
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/archive.py:41:29
+   |
+39 | async def inspect_replay_state(
+40 |     campaign_id: UUID,
+41 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+42 | ):
+43 |     try:
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/archive.py:52:29
+   |
+50 | async def ensure_replay_checkpoint(
+51 |     campaign_id: UUID,
+52 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+53 | ):
+54 |     try:
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/archive.py:71:29
+   |
+69 |     campaign_id: UUID,
+70 |     apply: bool = Query(default=False),
+71 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+72 | ):
+73 |     try:
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/campaigns.py:14:73
+   |
+13 | @router.post("", response_model=CampaignRead, status_code=status.HTTP_201_CREATED)
+14 | async def create_campaign(data: CampaignCreate, session: AsyncSession = Depends(get_session)):
+   |                                                                         ^^^^^^^^^^^^^^^^^^^^
+15 |     service = CampaignService(session)
+16 |     return await service.create_campaign(data)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/campaigns.py:19:50
+   |
+18 | @router.get("", response_model=list[CampaignRead])
+19 | async def list_campaigns(session: AsyncSession = Depends(get_session)):
+   |                                                  ^^^^^^^^^^^^^^^^^^^^
+20 |     service = CampaignService(session)
+21 |     return await service.list_campaigns()
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/campaigns.py:24:67
+   |
+23 | @router.get("/{campaign_id}", response_model=CampaignRead)
+24 | async def get_campaign(campaign_id: UUID, session: AsyncSession = Depends(get_session)):
+   |                                                                   ^^^^^^^^^^^^^^^^^^^^
+25 |     service = CampaignService(session)
+26 |     campaign = await service.get_campaign(campaign_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/campaigns.py:32:92
+   |
+31 | @router.put("/{campaign_id}", response_model=CampaignRead)
+32 | async def update_campaign(campaign_id: UUID, data: CampaignUpdate, session: AsyncSession = Depends(get_session)):
+   |                                                                                            ^^^^^^^^^^^^^^^^^^^^
+33 |     service = CampaignService(session)
+34 |     try:
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/campaigns.py:43:70
+   |
+42 | @router.delete("/{campaign_id}", status_code=status.HTTP_204_NO_CONTENT)
+43 | async def delete_campaign(campaign_id: UUID, session: AsyncSession = Depends(get_session)):
+   |                                                                      ^^^^^^^^^^^^^^^^^^^^
+44 |     service = CampaignService(session)
+45 |     success = await service.delete_campaign(campaign_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/campaigns.py:52:101
+   |
+51 | @router.post("/{campaign_id}/provider", response_model=ProviderConfigRead)
+52 | async def configure_provider(campaign_id: UUID, data: ProviderConfigCreate, session: AsyncSession = Depends(get_session)):
+   |                                                                                                     ^^^^^^^^^^^^^^^^^^^^
+53 |     service = CampaignService(session)
+54 |     try:
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/campaigns.py:60:74
+   |
+59 | @router.get("/{campaign_id}/provider", response_model=ProviderConfigRead)
+60 | async def get_provider_config(campaign_id: UUID, session: AsyncSession = Depends(get_session)):
+   |                                                                          ^^^^^^^^^^^^^^^^^^^^
+61 |     service = CampaignService(session)
+62 |     config = await service.get_provider_config(campaign_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/campaigns.py:68:80
+   |
+67 | @router.post("/{campaign_id}/provider/check")
+68 | async def check_provider_connection(campaign_id: UUID, session: AsyncSession = Depends(get_session)):
+   |                                                                                ^^^^^^^^^^^^^^^^^^^^
+69 |     service = CampaignService(session)
+70 |     connected = await service.check_provider_connection(campaign_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/debugger.py:26:29
+   |
+24 |     campaign_id: UUID,
+25 |     turn_limit: int = Query(default=100, ge=1, le=1000),
+26 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+27 | ):
+28 |     try:
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/debugger.py:37:29
+   |
+35 | async def retry_post_turn_job(
+36 |     job_id: UUID,
+37 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+38 | ):
+39 |     job = await PostTurnJobRepository(session).retry(job_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/debugger.py:53:29
+   |
+51 | async def process_post_turn(
+52 |     assistant_turn_id: UUID,
+53 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+54 | ):
+55 |     await PostTurnProcessor(session).process_turn(assistant_turn_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/entities.py:33:29
+   |
+31 |     campaign_id: UUID,
+32 |     data: EntityCreate,
+33 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+34 | ):
+35 |     entity = await EntityRepository(session).create(campaign_id, data)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/entities.py:44:29
+   |
+42 |     campaign_id: UUID,
+43 |     entity_type: str | None = None,
+44 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+45 | ):
+46 |     return await EntityRepository(session).list_by_campaign(campaign_id, entity_type)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/entities.py:53:29
+   |
+51 |     campaign_id: UUID,
+52 |     q: str,
+53 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+54 | ):
+55 |     return await EntityRepository(session).search_by_name(campaign_id, q)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/entities.py:61:29
+   |
+59 | async def get_entity(
+60 |     entity_id: UUID,
+61 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+62 | ):
+63 |     entity = await EntityRepository(session).get_by_id(entity_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/entities.py:73:29
+   |
+71 |     entity_id: UUID,
+72 |     data: EntityUpdate,
+73 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+74 | ):
+75 |     entity = await EntityRepository(session).update(entity_id, data)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/entities.py:85:29
+   |
+83 | async def delete_entity(
+84 |     entity_id: UUID,
+85 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+86 | ):
+87 |     if not await EntityRepository(session).delete(entity_id):
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:100:29
+    |
+ 98 |     campaign_id: UUID,
+ 99 |     data: CharacterCreate,
+100 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+101 | ):
+102 |     character = await EntityRepository(session).create_character(campaign_id, data)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:110:29
+    |
+108 | async def get_character(
+109 |     character_id: UUID,
+110 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+111 | ):
+112 |     character = await EntityRepository(session).get_character(character_id)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:122:29
+    |
+120 |     character_id: UUID,
+121 |     data: CharacterUpdate,
+122 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+123 | ):
+124 |     character = await EntityRepository(session).update_character(character_id, data)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:140:29
+    |
+138 |     data: GoalCreate,
+139 |     turn_id: UUID | None = None,
+140 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+141 | ):
+142 |     goal = await GoalRepository(session).create(character_id, data, turn_id)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:151:29
+    |
+149 |     character_id: UUID,
+150 |     active_only: bool = True,
+151 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+152 | ):
+153 |     return await GoalRepository(session).get_for_character(character_id, active_only)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:160:29
+    |
+158 |     goal_id: UUID,
+159 |     data: GoalUpdate,
+160 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+161 | ):
+162 |     goal = await GoalRepository(session).update(goal_id, data)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:172:29
+    |
+170 | async def delete_goal(
+171 |     goal_id: UUID,
+172 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+173 | ):
+174 |     if not await GoalRepository(session).delete(goal_id):
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:187:29
+    |
+185 |     campaign_id: UUID,
+186 |     data: FactCreate,
+187 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+188 | ):
+189 |     fact = await FactRepository(session).create(campaign_id, data)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:198:29
+    |
+196 |     campaign_id: UUID,
+197 |     visibility: str | None = None,
+198 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+199 | ):
+200 |     return await FactRepository(session).list_active(campaign_id, visibility)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:207:29
+    |
+205 |     fact_id: UUID,
+206 |     data: FactUpdate,
+207 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+208 | ):
+209 |     fact = await FactRepository(session).update(fact_id, data)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:220:29
+    |
+218 |     fact_id: UUID,
+219 |     new_fact: FactCreate,
+220 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+221 | ):
+222 |     try:
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:238:29
+    |
+236 |     character_id: UUID,
+237 |     data: BeliefCreate,
+238 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+239 | ):
+240 |     belief = await BeliefRepository(session).create(
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:251:29
+    |
+249 |     character_id: UUID,
+250 |     active_only: bool = True,
+251 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+252 | ):
+253 |     return await BeliefRepository(session).get_for_character(character_id, active_only)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:260:29
+    |
+258 |     belief_id: UUID,
+259 |     data: BeliefUpdate,
+260 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+261 | ):
+262 |     belief = await BeliefRepository(session).update(belief_id, data)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:273:29
+    |
+271 |     belief_id: UUID,
+272 |     new_belief: BeliefCreate,
+273 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+274 | ):
+275 |     try:
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:291:29
+    |
+289 |     campaign_id: UUID,
+290 |     data: RelationshipCreate,
+291 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+292 | ):
+293 |     relationship = await RelationshipRepository(session).create(campaign_id, data)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:305:29
+    |
+303 |     character_id: UUID,
+304 |     active_only: bool = True,
+305 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+306 | ):
+307 |     return await RelationshipRepository(session).get_for_character(
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/entities.py:320:29
+    |
+318 |     assertion_id: UUID,
+319 |     new_data: RelationshipCreate,
+320 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+321 | ):
+322 |     try:
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/memory.py:26:29
+   |
+24 |     campaign_id: UUID,
+25 |     character_id: UUID,
+26 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+27 | ):
+28 |     entity_repo = EntityRepository(session)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/memory.py:54:29
+   |
+52 | async def get_proposals_for_turn(
+53 |     turn_id: UUID,
+54 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+55 | ):
+56 |     return await ProposedChangeRepository(session).get_for_turn(turn_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/memory.py:66:29
+   |
+64 |     proposal_id: UUID,
+65 |     action: ProposalAction,
+66 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+67 | ):
+68 |     proposed_repo = ProposedChangeRepository(session)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/scenes.py:26:29
+   |
+24 |     campaign_id: UUID,
+25 |     data: SceneCreate,
+26 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+27 | ):
+28 |     scene = await SceneRepository(session).create(campaign_id, data)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/scenes.py:36:29
+   |
+34 | async def list_scenes(
+35 |     campaign_id: UUID,
+36 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+37 | ):
+38 |     return await SceneRepository(session).list_by_campaign(campaign_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/scenes.py:44:29
+   |
+42 | async def get_scene(
+43 |     scene_id: UUID,
+44 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+45 | ):
+46 |     scene = await SceneRepository(session).get_by_id(scene_id)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/scenes.py:56:29
+   |
+54 |     scene_id: UUID,
+55 |     data: SceneUpdate,
+56 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+57 | ):
+58 |     scene = await SceneRepository(session).update(scene_id, data)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/scenes.py:68:29
+   |
+66 | async def delete_scene(
+67 |     scene_id: UUID,
+68 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+69 | ):
+70 |     if not await SceneRepository(session).delete(scene_id):
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/scenes.py:79:29
+   |
+77 |     scene_id: UUID,
+78 |     entity_id: UUID,
+79 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+80 | ):
+81 |     try:
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/scenes.py:94:29
+   |
+92 |     scene_id: UUID,
+93 |     entity_id: UUID,
+94 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+95 | ):
+96 |     if not await SceneRepository(session).remove_participant(scene_id, entity_id):
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/scenes.py:105:29
+    |
+103 | async def list_participants(
+104 |     scene_id: UUID,
+105 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+106 | ):
+107 |     return await SceneRepository(session).get_participants(scene_id)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/scenes.py:119:29
+    |
+117 |     data: SceneThesisCreate,
+118 |     turn_id: UUID | None = None,
+119 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+120 | ):
+121 |     thesis = await SceneRepository(session).create_thesis(
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/scenes.py:134:29
+    |
+132 |     scene_id: UUID,
+133 |     active_only: bool = True,
+134 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+135 | ):
+136 |     return await SceneRepository(session).list_theses_by_scene(scene_id, active_only)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/scenes.py:143:29
+    |
+141 |     thesis_id: UUID,
+142 |     data: SceneThesisUpdate,
+143 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+144 | ):
+145 |     thesis = await SceneRepository(session).update_thesis(thesis_id, data)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/scenes.py:155:29
+    |
+153 | async def pin_thesis(
+154 |     thesis_id: UUID,
+155 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+156 | ):
+157 |     repo = SceneRepository(session)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/scenes.py:167:29
+    |
+165 | async def resolve_thesis(
+166 |     thesis_id: UUID,
+167 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+168 | ):
+169 |     repo = SceneRepository(session)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/scenes.py:179:29
+    |
+177 | async def delete_thesis(
+178 |     thesis_id: UUID,
+179 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+180 | ):
+181 |     if not await SceneRepository(session).delete_thesis(thesis_id):
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/turns.py:25:29
+   |
+23 |     campaign_id: UUID,
+24 |     data: TurnCreate,
+25 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+26 | ):
+27 |     if data.role != "user":
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/turns.py:48:29
+   |
+46 | async def stop_generation(
+47 |     campaign_id: UUID,
+48 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+49 | ):
+50 |     return {
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/turns.py:60:29
+   |
+58 |     limit: int = 50,
+59 |     active_only: bool = True,
+60 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+61 | ):
+62 |     return await TurnRepository(session).get_history(
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/turns.py:72:29
+   |
+70 | async def undo_last_pair(
+71 |     campaign_id: UUID,
+72 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+73 | ):
+74 |     repo = TurnRepository(session)
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+  --> src/backend/app/api/turns.py:89:29
+   |
+87 |     campaign_id: UUID,
+88 |     turn_id: UUID,
+89 |     session: AsyncSession = Depends(get_session),
+   |                             ^^^^^^^^^^^^^^^^^^^^
+90 | ):
+91 |     result = await session.execute(
+   |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/world_state.py:162:29
+    |
+160 |     campaign_id: UUID,
+161 |     request: CharacterDraftRequest,
+162 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+163 | ):
+164 |     config_repo = ProviderConfigRepository(session)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/world_state.py:219:29
+    |
+217 |     campaign_id: UUID,
+218 |     draft: CharacterDraft,
+219 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+220 | ):
+221 |     if draft.current_location_id:
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/world_state.py:325:29
+    |
+323 |     campaign_id: UUID,
+324 |     command: KnowledgeGrant,
+325 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+326 | ):
+327 |     await _require_entity(
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/world_state.py:371:29
+    |
+369 |     campaign_id: UUID,
+370 |     command: EventWitnessGrant,
+371 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+372 | ):
+373 |     event = await EventRepository(session).get_by_id(command.event_id)
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/world_state.py:406:29
+    |
+404 |     character_id: UUID,
+405 |     command: MovementCommand,
+406 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+407 | ):
+408 |     character = await _require_entity(
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/world_state.py:445:29
+    |
+443 |     item_id: UUID,
+444 |     command: ItemTransferCommand,
+445 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+446 | ):
+447 |     item_entity = await _require_entity(
+    |
+
+B008 Do not perform function call `Depends` in argument defaults; instead, perform the call within the function, or read the default from a module-level singleton variable
+   --> src/backend/app/api/world_state.py:489:29
+    |
+487 |     character_id: UUID,
+488 |     command: CapabilityCheck,
+489 |     session: AsyncSession = Depends(get_session),
+    |                             ^^^^^^^^^^^^^^^^^^^^
+490 | ):
+491 |     character = await _require_entity(
+    |
+
+S110 `try`-`except`-`pass` detected, consider logging the exception
+  --> src/backend/app/db/engine.py:38:5
+   |
+36 |           cursor.execute("PRAGMA busy_timeout=5000")
+37 |           cursor.execute("PRAGMA synchronous=NORMAL")
+38 | /     except Exception:
+39 | |         # Fallback if PRAGMAs fail (e.g. if database type is not SQLite)
+40 | |         pass
+   | |____________^
+41 |       finally:
+42 |           cursor.close()
+   |
+
+BLE001 Do not catch blind exception: `Exception`
+  --> src/backend/app/db/engine.py:38:12
+   |
+36 |         cursor.execute("PRAGMA busy_timeout=5000")
+37 |         cursor.execute("PRAGMA synchronous=NORMAL")
+38 |     except Exception:
+   |            ^^^^^^^^^
+39 |         # Fallback if PRAGMAs fail (e.g. if database type is not SQLite)
+40 |         pass
+   |
+
+F401 `app.db.repositories.base.BaseRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/db/repositories/__init__.py:1:38
+  |
+1 | from app.db.repositories.base import BaseRepository
+  |                                      ^^^^^^^^^^^^^^
+2 | from app.db.repositories.belief_repo import BeliefRepository
+3 | from app.db.repositories.campaign_repo import CampaignRepository
+  |
+help: Use an explicit re-export: `BaseRepository as BaseRepository`
+
+F401 `app.db.repositories.belief_repo.BeliefRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/db/repositories/__init__.py:2:45
+  |
+1 | from app.db.repositories.base import BaseRepository
+2 | from app.db.repositories.belief_repo import BeliefRepository
+  |                                             ^^^^^^^^^^^^^^^^
+3 | from app.db.repositories.campaign_repo import CampaignRepository
+4 | from app.db.repositories.entity_repo import EntityRepository
+  |
+help: Use an explicit re-export: `BeliefRepository as BeliefRepository`
+
+F401 `app.db.repositories.campaign_repo.CampaignRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/db/repositories/__init__.py:3:47
+  |
+1 | from app.db.repositories.base import BaseRepository
+2 | from app.db.repositories.belief_repo import BeliefRepository
+3 | from app.db.repositories.campaign_repo import CampaignRepository
+  |                                               ^^^^^^^^^^^^^^^^^^
+4 | from app.db.repositories.entity_repo import EntityRepository
+5 | from app.db.repositories.event_repo import EventRepository
+  |
+help: Use an explicit re-export: `CampaignRepository as CampaignRepository`
+
+F401 `app.db.repositories.entity_repo.EntityRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/db/repositories/__init__.py:4:45
+  |
+2 | from app.db.repositories.belief_repo import BeliefRepository
+3 | from app.db.repositories.campaign_repo import CampaignRepository
+4 | from app.db.repositories.entity_repo import EntityRepository
+  |                                             ^^^^^^^^^^^^^^^^
+5 | from app.db.repositories.event_repo import EventRepository
+6 | from app.db.repositories.fact_repo import FactRepository
+  |
+help: Use an explicit re-export: `EntityRepository as EntityRepository`
+
+F401 `app.db.repositories.event_repo.EventRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/db/repositories/__init__.py:5:44
+  |
+3 | from app.db.repositories.campaign_repo import CampaignRepository
+4 | from app.db.repositories.entity_repo import EntityRepository
+5 | from app.db.repositories.event_repo import EventRepository
+  |                                            ^^^^^^^^^^^^^^^
+6 | from app.db.repositories.fact_repo import FactRepository
+7 | from app.db.repositories.goal_repo import GoalRepository
+  |
+help: Use an explicit re-export: `EventRepository as EventRepository`
+
+F401 `app.db.repositories.fact_repo.FactRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/db/repositories/__init__.py:6:43
+  |
+4 | from app.db.repositories.entity_repo import EntityRepository
+5 | from app.db.repositories.event_repo import EventRepository
+6 | from app.db.repositories.fact_repo import FactRepository
+  |                                           ^^^^^^^^^^^^^^
+7 | from app.db.repositories.goal_repo import GoalRepository
+8 | from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+  |
+help: Use an explicit re-export: `FactRepository as FactRepository`
+
+F401 `app.db.repositories.goal_repo.GoalRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/db/repositories/__init__.py:7:43
+  |
+5 | from app.db.repositories.event_repo import EventRepository
+6 | from app.db.repositories.fact_repo import FactRepository
+7 | from app.db.repositories.goal_repo import GoalRepository
+  |                                           ^^^^^^^^^^^^^^
+8 | from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+9 | from app.db.repositories.provider_config_repo import ProviderConfigRepository
+  |
+help: Use an explicit re-export: `GoalRepository as GoalRepository`
+
+F401 `app.db.repositories.proposed_change_repo.ProposedChangeRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/db/repositories/__init__.py:8:54
+   |
+ 6 | from app.db.repositories.fact_repo import FactRepository
+ 7 | from app.db.repositories.goal_repo import GoalRepository
+ 8 | from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+   |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^
+ 9 | from app.db.repositories.provider_config_repo import ProviderConfigRepository
+10 | from app.db.repositories.relationship_repo import RelationshipRepository
+   |
+help: Use an explicit re-export: `ProposedChangeRepository as ProposedChangeRepository`
+
+F401 `app.db.repositories.provider_config_repo.ProviderConfigRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/db/repositories/__init__.py:9:54
+   |
+ 7 | from app.db.repositories.goal_repo import GoalRepository
+ 8 | from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+ 9 | from app.db.repositories.provider_config_repo import ProviderConfigRepository
+   |                                                      ^^^^^^^^^^^^^^^^^^^^^^^^
+10 | from app.db.repositories.relationship_repo import RelationshipRepository
+11 | from app.db.repositories.scene_repo import SceneRepository
+   |
+help: Use an explicit re-export: `ProviderConfigRepository as ProviderConfigRepository`
+
+F401 `app.db.repositories.relationship_repo.RelationshipRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/db/repositories/__init__.py:10:51
+   |
+ 8 | from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+ 9 | from app.db.repositories.provider_config_repo import ProviderConfigRepository
+10 | from app.db.repositories.relationship_repo import RelationshipRepository
+   |                                                   ^^^^^^^^^^^^^^^^^^^^^^
+11 | from app.db.repositories.scene_repo import SceneRepository
+12 | from app.db.repositories.turn_repo import TurnRepository
+   |
+help: Use an explicit re-export: `RelationshipRepository as RelationshipRepository`
+
+F401 `app.db.repositories.scene_repo.SceneRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/db/repositories/__init__.py:11:44
+   |
+ 9 | from app.db.repositories.provider_config_repo import ProviderConfigRepository
+10 | from app.db.repositories.relationship_repo import RelationshipRepository
+11 | from app.db.repositories.scene_repo import SceneRepository
+   |                                            ^^^^^^^^^^^^^^^
+12 | from app.db.repositories.turn_repo import TurnRepository
+   |
+help: Use an explicit re-export: `SceneRepository as SceneRepository`
+
+F401 `app.db.repositories.turn_repo.TurnRepository` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/db/repositories/__init__.py:12:43
+   |
+10 | from app.db.repositories.relationship_repo import RelationshipRepository
+11 | from app.db.repositories.scene_repo import SceneRepository
+12 | from app.db.repositories.turn_repo import TurnRepository
+   |                                           ^^^^^^^^^^^^^^
+   |
+help: Use an explicit re-export: `TurnRepository as TurnRepository`
+
+BLE001 Do not catch blind exception: `Exception`
+   --> src/backend/app/db/repositories/entity_repo.py:282:16
+    |
+280 |             decoded = json.loads(value)
+281 |             return decoded if isinstance(decoded, list) else []
+282 |         except Exception:
+    |                ^^^^^^^^^
+283 |             return []
+    |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> src/backend/app/db/repositories/entity_repo.py:292:16
+    |
+290 |             decoded = json.loads(value)
+291 |             return decoded if isinstance(decoded, dict) else None
+292 |         except Exception:
+    |                ^^^^^^^^^
+293 |             return None
+    |
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/app/db/repositories/job_repo.py:43:26
+   |
+41 |         row.error = None
+42 |         row.assistant_turn_id = None
+43 |         row.updated_at = datetime.utcnow()
+   |                          ^^^^^^^^^^^^^^^^^
+44 |         await self._session.flush()
+45 |         return GenerationRunRead.model_validate(row)
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/app/db/repositories/job_repo.py:60:55
+   |
+58 |                 GenerationRun.status == "running",
+59 |             )
+60 |             .values(cancel_requested=True, updated_at=datetime.utcnow())
+   |                                                       ^^^^^^^^^^^^^^^^^
+61 |         )
+62 |         await self._session.flush()
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/app/db/repositories/job_repo.py:73:67
+   |
+71 |         error: str | None = None,
+72 |     ) -> None:
+73 |         values = {"status": status, "error": error, "updated_at": datetime.utcnow()}
+   |                                                                   ^^^^^^^^^^^^^^^^^
+74 |         if assistant_turn_id is not None:
+75 |             values["assistant_turn_id"] = str(assistant_turn_id)
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+   --> src/backend/app/db/repositories/job_repo.py:155:21
+    |
+154 |     async def recover_stale(self, stale_after_seconds: int = 300) -> int:
+155 |         threshold = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
+    |                     ^^^^^^^^^^^^^^^^^
+156 |         result = await self._session.execute(
+157 |             update(PostTurnJob)
+    |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+   --> src/backend/app/db/repositories/job_repo.py:177:15
+    |
+175 |         if not row:
+176 |             return None
+177 |         now = datetime.utcnow()
+    |               ^^^^^^^^^^^^^^^^^
+178 |         claimed = await self._session.execute(
+179 |             update(PostTurnJob)
+    |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+   --> src/backend/app/db/repositories/job_repo.py:198:28
+    |
+196 |                 error=error,
+197 |                 locked_at=None,
+198 |                 updated_at=datetime.utcnow(),
+    |                            ^^^^^^^^^^^^^^^^^
+199 |             )
+200 |         )
+    |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/app/db/repositories/proposed_change_repo.py:74:33
+   |
+73 |         db_change.status = action.status
+74 |         db_change.resolved_at = datetime.utcnow()
+   |                                 ^^^^^^^^^^^^^^^^^
+75 |         if action.user_edit is not None:
+76 |             db_change.user_edit = json.dumps(action.user_edit)
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+S110 `try`-`except`-`pass` detected, consider logging the exception
+  --> src/backend/app/db/repositories/proposed_change_repo.py:86:13
+   |
+84 |               try:
+85 |                   payload = json.loads(db_change.payload)
+86 | /             except Exception:
+87 | |                 pass
+   | |____________________^
+88 |
+89 |           user_edit = None
+   |
+
+BLE001 Do not catch blind exception: `Exception`
+  --> src/backend/app/db/repositories/proposed_change_repo.py:86:20
+   |
+84 |             try:
+85 |                 payload = json.loads(db_change.payload)
+86 |             except Exception:
+   |                    ^^^^^^^^^
+87 |                 pass
+   |
+
+S110 `try`-`except`-`pass` detected, consider logging the exception
+  --> src/backend/app/db/repositories/proposed_change_repo.py:93:13
+   |
+91 |               try:
+92 |                   user_edit = json.loads(db_change.user_edit)
+93 | /             except Exception:
+94 | |                 pass
+   | |____________________^
+95 |
+96 |           return ProposedChangeRead(
+   |
+
+BLE001 Do not catch blind exception: `Exception`
+  --> src/backend/app/db/repositories/proposed_change_repo.py:93:20
+   |
+91 |             try:
+92 |                 user_edit = json.loads(db_change.user_edit)
+93 |             except Exception:
+   |                    ^^^^^^^^^
+94 |                 pass
+   |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> src/backend/app/db/repositories/scene_repo.py:244:20
+    |
+242 |                     for value in json.loads(db_thesis.related_entity_ids)
+243 |                 ]
+244 |             except Exception:
+    |                    ^^^^^^^^^
+245 |                 related_ids = []
+    |
+
+F401 `app.models.belief.BeliefCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:1:31
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+  |                               ^^^^^^^^^^^^
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+  |
+help: Use an explicit re-export: `BeliefCreate as BeliefCreate`
+
+F401 `app.models.belief.BeliefRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:1:45
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+  |                                             ^^^^^^^^^^
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+  |
+help: Use an explicit re-export: `BeliefRead as BeliefRead`
+
+F401 `app.models.belief.BeliefUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:1:57
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+  |                                                         ^^^^^^^^^^^^
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+  |
+help: Use an explicit re-export: `BeliefUpdate as BeliefUpdate`
+
+F401 `app.models.campaign.CampaignCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:2:33
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+  |                                 ^^^^^^^^^^^^^^
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+  |
+help: Use an explicit re-export: `CampaignCreate as CampaignCreate`
+
+F401 `app.models.campaign.CampaignRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:2:49
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+  |                                                 ^^^^^^^^^^^^
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+  |
+help: Use an explicit re-export: `CampaignRead as CampaignRead`
+
+F401 `app.models.campaign.CampaignUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:2:63
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+  |                                                               ^^^^^^^^^^^^^^
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+  |
+help: Use an explicit re-export: `CampaignUpdate as CampaignUpdate`
+
+F401 `app.models.character.CharacterCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:3:34
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+  |                                  ^^^^^^^^^^^^^^^
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+5 | from app.models.event import EventCreate, EventRead
+  |
+help: Use an explicit re-export: `CharacterCreate as CharacterCreate`
+
+F401 `app.models.character.CharacterRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:3:51
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+  |                                                   ^^^^^^^^^^^^^
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+5 | from app.models.event import EventCreate, EventRead
+  |
+help: Use an explicit re-export: `CharacterRead as CharacterRead`
+
+F401 `app.models.character.CharacterUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:3:66
+  |
+1 | from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+  |                                                                  ^^^^^^^^^^^^^^^
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+5 | from app.models.event import EventCreate, EventRead
+  |
+help: Use an explicit re-export: `CharacterUpdate as CharacterUpdate`
+
+F401 `app.models.entity.EntityCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:4:31
+  |
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+  |                               ^^^^^^^^^^^^
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+  |
+help: Use an explicit re-export: `EntityCreate as EntityCreate`
+
+F401 `app.models.entity.EntityRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:4:45
+  |
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+  |                                             ^^^^^^^^^^
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+  |
+help: Use an explicit re-export: `EntityRead as EntityRead`
+
+F401 `app.models.entity.EntityStatus` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:4:57
+  |
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+  |                                                         ^^^^^^^^^^^^
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+  |
+help: Use an explicit re-export: `EntityStatus as EntityStatus`
+
+F401 `app.models.entity.EntityType` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:4:71
+  |
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+  |                                                                       ^^^^^^^^^^
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+  |
+help: Use an explicit re-export: `EntityType as EntityType`
+
+F401 `app.models.entity.EntityUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:4:83
+  |
+2 | from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+  |                                                                                   ^^^^^^^^^^^^
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+  |
+help: Use an explicit re-export: `EntityUpdate as EntityUpdate`
+
+F401 `app.models.event.EventCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:5:30
+  |
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+5 | from app.models.event import EventCreate, EventRead
+  |                              ^^^^^^^^^^^
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+  |
+help: Use an explicit re-export: `EventCreate as EventCreate`
+
+F401 `app.models.event.EventRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:5:43
+  |
+3 | from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+5 | from app.models.event import EventCreate, EventRead
+  |                                           ^^^^^^^^^
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+  |
+help: Use an explicit re-export: `EventRead as EventRead`
+
+F401 `app.models.fact.FactCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:6:29
+  |
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+  |                             ^^^^^^^^^^
+7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+8 | from app.models.proposed_change import (
+  |
+help: Use an explicit re-export: `FactCreate as FactCreate`
+
+F401 `app.models.fact.FactRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:6:41
+  |
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+  |                                         ^^^^^^^^
+7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+8 | from app.models.proposed_change import (
+  |
+help: Use an explicit re-export: `FactRead as FactRead`
+
+F401 `app.models.fact.FactUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:6:51
+  |
+4 | from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+  |                                                   ^^^^^^^^^^
+7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+8 | from app.models.proposed_change import (
+  |
+help: Use an explicit re-export: `FactUpdate as FactUpdate`
+
+F401 `app.models.goal.GoalCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:7:29
+  |
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+  |                             ^^^^^^^^^^
+8 | from app.models.proposed_change import (
+9 |     ChangeType,
+  |
+help: Use an explicit re-export: `GoalCreate as GoalCreate`
+
+F401 `app.models.goal.GoalRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:7:41
+  |
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+  |                                         ^^^^^^^^
+8 | from app.models.proposed_change import (
+9 |     ChangeType,
+  |
+help: Use an explicit re-export: `GoalRead as GoalRead`
+
+F401 `app.models.goal.GoalUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+ --> src/backend/app/models/__init__.py:7:51
+  |
+5 | from app.models.event import EventCreate, EventRead
+6 | from app.models.fact import FactCreate, FactRead, FactUpdate
+7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+  |                                                   ^^^^^^^^^^
+8 | from app.models.proposed_change import (
+9 |     ChangeType,
+  |
+help: Use an explicit re-export: `GoalUpdate as GoalUpdate`
+
+F401 `app.models.proposed_change.ChangeType` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:9:5
+   |
+ 7 | from app.models.goal import GoalCreate, GoalRead, GoalUpdate
+ 8 | from app.models.proposed_change import (
+ 9 |     ChangeType,
+   |     ^^^^^^^^^^
+10 |     ProposalAction,
+11 |     ProposedChangeCreate,
+   |
+help: Use an explicit re-export: `ChangeType as ChangeType`
+
+F401 `app.models.proposed_change.ProposalAction` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:10:5
+   |
+ 8 | from app.models.proposed_change import (
+ 9 |     ChangeType,
+10 |     ProposalAction,
+   |     ^^^^^^^^^^^^^^
+11 |     ProposedChangeCreate,
+12 |     ProposedChangeRead,
+   |
+help: Use an explicit re-export: `ProposalAction as ProposalAction`
+
+F401 `app.models.proposed_change.ProposedChangeCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:11:5
+   |
+ 9 |     ChangeType,
+10 |     ProposalAction,
+11 |     ProposedChangeCreate,
+   |     ^^^^^^^^^^^^^^^^^^^^
+12 |     ProposedChangeRead,
+13 | )
+   |
+help: Use an explicit re-export: `ProposedChangeCreate as ProposedChangeCreate`
+
+F401 `app.models.proposed_change.ProposedChangeRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:12:5
+   |
+10 |     ProposalAction,
+11 |     ProposedChangeCreate,
+12 |     ProposedChangeRead,
+   |     ^^^^^^^^^^^^^^^^^^
+13 | )
+14 | from app.models.provider_config import (
+   |
+help: Use an explicit re-export: `ProposedChangeRead as ProposedChangeRead`
+
+F401 `app.models.provider_config.ProviderConfigCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:15:5
+   |
+13 | )
+14 | from app.models.provider_config import (
+15 |     ProviderConfigCreate,
+   |     ^^^^^^^^^^^^^^^^^^^^
+16 |     ProviderConfigRead,
+17 |     ProviderConfigUpdate,
+   |
+help: Use an explicit re-export: `ProviderConfigCreate as ProviderConfigCreate`
+
+F401 `app.models.provider_config.ProviderConfigRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:16:5
+   |
+14 | from app.models.provider_config import (
+15 |     ProviderConfigCreate,
+16 |     ProviderConfigRead,
+   |     ^^^^^^^^^^^^^^^^^^
+17 |     ProviderConfigUpdate,
+18 | )
+   |
+help: Use an explicit re-export: `ProviderConfigRead as ProviderConfigRead`
+
+F401 `app.models.provider_config.ProviderConfigUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:17:5
+   |
+15 |     ProviderConfigCreate,
+16 |     ProviderConfigRead,
+17 |     ProviderConfigUpdate,
+   |     ^^^^^^^^^^^^^^^^^^^^
+18 | )
+19 | from app.models.relationship import RelationshipCreate, RelationshipRead, RelationshipUpdate
+   |
+help: Use an explicit re-export: `ProviderConfigUpdate as ProviderConfigUpdate`
+
+F401 `app.models.relationship.RelationshipCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:19:37
+   |
+17 |     ProviderConfigUpdate,
+18 | )
+19 | from app.models.relationship import RelationshipCreate, RelationshipRead, RelationshipUpdate
+   |                                     ^^^^^^^^^^^^^^^^^^
+20 | from app.models.scene import SceneCreate, SceneRead, SceneUpdate
+21 | from app.models.scene_thesis import (
+   |
+help: Use an explicit re-export: `RelationshipCreate as RelationshipCreate`
+
+F401 `app.models.relationship.RelationshipRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:19:57
+   |
+17 |     ProviderConfigUpdate,
+18 | )
+19 | from app.models.relationship import RelationshipCreate, RelationshipRead, RelationshipUpdate
+   |                                                         ^^^^^^^^^^^^^^^^
+20 | from app.models.scene import SceneCreate, SceneRead, SceneUpdate
+21 | from app.models.scene_thesis import (
+   |
+help: Use an explicit re-export: `RelationshipRead as RelationshipRead`
+
+F401 `app.models.relationship.RelationshipUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:19:75
+   |
+17 |     ProviderConfigUpdate,
+18 | )
+19 | from app.models.relationship import RelationshipCreate, RelationshipRead, RelationshipUpdate
+   |                                                                           ^^^^^^^^^^^^^^^^^^
+20 | from app.models.scene import SceneCreate, SceneRead, SceneUpdate
+21 | from app.models.scene_thesis import (
+   |
+help: Use an explicit re-export: `RelationshipUpdate as RelationshipUpdate`
+
+F401 `app.models.scene.SceneCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:20:30
+   |
+18 | )
+19 | from app.models.relationship import RelationshipCreate, RelationshipRead, RelationshipUpdate
+20 | from app.models.scene import SceneCreate, SceneRead, SceneUpdate
+   |                              ^^^^^^^^^^^
+21 | from app.models.scene_thesis import (
+22 |     SceneThesisCreate,
+   |
+help: Use an explicit re-export: `SceneCreate as SceneCreate`
+
+F401 `app.models.scene.SceneRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:20:43
+   |
+18 | )
+19 | from app.models.relationship import RelationshipCreate, RelationshipRead, RelationshipUpdate
+20 | from app.models.scene import SceneCreate, SceneRead, SceneUpdate
+   |                                           ^^^^^^^^^
+21 | from app.models.scene_thesis import (
+22 |     SceneThesisCreate,
+   |
+help: Use an explicit re-export: `SceneRead as SceneRead`
+
+F401 `app.models.scene.SceneUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:20:54
+   |
+18 | )
+19 | from app.models.relationship import RelationshipCreate, RelationshipRead, RelationshipUpdate
+20 | from app.models.scene import SceneCreate, SceneRead, SceneUpdate
+   |                                                      ^^^^^^^^^^^
+21 | from app.models.scene_thesis import (
+22 |     SceneThesisCreate,
+   |
+help: Use an explicit re-export: `SceneUpdate as SceneUpdate`
+
+F401 `app.models.scene_thesis.SceneThesisCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:22:5
+   |
+20 | from app.models.scene import SceneCreate, SceneRead, SceneUpdate
+21 | from app.models.scene_thesis import (
+22 |     SceneThesisCreate,
+   |     ^^^^^^^^^^^^^^^^^
+23 |     SceneThesisRead,
+24 |     SceneThesisUpdate,
+   |
+help: Use an explicit re-export: `SceneThesisCreate as SceneThesisCreate`
+
+F401 `app.models.scene_thesis.SceneThesisRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:23:5
+   |
+21 | from app.models.scene_thesis import (
+22 |     SceneThesisCreate,
+23 |     SceneThesisRead,
+   |     ^^^^^^^^^^^^^^^
+24 |     SceneThesisUpdate,
+25 |     ThesisType,
+   |
+help: Use an explicit re-export: `SceneThesisRead as SceneThesisRead`
+
+F401 `app.models.scene_thesis.SceneThesisUpdate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:24:5
+   |
+22 |     SceneThesisCreate,
+23 |     SceneThesisRead,
+24 |     SceneThesisUpdate,
+   |     ^^^^^^^^^^^^^^^^^
+25 |     ThesisType,
+26 | )
+   |
+help: Use an explicit re-export: `SceneThesisUpdate as SceneThesisUpdate`
+
+F401 `app.models.scene_thesis.ThesisType` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:25:5
+   |
+23 |     SceneThesisRead,
+24 |     SceneThesisUpdate,
+25 |     ThesisType,
+   |     ^^^^^^^^^^
+26 | )
+27 | from app.models.turn import ChatMessage, TurnCreate, TurnRead
+   |
+help: Use an explicit re-export: `ThesisType as ThesisType`
+
+F401 `app.models.turn.ChatMessage` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:27:29
+   |
+25 |     ThesisType,
+26 | )
+27 | from app.models.turn import ChatMessage, TurnCreate, TurnRead
+   |                             ^^^^^^^^^^^
+   |
+help: Use an explicit re-export: `ChatMessage as ChatMessage`
+
+F401 `app.models.turn.TurnCreate` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:27:42
+   |
+25 |     ThesisType,
+26 | )
+27 | from app.models.turn import ChatMessage, TurnCreate, TurnRead
+   |                                          ^^^^^^^^^^
+   |
+help: Use an explicit re-export: `TurnCreate as TurnCreate`
+
+F401 `app.models.turn.TurnRead` imported but unused; consider removing, adding to `__all__`, or using a redundant alias
+  --> src/backend/app/models/__init__.py:27:54
+   |
+25 |     ThesisType,
+26 | )
+27 | from app.models.turn import ChatMessage, TurnCreate, TurnRead
+   |                                                      ^^^^^^^^
+   |
+help: Use an explicit re-export: `TurnRead as TurnRead`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/models/character.py:16:25
+   |
+14 |     immutable_features: str | None = None
+15 |     personality: str | None = None
+16 |     values: list[str] = []
+   |                         ^^
+17 |     fears: list[str] = []
+18 |     desires: list[str] = []
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/models/character.py:17:24
+   |
+15 |     personality: str | None = None
+16 |     values: list[str] = []
+17 |     fears: list[str] = []
+   |                        ^^
+18 |     desires: list[str] = []
+19 |     voice: str | None = None
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/models/character.py:18:26
+   |
+16 |     values: list[str] = []
+17 |     fears: list[str] = []
+18 |     desires: list[str] = []
+   |                          ^^
+19 |     voice: str | None = None
+20 |     speech_patterns: str | None = None
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/models/character.py:26:37
+   |
+24 |     emotional_state: str | None = None
+25 |     current_location_id: UUID | None = None
+26 |     current_intentions: list[str] = []
+   |                                     ^^
+27 |     visual_profile: dict | None = None
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/models/character.py:35:25
+   |
+33 |     immutable_features: str | None = None
+34 |     personality: str | None = None
+35 |     values: list[str] = []
+   |                         ^^
+36 |     fears: list[str] = []
+37 |     desires: list[str] = []
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/models/character.py:36:24
+   |
+34 |     personality: str | None = None
+35 |     values: list[str] = []
+36 |     fears: list[str] = []
+   |                        ^^
+37 |     desires: list[str] = []
+38 |     voice: str | None = None
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/models/character.py:37:26
+   |
+35 |     values: list[str] = []
+36 |     fears: list[str] = []
+37 |     desires: list[str] = []
+   |                          ^^
+38 |     voice: str | None = None
+39 |     speech_patterns: str | None = None
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/models/character.py:45:37
+   |
+43 |     emotional_state: str | None = None
+44 |     current_location_id: UUID | None = None
+45 |     current_intentions: list[str] = []
+   |                                     ^^
+46 |     visual_profile: dict | None = None
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/app/providers/llm_provider.py:47:26
+   |
+45 |         "return one json",
+46 |     )
+47 |     TRUNCATION_REASONS = {"length", "max_tokens", "max_token", "limit"}
+   |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+48 |
+49 |     def __init__(self):
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+S110 `try`-`except`-`pass` detected, consider logging the exception
+   --> src/backend/app/providers/llm_provider.py:199:9
+    |
+197 |               if isinstance(value, dict):
+198 |                   return value
+199 | /         except Exception:
+200 | |             pass
+    | |________________^
+201 |
+202 |           start = clean.find("{")
+    |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> src/backend/app/providers/llm_provider.py:199:16
+    |
+197 |             if isinstance(value, dict):
+198 |                 return value
+199 |         except Exception:
+    |                ^^^^^^^^^
+200 |             pass
+    |
+
+ISC004 Unparenthesized implicit string concatenation in collection
+   --> src/backend/app/providers/llm_provider.py:246:13
+    |
+244 |       ) -> dict[str, str]:
+245 |           parts = [
+246 | /             "Не рассуждай вслух. Верни только один короткий валидный JSON-объект "
+247 | |             "строго по заданной схеме. Не используй markdown и пояснения."
+    | |__________________________________________________________________________^
+248 |           ]
+249 |           if error:
+    |
+help: Did you forget a comma?
+help: Wrap implicitly concatenated strings in parentheses
+
+SIM211 Use `not ...` instead of `False if ... else True`
+   --> src/backend/app/providers/llm_provider.py:574:26
+    |
+572 |                 "messages": self._messages_payload(messages),
+573 |                 "stream": True,
+574 |                 "think": False if disable_thinking else True,
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+575 |                 "options": {"num_predict": completion_budget},
+576 |             }
+    |
+help: Replace with `not ...`
+
+BLE001 Do not catch blind exception: `Exception`
+   --> src/backend/app/providers/llm_provider.py:771:16
+    |
+769 |                     or data.get("done") is True
+770 |                 )
+771 |         except Exception:
+    |                ^^^^^^^^^
+772 |             return False
+    |
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/app/services/campaign_archive.py:44:39
+   |
+42 |     backup_dir.mkdir(parents=True, exist_ok=True)
+43 |     safe_reason = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in reason)[:40]
+44 |     target = backup_dir / f"campaign-{datetime.utcnow():%Y%m%d-%H%M%S}-{safe_reason}.db"
+   |                                       ^^^^^^^^^^^^^^^^^
+45 |     with sqlite3.connect(source_path) as source, sqlite3.connect(target) as destination:
+46 |         source.backup(destination)
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/app/services/campaign_archive.py:77:28
+   |
+75 |             "format": self.ARCHIVE_FORMAT,
+76 |             "version": self.ARCHIVE_VERSION,
+77 |             "exported_at": datetime.utcnow().isoformat(),
+   |                            ^^^^^^^^^^^^^^^^^
+78 |             "campaign_id": str(campaign_id),
+79 |             "initial_world_state": initial_state,
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/app/services/campaign_archive.py:90:46
+   |
+88 |         export_dir = Path(settings.DATA_DIR).resolve() / "exports"
+89 |         export_dir.mkdir(parents=True, exist_ok=True)
+90 |         filename = f"campaign-{campaign_id}-{datetime.utcnow():%Y%m%d-%H%M%S}.json"
+   |                                              ^^^^^^^^^^^^^^^^^
+91 |         path = export_dir / filename
+92 |         path.write_text(json.dumps(archive, ensure_ascii=False, indent=2), encoding="utf-8")
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/app/services/initial_world_state.py:96:28
+   |
+94 |         snapshot = {
+95 |             "schema_version": self.SCHEMA_VERSION,
+96 |             "captured_at": datetime.utcnow().isoformat(),
+   |                            ^^^^^^^^^^^^^^^^^
+97 |             "baseline_proposal_ids": await self._accepted_proposal_ids(
+98 |                 campaign_id,
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+BLE001 Do not catch blind exception: `Exception`
+   --> src/backend/app/services/post_turn_processor.py:173:20
+    |
+171 |                             already_claimed=True,
+172 |                         )
+173 |             except Exception:
+    |                    ^^^^^^^^^
+174 |                 traceback.print_exc()
+175 |             if not processed:
+    |
+
+TRY203 Remove exception handler; error is immediately re-raised
+   --> src/backend/app/services/thesis_curator.py:210:9
+    |
+208 |                   response_model=CuratorResponse,
+209 |               )
+210 | /         except LLMProviderError:
+211 | |             raise
+    | |_________________^
+212 |
+213 |           desired = self._validate_response(response_data, set(entity_names))
+    |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> src/backend/app/services/turn_runner.py:329:20
+    |
+327 |             try:
+328 |                 await processor.process_turn(saved_assistant.id)
+329 |             except Exception:
+    |                    ^^^^^^^^^
+330 |                 traceback.print_exc()
+    |
+
+BLE001 Do not catch blind exception: `Exception`
+   --> src/backend/app/services/turn_runner.py:359:16
+    |
+357 |             await self._fail_user_turn(user_turn.id, owns_user_turn)
+358 |             raise
+359 |         except Exception as exc:
+    |                ^^^^^^^^^
+360 |             traceback.print_exc()
+361 |             await self._generation_runs.set_status(
+    |
+
+RUF059 Unpacked variable `messages` is never used
+   --> src/backend/tests/run_scale_simulation.py:242:17
+    |
+241 |                 # Compile context to verify sliding window keeps context within limits under scale
+242 |                 messages, meta = await compiler.compile_context(campaign_id, acting_npc.id, scene.id)
+    |                 ^^^^^^^^
+243 |                 
+244 |                 # Print status updates every 100 turns
+    |
+help: Prefix it with an underscore or any other dummy variable pattern
+
+ASYNC230 Async functions should not open files with blocking methods like `open`
+   --> src/backend/tests/run_scale_simulation.py:300:14
+    |
+299 | …     # Write report to artifact directory
+300 | …     with open("C:/Users/User/.gemini/antigravity/brain/4877c6e1-77e6-43a3-b645-d0d21fc3bdcf/analysis_results.md", "w", encoding="ut…
+    |            ^^^^
+301 | …         f.write(report)
+    |
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/tests/test_canon_replay_roundtrip.py:39:25
+   |
+37 |             payload=json.dumps(payload, ensure_ascii=False),
+38 |             status="accepted",
+39 |             resolved_at=datetime.utcnow(),
+   |                         ^^^^^^^^^^^^^^^^^
+40 |         )
+41 |     )
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+RUF012 Mutable default value for class attribute
+  --> src/backend/tests/test_llm_provider_resilience.py:22:16
+   |
+21 | class _FakeAsyncClient:
+22 |     requests = []
+   |                ^^
+23 |
+24 |     def __init__(self, *args, **kwargs):
+   |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+RUF012 Mutable default value for class attribute
+   --> src/backend/tests/test_llm_provider_resilience.py:220:16
+    |
+219 | class _SchemaRepairClient:
+220 |     requests = []
+    |                ^^
+221 |
+222 |     def __init__(self, *args, **kwargs):
+    |
+help: Consider initializing in `__init__` or annotating with `typing.ClassVar`
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/tests/test_post_turn_scheduling.py:46:13
+   |
+44 |     db_session.add(scene)
+45 |     await db_session.flush()
+46 |     start = datetime.utcnow()
+   |             ^^^^^^^^^^^^^^^^^
+47 |     turns = []
+48 |     for index in range(3):
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/tests/test_role_model_router.py:33:20
+   |
+31 |         has_api_key=True,
+32 |         context_window=6144,
+33 |         created_at=datetime.utcnow(),
+   |                    ^^^^^^^^^^^^^^^^^
+34 |     )
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+B017 Do not assert blind exception: `Exception`
+   --> src/backend/tests/test_simulation_quality_controls.py:146:10
+    |
+145 | def test_player_decision_schema_rejects_unknown_mode():
+146 |     with pytest.raises(Exception):
+    |          ^^^^^^^^^^^^^^^^^^^^^^^^
+147 |         quality.PlayerDecisionPayload.model_validate(
+148 |             {"target": "narrator", "mode": "observe_forever", "intent": "Смотрю"}
+    |
+
+DTZ003 `datetime.datetime.utcnow()` used
+  --> src/backend/tests/test_thesis_curator_lifecycle.py:36:15
+   |
+35 | def thesis(*, priority=5, created_offset=0, pinned=False):
+36 |     created = datetime.utcnow() + timedelta(seconds=created_offset)
+   |               ^^^^^^^^^^^^^^^^^
+37 |     return SimpleNamespace(
+38 |         id=uuid4(),
+   |
+help: Use `datetime.datetime.now(tz=...)` instead
+
+Found 169 errors.
+No fixes available (3 hidden fixes can be enabled with the `--unsafe-fixes` option).
