@@ -1,0 +1,32 @@
+name: Discover cleanup workflow paths
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  discover:
+    if: github.head_ref == 'agent/remove-campaign-hardcode'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/remove-campaign-hardcode
+          fetch-depth: 0
+      - name: Publish workflow inventory
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          {
+            find .github/workflows -maxdepth 1 -type f -print | sort
+            echo
+            grep -R -n -E 'Campaign integrity milestones|Lint milestone files|Validate simulation invariants|Validate idempotent resume' .github/workflows || true
+          } > workflow-inventory.txt
+          git checkout -f -B agent/remove-campaign-hardcode-workflow-debug
+          git add -f workflow-inventory.txt
+          git commit -m "Сохранить список workflow"
+          git push --force origin HEAD:agent/remove-campaign-hardcode-workflow-debug
