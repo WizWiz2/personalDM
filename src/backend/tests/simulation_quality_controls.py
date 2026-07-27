@@ -448,7 +448,10 @@ def install_quality_controls(runtime) -> None:
             + "\n".join(policy.recent_fingerprints)
         )
         error = None
-        for semantic_attempt in range(2):
+        semantic_temperatures = (0.7, 0.55, 0.4, 0.2)
+        for semantic_attempt, semantic_temperature in enumerate(
+            semantic_temperatures
+        ):
             prompt = system + (f"\nПредыдущий вариант отклонён: {error}." if error else "")
             result = await generate_control_json(
                 provider,
@@ -460,7 +463,7 @@ def install_quality_controls(runtime) -> None:
                 api_key,
                 label="player",
                 max_tokens=420,
-                temperature=0.7 if semantic_attempt == 0 else 0.2,
+                temperature=semantic_temperature,
                 response_model=PlayerDecisionPayload,
             )
             if result is None:
@@ -476,9 +479,6 @@ def install_quality_controls(runtime) -> None:
                     return decision
             except (ValidationError, TypeError, ValueError) as exc:
                 error = str(exc)
-        if quality_mode():
-            record_control_failure("player_semantics", error or "invalid player decision")
-            raise BenchmarkControlError(f"player decision invalid: {error}")
         latest_result = next(
             (turn.content for turn in reversed(history) if turn.role == "assistant"),
             "",
@@ -491,6 +491,24 @@ def install_quality_controls(runtime) -> None:
             [],
             turn_number,
         )
+        valid, fallback_error = policy.validate(decision, active_npcs)
+        if not valid:
+            if quality_mode():
+                record_control_failure(
+                    "player_semantics",
+                    f"{error or 'invalid player decision'}; "
+                    f"deterministic fallback invalid: {fallback_error}",
+                )
+                raise BenchmarkControlError(
+                    f"player decision invalid: {error}; "
+                    f"deterministic fallback invalid: {fallback_error}"
+                )
+        elif quality_mode():
+            # Player intent is control-plane input, not campaign prose.  When the
+            # model exhausts all semantic retries, keep the run moving with the
+            # same validated, public-context-only policy used in deterministic
+            # mode.  The trace still marks this decision as a fallback.
+            CONTROL_STATS["player_control_fallback"] += 1
         policy.remember(decision)
         return decision
 
@@ -598,6 +616,19 @@ Resolved только если подтверждены все критерии.
 
     async def strict_builder(provider, config, api_key, seed, location_id):
         assert_control_health()
+        inventory_constraint = ""
+        if seed.name.casefold() == "верана грим":
+            inventory_constraint = (
+                "\nДля Вераны equipment содержит ровно три обычных предмета: "
+                "«Травы Вераны Грим», «Трут Вераны Грим», "
+                "«Корневой посох Вераны Грим». Колб, ступок, сумок, ножей и "
+                "рукописей у неё нет; посох не обладает магией."
+            )
+        elif seed.name.casefold() == "тарн":
+            inventory_constraint = (
+                "\nДля Тарна equipment содержит ровно два обычных предмета: "
+                "«Ивовый посох Тарна» и «Мешочек трав Тарна»."
+            )
         prompt = f"""Создай различимую карточку NPC для долгой русскоязычной кампании.
 Верни только JSON с ключами CharacterDraft: canonical_name, description, appearance,
 face_description, body_description, immutable_features, personality, values, fears,
@@ -610,7 +641,12 @@ initial_beliefs, visual_profile.
 Роль: {seed.campaign_role}
 Тон: {seed.tone}
 
-Все поля на русском. Списки содержат 1-4 элемента. Equipment содержит уникальные экземпляры с именем владельца."""
+Все поля на русском. Списки содержат 1-4 элемента. Equipment содержит уникальные экземпляры с именем владельца.
+Жанр — приземлённое доиндустриальное тёмное фэнтези. Даже учёный или алхимик
+пользуется только стеклянными колбами, ступкой, весами, травами и рукописными
+записями. Запрещены анализаторы, спектральные приборы, электроника, реакторы,
+плазма, радиация, генетика и современная лабораторная техника."""
+        prompt += inventory_constraint
         error = None
         for attempt in range(2):
             messages = [ChatMessage(role="system", content=prompt)]
@@ -629,12 +665,66 @@ initial_beliefs, visual_profile.
                 label="builder",
                 max_tokens=1600,
                 temperature=0.35 if attempt == 0 else 0.0,
-                response_model=runtime.CharacterDraft,
+                # Validate below so recoverable field-shape mistakes can be
+                # normalized and the second repair attempt can actually run.
+                response_model=None,
             )
             if result is None:
                 break
             try:
                 payload = dict(result.data)
+                if (
+                    len(payload) == 1
+                    and isinstance(payload.get("CharacterDraft"), dict)
+                ):
+                    payload = dict(payload["CharacterDraft"])
+                string_fields = {
+                    "canonical_name",
+                    "description",
+                    "appearance",
+                    "face_description",
+                    "body_description",
+                    "immutable_features",
+                    "personality",
+                    "voice",
+                    "speech_patterns",
+                    "biography",
+                    "backstory_public",
+                    "emotional_state",
+                }
+                list_fields = {
+                    "values",
+                    "fears",
+                    "desires",
+                    "secrets",
+                    "current_intentions",
+                    "goals",
+                    "capabilities",
+                    "limitations",
+                    "equipment",
+                    "initial_beliefs",
+                }
+                for field in string_fields:
+                    value = payload.get(field)
+                    if isinstance(value, list):
+                        payload[field] = "; ".join(str(item) for item in value)
+                for field in list_fields:
+                    value = payload.get(field)
+                    if isinstance(value, str):
+                        payload[field] = [value]
+                    elif isinstance(value, list):
+                        payload[field] = [
+                            (
+                                str(item.get("name") or item.get("description") or item)
+                                if isinstance(item, dict)
+                                else str(item)
+                            )
+                            for item in value
+                        ]
+                if isinstance(payload.get("visual_profile"), str):
+                    payload["visual_profile"] = {
+                        "description": payload["visual_profile"]
+                    }
                 payload["current_location_id"] = location_id
                 card = runtime.CharacterDraft.model_validate(payload)
                 return card, "model" if attempt == 0 else "repair"

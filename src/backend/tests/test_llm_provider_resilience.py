@@ -277,3 +277,39 @@ async def test_native_ollama_uses_schema_and_repairs_validation_error(monkeypatc
     assert "validation" in repair_text
     assert provider.last_telemetry["schema_enforced"] is True
     assert provider.last_telemetry["response_model"] == "_EvaluationPayload"
+
+
+@pytest.mark.asyncio
+async def test_structured_response_unwraps_model_named_root(monkeypatch):
+    class WrappedModelClient(_SchemaRepairClient):
+        async def post(self, url, headers=None, json=None):
+            self.requests.append({"url": url, "headers": headers, "json": json})
+            return _FakeResponse(
+                {
+                    "message": {
+                        "content": (
+                            '{"_EvaluationPayload":'
+                            '{"status":"resolved","evidence":"готово"}}'
+                        )
+                    },
+                    "done": True,
+                    "done_reason": "stop",
+                }
+            )
+
+    WrappedModelClient.requests = []
+    monkeypatch.setattr(
+        llm_provider_module.httpx,
+        "AsyncClient",
+        WrappedModelClient,
+    )
+
+    result = await LLMProvider().generate_json(
+        [ChatMessage(role="system", content="Верни только JSON.")],
+        _MockConfig(),
+        max_tokens=400,
+        temperature=0.0,
+        response_model=_EvaluationPayload,
+    )
+
+    assert result == {"status": "resolved", "evidence": "готово"}

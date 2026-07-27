@@ -197,8 +197,56 @@ FACT SEMANTICS:
             raise
 
         self._current_scene_id = scene_id
-        return self._parse_data(
+        proposals = self._parse_data(
             data,
+            authoritative_text=assistant_content,
+            known_entities=known_entities,
+            known_ids=set(display_by_id),
+            acting_character_id=acting_character_id,
+            player_character_id=player_character_id,
+            scene_participant_ids=scene_participant_ids,
+        )
+        audit = self.last_audit
+        if audit.get("envelope_valid", True) and not audit.get("gap_count"):
+            return proposals
+
+        reason = audit.get("error") or (
+            "rejected evidence="
+            f"{audit.get('rejected_evidence_count', 0)}, "
+            "authority="
+            f"{audit.get('rejected_authority_count', 0)}, "
+            "schema="
+            f"{audit.get('rejected_schema_count', 0)}, "
+            "gaps="
+            f"{audit.get('gap_count', 0)}"
+        )
+        repaired = await self._model_router.generate_json(
+            self._llm_provider,
+            selection,
+            [
+                ChatMessage(role="system", content=system_prompt),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "ПОПЫТКА ИГРОКА:\n"
+                        f"{user_content}\n\n"
+                        "АВТОРИТЕТНЫЙ РЕЗУЛЬТАТ ДМа:\n"
+                        f"{assistant_content}\n\n"
+                        "ПРЕДЫДУЩИЙ JSON СЕМАНТИЧЕСКИ ОТКЛОНЁН:\n"
+                        f"{reason}\n"
+                        "Сформируй envelope заново. Evidence должен быть точным "
+                        "фрагментом результата ДМа. Каждый durable outcome должен "
+                        "иметь нормализуемый proposal с именами только из списка "
+                        "известных сущностей."
+                    ),
+                ),
+            ],
+            max_tokens=1400,
+            temperature=0.0,
+            response_model=CanonEnvelope,
+        )
+        return self._parse_data(
+            repaired,
             authoritative_text=assistant_content,
             known_entities=known_entities,
             known_ids=set(display_by_id),
@@ -465,6 +513,8 @@ FACT SEMANTICS:
                 cardinality = "single"
             resolved["operation"] = operation
             resolved["cardinality"] = cardinality
+            if operation != "retract" and not resolved.get("object_value"):
+                return None
             scope = str(resolved.get("scope") or "scene").casefold()
             if scope not in {"campaign", "scene"}:
                 scope = "scene"

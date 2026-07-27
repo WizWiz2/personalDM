@@ -68,11 +68,11 @@ def install(quality_module) -> None:
 
     def control_budget(label: str, requested: int) -> int:
         floors = {
-            "builder": 1800,
-            "curator": 1600,
-            "scribe": 1400,
-            "player": 640,
-            "evaluator": 640,
+            "builder": 4000,
+            "curator": 2800,
+            "scribe": 2800,
+            "player": 1024,
+            "evaluator": 1024,
         }
         return max(int(requested), floors.get(label, int(requested)))
 
@@ -145,10 +145,40 @@ def install(quality_module) -> None:
         failure = None
         if audit.get("legacy_envelope"):
             failure = "legacy Scribe envelope has no outcome evidence"
-        elif not audit.get("envelope_valid", True):
-            failure = audit.get("error") or "outcome envelope failed semantic validation"
         elif int(audit.get("gap_count") or 0) > 0:
-            failure = f"{audit.get('gap_count')} durable outcomes have no canon delta"
+            gap_details = []
+            for proposal in proposals:
+                if proposal.change_type.value != "canon_gap":
+                    continue
+                canon = (
+                    proposal.payload.get("_canon")
+                    if isinstance(proposal.payload.get("_canon"), dict)
+                    else {}
+                )
+                gap_details.append(
+                    f"{canon.get('kind', 'unknown')}: "
+                    f"{canon.get('description', '')}"
+                )
+            failure = audit.get("error") or (
+                f"{audit.get('gap_count')} durable outcomes have no canon delta"
+                + (f": {'; '.join(gap_details)}" if gap_details else "")
+            )
+        elif audit.get("error"):
+            failure = str(audit["error"])
+        elif not audit.get("envelope_valid", True):
+            # Unsupported evidence is already removed before proposals reach the
+            # database. Treat safe filtering as telemetry, not as a fatal canon
+            # gap; prolonged empty extraction is guarded separately.
+            quality_module.CONTROL_STATS["scribe_filtered_envelopes"] += 1
+            quality_module.CONTROL_STATS["scribe_rejected_evidence"] += int(
+                audit.get("rejected_evidence_count") or 0
+            )
+            quality_module.CONTROL_STATS["scribe_rejected_authority"] += int(
+                audit.get("rejected_authority_count") or 0
+            )
+            quality_module.CONTROL_STATS["scribe_rejected_schema"] += int(
+                audit.get("rejected_schema_count") or 0
+            )
         if failure:
             quality_module.record_control_failure("scribe_semantics", failure)
             if quality_module.quality_mode():

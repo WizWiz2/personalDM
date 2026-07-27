@@ -5,8 +5,10 @@ import json
 import os
 import re
 import time
+import unicodedata
 from collections import Counter, deque
 from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
@@ -57,6 +59,7 @@ from app.services.turn_runner import TurnRunner
 try:
     from .simulation_database import upgrade_simulation_database
     from .simulation_dynamic_campaign import (
+        _reject_near_miss_npc_names,
         catalog_summary,
         ensure_phase_available,
     )
@@ -64,6 +67,7 @@ try:
 except ImportError:
     from simulation_database import upgrade_simulation_database
     from simulation_dynamic_campaign import (
+        _reject_near_miss_npc_names,
         catalog_summary,
         ensure_phase_available,
     )
@@ -78,6 +82,463 @@ OUTCOME_PATTERNS = (
 )
 WORD_PATTERN = re.compile(r"[\w]+", flags=re.UNICODE)
 JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", flags=re.DOTALL)
+NPC_TITLE_TOKENS = {
+    "мастер",
+    "сестра",
+    "брат",
+    "братус",
+    "архивариус",
+    "маэстра",
+    "старейшина",
+}
+
+
+def _npc_name_stems(name: str) -> set[str]:
+    stems: set[str] = set()
+    for token in re.findall(r"[А-Яа-яЁё]+", name.casefold()):
+        if token in NPC_TITLE_TOKENS or len(token) < 3:
+            continue
+        if token.endswith(("а", "я", "ь", "й")) and len(token) > 3:
+            token = token[:-1]
+        stems.add(token)
+    return stems
+
+
+def validate_russian_narrative(text: str) -> tuple[bool, str | None]:
+    letters = [char for char in text if char.isalpha()]
+    if not letters:
+        return False, "text contains no letters"
+    cyrillic = 0
+    for char in letters:
+        script_name = unicodedata.name(char, "")
+        if "CYRILLIC" in script_name:
+            cyrillic += 1
+        elif "LATIN" not in script_name:
+            return False, f"text contains non-Russian script character {char!r}"
+    if cyrillic / len(letters) < 0.55:
+        return False, "text is not predominantly Russian"
+    for token in "".join(char if char.isalpha() else " " for char in text).split():
+        scripts = {
+            "cyrillic" if "CYRILLIC" in unicodedata.name(char, "") else "latin"
+            for char in token
+            if "CYRILLIC" in unicodedata.name(char, "")
+            or "LATIN" in unicodedata.name(char, "")
+        }
+        if len(scripts) > 1:
+            return False, f"text contains mixed-script token {token!r}"
+    if re.search(r"[а-яё]{2}[А-ЯЁ][а-яё]{2}", text):
+        return False, "text contains glued Russian words"
+    if re.search(r"\b([а-яё]{3,})\.{3}\1[а-яё]*", text, re.IGNORECASE):
+        return False, "text contains a broken repeated word"
+    if re.search(
+        r"\b([а-яё]{4,})\.{3}[^\n]{0,80}\b\1[а-яё]*",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "text contains a broken repeated phrase"
+    if re.search(
+        r"\bне\s+(уверенност\w*|страх\w*|тишин\w*|темнот\w*|"
+        r"напряжени\w*)\b.{0,80}\bа\b.{0,60}\b\1\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "text contains a self-contradictory repeated phrase"
+    if re.search(r"\b[а-яё]{2,}\s+\.{3}\s*[а-яё]+\b", text, re.IGNORECASE):
+        return False, "text contains a broken word around an ellipsis"
+    if re.search(r"\bразберешив\w*\b", text, re.IGNORECASE):
+        return False, "text contains a malformed Russian word"
+    if re.search(r"[а-яё,]\s+(?:Он|Она|Они|Его|Её)\b", text):
+        return False, "text contains a missing sentence boundary"
+    return True, None
+
+
+def validate_dm_player_agency(
+    text: str,
+    location_description: str = "",
+    active_npcs: list[str] | None = None,
+    player_mode: str | None = None,
+    recent_history: str = "",
+    allow_paid_cost: bool = False,
+) -> tuple[bool, str | None]:
+    try:
+        _reject_near_miss_npc_names(
+            [text],
+            active_npcs or [],
+            location="DM prose",
+        )
+    except ValueError:
+        return False, "DM uses a near-miss active NPC name"
+    if re.search(
+        r"\b(?:Эльдон|Елдон|Элден|Элдэн)\w*\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM uses an inconsistent player name"
+    if re.search(
+        r"\bnarrator\b|\bтвой запрос\b|"
+        r"\bигрок(?:а|у|ом|е|и|ов|ами)?\b|"
+        r"\*{2}(?:конкретное последствие|напряжение|результат|итог)\b|"
+        r"\bнапряжение оста[её]тся (?:высоким|низким|средним)\b|"
+        r"[—-]{3,}",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM exposes control-plane or benchmark prose"
+    if re.search(r"(?m)^\s*\d+[.)]\s+(?:\*\*)?", text):
+        return False, "DM uses report-style numbered prose"
+    if re.search(
+        r"(?mi)^\s*\*{0,2}(?:последствия|итог|результат|"
+        r"проверка канона|изменения канона)\*{0,2}\s*:",
+        text,
+    ):
+        return False, "DM exposes control-plane or benchmark prose"
+    if re.search(
+        r"\b(?:анализатор\w*\s+сред\w*|спектральн\w+\s+анализ\w*|"
+        r"электромагнитн\w*|реактор\w*|плазм\w*|радиоактив\w*|"
+        r"генетическ\w*|компьютер\w*|лабораторн\w+\s+халат\w*|"
+        r"клеточн\w+\s+уровн\w*|дифференциальн\w+\s+диагностик\w*|"
+        r"перенасыщенн\w+\s+раствор\w*|эпицентр\w*\s+экссудац\w*|"
+        r"химическ\w+\s+(?:состав\w*|разложени\w*|барьер\w*)|"
+        r"градиент\w+\s+(?:плотност\w*|концентрац\w*))\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM introduces modern or science-fiction genre drift"
+    if re.search(
+        r"\b(?:доста[её]т|достал[аи]?|доставая|вынул[аи]?|вынув|вынимает)\b"
+        r".{0,100}\b(?:колб\w*|пробирк\w*|"
+        r"склянк\w*|луп\w*|ступк\w*)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents an undeclared inventory item"
+    diary_event = re.search(
+        r"\b(?:дневник\w*|книжк\w*|книг\w*)\b[\s\S]{0,500}\b(?:вылет\w*|вышвыр\w*|"
+        r"пад\w*|упал\w*)\b|\b(?:вылет\w*|вышвыр\w*|пад\w*|упал\w*)\b"
+        r"[\s\S]{0,500}\b(?:дневник\w*|книжк\w*|книг\w*)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if diary_event and re.search(
+        r"\b(?:дневник\w*|книжк\w*|книг\w*)\b",
+        recent_history,
+        re.IGNORECASE,
+    ):
+        return False, "DM repeats an already resolved scene event"
+    secret_cost_pattern = re.compile(
+        r"\b(?:теря\w*|утрат\w*|ст[её]р\w*|лиш\w*|"
+        r"смо[её]т\w*|смыва\w*|забер\w*|забира\w*)\b.{0,100}\b"
+        r"(?:имен\w*|воспоминан\w*|памят\w*)\b",
+        re.IGNORECASE,
+    )
+    verana_revealed_cost = bool(
+        re.search(r"\bВерана\b", recent_history, re.IGNORECASE)
+        and secret_cost_pattern.search(recent_history)
+    )
+    if secret_cost_pattern.search(text) and not verana_revealed_cost:
+        paragraphs = re.split(r"\n\s*\n", text)
+        for index, paragraph in enumerate(paragraphs):
+            if not secret_cost_pattern.search(paragraph):
+                continue
+            if re.search(r"\bТарн\b", paragraph, re.IGNORECASE):
+                return False, "DM leaks Verana's secret through the wrong NPC"
+            if re.search(r"\bВерана\b", paragraph, re.IGNORECASE):
+                continue
+            previous = paragraphs[index - 1] if index else ""
+            if (
+                paragraph.lstrip().startswith(("—", "«", '"'))
+                and re.search(r"\bВерана\b", previous, re.IGNORECASE)
+            ):
+                continue
+            return False, "DM leaks Verana's secret through the wrong NPC"
+    if re.search(
+        r"\b(?:утрачу|потеряю|лишусь)\s+(?:сво[её]\s+)?имен\w*\b|"
+        r"\b(?:утрачу|потеряю|лишусь)\b.{0,60}\bлиц\w+\s+наставник\w*\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM distorts the defined personal cost"
+    if (
+        re.search(
+            r"\bпамят\w*\b.{0,80}\bбез\s+имен\w*\b|"
+            r"\bбез\s+имен\w*\b.{0,80}\bпамят\w*\b",
+            text,
+            re.IGNORECASE,
+        )
+        and not re.search(r"\bВерана\b", text, re.IGNORECASE)
+    ):
+        return False, "DM leaks Verana's secret through the wrong NPC"
+    if not allow_paid_cost and re.search(
+        r"\bцен\w*\b.{0,100}\b(?:уже\s+)?(?:заплачен\w*|уплачен\w*)\b|"
+        r"\b(?:уже\s+)?(?:заплатил[аи]?|уплатил[аи]?|потерял[аи]?)\b"
+        r".{0,100}\b(?:цен\w*|последн\w+\s+т[её]пл\w+\s+воспоминан\w*)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM pays the personal cost before the terminal finale"
+    if re.search(
+        r"\b(?:после\s+\w+\s+хода|ситуация\s+изменилась|"
+        r"в\s+сцене\s+появилось|также\s+зафиксировано)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM exposes turn bookkeeping in narrative prose"
+    if re.search(
+        r"\b(?:жезл\w*|посох\w*|кинжал\w*|меш(?:ок|оч\w*)|"
+        r"книг\w*|трав\w*)\b[\s\S]{0,200}\b(?:вспых\w*|засвет\w*|"
+        r"светится|пульсир\w*|завис\w*|"
+        r"взлет\w*|парит\w*|не\s+упал\w*|сам(?:а|о)?\s+двин\w*|"
+        r"воздух\w*\s+(?:вокруг\s+)?(?:дрож\w*|задрожал\w*))\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents an undeclared magical item property"
+    if re.search(
+        r"\b(?:жезл\w*|посох\w*|кинжал\w*|меш(?:ок|оч\w*)|"
+        r"книг\w*|трав\w*)\b[^.!?\n]{0,35}\b(?:заговор\w*|зашептал\w*)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents an undeclared magical item property"
+    if re.search(
+        r"\b(?:его|в его)\s+взгляд\w*\b.{0,80}\b(?:уверенн\w*|"
+        r"настороженн\w*|решимост\w*|понимани\w*)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents Eldon's internal state"
+    if re.search(
+        r"\bест(?:ь| вас)\b.{0,40}\bкак\s+ед\w+\s+в\s+котл\w*\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM uses incoherent figurative language"
+    if re.search(
+        r"\b(?:их|наш|следующий)\s+следующ(?:ий|его)\s+шаг\s+"
+        r"(?:был\s+)?(?:определ[её]н|реш[её]н)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM decides the player's next step"
+    retrospective_pattern = re.compile(
+        r"\b(?:ранее|раньше(?!\s+времени\b)|до этого|перед этим)\b"
+        r"(?!\s+(?:молчал[аи]?|не\s+(?:говорил[аи]?|вмешивал(?:ся|ась))))",
+        re.IGNORECASE,
+    )
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text):
+        if not retrospective_pattern.search(sentence):
+            continue
+        sentence_stems = {
+            word.casefold()[:4]
+            for word in re.findall(r"[А-ЯЁа-яё]{4,}", sentence)
+            if word.casefold() not in {"ранее", "раньше", "этого"}
+        }
+        history_stems = {
+            word.casefold()[:4]
+            for word in re.findall(r"[А-ЯЁа-яё]{4,}", recent_history)
+        }
+        if len(sentence_stems & history_stems) < 2:
+            return False, "DM makes an unsupported retrospective assertion"
+    if (
+        re.search(
+            r"\b(?:поляна|лес|тропа|опушка|земля|окраин\w*|поле|"
+            r"улиц\w*|двор\w*|поселени\w*)\b",
+            location_description,
+            re.IGNORECASE,
+        )
+        and re.search(
+            r"\b(?:помещение|комната|коридор|потолок|подоконник|"
+            r"лаборатори\w*|кабинет\w*|аудитори\w*)\b",
+            text,
+            re.IGNORECASE,
+        )
+    ):
+        return False, "DM contradicts the outdoor scene location"
+    if (
+        re.search(
+            r"\b(?:поселени\w*|улиц\w*|переул\w*|дом\w*|лавк\w*)\b",
+            location_description,
+            re.IGNORECASE,
+        )
+        and not re.search(r"\b(?:лес\w*|чащ\w*|холм\w*)\b", location_description, re.IGNORECASE)
+        and re.search(r"\b(?:край\s+леса|лес\w*|чащ\w*|холм\w*)\b", text, re.IGNORECASE)
+    ):
+        return False, "DM moves the settlement scene into undeclared wilderness"
+    if re.search(
+        r"\bтебе кажется\b|"
+        r"\bты\s+(?:не\s+)?(?:думаешь|чувствуешь|хочешь|желаешь|надеешься|"
+        r"боишься|решаешь|ожидаешь|жд[её]шь|осозна[её]шь|понимаешь|"
+        r"помнишь|концентрируешься)\b|"
+        r"\bтвой\s+(?:взгляд|внимание|желание|страх|мысл[ьи]|чувств\w*)\b|"
+        r"\bкаждый мускул напряж[её]н\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents Eldon's internal state"
+    if re.search(
+        r"\bваши?\s+(?:глаз\w*|колен\w*|взгляд\w*|лиц\w*|рук\w*|ног\w*)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM narrates the player character"
+    speech_verbs = (
+        r"сказал|говорит|спросил|спрашивает|ответил|отвечает|"
+        r"произн[её]с|произносит|повторил|повторяет|объяснил|объясняет|"
+        r"предложил|потребовал|прошептал|крикнул|"
+        r"констатир\w*|добавил|возразил|продолжил"
+    )
+    quote_speech_verbs = rf"(?:{speech_verbs}|заметил)"
+    if re.search(
+        rf"[«\"](?:[^»\"\n]|\n(?!\n)){{1,700}}[»\"]"
+        rf"[\s,—-]*(?:{quote_speech_verbs})\s+Элдон\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents direct speech for Eldon"
+    if re.search(
+        rf"(?:^|\n)\s*—[\s\S]{{1,700}}?—\s*"
+        rf"(?:{quote_speech_verbs})\s+Элдон\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents direct speech for Eldon"
+    if re.search(
+        rf"\bЭлдон\b[^\n]{{0,220}}[«\"][\s\S]{{1,320}}[»\"]"
+        rf"[\s,—-]*(?:{quote_speech_verbs})\s+(?:Элдон|он)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents direct speech for Eldon"
+    if re.search(
+        rf"\bЭлдон\s+(?:{speech_verbs})\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents direct speech for Eldon"
+    if player_mode in {"question", "dialogue", "plan", "decision"} and re.search(
+        r"\bЭлдон\b[^.\n]{0,180}\b(?:кивает|кивнув|прислоняется|"
+        r"прислонившись|отходит|отойдя|подходит|подойдя|"
+        r"отступает|садится|вста[её]т|бер[её]т|поднимает|опускает|"
+        r"направляется|ид[её]т|двигается|начинает\s+двигаться|"
+        r"(?:начинает|стал|принялся)\s+[а-яё]+|поворачивается)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents an unrequested physical action for Eldon"
+    interior_verbs = (
+        r"думает|думал|чувствует|чувствовал|хочет|хотел|желает|желал|"
+        r"надеется|надеялся|боится|боялся|решает|решил|"
+        r"ожидает|ожидал|жд[её]т|ждал|знает|знал|уверен|"
+        r"осозна[её]т|осознал|понимает|понял|"
+        r"помнит|помнил|ощущает|ощутил|готовится|"
+        r"игнорирует|игнорировал|подсчитывает|подсчитал|"
+        r"делает\s+(?:быстрый\s+)?вывод|сделал\s+вывод"
+    )
+    eldon_context = False
+    for paragraph in re.split(r"\n\s*\n", text):
+        folded = paragraph.casefold().strip()
+        if re.match(
+            r"^(?:(?:когда|пока|если)\s+)?элдон\b",
+            folded,
+        ):
+            eldon_context = True
+        elif eldon_context and folded.startswith(("—", "-")):
+            return False, "DM invents direct speech for Eldon"
+        elif eldon_context and folded.startswith(("«", '"')):
+            if re.search(
+                rf"[»\"][\s,—-]*(?:{quote_speech_verbs})\s+он\b",
+                paragraph,
+                re.IGNORECASE,
+            ):
+                return False, "DM invents direct speech for Eldon"
+            eldon_context = False
+        elif eldon_context and not (
+            re.match(r"^(?:он|его|в его)\b", folded)
+            or re.search(r"\b(?:он|его|ему|им)\b", folded)
+        ):
+            eldon_context = False
+        if not eldon_context:
+            continue
+        if re.search(r"[«\"]", paragraph):
+            return False, "DM invents direct speech for Eldon"
+        if re.search(
+            rf"\b(?:Элдон|он)\s+(?:не\s+)?(?:{interior_verbs})\b",
+            paragraph,
+            re.IGNORECASE,
+        ):
+            return False, "DM invents Eldon's internal state"
+        if re.search(
+            r"\b(?:делает\s+(?:быстрый\s+)?вывод|сделал\s+вывод)\b",
+            paragraph,
+            re.IGNORECASE,
+        ):
+            return False, "DM invents Eldon's internal state"
+        if re.search(
+            rf"\bкак будто\s+(?:{interior_verbs})\b",
+            paragraph,
+            re.IGNORECASE,
+        ):
+            return False, "DM invents Eldon's internal state"
+        if re.search(
+            r"\b(?:помня|понимая|зная|осознавая|решая|стараясь|"
+            r"надеясь|ожидая|решив|игнорируя)\b",
+            paragraph,
+            re.IGNORECASE,
+        ):
+            return False, "DM invents Eldon's internal state"
+        if re.search(
+            r"\b(?:его|в его)\s+(?:внимание|сосредоточенность)\b",
+            paragraph,
+            re.IGNORECASE,
+        ):
+            return False, "DM invents Eldon's internal state"
+        if re.search(
+            r"\*(?:Я|Мне|Меня|Мой|Моя|Моё|Мы)\b[^*]{1,300}\*",
+            paragraph,
+        ):
+            return False, "DM invents Eldon's internal state"
+        if re.search(
+            r"\b(?:его|в его)\s+(?:глубок\w+\s+)?(?:желание|надежд\w+|страх\w+|"
+            r"мысл\w+|чувств\w+)\b",
+            paragraph,
+            re.IGNORECASE,
+        ):
+            return False, "DM invents Eldon's internal state"
+    if re.search(
+        r"\b(?:доста[её]т|вынимает|бер[её]т)\s+из\s+(?:своего\s+)?инвентаря\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM invents an undeclared inventory item"
+    undeclared_eldon_item = (
+        r"(?:портативн\w+\s+)?анализатор\w*|"
+        r"пробоотборн\w+\s+трубочк\w*|"
+        r"блокнот\w*"
+    )
+    # Keep the ownership check local.  A scene can legitimately mention Eldon
+    # and then show a declared item belonging to an NPC (for example Elias's
+    # analyzer) in another paragraph.
+    for paragraph in re.split(r"\n\s*\n", text):
+        if (
+            re.search(
+                rf"\bЭлдон\b.{{0,100}}\b(?:{undeclared_eldon_item})\b",
+                paragraph,
+                re.IGNORECASE,
+            )
+            or re.search(
+                rf"\b(?:{undeclared_eldon_item})\b.{{0,100}}\bЭлдон\b",
+                paragraph,
+                re.IGNORECASE,
+            )
+        ):
+            return False, "DM invents an undeclared inventory item"
+    if player_mode in {"dialogue", "question", "plan", "decision"} and re.search(
+        r"(?:^|\n+)\s*(?:Элдон|Вы|Ты)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False, "DM narrates the player character"
+    return True, None
 
 
 class ObjectiveEvaluation(BaseModel):
@@ -244,6 +705,78 @@ class PlayerPolicy:
             return False, f"target {decision.target!r} is not active"
         if not decision.intent.strip() or len(decision.intent) > 700:
             return False, "intent is empty or too long"
+        language_valid, language_error = validate_russian_narrative(decision.intent)
+        if not language_valid:
+            return False, language_error
+        if not re.search(
+            r"\b(?:я|мне|меня|мой|моя|моё|элдон)\b",
+            decision.intent,
+            re.IGNORECASE,
+        ):
+            return False, "intent does not identify Eldon as the acting player"
+        if re.search(
+            r"\b(?:Элдон|элдон)\s+[А-ЯЁ][а-яё]+\b",
+            decision.intent,
+        ):
+            return False, "intent assigns an unsupported surname or title to Eldon"
+        if re.search(
+            r"\bкарт(?:а|у|е|ой|ы)\b",
+            decision.intent,
+            re.IGNORECASE,
+        ):
+            return False, "intent invents an undeclared inventory item"
+        if re.search(
+            r"\b(?:фланелев\w+|повязк\w*)\b",
+            decision.intent,
+            re.IGNORECASE,
+        ):
+            return False, "intent invents an undeclared inventory item"
+        if re.search(
+            r"\b(?:оставш\w+|оказавш\w+)\b.{0,120}\bпосле\b|"
+            r"\bпосле\s+(?:прикосновения|перехода|прибытия)\b",
+            decision.intent,
+            re.IGNORECASE,
+        ):
+            return False, "intent invents an unsupported prior outcome"
+        if re.search(
+            r"\b(?:он|элдон)\s+знает,\s+что\b.{0,180}\b"
+            r"(?:собеседник\w*|остальн\w*|они|группа)\s+буд\w*",
+            decision.intent,
+            re.IGNORECASE,
+        ):
+            return False, "intent invents future NPC reactions"
+        if decision.mode in {"question", "dialogue"}:
+            intent_folded = decision.intent.casefold()
+            mentioned = {
+                name.casefold()
+                for name in active_npcs
+                if any(
+                    re.search(rf"\b{re.escape(stem)}[а-яё]*\b", intent_folded)
+                    for stem in _npc_name_stems(name)
+                )
+            }
+            target_folded = decision.target.casefold()
+            if mentioned and target_folded not in mentioned:
+                return False, (
+                    f"intent addresses {sorted(mentioned)!r} but target is "
+                    f"{decision.target!r}"
+                )
+            if decision.mode == "question" and "?" not in decision.intent:
+                return False, "question mode has no question"
+            if (
+                not re.search(r"\b(?:я|мне|мой|моя|моё|элдон)\b", intent_folded)
+                and any(
+                    re.search(
+                        rf"\b{re.escape(stem)}[а-яё]*\s+"
+                        r"(?:обращается|говорит|спрашивает|предлагает|решает|"
+                        r"пытается|осматривает|ид[её]т|делает)\b",
+                        intent_folded,
+                    )
+                    for name in active_npcs
+                    for stem in _npc_name_stems(name)
+                )
+            ):
+                return False, "intent makes an NPC the acting subject"
         if any(re.search(pattern, decision.intent, re.IGNORECASE) for pattern in OUTCOME_PATTERNS):
             self.rejected_outcomes += 1
             return False, "intent declares an outcome"
@@ -272,44 +805,105 @@ class PlayerPolicy:
         if count_fallback:
             self.fallbacks += 1
         target = self.suggested_target(active_npcs, mode)
-        hook = next((value for value in reversed(active_theses) if value.strip()), objective)
-        hook = " ".join(hook.split())[:180]
-        consequence = " ".join(latest_result.split())[-180:] if latest_result else ""
-        variants = [
+        if mode == "dialogue" and turn_number >= 3:
+            verana_target = next(
+                (name for name in active_npcs if name.casefold().startswith("верана")),
+                None,
+            )
+            if verana_target:
+                target = verana_target
+        scene_context = "\n".join([latest_result, *active_theses]).casefold()
+        risk_request = (
+            f"Я обращаюсь к {target}: «Скажите прямо, что в происходящем связано "
+            "лично с вами и какую точную будущую цену потребует возвращение правды; "
+            "не утверждайте, что цена уже уплачена»."
+            if target.casefold().startswith("верана")
+            else (
+                f"Я формулирую просьбу: «{target}, прямо назовите личный риск, "
+                "который группа принимает, если продолжит расследование выбранным способом»."
+            )
+        )
+        targeted_variants: list[tuple[str, str, str]] = []
+        if re.search(r"\b(?:дневник|книг\w*|книжк\w*)\b", scene_context):
+            targeted_variants.append(
+                (
+                    "action",
+                    "narrator",
+                    "Я использую закреплённую верёвку как страховку и пробую вытянуть "
+                    "дневник за край кожаного переплёта из чёрной лужи, не объявляя успех.",
+                )
+            )
+        if turn_number >= 3 and re.search(
+            r"\b(?:печат\w*|усыплен\w*|обряд\w+\s+забвени\w*|"
+            r"последн\w+\s+т[её]пл\w+\s+воспоминан\w*)\b",
+            scene_context,
+        ):
+            verana = next(
+                (name for name in active_npcs if name.casefold().startswith("верана")),
+                None,
+            )
+            if verana:
+                targeted_variants.append(
+                    (
+                        "dialogue",
+                        verana,
+                        f"Я обращаюсь к {verana}: «Скажите прямо, что в этих знаках "
+                        "кажется вам лично знакомым и какую точную цену вы ожидаете "
+                        "за возвращение скрытой правды?»",
+                    )
+                )
+        variants = targeted_variants + [
             (
                 "question",
                 target,
-                f"Я спрашиваю {target}, какой наблюдаемый признак подтвердит или опровергнет: «{hook}». Мне нужен конкретный ответ, который изменит наш следующий шаг.",
+                f"Я задаю вопрос: «{target}, какой один наблюдаемый признак сейчас надёжнее всего укажет направление источника и изменит наш следующий шаг?»",
             ),
             (
                 "dialogue",
                 target,
-                f"Я кратко объясняю {target}, что после последнего события нам нужно решить задачу «{objective}», и прошу назвать личный риск, о котором группа ещё не договорилась.",
+                risk_request,
             ),
             (
                 "plan",
                 target,
-                f"Я предлагаю проверить один факт из текущей ситуации: «{hook}». Сначала наблюдение, затем решение, без попытки заранее объявить результат.",
+                f"Я вслух предлагаю план: {target} может сравнить два ближайших следа воздействия, затем выбрать один безопасный проверяемый шаг, не объявляя результат заранее.",
             ),
             (
                 "decision",
                 target,
-                f"Я формулирую два допустимых варианта для цели «{objective}» и прошу {target} указать, какой из них меньше противоречит увиденному нами последствию: «{consequence or hook}».",
+                f"Я ставлю перед группой выбор и обращаюсь к {target}: «Что проверяем сначала — защищённый образец или безопасный путь к зоне сильнейшего воздействия?»",
             ),
             (
                 "action",
                 "narrator",
-                f"Я использую обычные навыки руиниста, чтобы проверить конкретную деталь, связанную с тезисом «{hook}»: осматриваю следы, крепления и доступные пути, не касаясь магических элементов и не объявляя успех.",
+                "Я использую обычные навыки руиниста: осматриваю следы, крепления и доступные пути, не касаясь магических элементов и не объявляя успех.",
             ),
             (
                 "action",
                 "narrator",
-                f"Я сверяю последнее наблюдение «{consequence or hook}» со своей верёвкой, фонарём и набором отмычек, чтобы понять, какой безопасный следующий тест возможен в рамках цели «{objective}».",
+                "Я закрепляю верёвку, ставлю фонарь как ориентир и сравниваю силу воздействия в двух доступных точках, чтобы наметить безопасный следующий тест.",
             ),
         ]
-        offset = turn_number % len(variants)
-        for index in range(len(variants)):
-            candidate_mode, candidate_target, intent = variants[(offset + index) % len(variants)]
+        preferred_variants = [
+            variant for variant in variants if variant[0] == mode
+        ]
+        other_variants = [
+            variant for variant in variants if variant[0] != mode
+        ]
+        if preferred_variants:
+            offset = turn_number % len(preferred_variants)
+            preferred_variants = (
+                preferred_variants[offset:] + preferred_variants[:offset]
+            )
+        for candidate_mode, candidate_target, intent in (
+            preferred_variants + other_variants
+        ):
+            if candidate_mode != "action" and candidate_target == "narrator":
+                candidate_target = self.suggested_target(
+                    active_npcs,
+                    candidate_mode,
+                )
+                intent = intent.replace("narrator", candidate_target)
             if candidate_target == "narrator" or candidate_target in active_npcs:
                 decision = PlayerDecision(
                     target=candidate_target,
@@ -323,8 +917,8 @@ class PlayerPolicy:
             target="narrator",
             mode="action",
             intent=(
-                f"Я останавливаюсь и вслух фиксирую, что именно изменилось после хода {turn_number}; "
-                f"затем выбираю новую проверку, напрямую связанную с целью «{objective}».")
+                "Я кратко называю группе уже обнаруженные признаки, не упоминая ходов "
+                f"или правил игры, затем предлагаю новую проверку по цели «{objective}».")
         )
 
 
@@ -348,17 +942,66 @@ def parse_json_object(raw: str) -> dict:
     return value
 
 
+CYRILLIC_TRANSLITERATION = str.maketrans(
+    {
+        "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e",
+        "ё": "e", "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k",
+        "л": "l", "м": "m", "н": "n", "о": "o", "п": "p", "р": "r",
+        "с": "s", "т": "t", "у": "u", "ф": "f", "х": "kh", "ц": "ts",
+        "ч": "ch", "ш": "sh", "щ": "shch", "ъ": "", "ы": "y", "ь": "",
+        "э": "e", "ю": "yu", "я": "ya",
+    }
+)
+
+
+def _latin_slug(value: str) -> str:
+    transliterated = value.casefold().translate(CYRILLIC_TRANSLITERATION)
+    return "_".join(re.findall(r"[a-z0-9]+", transliterated))
+
+
 def parse_player_decision(raw: str, active_npcs: list[str]) -> PlayerDecision:
     data = parse_json_object(raw)
     canonical = {name.casefold(): name for name in active_npcs}
     target_raw = str(data.get("target", "narrator")).strip()
+    target_key = target_raw.casefold()
+    if target_key in {"activenpc", "active_npc"} and active_npcs:
+        target_key = active_npcs[0].casefold()
+    elif "|" in target_key and "narrator" in target_key:
+        target_key = "narrator"
+    if target_key in {
+        "eldon",
+        "aldon",
+        "elden",
+        "элдон",
+        "елдон",
+        "player",
+        "self",
+        "игрок",
+        "я",
+    }:
+        target_key = "narrator"
+    if target_key not in canonical and target_key != "narrator":
+        target_slug = _latin_slug(target_key)
+        scored = sorted(
+            (
+                SequenceMatcher(None, target_slug, _latin_slug(name)).ratio(),
+                name,
+            )
+            for name in active_npcs
+        )
+        if scored and scored[-1][0] >= 0.78:
+            runner_up = scored[-2][0] if len(scored) > 1 else 0.0
+            if scored[-1][0] - runner_up >= 0.08:
+                target_key = scored[-1][1].casefold()
     target = canonical.get(
-        target_raw.casefold(),
-        "narrator" if target_raw.casefold() == "narrator" else target_raw,
+        target_key,
+        "narrator" if target_key == "narrator" else target_raw,
     )
     mode = str(data.get("mode", "action")).strip().casefold()
     if mode not in {"action", "dialogue", "question", "plan", "decision"}:
         mode = "action"
+    if target == "narrator" and mode in {"dialogue", "question"} and active_npcs:
+        target = active_npcs[0]
     return PlayerDecision(
         target=target,
         mode=mode,
@@ -369,24 +1012,42 @@ def parse_player_decision(raw: str, active_npcs: list[str]) -> PlayerDecision:
 def eldon_card() -> CharacterDraft:
     return CharacterDraft(
         canonical_name="Eldon",
-        description="Практичный человек-руинист, который выживает благодаря осторожности и сотрудничеству.",
+        description="Практичный руинист экспедиции, ищущей источник чёрного дождя.",
         appearance="Потёртый дорожный плащ, короткие тёмные волосы и шрам над правой бровью.",
         personality="Практичный, подозрительный к лёгким ответам, суховатый, но умеющий слушать.",
         values=["жизнь спутников", "проверяемые свидетельства", "свобода выбора"],
         fears=["стать чужим инструментом", "потерять людей из-за безрассудного любопытства"],
-        desires=["понять цитадель", "уйти с реликтовым ключом и живой группой"],
+        desires=["найти источник чёрного дождя", "вывести экспедицию живой"],
         voice="Низкий, прямой, с сухим юмором.",
         speech_patterns="Задаёт конкретные вопросы и называет риск до действия.",
-        biography="Бывший охранник караванов и исследователь руин, знакомый с обычными ловушками.",
-        backstory_public="Исчезнувший покровитель выбрал его запасным исследователем.",
-        secrets=["Элдон подозревает, что покровитель изначально считал его расходным материалом."],
+        biography=(
+            "Бывший охранник караванов и исследователь руин. Во время первого чёрного "
+            "ливня он настоял на опасном маршруте и потерял наставника."
+        ),
+        backstory_public=(
+            "Элдон присоединился к экспедиции, потому что умеет читать следы в руинах "
+            "и уже пережил один чёрный ливень."
+        ),
+        secrets=[
+            "Элдон винит себя в гибели наставника и боится, что разгадка потребует "
+            "от него отказаться от последней вещи, оставшейся от погибшего."
+        ],
         emotional_state="настороженное любопытство",
-        current_intentions=["понять, кому можно доверять", "найти реликтовый ключ"],
-        goals=["Найти реликтовый ключ", "Сохранить экспедицию", "Понять выбор покровителя"],
+        current_intentions=[
+            "понять, кому можно доверять",
+            "проследить воздействие чёрного дождя до источника",
+        ],
+        goals=[
+            "Найти источник чёрного дождя",
+            "Сохранить экспедицию",
+            "Не переложить личную цену разгадки на спутников",
+        ],
         capabilities=["осматривать обычные механизмы", "работать простыми отмычками", "сражаться кинжалом", "лазать с верёвкой", "замечать практическую опасность"],
         limitations=["не умеет колдовать", "не распознаёт сверхъестественное без помощи", "не использует продвинутую технику", "не объявляет результаты своих действий"],
         equipment=["дорожный фонарь", "пеньковая верёвка", "обычный кинжал", "набор простых отмычек", "фляга"],
-        initial_beliefs=["Каждый источник о реликтовом ключе неполон."],
+        initial_beliefs=[
+            "Чёрный дождь имеет конкретный источник, а не является обычной погодой."
+        ],
         visual_profile={"palette": "brown, iron and weathered green"},
     )
 
@@ -683,16 +1344,27 @@ class ScenarioDirector:
             max(2, round(pulse.at_fraction * hard_limit))
             for pulse in runtime.phase.pulses
         ]
+        active_theses = await self.scenes.list_theses_by_scene(
+            runtime.scene_id,
+            active_only=True,
+        )
+        existing_texts = {thesis.text for thesis in active_theses}
         for pulse_index, pulse in enumerate(runtime.phase.pulses):
             if pulse_index in runtime.injected_pulses:
                 continue
             if runtime.phase_turn < thresholds[pulse_index]:
                 continue
+            pulse_text = (
+                f"Неразыгранное осложнение: {pulse.event}. {pulse.thesis.text}"
+            )
+            if pulse_text in existing_texts:
+                runtime.injected_pulses.add(pulse_index)
+                continue
             await self.scenes.create_thesis(
                 runtime.scene_id,
                 SceneThesisCreate(
                     thesis_type=pulse.thesis.thesis_type,
-                    text=f"Неразыгранное осложнение: {pulse.event}. {pulse.thesis.text}",
+                    text=pulse_text,
                     priority=pulse.thesis.priority,
                     visibility=pulse.thesis.visibility,
                     related_entity_ids=[
@@ -702,6 +1374,7 @@ class ScenarioDirector:
                     ],
                 ),
             )
+            existing_texts.add(pulse_text)
             runtime.injected_pulses.add(pulse_index)
             self.stats["pulses_injected"] += 1
         await self.session.commit()
@@ -1044,24 +1717,66 @@ async def run_realistic_simulation_v2() -> None:
                 ),
                 None,
             )
+        simulation_system_instructions = (
+            "Ты приземлённый Dungeon Master в жанре тёмного фэнтези. "
+            "Пиши исключительно на русском языке. Игрок заявляет только намерения; "
+            "ты определяешь исходы и даёшь конкретные последствия. Уважай карточки NPC, "
+            "инвентарь, способности, знания и тезисы. Не говори за Элдона, не повторяй "
+            "универсальные формулы о риске и не заменяй действие новым вопросом. "
+            "Вообще не описывай действия, позу, взгляд, мысли или реакции Элдона: "
+            "даже при проверке его действия описывай только наблюдаемый результат "
+            "в мире и ответы NPC. Имя Элдона допустимо лишь в обращении NPC. "
+            "Мир доиндустриальный: не вводи современную технику или научную фантастику. "
+            "Оставайся строго в текущей описанной локации; не добавляй лес, чащу, "
+            "холмы или другую местность к уличной сцене поселения. "
+            "Не используй современный научный и медицинский жаргон: никаких градиентов, "
+            "эпицентров, экссудации, дифференциальной диагностики, химического состава "
+            "или перенасыщенных растворов; наблюдения называй простыми ремесленными словами. "
+            "Секрет из контекста нельзя упоминать даже намёком, пока активный тезис "
+            "или событие прямо не сделает его наблюдаемым. Не придумывай NPC новые "
+            "предметы: используй только явно перечисленный инвентарь. "
+            "Не приписывай предметам магические свойства, которых нет в каноне. "
+            "Каждое режиссёрское событие происходит только один раз; после него "
+            "описывай последствия, но не разыгрывай то же появление заново. "
+            "Если в контексте есть «Неразыгранное осложнение», разыграй его в этом "
+            "ответе прежде любого нового события. Если Элдон прямо спрашивает Верану "
+            "о её личной связи и точной цене, она обязана назвать заданные в "
+            "режиссёрской границе обряд, утрату имени и лица наставника и последнее "
+            "тёплое воспоминание; не подменяй эту цену золотом, свободой или статусом. "
+            "До последней фазы терминальной арки цена только названа и ожидается: "
+            "никогда не утверждай, что она уже заплачена или что воспоминание уже потеряно. "
+            "Если игрок спрашивает об одном наблюдаемом признаке направления, NPC "
+            "обязан прямо назвать ровно один физический признак и сказать, в какую "
+            "сторону он ведёт; не заменяй ответ общей теорией угрозы. "
+            "Пиши естественной грамотной прозой без нагромождения метафор; "
+            "каждую реплику явно связывай с говорящим."
+        )
+        simulation_narrative_style = (
+            "Два-четыре компактных абзаца романной прозы, конкретные сенсорные детали, "
+            "различимые голоса NPC и завершённый результат каждого хода. "
+            "Не более одной развёрнутой метафоры на абзац."
+        )
         if not campaign:
             campaign = await campaigns.create_campaign(
                 CampaignCreate(
                     name="Хроники Бездны: реалистичная автономная кампания",
                     description="Objective-driven LLM-vs-LLM benchmark with idempotent resume.",
-                    system_instructions=(
-                        "Ты приземлённый Dungeon Master в жанре тёмного фэнтези. "
-                        "Пиши исключительно на русском языке. Игрок заявляет только намерения; "
-                        "ты определяешь исходы и даёшь конкретные последствия. Уважай карточки NPC, "
-                        "инвентарь, способности, знания и тезисы. Не говори за Элдона, не повторяй "
-                        "универсальные формулы о риске и не заменяй действие новым вопросом."
-                    ),
-                    narrative_style=(
-                        "Компактная романная проза, конкретные сенсорные детали, различимые голоса NPC "
-                        "и завершённый результат каждого хода на русском языке."
-                    ),
+                    system_instructions=simulation_system_instructions,
+                    narrative_style=simulation_narrative_style,
                 )
             )
+        elif (
+            campaign.system_instructions != simulation_system_instructions
+            or campaign.narrative_style != simulation_narrative_style
+        ):
+            campaign = await campaigns.update_campaign(
+                campaign.id,
+                CampaignUpdate(
+                    system_instructions=simulation_system_instructions,
+                    narrative_style=simulation_narrative_style,
+                ),
+            )
+            assert campaign is not None
         state.campaign_id = str(campaign.id)
         state.save(state_path)
         campaign_id = campaign.id
@@ -1162,6 +1877,10 @@ async def run_realistic_simulation_v2() -> None:
 
         while state.logical_turn <= turns_limit and not state.completed:
             if state.phase_index >= len(PHASES):
+                if catalog.arcs and catalog.arcs[-1].terminal:
+                    state.completed = True
+                    state.save(state_path)
+                    break
                 catalog = await ensure_phase_available(
                     path=scenario_path,
                     reset=False,
@@ -1205,9 +1924,19 @@ async def run_realistic_simulation_v2() -> None:
             if existing_assistant and existing_assistant.content.lstrip().startswith("[Generation failed"):
                 print(f"[simulation] Deleting failed logical turn {state.logical_turn} from DB to re-attempt.")
                 from sqlalchemy import delete as sql_delete
-                await session.execute(sql_delete(DBTurn).where(DBTurn.id == existing_assistant.id))
                 if existing_user:
+                    await session.execute(
+                        sql_delete(DBTurn).where(
+                            DBTurn.parent_turn_id == existing_user.id
+                        )
+                    )
                     await session.execute(sql_delete(DBTurn).where(DBTurn.id == existing_user.id))
+                else:
+                    await session.execute(
+                        sql_delete(DBTurn).where(
+                            DBTurn.id == existing_assistant.id
+                        )
+                    )
                 await session.commit()
                 existing_user = None
                 existing_assistant = None
@@ -1222,8 +1951,17 @@ async def run_realistic_simulation_v2() -> None:
                 )
                 dm_text = existing_assistant.content
                 assistant_turn_id = UUID(existing_assistant.id)
-                accepted: list[str] = []
-                rejected: list[str] = []
+                from app.services.post_turn_processor import PostTurnProcessor
+
+                await PostTurnProcessor(session).process_turn(assistant_turn_id)
+                accepted, rejected = await resolve_turn_proposals(
+                    session,
+                    assistant_turn_id,
+                )
+                for change in accepted:
+                    if change not in runtime.durable_changes:
+                        runtime.durable_changes.append(change)
+                runtime.durable_changes = runtime.durable_changes[-80:]
             else:
                 decision = await generate_player_decision(
                     provider,
@@ -1278,7 +2016,27 @@ async def run_realistic_simulation_v2() -> None:
                 if assistant_row is None and user_row is not None:
                     assistant_row = await latest_assistant_for_user(session, user_row.id)
                 assistant_turn_id = UUID(assistant_row.id) if assistant_row else None
-                if dm_text.lstrip().startswith("[Generation failed") or not assistant_turn_id:
+                rejected_dm_text = dm_text
+                narrative_valid, narrative_error = validate_russian_narrative(dm_text)
+                if narrative_valid:
+                    arc = catalog.arcs[runtime.phase.arc_index]
+                    allow_paid_cost = bool(
+                        arc.terminal
+                        and runtime.phase.slug == arc.phases[-1].slug
+                    )
+                    narrative_valid, narrative_error = validate_dm_player_agency(
+                        dm_text,
+                        runtime.phase.location_description,
+                        list(runtime.phase.active_npcs),
+                        decision.mode,
+                        "\n".join(turn.content for turn in history[-12:]),
+                        allow_paid_cost,
+                    )
+                if not narrative_valid and assistant_row is not None:
+                    dm_text = f"[Generation failed: narrative quality: {narrative_error}]"
+                    assistant_row.content = dm_text
+                    await session.commit()
+                if "[Generation failed" in dm_text or not assistant_turn_id:
                     state.consecutive_failures += 1
                     stats["generation_failures"] += 1
                     trace.upsert(
@@ -1291,6 +2049,7 @@ async def run_realistic_simulation_v2() -> None:
                             "active_npcs": list(runtime.phase.active_npcs),
                             "player": asdict(decision),
                             "dm": dm_text.strip(),
+                            "rejected_dm": rejected_dm_text.strip(),
                             "generation_failed": True,
                             "active_theses": [
                                 {
@@ -1417,6 +2176,12 @@ async def run_realistic_simulation_v2() -> None:
                 state.criteria_met = []
                 state.durable_changes = []
                 director.current = None
+                finished_arc = catalog.arcs[runtime.phase.arc_index]
+                if (
+                    finished_arc.terminal
+                    and runtime.phase.slug == finished_arc.phases[-1].slug
+                ):
+                    state.completed = True
             state.save(state_path)
 
             if state.logical_turn % 5 == 0:
@@ -1425,10 +2190,6 @@ async def run_realistic_simulation_v2() -> None:
                     f"phase_turn={runtime.phase_turn}; status={evaluation.status}; "
                     f"{(time.time() - started) / max(1, state.logical_turn - 1):.2f}s/turn"
                 )
-
-        if state.logical_turn > turns_limit:
-            state.completed = True
-            state.save(state_path)
 
         all_turns = await turns.get_history(campaign_id, limit=turns_limit * 4, active_only=False)
         active_theses = await session.execute(

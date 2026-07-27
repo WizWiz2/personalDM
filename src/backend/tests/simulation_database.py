@@ -28,6 +28,10 @@ def _upgrade_simulation_database_sync(path: Path) -> str:
         settings.DATABASE_URL = url
         config = Config(str(alembic_ini))
         config.set_main_option("script_location", str(backend_root / "alembic"))
+        config.set_main_option(
+            "version_locations",
+            str(backend_root / "alembic" / "versions"),
+        )
         config.set_main_option("sqlalchemy.url", url)
         command.upgrade(config, "head")
     finally:

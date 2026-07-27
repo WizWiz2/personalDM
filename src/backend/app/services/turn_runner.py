@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.job_repo import GenerationRunRepository
@@ -198,7 +199,11 @@ class TurnRunner:
                         messages_for_attempt,
                         config,
                         api_key,
-                        temperature=0.7 if attempt == 0 else 0.45,
+                        temperature=(
+                            settings.NARRATOR_TEMPERATURE
+                            if attempt == 0
+                            else settings.NARRATOR_RETRY_TEMPERATURE
+                        ),
                     ):
                         if await self._cancel_requested(generation_run.id):
                             raise asyncio.CancelledError

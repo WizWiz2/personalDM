@@ -3,6 +3,8 @@ import pytest
 from tests.simulation_dynamic_campaign import (
     CampaignCatalog,
     GeneratedArc,
+    GeneratedPhase,
+    _require_russian_text,
     normalize_arc_references,
 )
 
@@ -138,7 +140,7 @@ def test_generated_references_are_canonicalized_case_insensitively():
     assert normalized.phases[1].pulses[0].thesis.related_names == ["Орсен"]
 
 
-def test_generated_phase_cannot_activate_npc_before_introduction():
+def test_generated_phase_repairs_first_active_npc_as_introduction():
     catalog = CampaignCatalog(seed="ordering-test")
     arc = GeneratedArc.model_validate(
         arc_payload(
@@ -161,5 +163,78 @@ def test_generated_phase_cannot_activate_npc_before_introduction():
         )
     )
 
-    with pytest.raises(ValueError, match="before introduction"):
-        normalize_arc_references(catalog, arc)
+    normalized = normalize_arc_references(catalog, arc)
+
+    assert normalized.phases[0].introduced_npcs == ["Мира", "Орсен"]
+    assert normalized.phases[0].active_npcs == ["Мира", "Орсен"]
+    assert normalized.phases[1].introduced_npcs == []
+
+
+def test_generated_pulse_fraction_is_clamped_inside_scene():
+    payload = phase_payload(
+        slug="edge_pulse",
+        title="Крайний импульс",
+        introduced=["Мира"],
+        active=["Мира"],
+        related=["Мира"],
+    )
+    payload["pulses"][0]["at_fraction"] = 1.0
+    payload["pulses"][1]["at_fraction"] = 0.0
+
+    phase = GeneratedArc.model_validate(arc_payload([payload, phase_payload(
+        slug="second_phase",
+        title="Вторая сцена",
+        introduced=["Орсен"],
+        active=["Орсен"],
+        related=["Орсен"],
+    )])).phases[0]
+
+    assert phase.pulses[0].at_fraction == 0.95
+    assert phase.pulses[1].at_fraction == 0.06
+
+
+def test_generated_numeric_tension_is_normalized_to_russian_text():
+    payload = phase_payload(
+        slug="rated_tension",
+        title="Шкала напряжения",
+        introduced=["РњРёСЂР°"],
+        active=["РњРёСЂР°"],
+        related=["РњРёСЂР°"],
+    )
+    payload["tension"] = "7/10"
+
+    phase = GeneratedPhase.model_validate(payload)
+
+    assert phase.tension == "Напряжение: 7/10"
+
+
+def test_generated_arc_rejects_non_russian_narrative_fields():
+    with pytest.raises(ValueError, match="non-Russian script|predominantly Russian"):
+        _require_russian_text("陷阱与秘密", field_name="phases[1].title")
+
+
+def test_generated_arc_rejects_science_fiction_genre_drift():
+    payload = arc_payload(
+        [
+            phase_payload(
+                slug="ash_gate",
+                title="Пепельные ворота",
+                introduced=["Мира"],
+                active=["Мира"],
+                related=["Мира"],
+            ),
+            phase_payload(
+                slug="debt_square",
+                title="Долговая площадь",
+                introduced=["Орсен"],
+                active=["Орсен"],
+                related=["Орсен"],
+            ),
+        ]
+    )
+    payload["phases"][0]["pulses"][0]["event"] = (
+        "Мира включает портативный анализатор среды."
+    )
+
+    with pytest.raises(ValueError, match="genre drift"):
+        GeneratedArc.model_validate(payload)

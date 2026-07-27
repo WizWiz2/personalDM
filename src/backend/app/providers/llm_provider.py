@@ -424,6 +424,16 @@ class LLMProvider:
 
                     if response_model is not None:
                         try:
+                            if (
+                                isinstance(parsed, dict)
+                                and len(parsed) == 1
+                                and response_model.__name__ in parsed
+                                and isinstance(
+                                    parsed[response_model.__name__],
+                                    dict,
+                                )
+                            ):
+                                parsed = parsed[response_model.__name__]
                             parsed = response_model.model_validate(parsed).model_dump(
                                 mode="json"
                             )
