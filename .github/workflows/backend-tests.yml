@@ -102,7 +102,7 @@ jobs:
           cat data/ci-v3/ci-output.log
           exit $status
 
-      - name: Validate simulation invariants
+      - name: Validate generated simulation invariants
         working-directory: src/backend
         run: |
           python - <<'PY'
@@ -113,11 +113,44 @@ jobs:
           root = Path("data/ci-v3")
           state = json.loads((root / "realistic_simulation_state.json").read_text(encoding="utf-8"))
           health = json.loads((root / "realistic_simulation_health.json").read_text(encoding="utf-8"))
-          records = [json.loads(line) for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+          scenario = json.loads((root / "realistic_simulation_scenario.json").read_text(encoding="utf-8"))
+          records = [
+              json.loads(line)
+              for line in (root / "realistic_simulation_trace.jsonl").read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
           report = (root / "realistic_simulation_report.md").read_text(encoding="utf-8")
 
+          arcs = scenario.get("arcs") or []
+          assert arcs, scenario
+          phases = [phase for arc in arcs for phase in (arc.get("phases") or [])]
+          npc_names = {
+              str(npc["name"]).casefold()
+              for arc in arcs
+              for npc in (arc.get("npcs") or [])
+          }
+          phase_slugs = [str(phase["slug"]) for phase in phases]
+          phase_titles = [str(phase["title"]).casefold() for phase in phases]
+          assert phases, scenario
+          assert npc_names, scenario
+          assert len(phase_slugs) == len(set(phase_slugs)), phase_slugs
+          assert len(phase_titles) == len(set(phase_titles)), phase_titles
+
+          introduced = set()
+          for phase in phases:
+              introduced_now = {
+                  str(name).casefold() for name in (phase.get("introduced_npcs") or [])
+              }
+              active_now = {
+                  str(name).casefold() for name in (phase.get("active_npcs") or [])
+              }
+              assert introduced_now <= npc_names, (phase, introduced_now - npc_names)
+              introduced |= introduced_now
+              assert active_now <= introduced, (phase, active_now - introduced)
+
+          assert arcs[-1].get("terminal") is True, arcs[-1]
           assert state["completed"] is True, state
-          assert state["phase_index"] == 10, state
+          assert state["phase_index"] == len(phases), (state, len(phases))
           assert health["mode"] == "quality", health
           assert health["valid"] is True, health
           assert health["control_stats"].get("player_success", 0) > 0, health
@@ -131,7 +164,7 @@ jobs:
           assert all(not (record.get("player") or {}).get("fallback") for record in records)
           assert len({record["player"]["intent"] for record in records}) >= len(records) * 0.8
           assert "Benchmark valid: **True**" in report
-          assert "Фаз завершено: 10/10" in report
+          assert f"Фаз завершено: {len(phases)}" in report
           assert "Active theses in completed scenes: 0" in report
           assert "Actor contexts/current-message omissions:" in report
 
@@ -195,11 +228,11 @@ jobs:
               actor_total += 1
               snapshot = json.loads(snapshot_raw or "{}")
               if not snapshot.get("current_user_reserved"):
-                actor_missing += 1
+                  actor_missing += 1
           db.close()
 
-          assert characters == 21, characters
-          assert outcomes == 10, outcomes
+          assert characters == len(npc_names) + 1, (characters, len(npc_names))
+          assert outcomes == len(phases), (outcomes, len(phases))
           assert proposals > 0, proposals
           assert canon_gaps == 0, canon_gaps
           assert sourced_beliefs > 0, sourced_beliefs
@@ -207,7 +240,15 @@ jobs:
           assert duplicate_scopes == 0, duplicate_scopes
           assert actor_total > 0, actor_total
           assert actor_missing == 0, actor_missing
-          print("Validated", len(records), "quality logical turns with complete canon coverage")
+          print(
+              "Validated",
+              len(records),
+              "logical turns across",
+              len(arcs),
+              "generated arcs and",
+              len(phases),
+              "generated phases",
+          )
           PY
 
       - name: Upload simulation evidence
