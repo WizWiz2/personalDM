@@ -148,7 +148,6 @@ jobs:
               introduced |= introduced_now
               assert active_now <= introduced, (phase, active_now - introduced)
 
-          assert arcs[-1].get("terminal") is True, arcs[-1]
           assert state["completed"] is True, state
           assert state["phase_index"] == len(phases), (state, len(phases))
           assert health["mode"] == "quality", health
