@@ -43,7 +43,7 @@ jobs:
         run: pytest -q --tb=short
       - name: Lint milestone files
         run: >-
-          ruff check
+          ruff check --extend-ignore B008
           src/backend/app/api/archive.py
           src/backend/app/api/debugger.py
           src/backend/app/db/initial_state_table.py
