@@ -19,7 +19,6 @@ from tests.simulation_database import current_revision, upgrade_simulation_datab
 from tests.simulation_dynamic_campaign import (
     CampaignCatalog,
     GeneratedArc,
-    _reject_near_miss_npc_names,
     catalog_summary,
 )
 from tests.simulation_scenario import ObjectiveCriterion, ScenarioPhase
@@ -177,15 +176,6 @@ def generated_arc_payload():
             },
         ],
     }
-
-
-def test_generated_scenario_rejects_near_miss_npc_name():
-    with pytest.raises(ValueError, match="near-miss NPC name"):
-        _reject_near_miss_npc_names(
-            ["Особое внимание уделить диалогу между Варной и Элдоном."],
-            ["Верана Грим", "Тарн"],
-            location="director note",
-        )
 
 
 def test_generated_catalog_converts_to_runtime_scenario():

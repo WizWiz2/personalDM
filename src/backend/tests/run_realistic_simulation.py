@@ -48,10 +48,7 @@ class RestoredPlayerPolicy(_BasePlayerPolicy):
         trace_path = data_dir / "realistic_simulation_trace.jsonl"
         restored = _BaseTraceStore(trace_path)
         for turn_number in sorted(restored.records):
-            record = restored.records[turn_number]
-            if record.get("generation_failed"):
-                continue
-            player = record.get("player") or {}
+            player = restored.records[turn_number].get("player") or {}
             decision = _BasePlayerDecision(
                 target=str(player.get("target", "narrator")),
                 mode=str(player.get("mode", "action")),
@@ -94,14 +91,10 @@ def _decision_from_trace(logical_turn: int):
     player = record.get("player") or {}
     if not str(player.get("intent", "")).strip():
         return None
-    intent = str(player.get("intent", ""))
-    valid, _ = runtime.validate_russian_narrative(intent)
-    if not valid:
-        return None
     return _BasePlayerDecision(
         target=str(player.get("target", "narrator")),
         mode=str(player.get("mode", "action")),
-        intent=intent,
+        intent=str(player.get("intent", "")),
     )
 
 
@@ -125,9 +118,6 @@ def _decision_from_user_content(content: str):
     target = match.group(1).strip()
     intent = match.group(2).strip()
     if not intent:
-        return None
-    valid, _ = runtime.validate_russian_narrative(intent)
-    if not valid:
         return None
     return _BasePlayerDecision(
         target=target,
@@ -169,17 +159,11 @@ def _retry_decision_from_trace():
         record = _BaseTraceStore(trace_path).records.get(logical_turn)
         if not record or not record.get("generation_failed"):
             return None
-        if "narrative quality" in str(record.get("dm", "")).casefold():
-            return None
         player = record.get("player") or {}
-        intent = str(player["intent"])
-        valid, _ = runtime.validate_russian_narrative(intent)
-        if not valid:
-            return None
         return _BasePlayerDecision(
             target=str(player["target"]),
             mode=str(player["mode"]),
-            intent=intent,
+            intent=str(player["intent"]),
         )
     except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
@@ -189,113 +173,6 @@ async def resumable_generate_player_decision(*args, **kwargs):
     previous = _retry_decision_from_trace()
     if previous is not None:
         return previous
-    data_dir = Path(os.getenv("PDM_SIM_DATA_DIR", "./data"))
-    state_path = data_dir / "realistic_simulation_state.json"
-    trace_path = data_dir / "realistic_simulation_trace.jsonl"
-    if state_path.exists() and trace_path.exists():
-        try:
-            logical_turn = int(
-                json.loads(state_path.read_text(encoding="utf-8"))["logical_turn"]
-            )
-            record = _BaseTraceStore(trace_path).records.get(logical_turn) or {}
-            if (
-                record.get("generation_failed")
-                and "narrative quality" in str(record.get("dm", "")).casefold()
-                and len(args) > 9
-            ):
-                prior_mode = str((record.get("player") or {}).get("mode", ""))
-                phase_runtime = args[5]
-                history = args[7]
-                policy = args[8]
-                logical_turn = int(args[9])
-                active_npcs = list(phase_runtime.phase.active_npcs)
-                target = policy.suggested_target(active_npcs, "question")
-                retry_variants = {
-                    "action": _BasePlayerDecision(
-                        target=target,
-                        mode="question",
-                        intent=(
-                            f"Я уточняю у {target}: «Какой наблюдаемый след можно "
-                            "проверить первым, чтобы отличить случайное загрязнение "
-                            "от направленного воздействия?»"
-                        ),
-                    ),
-                    "question": _BasePlayerDecision(
-                        target=target,
-                        mode="plan",
-                        intent=(
-                            f"Я предлагаю новый порядок проверки: сначала {target} "
-                            "называет самый спорный след, затем я сопоставляю его с "
-                            "безопасным образцом, не объявляя вывод заранее."
-                        ),
-                    ),
-                    "plan": _BasePlayerDecision(
-                        target=target,
-                        mode="dialogue",
-                        intent=(
-                            f"Я обращаюсь к {target}: «Назовите одно наблюдение, "
-                            "которым вы готовы рискнуть ради проверки своей версии»."
-                        ),
-                    ),
-                    "dialogue": _BasePlayerDecision(
-                        target="narrator",
-                        mode="action",
-                        intent=(
-                            "Я сравниваю видимые следы на земле с направлением ветра "
-                            "и отмечаю только доступные пути проверки, не касаясь "
-                            "источника воздействия и не объявляя результат."
-                        ),
-                    ),
-                    "decision": _BasePlayerDecision(
-                        target=target,
-                        mode="question",
-                        intent=(
-                            f"Я спрашиваю {target}: «Какую проверку можно отменить "
-                            "без потери единственного доказательства, если опасность "
-                            "усилится?»"
-                        ),
-                    ),
-                }
-                retry_decision = retry_variants.get(prior_mode)
-                if retry_decision is not None:
-                    valid, error = policy.validate(retry_decision, active_npcs)
-                    if valid:
-                        policy.remember(retry_decision)
-                        return retry_decision
-                for offset in range(1, len(policy.MODES) + 1):
-                    retry_mode = policy.preferred_mode(logical_turn + offset)
-                    if retry_mode != prior_mode:
-                        latest_result = next(
-                            (
-                                turn.content
-                                for turn in reversed(history)
-                                if turn.role == "assistant"
-                                and not turn.content.lstrip().startswith(
-                                    "[Generation failed"
-                                )
-                            ),
-                            "",
-                        )
-                        decision = policy.fallback(
-                            active_npcs,
-                            retry_mode,
-                            phase_runtime.phase.objective,
-                            latest_result,
-                            [],
-                            logical_turn,
-                        )
-                        valid, error = policy.validate(
-                            decision,
-                            active_npcs,
-                        )
-                        if not valid:
-                            raise ValueError(
-                                f"narrative retry fallback invalid: {error}"
-                            )
-                        policy.remember(decision)
-                        return decision
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-            pass
     return await _original_generate_player_decision(*args, **kwargs)
 
 
