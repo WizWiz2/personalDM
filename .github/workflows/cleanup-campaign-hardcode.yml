@@ -26,21 +26,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Remove the entire overfitted Codex commit first.
           git revert --no-commit 49a6f1db61f48fb697b8c45b2568feadf4034397
-
-          # Preserve only campaign-agnostic production improvements.
           git checkout 49a6f1db61f48fb697b8c45b2568feadf4034397 -- \
             src/backend/app/config.py \
             src/backend/app/providers/llm_provider.py \
             src/backend/app/services/memory_scribe.py \
             src/backend/app/services/turn_runner.py \
             src/backend/tests/test_llm_provider_resilience.py
-
-          # The workflow is only a transport for producing the real cleanup commit.
           rm -f .github/workflows/cleanup-campaign-hardcode.yml
-
           git add -A
           git status --short
 
@@ -51,7 +44,23 @@ jobs:
         run: python -m compileall -q src/backend/app src/backend/tests
 
       - name: Run backend tests
-        run: pytest -q src/backend/tests
+        id: pytest
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pytest -q src/backend/tests 2>&1 | tee pytest-cleanup.log
+
+      - name: Publish pytest diagnostics
+        if: steps.pytest.outcome == 'failure'
+        run: |
+          git checkout -f -B agent/remove-campaign-hardcode-debug
+          git add -f pytest-cleanup.log
+          git commit -m "Сохранить pytest cleanup log"
+          git push --force origin HEAD:agent/remove-campaign-hardcode-debug
+
+      - name: Fail after pytest diagnostics
+        if: steps.pytest.outcome == 'failure'
+        run: exit 1
 
       - name: Run Ruff
         run: ruff check src/backend
