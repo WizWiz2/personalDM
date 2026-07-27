@@ -63,8 +63,29 @@ jobs:
         if: steps.pytest.outcome == 'failure'
         run: exit 1
 
+      - name: Autofix Ruff
+        run: |
+          ruff check --fix src/backend
+          git add -A
+
       - name: Run Ruff
-        run: ruff check src/backend
+        id: ruff
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ruff check src/backend 2>&1 | tee ruff-cleanup.log
+
+      - name: Publish Ruff diagnostics
+        if: steps.ruff.outcome == 'failure'
+        run: |
+          git checkout -f -B agent/remove-campaign-hardcode-debug
+          git add -f ruff-cleanup.log
+          git commit -m "Сохранить Ruff cleanup log"
+          git push --force origin HEAD:agent/remove-campaign-hardcode-debug
+
+      - name: Fail after Ruff diagnostics
+        if: steps.ruff.outcome == 'failure'
+        run: exit 1
 
       - name: Publish cleanup commit
         run: |
