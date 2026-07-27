@@ -32,6 +32,7 @@ jobs:
             src/backend/app/providers/llm_provider.py \
             src/backend/app/services/memory_scribe.py \
             src/backend/app/services/turn_runner.py \
+            src/backend/tests/simulation_database.py \
             src/backend/tests/test_llm_provider_resilience.py
           rm -f .github/workflows/cleanup-campaign-hardcode.yml
           git add -A
