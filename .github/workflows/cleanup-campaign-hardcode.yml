@@ -65,7 +65,7 @@ jobs:
 
       - name: Autofix Ruff
         run: |
-          ruff check --fix src/backend
+          ruff check --fix src/backend || true
           git add -A
 
       - name: Run Ruff
