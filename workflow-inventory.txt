@@ -1,0 +1,9 @@
+.github/workflows/backend-tests.yml
+.github/workflows/discover-cleanup-workflows.yml
+.github/workflows/playable-debugger.yml
+.github/workflows/resume-simulation.yml
+
+.github/workflows/discover-cleanup-workflows.yml:27:            grep -R -n -E 'Campaign integrity milestones|Lint milestone files|Validate simulation invariants|Validate idempotent resume' .github/workflows || true
+.github/workflows/resume-simulation.yml:92:      - name: Validate idempotent resume
+.github/workflows/playable-debugger.yml:1:name: Campaign integrity milestones
+.github/workflows/playable-debugger.yml:44:      - name: Lint milestone files
