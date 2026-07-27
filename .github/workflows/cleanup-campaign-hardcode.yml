@@ -1,15 +1,16 @@
 name: Cleanup campaign hardcode
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/remove-campaign-hardcode
+      - main
 
 permissions:
   contents: write
 
 jobs:
   cleanup:
+    if: github.head_ref == 'agent/remove-campaign-hardcode'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
