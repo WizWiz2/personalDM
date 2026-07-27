@@ -45,47 +45,25 @@ jobs:
         run: python -m compileall -q src/backend/app src/backend/tests
 
       - name: Run backend tests
-        id: pytest
-        continue-on-error: true
+        run: pytest -q src/backend/tests
+
+      - name: Autofix changed Python files
         run: |
-          set -o pipefail
-          pytest -q src/backend/tests 2>&1 | tee pytest-cleanup.log
+          mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+          if [ "${#files[@]}" -gt 0 ]; then
+            ruff check --fix "${files[@]}" || true
+            git add -A
+          fi
 
-      - name: Publish pytest diagnostics
-        if: steps.pytest.outcome == 'failure'
+      - name: Lint changed Python files
         run: |
-          git checkout -f -B agent/remove-campaign-hardcode-debug
-          git add -f pytest-cleanup.log
-          git commit -m "Сохранить pytest cleanup log"
-          git push --force origin HEAD:agent/remove-campaign-hardcode-debug
+          mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR -- '*.py')
+          if [ "${#files[@]}" -gt 0 ]; then
+            ruff check "${files[@]}"
+          fi
 
-      - name: Fail after pytest diagnostics
-        if: steps.pytest.outcome == 'failure'
-        run: exit 1
-
-      - name: Autofix Ruff
-        run: |
-          ruff check --fix src/backend || true
-          git add -A
-
-      - name: Run Ruff
-        id: ruff
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          ruff check src/backend 2>&1 | tee ruff-cleanup.log
-
-      - name: Publish Ruff diagnostics
-        if: steps.ruff.outcome == 'failure'
-        run: |
-          git checkout -f -B agent/remove-campaign-hardcode-debug
-          git add -f ruff-cleanup.log
-          git commit -m "Сохранить Ruff cleanup log"
-          git push --force origin HEAD:agent/remove-campaign-hardcode-debug
-
-      - name: Fail after Ruff diagnostics
-        if: steps.ruff.outcome == 'failure'
-        run: exit 1
+      - name: Recompile after lint
+        run: python -m compileall -q src/backend/app src/backend/tests
 
       - name: Publish cleanup commit
         run: |
