@@ -1,0 +1,61 @@
+name: Cleanup campaign hardcode
+
+on:
+  push:
+    branches:
+      - agent/remove-campaign-hardcode
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/remove-campaign-hardcode
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Revert overfitted campaign layer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Remove the entire overfitted Codex commit first.
+          git revert --no-commit 49a6f1db61f48fb697b8c45b2568feadf4034397
+
+          # Preserve only campaign-agnostic production improvements.
+          git checkout 49a6f1db61f48fb697b8c45b2568feadf4034397 -- \
+            src/backend/app/config.py \
+            src/backend/app/providers/llm_provider.py \
+            src/backend/app/services/memory_scribe.py \
+            src/backend/app/services/turn_runner.py \
+            src/backend/tests/test_llm_provider_resilience.py
+
+          # The workflow is only a transport for producing the real cleanup commit.
+          rm -f .github/workflows/cleanup-campaign-hardcode.yml
+
+          git add -A
+          git status --short
+
+      - name: Install backend
+        run: python -m pip install -e 'src/backend[dev]'
+
+      - name: Compile backend
+        run: python -m compileall -q src/backend/app src/backend/tests
+
+      - name: Run backend tests
+        run: pytest -q src/backend/tests
+
+      - name: Run Ruff
+        run: ruff check src/backend
+
+      - name: Publish cleanup commit
+        run: |
+          git commit -m "Удалить кампанийный хардкод из симуляции"
+          git push origin HEAD:agent/remove-campaign-hardcode
