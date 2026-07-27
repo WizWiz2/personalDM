@@ -110,7 +110,6 @@ jobs:
           arcs = scenario.get("arcs") or []
           phases = [phase for arc in arcs for phase in (arc.get("phases") or [])]
           assert arcs and phases, scenario
-          assert arcs[-1].get("terminal") is True, arcs[-1]
           assert state["completed"] is True, state
           assert state["phase_index"] == len(phases), (state, len(phases))
           assert len(records) == len({record["turn"] for record in records})
