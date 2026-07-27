@@ -42,17 +42,31 @@ jobs:
         working-directory: src/backend
         run: pytest -q --tb=short
       - name: Lint milestone files
-        run: >-
-          ruff check --extend-ignore B008
-          src/backend/app/api/archive.py
-          src/backend/app/api/debugger.py
-          src/backend/app/db/initial_state_table.py
-          src/backend/app/db/repositories/job_repo.py
-          src/backend/app/models/jobs.py
-          src/backend/app/services/campaign_archive.py
-          src/backend/app/services/canon_applier.py
-          src/backend/app/services/debugger_service.py
-          src/backend/app/services/initial_world_state.py
-          src/backend/app/services/post_turn_processor.py
-          src/backend/tests/test_playable_debugger_foundation.py
-          src/backend/tests/test_canon_replay_roundtrip.py
+        id: milestone_lint
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ruff check --extend-ignore B008 \
+            src/backend/app/api/archive.py \
+            src/backend/app/api/debugger.py \
+            src/backend/app/db/initial_state_table.py \
+            src/backend/app/db/repositories/job_repo.py \
+            src/backend/app/models/jobs.py \
+            src/backend/app/services/campaign_archive.py \
+            src/backend/app/services/canon_applier.py \
+            src/backend/app/services/debugger_service.py \
+            src/backend/app/services/initial_world_state.py \
+            src/backend/app/services/post_turn_processor.py \
+            src/backend/tests/test_playable_debugger_foundation.py \
+            src/backend/tests/test_canon_replay_roundtrip.py \
+            2>&1 | tee milestone-ruff.log
+      - name: Upload milestone lint diagnostics
+        if: steps.milestone_lint.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: campaign-integrity-ruff
+          path: milestone-ruff.log
+          retention-days: 3
+      - name: Fail after milestone lint diagnostics
+        if: steps.milestone_lint.outcome == 'failure'
+        run: exit 1
