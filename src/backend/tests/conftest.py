@@ -1,14 +1,19 @@
 import asyncio
+from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock, patch
+
 import pytest
 import pytest_asyncio
-from collections.abc import AsyncIterator
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from app.db.engine import Base, get_session
 from app.main import app
+from app.services.turn_planner import TurnPlan
 
 # Use in-memory SQLite database for testing
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+
 
 @pytest.fixture(scope="session")
 def event_loop():
@@ -17,24 +22,47 @@ def event_loop():
     yield loop
     loop.close()
 
+
+@pytest.fixture(autouse=True)
+def mock_turn_planner():
+    """Keep unrelated endpoint tests offline while preserving planner integration."""
+    plan = TurnPlan(
+        player_intent="Resolve the player's latest action.",
+        resolution="observation",
+        observable_consequences=["The action produces one visible consequence."],
+        character_beats=[],
+        canon_constraints=["Do not invent abilities, items, movement, or knowledge."],
+        new_fact_candidates=[],
+        narration_guidance=["Keep the response grounded and concise."],
+        ending_hook="Return a meaningful situation to the player.",
+    )
+    with patch(
+        "app.services.turn_planner.TurnPlanner.plan",
+        new_callable=AsyncMock,
+        return_value=plan,
+    ):
+        yield
+
+
 @pytest_asyncio.fixture(scope="function")
 async def test_engine():
     engine = create_async_engine(
         TEST_DATABASE_URL,
-        connect_args={"check_same_thread": False}
+        connect_args={"check_same_thread": False},
     )
-    
+
     # Create tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        
+
     yield engine
-    
+
     # Drop tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
-        
+
     await engine.dispose()
+
 
 @pytest_asyncio.fixture(scope="function")
 async def db_session(test_engine) -> AsyncIterator[AsyncSession]:
@@ -43,10 +71,11 @@ async def db_session(test_engine) -> AsyncIterator[AsyncSession]:
         class_=AsyncSession,
         expire_on_commit=False,
         autocommit=False,
-        autoflush=False
+        autoflush=False,
     )
     async with AsyncSessionLocal() as session:
         yield session
+
 
 @pytest_asyncio.fixture(scope="function")
 async def client(db_session) -> AsyncIterator[TestClient]:
@@ -55,8 +84,8 @@ async def client(db_session) -> AsyncIterator[TestClient]:
         yield db_session
 
     app.dependency_overrides[get_session] = _get_test_session
-    
+
     with TestClient(app) as test_client:
         yield test_client
-        
+
     app.dependency_overrides.clear()
