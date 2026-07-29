@@ -17,6 +17,7 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.role_model_router import ModelRole, RoleModelRouter
+from app.services.turn_planner import TurnPlanner, TurnPlanningError
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -176,7 +177,9 @@ class TurnRunner:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield "[Generation failed: no LLM provider is configured for this campaign.]"
             return
-        narrator_selection = await RoleModelRouter(self._config_repo).resolve(
+
+        role_router = RoleModelRouter(self._config_repo)
+        narrator_selection = await role_router.resolve(
             campaign_id,
             ModelRole.NARRATOR,
             primary_config,
@@ -195,27 +198,77 @@ class TurnRunner:
 
         from app.services.context_compiler import ContextCompiler
 
+        max_budget_override = None
+        if turn_create.acting_character_id is None:
+            safety_margin = int(
+                primary_config.context_window * settings.SAFETY_MARGIN_PERCENT
+            )
+            max_budget_override = max(
+                512,
+                primary_config.context_window
+                - settings.RESPONSE_RESERVE_TOKENS
+                - safety_margin
+                - settings.PLANNER_CONTEXT_RESERVE_TOKENS,
+            )
         messages, context_metadata = await ContextCompiler(self._session).compile_context(
             campaign_id=campaign_id,
             acting_character_id=turn_create.acting_character_id,
             scene_id=turn_create.scene_id,
             current_user_content=turn_create.content,
+            max_budget_override=max_budget_override,
         )
-        if turn_create.acting_character_id:
-            messages, context_metadata = self._reserve_current_user(
-                messages,
-                context_metadata,
-                turn_create.content,
-            )
+        messages, context_metadata = self._reserve_current_user(
+            messages,
+            context_metadata,
+            turn_create.content,
+        )
 
         current_task = asyncio.current_task()
         if current_task is not None:
             active_tasks[campaign_key] = current_task
 
+        narrator_messages = messages
+        planner_metadata: dict = {"status": "skipped", "reason": "actor_scoped_turn"}
+        if turn_create.acting_character_id is None:
+            planner_selection = await role_router.resolve(
+                campaign_id,
+                ModelRole.PLANNER,
+                primary_config,
+            )
+            if planner_selection is None:
+                planner_metadata = {
+                    "status": "skipped",
+                    "reason": "planner_model_routing_unavailable",
+                }
+            else:
+                planner = TurnPlanner(role_router)
+                try:
+                    turn_plan = await planner.plan(planner_selection, messages)
+                    narrator_messages = planner.inject_plan(messages, turn_plan)
+                    planner_metadata = {
+                        "status": "completed",
+                        "model_name": planner_selection.config.model_name,
+                        "model_source": planner_selection.source,
+                        "plan": turn_plan.model_dump(),
+                        "telemetry": planner.telemetry,
+                    }
+                except TurnPlanningError as exc:
+                    # Planning is an advisory quality layer. Its failure must not erase the
+                    # existing reliable narrator path or invalidate the player's turn.
+                    planner_metadata = {
+                        "status": "failed_open",
+                        "model_name": planner_selection.config.model_name,
+                        "model_source": planner_selection.source,
+                        "error": str(exc)[:2000],
+                        "telemetry": planner.telemetry,
+                    }
+        context_metadata = dict(context_metadata)
+        context_metadata["turn_planner"] = planner_metadata
+
         accumulated_text = ""
         attempt_number = 0
         attempt_telemetry: list[dict] = []
-        messages_for_attempt = messages
+        messages_for_attempt = narrator_messages
         last_provider_error: LLMProviderError | None = None
 
         try:
@@ -255,13 +308,13 @@ class TurnRunner:
                     if attempt + 1 < self.MAX_GENERATION_ATTEMPTS:
                         if accumulated_text.strip():
                             messages_for_attempt = self._continuation_messages(
-                                messages,
+                                narrator_messages,
                                 accumulated_text,
                             )
                             await asyncio.sleep(0.15)
                             continue
                         messages_for_attempt = [
-                            *messages,
+                            *narrator_messages,
                             ChatMessage(
                                 role="user",
                                 content=(
@@ -283,7 +336,7 @@ class TurnRunner:
                         )
                     if attempt + 1 < self.MAX_GENERATION_ATTEMPTS:
                         messages_for_attempt = [
-                            *messages,
+                            *narrator_messages,
                             ChatMessage(
                                 role="user",
                                 content=(
@@ -359,7 +412,6 @@ class TurnRunner:
                 await processor.process_turn(saved_assistant.id)
             except Exception:
                 traceback.print_exc()
-
 
         except asyncio.CancelledError:
             if accumulated_text.strip():

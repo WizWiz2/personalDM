@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     CONTROL_LLM_MODEL: str = "qwen2.5:7b"
     CONTROL_LLM_API_KEY: str | None = None
     CONTROL_LLM_CONTEXT_WINDOW: int | None = None
+    PLANNER_LLM_MODEL: str | None = None
     SCRIBE_LLM_MODEL: str | None = None
     CURATOR_LLM_MODEL: str | None = None
     EVALUATOR_LLM_MODEL: str | None = None
@@ -37,6 +38,11 @@ class Settings(BaseSettings):
     NARRATOR_RECEIPT_MAX_ITEMS: int = 6
     NARRATOR_TEMPERATURE: float = 0.55
     NARRATOR_RETRY_TEMPERATURE: float = 0.3
+
+    # The planner is a compact structured control call before prose generation.
+    PLANNER_TEMPERATURE: float = 0.15
+    PLANNER_MAX_TOKENS: int = 900
+    PLANNER_CONTEXT_RESERVE_TOKENS: int = 700
 
     # Narrative and structured control calls have different completion needs.
     RESPONSE_RESERVE_TOKENS: int = 1536

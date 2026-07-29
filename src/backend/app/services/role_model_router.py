@@ -13,6 +13,7 @@ from app.providers.llm_provider import LLMProvider, LLMProviderError
 
 class ModelRole(str, Enum):
     NARRATOR = "narrator"
+    PLANNER = "planner"
     SCRIBE = "scribe"
     CURATOR = "curator"
     EVALUATOR = "evaluator"
@@ -23,6 +24,7 @@ class ModelRole(str, Enum):
 
 
 CONTROL_ROLES = {
+    ModelRole.PLANNER,
     ModelRole.SCRIBE,
     ModelRole.CURATOR,
     ModelRole.EVALUATOR,
@@ -63,6 +65,7 @@ class RoleModelRouter:
     @staticmethod
     def _model_override(role: ModelRole) -> str | None:
         return {
+            ModelRole.PLANNER: settings.PLANNER_LLM_MODEL,
             ModelRole.SCRIBE: settings.SCRIBE_LLM_MODEL,
             ModelRole.CURATOR: settings.CURATOR_LLM_MODEL,
             ModelRole.EVALUATOR: settings.EVALUATOR_LLM_MODEL,
