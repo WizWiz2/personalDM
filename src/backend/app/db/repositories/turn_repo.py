@@ -17,8 +17,10 @@ class TurnRepository(BaseRepository):
         """Bind persisted turns to authoritative structured scene state.
 
         A user turn follows campaign.current_scene_id even when a stale client sends
-        the previous scene. Assistant turns inherit the scene from their parent user
-        turn, preventing a user/assistant pair from being split across scenes.
+        the previous scene. Assistant turns normally inherit their parent user scene,
+        but an explicit validated scene_id may point to a newly applied structured
+        transition. This keeps ordinary pairs together without erasing a legitimate
+        source-scene -> target-scene boundary created before narration.
         """
         campaign_key = str(campaign_id)
         resolved = str(data.scene_id) if data.scene_id else None
@@ -27,7 +29,7 @@ class TurnRepository(BaseRepository):
             campaign = await self._session.get(Campaign, campaign_key)
             if campaign and campaign.current_scene_id:
                 resolved = campaign.current_scene_id
-        elif data.role == "assistant" and data.parent_turn_id:
+        elif data.role == "assistant" and data.parent_turn_id and not resolved:
             parent = await self._session.get(Turn, str(data.parent_turn_id))
             if parent and parent.campaign_id == campaign_key:
                 resolved = parent.scene_id
