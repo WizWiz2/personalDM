@@ -17,7 +17,10 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.role_model_router import ModelRole, RoleModelRouter
-from app.services.scene_transition_executor import SceneTransitionExecutor
+from app.services.scene_transition_executor import (
+    AppliedSceneTransition,
+    SceneTransitionExecutor,
+)
 from app.services.turn_planner import (
     SceneTransitionPlan,
     TurnPlanner,
@@ -54,6 +57,20 @@ class TurnRunner:
         if owned:
             await self._turn_repo.mark_failed(user_turn_id)
         await self._session.commit()
+
+    async def _rollback_prepared_transition(
+        self,
+        executor: SceneTransitionExecutor | None,
+        transition: AppliedSceneTransition | None,
+    ) -> bool:
+        if not executor or not transition or transition.status != "prepared":
+            return False
+        # Discard any failed assistant/generation writes, then compensate the already
+        # committed scene boundary in a fresh transaction.
+        await self._session.rollback()
+        rolled_back = await executor.rollback_transition(transition.transition_id)
+        await self._session.commit()
+        return rolled_back
 
     @staticmethod
     def _merge_continuation(prefix: str, continuation: str) -> str:
@@ -181,7 +198,8 @@ class TurnRunner:
 
         source_scene_id = user_turn.scene_id
         effective_scene_id = source_scene_id
-        transition_created_this_run = False
+        transition_executor: SceneTransitionExecutor | None = None
+        applied_transition: AppliedSceneTransition | None = None
 
         campaign_key = str(campaign_id)
         if campaign_key in active_tasks:
@@ -273,28 +291,30 @@ class TurnRunner:
                 planner = TurnPlanner(role_router)
                 try:
                     turn_plan = await planner.plan(planner_selection, messages)
-                    executor = SceneTransitionExecutor(self._session)
-                    existing_transition = await executor.existing_for_turn(
+                    transition_executor = SceneTransitionExecutor(self._session)
+                    existing_transition = await transition_executor.existing_for_turn(
                         campaign_id,
                         user_turn.id,
                     )
                     applied_transition = existing_transition
                     if not existing_transition and turn_plan.scene_transition.required:
                         try:
-                            async with self._session.begin_nested():
-                                applied_transition = await executor.apply(
-                                    campaign_id,
-                                    source_scene_id,
-                                    user_turn.id,
-                                    turn_plan.scene_transition,
-                                )
+                            applied_transition = await transition_executor.apply(
+                                campaign_id,
+                                source_scene_id,
+                                user_turn.id,
+                                turn_plan.scene_transition,
+                            )
+                            if applied_transition:
+                                # The prepared boundary must be durable before streaming.
+                                await self._session.commit()
                         except ValueError as exc:
+                            await self._session.rollback()
                             failed_plan = turn_plan.scene_transition.model_dump()
                             turn_plan = turn_plan.model_copy(
-                                update={
-                                    "scene_transition": SceneTransitionPlan()
-                                }
+                                update={"scene_transition": SceneTransitionPlan()}
                             )
+                            applied_transition = None
                             transition_metadata = {
                                 "status": "failed_open",
                                 "source_scene_id": (
@@ -305,20 +325,18 @@ class TurnRunner:
                                 "requested": failed_plan,
                                 "error": str(exc)[:2000],
                             }
-                        else:
-                            transition_created_this_run = applied_transition is not None
 
                     if applied_transition:
+                        # Existing prepared records may have reactivated their target.
+                        await self._session.commit()
                         effective_scene_id = applied_transition.target_scene_id
                         transition_metadata = {
                             "status": (
-                                "reused"
-                                if existing_transition
-                                else "applied"
+                                "prepared"
+                                if applied_transition.status == "prepared"
+                                else "reused"
                             ),
-                            "transition_id": str(
-                                applied_transition.transition_id
-                            ),
+                            "transition_id": str(applied_transition.transition_id),
                             "source_scene_id": (
                                 str(applied_transition.source_scene_id)
                                 if applied_transition.source_scene_id
@@ -369,8 +387,6 @@ class TurnRunner:
                         "telemetry": planner.telemetry,
                     }
                 except TurnPlanningError as exc:
-                    # Planning is an advisory quality layer. Its failure must not erase the
-                    # existing reliable narrator path or invalidate the player's turn.
                     planner_metadata = {
                         "status": "failed_open",
                         "model_name": planner_selection.config.model_name,
@@ -378,6 +394,7 @@ class TurnRunner:
                         "error": str(exc)[:2000],
                         "telemetry": planner.telemetry,
                     }
+
         context_metadata = dict(context_metadata)
         context_metadata["planner_context_scene_id"] = (
             str(source_scene_id) if source_scene_id else None
@@ -482,10 +499,11 @@ class TurnRunner:
                 break
 
             if last_provider_error is not None or not accumulated_text.strip():
-                if transition_created_this_run:
-                    await self._session.rollback()
+                if await self._rollback_prepared_transition(
+                    transition_executor,
+                    applied_transition,
+                ):
                     effective_scene_id = source_scene_id
-                    transition_created_this_run = False
                 if accumulated_text.strip():
                     snapshot, token_count = self._snapshot(
                         context_metadata,
@@ -537,6 +555,11 @@ class TurnRunner:
                     token_count=token_count,
                 ),
             )
+            if applied_transition and applied_transition.status == "prepared":
+                if not transition_executor or not await transition_executor.mark_applied(
+                    applied_transition.transition_id
+                ):
+                    raise RuntimeError("Prepared scene transition could not be finalized")
             await self._generation_runs.set_status(
                 generation_run.id,
                 "completed",
@@ -549,18 +572,17 @@ class TurnRunner:
             await processor.enqueue(campaign_id, saved_assistant.id)
             await self._session.commit()
 
-            # Keep the first local response useful while preserving durable retry state.
-            # A failed job never invalidates or deletes the narrative turn.
             try:
                 await processor.process_turn(saved_assistant.id)
             except Exception:
                 traceback.print_exc()
 
         except asyncio.CancelledError:
-            if transition_created_this_run:
-                await self._session.rollback()
+            if await self._rollback_prepared_transition(
+                transition_executor,
+                applied_transition,
+            ):
                 effective_scene_id = source_scene_id
-                transition_created_this_run = False
             if accumulated_text.strip():
                 snapshot, token_count = self._snapshot(
                     context_metadata,
@@ -590,8 +612,10 @@ class TurnRunner:
             raise
         except Exception as exc:
             traceback.print_exc()
-            if transition_created_this_run:
-                await self._session.rollback()
+            await self._rollback_prepared_transition(
+                transition_executor,
+                applied_transition,
+            )
             await self._generation_runs.set_status(
                 generation_run.id,
                 "failed",
