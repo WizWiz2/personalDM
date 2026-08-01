@@ -12,7 +12,9 @@ from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.models.proposed_change import ChangeType
 from app.services.continuity_checker import ContinuityChecker
+from app.services.entity_registrar import EntityRegistrar
 from app.services.memory_scribe import MemoryScribe
+from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.thesis_curator import ThesisCurator
 
 
@@ -95,6 +97,14 @@ class PostTurnProcessor:
                 )
                 if not existing:
                     campaign = await self._campaigns.get_by_id(campaign_id)
+                    registration = await EntityRegistrar(
+                        self._session
+                    ).register_from_turn(
+                        campaign_id=campaign_id,
+                        scene_id=assistant.scene_id,
+                        source_turn_id=assistant.id,
+                        assistant_content=assistant.content,
+                    )
                     proposals = await MemoryScribe(self._session).extract_proposals(
                         campaign_id=campaign_id,
                         scene_id=assistant.scene_id,
@@ -110,10 +120,20 @@ class PostTurnProcessor:
                         for proposal in proposals
                         if proposal.change_type != ChangeType.SCENE_THESIS
                     ]
+                    proposals.extend(registration.gap_proposals(assistant.scene_id))
+                    proposals = await ProposalPresenceResolver(
+                        self._session
+                    ).enrich(
+                        campaign_id,
+                        assistant.scene_id,
+                        proposals,
+                    )
                     checker = ContinuityChecker(self._session)
                     for proposal in proposals:
                         valid, warning = await checker.validate_change(
-                            campaign_id, proposal
+                            campaign_id,
+                            proposal,
+                            scene_id=assistant.scene_id,
                         )
                         if not valid:
                             proposal.payload["_validation_error"] = (
