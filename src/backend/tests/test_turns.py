@@ -363,6 +363,14 @@ def test_failed_narration_rolls_back_new_scene_transition(client: TestClient):
         f"/api/campaigns/{state['campaign_id']}/debugger"
     ).json()
     assert snapshot["active_scene"]["id"] == state["source_scene"]["id"]
-    assert snapshot["scene_transitions"] == []
-    assert len(snapshot["scenes"]) == 1
+    assert len(snapshot["scene_transitions"]) == 1
+    rolled_back = snapshot["scene_transitions"][0]
+    assert rolled_back["status"] == "rolled_back"
+    assert snapshot["last_scene_transition"] is None
+    target = next(
+        scene
+        for scene in snapshot["scenes"]
+        if scene["id"] == rolled_back["target_scene_id"]
+    )
+    assert target["status"] == "abandoned"
     assert snapshot["campaign"]["player_location_id"] != state["bedroom"]["id"]
