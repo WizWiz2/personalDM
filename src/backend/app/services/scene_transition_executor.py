@@ -39,6 +39,41 @@ class SceneTransitionExecutor:
         self._scenes = SceneRepository(session)
         self._locations = LocationRepository(session)
 
+    async def existing_for_turn(
+        self,
+        campaign_id: UUID,
+        trigger_turn_id: UUID,
+    ) -> AppliedSceneTransition | None:
+        result = await self._session.execute(
+            select(SceneTransition)
+            .where(
+                SceneTransition.campaign_id == str(campaign_id),
+                SceneTransition.trigger_turn_id == str(trigger_turn_id),
+            )
+            .order_by(SceneTransition.created_at)
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if not row:
+            return None
+        scene = await self._scenes.get_by_id(UUID(row.target_scene_id))
+        if not scene:
+            return None
+        return AppliedSceneTransition(
+            scene=scene,
+            source_scene_id=(
+                UUID(row.source_scene_id) if row.source_scene_id else None
+            ),
+            target_scene_id=UUID(row.target_scene_id),
+            source_location_id=(
+                UUID(row.source_location_id) if row.source_location_id else None
+            ),
+            target_location_id=(
+                UUID(row.target_location_id) if row.target_location_id else None
+            ),
+            transition_id=UUID(row.id),
+        )
+
     async def apply(
         self,
         campaign_id: UUID,
@@ -48,6 +83,11 @@ class SceneTransitionExecutor:
     ) -> AppliedSceneTransition | None:
         if not plan.required or plan.transition_type == "none":
             return None
+
+        if trigger_turn_id:
+            existing = await self.existing_for_turn(campaign_id, trigger_turn_id)
+            if existing:
+                return existing
 
         campaign = await self._session.get(Campaign, str(campaign_id))
         if not campaign:
@@ -197,10 +237,7 @@ class SceneTransitionExecutor:
         present = result.scalars().all()
 
         requested = {name.casefold() for name in plan.carry_participants}
-        carry_all = (
-            plan.transition_type == "focus_transition"
-            and not requested
-        )
+        carry_all = plan.transition_type == "focus_transition" and not requested
         for entity in present:
             entity_id = UUID(entity.id)
             if entity_id in selected:
