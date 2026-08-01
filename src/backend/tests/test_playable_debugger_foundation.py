@@ -94,10 +94,13 @@ def test_turn_creates_durable_runs_jobs_and_debugger_snapshot(client: TestClient
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["campaign"]["player_character_id"] == hero["id"]
     assert snapshot["health"] == {
+        "auto_registered_npcs": 0,
         "canon_gaps": 0,
+        "events_without_participants": 0,
         "failed_jobs": 0,
         "location_state_errors": 0,
         "pending_jobs": 0,
+        "presence_state_errors": 0,
         "running_generations": 0,
         "scene_state_errors": 0,
     }
