@@ -24,6 +24,7 @@ def upgrade() -> None:
         sa.Column("target_scene_id", sa.String(length=36), nullable=False),
         sa.Column("trigger_turn_id", sa.String(length=36), nullable=True),
         sa.Column("transition_type", sa.String(length=50), nullable=False),
+        sa.Column("status", sa.String(length=50), nullable=False),
         sa.Column("source_location_id", sa.String(length=36), nullable=True),
         sa.Column("target_location_id", sa.String(length=36), nullable=True),
         sa.Column("elapsed_time", sa.String(length=255), nullable=True),
@@ -31,6 +32,7 @@ def upgrade() -> None:
         sa.Column("reason", sa.Text(), nullable=True),
         sa.Column("detector", sa.String(length=100), nullable=False),
         sa.Column("created_at", sa.DateTime(), nullable=False),
+        sa.Column("undone_at", sa.DateTime(), nullable=True),
         sa.ForeignKeyConstraint(
             ["campaign_id"], ["campaigns.id"], ondelete="CASCADE"
         ),
