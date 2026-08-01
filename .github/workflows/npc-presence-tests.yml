@@ -1,0 +1,49 @@
+name: NPC registration and presence
+
+on:
+  push:
+    branches:
+      - "agent/npc-registration-presence"
+  pull_request:
+    paths:
+      - "src/backend/app/services/entity_registrar.py"
+      - "src/backend/app/services/proposal_presence.py"
+      - "src/backend/app/services/presence_debugger.py"
+      - "src/backend/app/services/continuity_checker.py"
+      - "src/backend/app/services/canon_applier.py"
+      - "src/backend/app/services/post_turn_processor.py"
+      - "src/backend/app/db/repositories/scene_repo.py"
+      - "src/backend/tests/test_entity_registrar.py"
+      - "src/backend/tests/test_proposal_presence.py"
+      - "src/backend/tests/test_presence_debugger.py"
+      - ".github/workflows/npc-presence-tests.yml"
+
+jobs:
+  npc-presence-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - run: python -m pip install -e "src/backend[dev]"
+      - name: Compile backend
+        run: python -m compileall -q src/backend/app src/backend/tests
+      - name: Validate migrations
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+      - name: Run NPC and presence contracts
+        working-directory: src/backend
+        run: >-
+          pytest -q
+          tests/test_entity_registrar.py
+          tests/test_proposal_presence.py
+          tests/test_presence_debugger.py
+          tests/test_scene_transition_executor.py
+          tests/test_scene_transition_undo.py
+          --tb=short
