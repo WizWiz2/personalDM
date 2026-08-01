@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import desc, func, select
 
 from app.db.repositories.base import BaseRepository
+from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Scene, Turn
 from app.models.turn import ChatMessage, TurnCreate, TurnRead
 
@@ -17,10 +18,9 @@ class TurnRepository(BaseRepository):
         """Bind persisted turns to authoritative structured scene state.
 
         A user turn follows campaign.current_scene_id even when a stale client sends
-        the previous scene. Assistant turns normally inherit their parent user scene,
-        but an explicit validated scene_id may point to a newly applied structured
-        transition. This keeps ordinary pairs together without erasing a legitimate
-        source-scene -> target-scene boundary created before narration.
+        the previous scene. Assistant turns normally inherit their parent user scene.
+        An explicit different target is accepted only when an applied structured scene
+        transition links that parent user turn to the target scene.
         """
         campaign_key = str(campaign_id)
         resolved = str(data.scene_id) if data.scene_id else None
@@ -29,15 +29,38 @@ class TurnRepository(BaseRepository):
             campaign = await self._session.get(Campaign, campaign_key)
             if campaign and campaign.current_scene_id:
                 resolved = campaign.current_scene_id
-        elif data.role == "assistant" and data.parent_turn_id and not resolved:
+        elif data.role == "assistant" and data.parent_turn_id:
             parent = await self._session.get(Turn, str(data.parent_turn_id))
             if parent and parent.campaign_id == campaign_key:
-                resolved = parent.scene_id
+                if not resolved:
+                    resolved = parent.scene_id
+                elif resolved != parent.scene_id:
+                    transition = (
+                        await self._session.execute(
+                            select(SceneTransition.id).where(
+                                SceneTransition.campaign_id == campaign_key,
+                                SceneTransition.trigger_turn_id == parent.id,
+                                SceneTransition.target_scene_id == resolved,
+                                SceneTransition.status == "applied",
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if not transition:
+                        raise ValueError(
+                            "Assistant turn may change scenes only through an applied transition"
+                        )
 
         if resolved:
-            scene = await self._session.get(Scene, resolved)
-            if not scene or scene.campaign_id != campaign_key:
-                raise ValueError("Turn scene must belong to the same campaign")
+            scene_campaign_id = (
+                await self._session.execute(
+                    select(Scene.campaign_id).where(Scene.id == resolved)
+                )
+            ).scalar_one_or_none()
+            if scene_campaign_id != campaign_key:
+                raise ValueError(
+                    "Turn scene must belong to the same campaign "
+                    f"(scene_id={resolved}, campaign_id={campaign_key})"
+                )
         return resolved
 
     async def create(self, campaign_id: UUID, data: TurnCreate) -> TurnRead:
