@@ -12,7 +12,7 @@ def _uuid() -> str:
 
 
 class SceneTransition(Base):
-    """Audit record for one applied scene boundary."""
+    """Audit record for one applied or undone scene boundary."""
 
     __tablename__ = "scene_transitions"
 
@@ -39,6 +39,11 @@ class SceneTransition(Base):
         nullable=True,
     )
     transition_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(50),
+        default="applied",
+        nullable=False,
+    )
     source_location_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("entities.id", ondelete="SET NULL"),
@@ -58,3 +63,4 @@ class SceneTransition(Base):
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
