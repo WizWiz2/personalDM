@@ -1,14 +1,15 @@
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Entity, Scene, SceneParticipant
+from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate, SceneRead
 from app.services.scene_lifecycle import SceneLifecycleService
@@ -23,15 +24,16 @@ class AppliedSceneTransition:
     source_location_id: UUID | None
     target_location_id: UUID | None
     transition_id: UUID
+    status: str
 
 
 class SceneTransitionExecutor:
-    """Apply a validated planner transition before prose generation.
+    """Prepare, finalize and compensate structured scene boundaries.
 
-    The executor is deliberately conservative: a new scene starts with the player
-    character and only explicitly carried participants. A focus transition without
-    an explicit list keeps the current cast because the physical interaction remains
-    in place; location and time transitions never inherit the old cast implicitly.
+    A transition is committed as ``prepared`` before the narrator starts streaming.
+    This prevents a second SQLite session from accidentally rolling back an open
+    write transaction. A successful assistant turn finalizes it as ``applied``;
+    generation failure performs an explicit compensating rollback.
     """
 
     def __init__(self, session: AsyncSession):
@@ -44,20 +46,12 @@ class SceneTransitionExecutor:
         campaign_id: UUID,
         trigger_turn_id: UUID,
     ) -> AppliedSceneTransition | None:
-        # SQLite may otherwise treat a SAVEPOINT as the outermost write transaction
-        # and persist it when released. This harmless write guarantees that the
-        # caller's later begin_nested() is a real child of an open transaction.
-        await self._session.execute(
-            update(Campaign)
-            .where(Campaign.id == str(campaign_id))
-            .values(updated_at=Campaign.updated_at)
-        )
         result = await self._session.execute(
             select(SceneTransition)
             .where(
                 SceneTransition.campaign_id == str(campaign_id),
                 SceneTransition.trigger_turn_id == str(trigger_turn_id),
-                SceneTransition.status == "applied",
+                SceneTransition.status.in_(("prepared", "applied")),
             )
             .order_by(SceneTransition.created_at)
             .limit(1)
@@ -68,20 +62,14 @@ class SceneTransitionExecutor:
         scene = await self._scenes.get_by_id(UUID(row.target_scene_id))
         if not scene:
             return None
-        return AppliedSceneTransition(
-            scene=scene,
-            source_scene_id=(
-                UUID(row.source_scene_id) if row.source_scene_id else None
-            ),
-            target_scene_id=UUID(row.target_scene_id),
-            source_location_id=(
-                UUID(row.source_location_id) if row.source_location_id else None
-            ),
-            target_location_id=(
-                UUID(row.target_location_id) if row.target_location_id else None
-            ),
-            transition_id=UUID(row.id),
-        )
+        if scene.status != "active":
+            scene = (
+                await SceneLifecycleService(self._session).activate(
+                    campaign_id,
+                    UUID(row.target_scene_id),
+                )
+            ).scene
+        return self._to_applied(row, scene)
 
     async def apply(
         self,
@@ -121,11 +109,10 @@ class SceneTransitionExecutor:
                 plan.destination_parent_location,
             )
 
-        title = self._scene_title(source_scene, plan)
         target_scene = await self._scenes.create(
             campaign_id,
             SceneCreate(
-                title=title,
+                title=self._scene_title(source_scene, plan),
                 location_id=target_location_id,
                 location_description=None,
             ),
@@ -155,7 +142,7 @@ class SceneTransitionExecutor:
             target_scene_id=str(target_scene.id),
             trigger_turn_id=(str(trigger_turn_id) if trigger_turn_id else None),
             transition_type=plan.transition_type,
-            status="applied",
+            status="prepared",
             source_location_id=(
                 str(source_location_id) if source_location_id else None
             ),
@@ -169,15 +156,52 @@ class SceneTransitionExecutor:
         )
         self._session.add(row)
         await self._session.flush()
+        return self._to_applied(row, target_scene)
 
-        return AppliedSceneTransition(
-            scene=target_scene,
-            source_scene_id=source_scene_id,
-            target_scene_id=target_scene.id,
-            source_location_id=source_location_id,
-            target_location_id=target_location_id,
-            transition_id=transition_id,
-        )
+    async def mark_applied(self, transition_id: UUID) -> bool:
+        row = await self._session.get(SceneTransition, str(transition_id))
+        if not row:
+            return False
+        if row.status == "prepared":
+            row.status = "applied"
+            await self._session.flush()
+        return row.status == "applied"
+
+    async def rollback_transition(self, transition_id: UUID) -> bool:
+        """Compensate a prepared transition after failed/cancelled narration."""
+        row = await self._session.get(SceneTransition, str(transition_id))
+        if not row:
+            return False
+        if row.status in {"rolled_back", "undone"}:
+            return True
+        if row.status != "prepared":
+            return False
+
+        campaign_id = UUID(row.campaign_id)
+        if row.source_scene_id:
+            await SceneLifecycleService(self._session).activate(
+                campaign_id,
+                UUID(row.source_scene_id),
+            )
+        else:
+            campaign = await self._session.get(Campaign, row.campaign_id)
+            if campaign:
+                campaign.current_scene_id = None
+                if campaign.player_character_id:
+                    player = await self._session.get(
+                        Character,
+                        campaign.player_character_id,
+                    )
+                    if player:
+                        player.current_location_id = None
+
+        target = await self._session.get(Scene, row.target_scene_id)
+        if target:
+            target.status = "abandoned"
+        row.status = "rolled_back"
+        row.undone_at = datetime.utcnow()
+        await self._session.flush()
+        return True
 
     async def _resolve_or_create_location(
         self,
@@ -233,7 +257,6 @@ class SceneTransitionExecutor:
         selected: list[UUID] = []
         if player_character_id:
             selected.append(UUID(player_character_id))
-
         if not source_scene_id:
             return selected
 
@@ -247,14 +270,12 @@ class SceneTransitionExecutor:
             )
         )
         present = result.scalars().all()
-
         requested = {name.casefold() for name in plan.carry_participants}
         carry_all = plan.transition_type == "focus_transition" and not requested
         for entity in present:
             entity_id = UUID(entity.id)
             if entity_id in selected:
                 continue
-            aliases = []
             try:
                 aliases = json.loads(entity.aliases or "[]")
             except (TypeError, json.JSONDecodeError):
@@ -279,3 +300,24 @@ class SceneTransitionExecutor:
             marker = plan.time_after or plan.elapsed_time or "позже"
             return f"{source_title} — {marker}"
         return f"{source_title} — новый фокус"
+
+    @staticmethod
+    def _to_applied(
+        row: SceneTransition,
+        scene: SceneRead,
+    ) -> AppliedSceneTransition:
+        return AppliedSceneTransition(
+            scene=scene,
+            source_scene_id=(
+                UUID(row.source_scene_id) if row.source_scene_id else None
+            ),
+            target_scene_id=UUID(row.target_scene_id),
+            source_location_id=(
+                UUID(row.source_location_id) if row.source_location_id else None
+            ),
+            target_location_id=(
+                UUID(row.target_location_id) if row.target_location_id else None
+            ),
+            transition_id=UUID(row.id),
+            status=row.status,
+        )
