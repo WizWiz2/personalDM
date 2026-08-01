@@ -1,0 +1,44 @@
+name: Scene transition tests
+
+on:
+  push:
+    branches:
+      - "agent/automatic-scene-transitions"
+  pull_request:
+    paths:
+      - "src/backend/app/services/scene_transition_executor.py"
+      - "src/backend/app/services/turn_runner.py"
+      - "src/backend/app/services/turn_undo_service.py"
+      - "src/backend/app/db/scene_transition_table.py"
+      - "src/backend/alembic/versions/a5e6f7b8c9d0_add_scene_transitions.py"
+      - "src/backend/tests/test_scene_transition_executor.py"
+      - "src/backend/tests/test_scene_transition_undo.py"
+      - "src/backend/tests/test_turns.py"
+      - ".github/workflows/scene-transition-tests.yml"
+
+jobs:
+  transition-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - run: python -m pip install -e "src/backend[dev]"
+      - name: Validate migrations
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+      - name: Run transition contracts
+        working-directory: src/backend
+        run: >-
+          pytest -q
+          tests/test_scene_transition_executor.py
+          tests/test_scene_transition_undo.py
+          tests/test_turns.py
+          tests/test_turn_planner.py
+          --tb=short
