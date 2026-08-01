@@ -7,6 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_session
+from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.turn import TurnCreate, TurnRead
@@ -17,6 +19,27 @@ from app.services.turn_runner import TurnRunner
 install_memory_scribe_guard()
 
 router = APIRouter(prefix="/api/campaigns/{campaign_id}/turns", tags=["turns"])
+
+
+async def _bind_current_scene(
+    campaign_id: UUID,
+    data: TurnCreate,
+    session: AsyncSession,
+) -> TurnCreate:
+    """Use campaign.current_scene_id as the authoritative scene for a new turn."""
+    campaign = await CampaignRepository(session).get_by_id(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    effective_scene_id = campaign.current_scene_id or data.scene_id
+    if effective_scene_id:
+        scene = await SceneRepository(session).get_by_id(effective_scene_id)
+        if not scene or scene.campaign_id != campaign_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Campaign current scene is missing or belongs to another campaign",
+            )
+    return data.model_copy(update={"scene_id": effective_scene_id})
 
 
 @router.post("", response_class=StreamingResponse)
@@ -31,6 +54,7 @@ async def send_turn(
             detail="The public turn endpoint accepts only role='user'",
         )
 
+    data = await _bind_current_scene(campaign_id, data, session)
     runner = TurnRunner(session)
 
     async def token_generator():
