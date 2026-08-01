@@ -4,18 +4,18 @@ from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Entity
+from app.db.tables import Campaign, Entity
 from app.models.character import CharacterCreate, CharacterUpdate
 from app.models.entity import EntityUpdate
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProvider
+from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import evidence_supported
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
@@ -75,6 +75,7 @@ class EntityRegistrar:
     Registration is intentionally post-turn and transactional with Memory Scribe.
     It never moves an existing character between structured locations. A narrator
     appearance that conflicts with current location becomes a visible canon gap.
+    Model or schema failure is fail-open so the established Scribe path still runs.
     """
 
     def __init__(self, session: AsyncSession):
@@ -97,7 +98,8 @@ class EntityRegistrar:
             return result
 
         scene = await self._scenes.get_by_id(scene_id)
-        if not scene:
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        if not scene or not campaign:
             return result
 
         entities = await self._entities.list_by_campaign(campaign_id)
@@ -146,19 +148,27 @@ class EntityRegistrar:
 - Не выдумывай биографию, секреты, мотивацию или внешность сверх текста.
 """
 
-        data = await self._router.generate_json(
-            self._provider,
-            selection,
-            [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=assistant_content),
-            ],
-            max_tokens=1100,
-            temperature=0.0,
-            response_model=EntityRegistrationEnvelope,
-        )
-        result.telemetry = dict(self._provider.last_telemetry or {})
-        envelope = EntityRegistrationEnvelope.model_validate(data)
+        try:
+            data = await self._router.generate_json(
+                self._provider,
+                selection,
+                [
+                    ChatMessage(role="system", content=system_prompt),
+                    ChatMessage(role="user", content=assistant_content),
+                ],
+                max_tokens=1100,
+                temperature=0.0,
+                response_model=EntityRegistrationEnvelope,
+            )
+            result.telemetry = dict(self._provider.last_telemetry or {})
+            envelope = EntityRegistrationEnvelope.model_validate(data)
+        except (LLMProviderError, ValidationError) as exc:
+            result.telemetry = {
+                **dict(self._provider.last_telemetry or {}),
+                "status": "failed_open",
+                "error": str(exc)[:2000],
+            }
+            return result
 
         index = self._entity_index(entities)
         for mention in envelope.characters:
@@ -171,6 +181,8 @@ class EntityRegistrar:
                 continue
 
             entity = index.get(name.casefold())
+            if entity and str(entity.id) == campaign.player_character_id:
+                continue
             if entity and entity.entity_type != "character":
                 result.conflicts.append(
                     {
@@ -252,10 +264,14 @@ class EntityRegistrar:
         source_turn_id: UUID,
         scene_id: UUID,
     ) -> None:
-        aliases = list(dict.fromkeys([
-            *character.aliases,
-            *self._clean_aliases(mention.aliases, character.canonical_name),
-        ]))
+        aliases = list(
+            dict.fromkeys(
+                [
+                    *character.aliases,
+                    *self._clean_aliases(mention.aliases, character.canonical_name),
+                ]
+            )
+        )
         custom_fields = dict(character.custom_fields or {})
         custom_fields.setdefault("registrar", "entity_registrar")
         custom_fields.setdefault("source_turn_id", str(source_turn_id))
@@ -266,14 +282,20 @@ class EntityRegistrar:
         if mention.temporary_name:
             custom_fields.setdefault("temporary_name", True)
 
-        await self._entities.update(
-            character.id,
-            EntityUpdate(
-                aliases=aliases,
-                description=character.description or mention.description or mention.role,
-                custom_fields=custom_fields,
-            ),
-        )
+        entity_updates = {}
+        if aliases != character.aliases:
+            entity_updates["aliases"] = aliases
+        description = character.description or mention.description or mention.role
+        if description != character.description:
+            entity_updates["description"] = description
+        if custom_fields != (character.custom_fields or {}):
+            entity_updates["custom_fields"] = custom_fields
+        if entity_updates:
+            await self._entities.update(
+                character.id,
+                EntityUpdate(**entity_updates),
+            )
+
         character_updates = {}
         for key in ("appearance", "personality", "voice"):
             if not getattr(character, key) and getattr(mention, key):
@@ -298,7 +320,15 @@ class EntityRegistrar:
         value = " ".join(value.split()).strip(" .,:;!?—–-")
         if len(value) < 2 or len(value) > 120:
             return None
-        if value.casefold() in {"кто-то", "некто", "человек", "толпа", "они", "он", "она"}:
+        if value.casefold() in {
+            "кто-то",
+            "некто",
+            "человек",
+            "толпа",
+            "они",
+            "он",
+            "она",
+        }:
             return None
         return value
 
