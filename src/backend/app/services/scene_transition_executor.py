@@ -1,8 +1,8 @@
 import json
 from dataclasses import dataclass
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
@@ -44,6 +44,14 @@ class SceneTransitionExecutor:
         campaign_id: UUID,
         trigger_turn_id: UUID,
     ) -> AppliedSceneTransition | None:
+        # SQLite may otherwise treat a SAVEPOINT as the outermost write transaction
+        # and persist it when released. This harmless write guarantees that the
+        # caller's later begin_nested() is a real child of an open transaction.
+        await self._session.execute(
+            update(Campaign)
+            .where(Campaign.id == str(campaign_id))
+            .values(updated_at=Campaign.updated_at)
+        )
         result = await self._session.execute(
             select(SceneTransition)
             .where(
@@ -139,7 +147,9 @@ class SceneTransitionExecutor:
             )
         ).scene
 
+        transition_id = uuid4()
         row = SceneTransition(
+            id=str(transition_id),
             campaign_id=str(campaign_id),
             source_scene_id=(str(source_scene_id) if source_scene_id else None),
             target_scene_id=str(target_scene.id),
@@ -166,7 +176,7 @@ class SceneTransitionExecutor:
             target_scene_id=target_scene.id,
             source_location_id=source_location_id,
             target_location_id=target_location_id,
-            transition_id=UUID(row.id),
+            transition_id=transition_id,
         )
 
     async def _resolve_or_create_location(
