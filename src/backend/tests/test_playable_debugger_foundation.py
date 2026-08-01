@@ -98,6 +98,7 @@ def test_turn_creates_durable_runs_jobs_and_debugger_snapshot(client: TestClient
         "failed_jobs": 0,
         "pending_jobs": 0,
         "running_generations": 0,
+        "scene_state_errors": 0,
     }
     assert {job["job_type"] for job in snapshot["post_turn_jobs"]} == {
         "memory_scribe",
