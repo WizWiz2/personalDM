@@ -16,6 +16,7 @@ on:
       - "src/backend/tests/test_entity_registrar.py"
       - "src/backend/tests/test_proposal_presence.py"
       - "src/backend/tests/test_presence_debugger.py"
+      - "src/backend/tests/test_post_turn_npc_pipeline.py"
       - ".github/workflows/npc-presence-tests.yml"
 
 jobs:
@@ -44,6 +45,7 @@ jobs:
           tests/test_entity_registrar.py
           tests/test_proposal_presence.py
           tests/test_presence_debugger.py
+          tests/test_post_turn_npc_pipeline.py
           tests/test_scene_transition_executor.py
           tests/test_scene_transition_undo.py
           --tb=short
