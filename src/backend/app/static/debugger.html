@@ -38,6 +38,7 @@
   <div id="health" class="health"></div>
   <section><h2>Активная сцена</h2><div id="activeScene"></div><div id="sceneIssues"></div></section>
   <section><h2>Все сцены</h2><div id="scenes"></div></section>
+  <section><h2>Иерархия локаций</h2><div id="locations"></div></section>
   <section><h2>Post-turn jobs</h2><div id="jobs"></div></section>
   <section><h2>Canon proposals и evidence</h2><div id="proposals"></div></section>
   <section><h2>Текущий канон</h2><div class="tabs">
@@ -49,6 +50,7 @@
 const $ = id => document.getElementById(id);
 let data = null, activeTab = 'facts';
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const pathText = path => path?.length ? path.join(' → ') : '';
 function table(rows, cols) {
   if (!rows?.length) return '<p class="muted">Пусто</p>';
   return `<table><thead><tr>${cols.map(c=>`<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${c[2] ? c[2](r[c[1]],r) : esc(r[c[1]])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
@@ -64,24 +66,38 @@ function renderSceneState() {
     $('activeScene').innerHTML = '<p class="muted">Активная сцена не назначена</p>';
   } else {
     const participants = scene.participant_names?.length ? scene.participant_names.join(', ') : 'нет';
+    const structuredLocation = pathText(scene.location_path) || scene.location_name || 'не привязана';
     $('activeScene').innerHTML = `<div class="scene-card">
       <strong>${esc(scene.title)}</strong>
       <span><span class="muted">ID:</span> ${esc(scene.id)}</span>
       <span><span class="muted">Статус:</span> ${esc(scene.status)}</span>
-      <span><span class="muted">Локация:</span> ${esc(scene.location_description || 'не задана')}</span>
+      <span><span class="muted">Структурная локация:</span> ${esc(structuredLocation)}</span>
+      <span><span class="muted">Описание:</span> ${esc(scene.location_description || 'не задано')}</span>
+      <span><span class="muted">Локация героя:</span> ${esc(pathText(data.campaign.player_location_path) || data.campaign.player_location_name || 'не задана')}</span>
       <span><span class="muted">Участники:</span> ${esc(participants)}</span>
     </div>`;
   }
-  const issues = data.scene_state_issues || [];
+  const issues = [
+    ...(data.scene_state_issues || []),
+    ...(data.location_state_issues || [])
+  ];
   $('sceneIssues').innerHTML = issues.length
-    ? `<div class="issues bad"><strong>Рассинхронизация сцены</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
-    : '<p class="ok">Структурное состояние сцены согласовано.</p>';
+    ? `<div class="issues bad"><strong>Рассинхронизация сцены или локации</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
+    : '<p class="ok">Структурное состояние сцены и локации согласовано.</p>';
   $('scenes').innerHTML = table(data.scenes,[
     ['Current','is_current',(v)=>v?'<span class="ok">да</span>':''],
     ['Название','title'],
     ['Статус','status'],
-    ['Локация','location_description'],
+    ['Структурный путь','location_path',(v)=>esc(pathText(v) || 'не привязана')],
+    ['Описание','location_description'],
     ['Участники','participant_names',(v)=>esc((v||[]).join(', '))],
+    ['ID','id']
+  ]);
+  $('locations').innerHTML = table(data.locations,[
+    ['Путь','path',(v)=>esc(pathText(v))],
+    ['Родитель','parent_location_name'],
+    ['Описание','description'],
+    ['Атмосфера','atmosphere'],
     ['ID','id']
   ]);
 }
@@ -89,7 +105,8 @@ async function load() {
   const id=$('campaign').value; if(!id)return;
   $('status').textContent='Загрузка…';
   data=await fetch(`/api/campaigns/${id}/debugger?turn_limit=120`).then(r=>r.json());
-  $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'}`;
+  const heroLocation = pathText(data.campaign.player_location_path) || data.campaign.player_location_name || 'не задана';
+  $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'} · локация: ${heroLocation}`;
   $('health').innerHTML=Object.entries(data.health).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
   renderSceneState();
   $('jobs').innerHTML=table(data.post_turn_jobs,[['Тип','job_type'],['Статус','status'],['Попытки','attempts'],['Ошибка','error'],['Действие','id',(v,r)=>r.status==='completed'?'':`<button onclick="retryJob('${v}')">Повторить</button>`]]);

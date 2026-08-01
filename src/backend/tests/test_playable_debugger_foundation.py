@@ -96,6 +96,7 @@ def test_turn_creates_durable_runs_jobs_and_debugger_snapshot(client: TestClient
     assert snapshot["health"] == {
         "canon_gaps": 0,
         "failed_jobs": 0,
+        "location_state_errors": 0,
         "pending_jobs": 0,
         "running_generations": 0,
         "scene_state_errors": 0,
