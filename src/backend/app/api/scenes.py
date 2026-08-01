@@ -31,13 +31,15 @@ async def create_scene(
     session: AsyncSession = Depends(get_session),
 ):
     repo = SceneRepository(session)
-    scene = await repo.create(campaign_id, data)
-    if activate:
-        try:
-            scene = (await SceneLifecycleService(session).activate(campaign_id, scene.id)).scene
-        except ValueError as exc:
-            await session.rollback()
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        scene = await repo.create(campaign_id, data)
+        if activate:
+            scene = (
+                await SceneLifecycleService(session).activate(campaign_id, scene.id)
+            ).scene
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     await session.commit()
     return scene
 
@@ -85,9 +87,20 @@ async def update_scene(
     data: SceneUpdate,
     session: AsyncSession = Depends(get_session),
 ):
-    scene = await SceneRepository(session).update(scene_id, data)
-    if not scene:
-        raise HTTPException(status_code=404, detail="Scene not found")
+    try:
+        scene = await SceneRepository(session).update(scene_id, data)
+        if not scene:
+            raise HTTPException(status_code=404, detail="Scene not found")
+        if "location_id" in data.model_fields_set and scene.status == "active":
+            scene = (
+                await SceneLifecycleService(session).activate(
+                    scene.campaign_id,
+                    scene.id,
+                )
+            ).scene
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     await session.commit()
     return scene
 
