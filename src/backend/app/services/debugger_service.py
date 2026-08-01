@@ -4,13 +4,16 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import (
     Belief,
     Campaign,
+    Character,
     Entity,
     Event,
     Fact,
     GenerationRun,
+    Location,
     PostTurnJob,
     ProposedChange,
     RelationshipAssertion,
@@ -47,6 +50,33 @@ class DebuggerService:
             )
         ).scalars().all()
         entity_names = {row.id: row.canonical_name for row in entities}
+        entity_map = {row.id: row for row in entities}
+
+        location_ids = [row.id for row in entities if row.entity_type == "location"]
+        location_details = []
+        if location_ids:
+            location_details = (
+                await self._session.execute(
+                    select(Location).where(Location.entity_id.in_(location_ids))
+                )
+            ).scalars().all()
+        location_parent = {
+            row.entity_id: row.parent_location_id for row in location_details
+        }
+        location_detail_map = {row.entity_id: row for row in location_details}
+
+        def location_path(location_id: str | None) -> list[str]:
+            if not location_id:
+                return []
+            names: list[str] = []
+            visited: set[str] = set()
+            current = location_id
+            while current and current not in visited:
+                visited.add(current)
+                names.append(entity_names.get(current, current))
+                current = location_parent.get(current)
+            names.reverse()
+            return names
 
         scenes = (
             await self._session.execute(
@@ -57,6 +87,19 @@ class DebuggerService:
         ).scalars().all()
         scene_ids = [row.id for row in scenes]
         scene_map = {row.id: row for row in scenes}
+
+        scene_locations: dict[str, str] = {}
+        if scene_ids:
+            link_rows = (
+                await self._session.execute(
+                    select(SceneLocationLink).where(
+                        SceneLocationLink.scene_id.in_(scene_ids)
+                    )
+                )
+            ).scalars().all()
+            scene_locations = {
+                row.scene_id: row.location_id for row in link_rows
+            }
 
         scene_participants: dict[str, list[str]] = {scene_id: [] for scene_id in scene_ids}
         if scene_ids:
@@ -91,6 +134,39 @@ class DebuggerService:
             scene_state_issues.append("the sole active scene differs from current_scene_id")
         if scenes and not active_scenes:
             scene_state_issues.append("campaign has no active scene")
+
+        player_location_id = None
+        if campaign.player_character_id:
+            player_details = await self._session.get(
+                Character,
+                campaign.player_character_id,
+            )
+            player_location_id = (
+                player_details.current_location_id if player_details else None
+            )
+
+        location_state_issues: list[str] = []
+        for scene_id, location_id in scene_locations.items():
+            location_entity = entity_map.get(location_id)
+            if not location_entity:
+                location_state_issues.append(
+                    f"scene {scene_id} points to a missing location {location_id}"
+                )
+            elif location_entity.entity_type != "location":
+                location_state_issues.append(
+                    f"scene {scene_id} points to non-location entity {location_id}"
+                )
+        current_scene_location_id = (
+            scene_locations.get(current_scene.id) if current_scene else None
+        )
+        if (
+            campaign.player_character_id
+            and current_scene_location_id
+            and player_location_id != current_scene_location_id
+        ):
+            location_state_issues.append(
+                "player current_location_id differs from the active scene location"
+            )
 
         turns = (
             await self._session.execute(
@@ -171,10 +247,14 @@ class DebuggerService:
 
         def scene_payload(row: Scene) -> dict:
             participant_ids = scene_participants.get(row.id, [])
+            location_id = scene_locations.get(row.id)
             return {
                 "id": row.id,
                 "title": row.title,
                 "status": row.status,
+                "location_id": location_id,
+                "location_name": entity_names.get(location_id),
+                "location_path": location_path(location_id),
                 "location_description": row.location_description,
                 "mood": row.mood,
                 "tension": row.tension,
@@ -195,9 +275,37 @@ class DebuggerService:
                 "current_scene_id": campaign.current_scene_id,
                 "player_character_id": campaign.player_character_id,
                 "player_character_name": entity_names.get(campaign.player_character_id),
+                "player_location_id": player_location_id,
+                "player_location_name": entity_names.get(player_location_id),
+                "player_location_path": location_path(player_location_id),
             },
             "active_scene": scene_payload(current_scene) if current_scene else None,
             "scene_state_issues": scene_state_issues,
+            "location_state_issues": location_state_issues,
+            "locations": [
+                {
+                    "id": row.id,
+                    "name": row.canonical_name,
+                    "description": row.description,
+                    "parent_location_id": location_parent.get(row.id),
+                    "parent_location_name": entity_names.get(
+                        location_parent.get(row.id)
+                    ),
+                    "path": location_path(row.id),
+                    "geography": (
+                        location_detail_map[row.id].geography
+                        if row.id in location_detail_map
+                        else None
+                    ),
+                    "atmosphere": (
+                        location_detail_map[row.id].atmosphere
+                        if row.id in location_detail_map
+                        else None
+                    ),
+                }
+                for row in entities
+                if row.entity_type == "location"
+            ],
             "entities": [
                 {
                     "id": row.id,
@@ -334,6 +442,7 @@ class DebuggerService:
             ],
             "health": {
                 "scene_state_errors": len(scene_state_issues),
+                "location_state_errors": len(location_state_issues),
                 "canon_gaps": sum(
                     1
                     for row in proposals
