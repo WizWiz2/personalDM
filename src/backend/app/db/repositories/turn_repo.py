@@ -19,7 +19,7 @@ class TurnRepository(BaseRepository):
         A user turn follows campaign.current_scene_id even when a stale client sends
         the previous scene. Assistant turns normally inherit their parent user scene.
         A different explicit target is accepted only when the internal context snapshot
-        proves that the orchestrator applied or reused that exact scene transition.
+        proves that the orchestrator prepared, applied or reused that exact transition.
         The public API never accepts assistant turns, so this authorization marker is
         not user-controlled input.
         """
@@ -40,7 +40,8 @@ class TurnRepository(BaseRepository):
                         "scene_transition"
                     ) or {}
                     authorized = (
-                        transition.get("status") in {"applied", "reused"}
+                        transition.get("status")
+                        in {"prepared", "applied", "reused"}
                         and str(transition.get("target_scene_id") or "") == resolved
                         and str(transition.get("source_scene_id") or "")
                         == str(parent.scene_id or "")
