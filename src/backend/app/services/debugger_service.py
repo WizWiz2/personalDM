@@ -15,6 +15,7 @@ from app.db.tables import (
     ProposedChange,
     RelationshipAssertion,
     Scene,
+    SceneParticipant,
     SceneThesis,
     Turn,
 )
@@ -55,6 +56,41 @@ class DebuggerService:
             )
         ).scalars().all()
         scene_ids = [row.id for row in scenes]
+        scene_map = {row.id: row for row in scenes}
+
+        scene_participants: dict[str, list[str]] = {scene_id: [] for scene_id in scene_ids}
+        if scene_ids:
+            participant_rows = (
+                await self._session.execute(
+                    select(SceneParticipant).where(
+                        SceneParticipant.scene_id.in_(scene_ids)
+                    )
+                )
+            ).scalars().all()
+            for participant in participant_rows:
+                scene_participants.setdefault(participant.scene_id, []).append(
+                    participant.entity_id
+                )
+
+        active_scenes = [row for row in scenes if row.status == "active"]
+        current_scene = scene_map.get(campaign.current_scene_id)
+        scene_state_issues: list[str] = []
+        if campaign.current_scene_id and current_scene is None:
+            scene_state_issues.append("campaign.current_scene_id points to a missing scene")
+        if current_scene and current_scene.status != "active":
+            scene_state_issues.append(
+                f"current scene has status '{current_scene.status}' instead of 'active'"
+            )
+        if scenes and not campaign.current_scene_id:
+            scene_state_issues.append("campaign has scenes but current_scene_id is not set")
+        if len(active_scenes) > 1:
+            scene_state_issues.append(
+                f"campaign has {len(active_scenes)} active scenes; expected exactly one"
+            )
+        if len(active_scenes) == 1 and current_scene and active_scenes[0].id != current_scene.id:
+            scene_state_issues.append("the sole active scene differs from current_scene_id")
+        if scenes and not active_scenes:
+            scene_state_issues.append("campaign has no active scene")
 
         turns = (
             await self._session.execute(
@@ -132,6 +168,26 @@ class DebuggerService:
         ).scalars().all()
 
         turn_map = {row.id: row for row in turns}
+
+        def scene_payload(row: Scene) -> dict:
+            participant_ids = scene_participants.get(row.id, [])
+            return {
+                "id": row.id,
+                "title": row.title,
+                "status": row.status,
+                "location_description": row.location_description,
+                "mood": row.mood,
+                "tension": row.tension,
+                "is_current": row.id == campaign.current_scene_id,
+                "participant_ids": participant_ids,
+                "participant_names": [
+                    entity_names.get(entity_id, entity_id)
+                    for entity_id in participant_ids
+                ],
+                "created_at": row.created_at.isoformat(),
+                "updated_at": row.updated_at.isoformat(),
+            }
+
         return {
             "campaign": {
                 "id": campaign.id,
@@ -140,6 +196,8 @@ class DebuggerService:
                 "player_character_id": campaign.player_character_id,
                 "player_character_name": entity_names.get(campaign.player_character_id),
             },
+            "active_scene": scene_payload(current_scene) if current_scene else None,
+            "scene_state_issues": scene_state_issues,
             "entities": [
                 {
                     "id": row.id,
@@ -150,20 +208,12 @@ class DebuggerService:
                 }
                 for row in entities
             ],
-            "scenes": [
-                {
-                    "id": row.id,
-                    "title": row.title,
-                    "status": row.status,
-                    "mood": row.mood,
-                    "tension": row.tension,
-                }
-                for row in scenes
-            ],
+            "scenes": [scene_payload(row) for row in scenes],
             "turns": [
                 {
                     "id": row.id,
                     "scene_id": row.scene_id,
+                    "scene_title": scene_map[row.scene_id].title if row.scene_id in scene_map else None,
                     "role": row.role,
                     "actor_id": row.acting_character_id,
                     "actor_name": entity_names.get(row.acting_character_id),
@@ -283,6 +333,7 @@ class DebuggerService:
                 for row in runs
             ],
             "health": {
+                "scene_state_errors": len(scene_state_issues),
                 "canon_gaps": sum(
                     1
                     for row in proposals
