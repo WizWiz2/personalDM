@@ -125,7 +125,11 @@ class SceneTransitionExecutor:
             plan,
         )
         for participant_id in participant_ids:
-            await self._scenes.add_participant(target_scene.id, participant_id)
+            await self._scenes.add_participant(
+                target_scene.id,
+                participant_id,
+                allow_movement=True,
+            )
 
         target_scene = (
             await SceneLifecycleService(self._session).activate(
