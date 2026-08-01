@@ -1,0 +1,91 @@
+from uuid import uuid4
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.scene_repo import SceneRepository
+from app.models.campaign import CampaignCreate, CampaignUpdate
+from app.models.character import CharacterCreate
+from app.models.location import LocationCreate
+from app.models.scene import SceneCreate
+from app.services.scene_lifecycle import SceneLifecycleService
+from app.services.scene_transition_executor import SceneTransitionExecutor
+from app.services.turn_planner import SceneTransitionPlan
+
+
+@pytest.mark.asyncio
+async def test_executor_creates_private_scene_without_inheriting_bartender(
+    db_session: AsyncSession,
+):
+    campaign_id = uuid4()
+    campaigns = CampaignRepository(db_session)
+    entities = EntityRepository(db_session)
+    locations = LocationRepository(db_session)
+    scenes = SceneRepository(db_session)
+
+    await campaigns.create(
+        campaign_id,
+        CampaignCreate(name="Executor isolation"),
+    )
+    tavern = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Таверна"),
+    )
+    hall = await locations.create(
+        campaign_id,
+        LocationCreate(
+            canonical_name="Общий зал",
+            parent_location_id=tavern.id,
+        ),
+    )
+    room = await locations.create(
+        campaign_id,
+        LocationCreate(
+            canonical_name="Комната №3",
+            parent_location_id=tavern.id,
+        ),
+    )
+    hero = await entities.create_character(
+        campaign_id,
+        CharacterCreate(canonical_name="Эйдан"),
+    )
+    bartender = await entities.create_character(
+        campaign_id,
+        CharacterCreate(canonical_name="Бармен"),
+    )
+    await campaigns.update(
+        campaign_id,
+        CampaignUpdate(player_character_id=hero.id),
+    )
+    source = await scenes.create(
+        campaign_id,
+        SceneCreate(title="Общий зал", location_id=hall.id),
+    )
+    await scenes.add_participant(source.id, hero.id)
+    await scenes.add_participant(source.id, bartender.id)
+    await SceneLifecycleService(db_session).activate(campaign_id, source.id)
+
+    result = await SceneTransitionExecutor(db_session).apply(
+        campaign_id,
+        source.id,
+        None,
+        SceneTransitionPlan(
+            required=True,
+            transition_type="location_transition",
+            destination_location="Комната №3",
+            destination_parent_location="Таверна",
+            scene_title="Ночь в комнате",
+            carry_participants=[],
+            reason="Игрок ушёл из общего зала.",
+        ),
+    )
+
+    assert result is not None
+    assert result.target_location_id == room.id
+    assert result.target_scene_id != source.id
+    target = await scenes.get_by_id(result.target_scene_id)
+    assert target is not None
+    assert target.participants == [hero.id]

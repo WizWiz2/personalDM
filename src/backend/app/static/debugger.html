@@ -38,6 +38,7 @@
   <div id="health" class="health"></div>
   <section><h2>Активная сцена</h2><div id="activeScene"></div><div id="sceneIssues"></div></section>
   <section><h2>Все сцены</h2><div id="scenes"></div></section>
+  <section><h2>Переходы сцен</h2><div id="transitions"></div></section>
   <section><h2>Иерархия локаций</h2><div id="locations"></div></section>
   <section><h2>Post-turn jobs</h2><div id="jobs"></div></section>
   <section><h2>Canon proposals и evidence</h2><div id="proposals"></div></section>
@@ -92,6 +93,16 @@ function renderSceneState() {
     ['Описание','location_description'],
     ['Участники','participant_names',(v)=>esc((v||[]).join(', '))],
     ['ID','id']
+  ]);
+  $('transitions').innerHTML = table(data.scene_transitions,[
+    ['Тип','transition_type'],
+    ['Из сцены','source_scene_title'],
+    ['В сцену','target_scene_title'],
+    ['Из локации','source_location_name'],
+    ['В локацию','target_location_name'],
+    ['Время','time_after',(v,r)=>esc(v || r.elapsed_time || '')],
+    ['Причина','reason'],
+    ['Триггер','trigger_turn_id']
   ]);
   $('locations').innerHTML = table(data.locations,[
     ['Путь','path',(v)=>esc(pathText(v))],

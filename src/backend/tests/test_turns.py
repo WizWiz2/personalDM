@@ -1,9 +1,10 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.providers.llm_provider import LLMProviderError
+from app.services.turn_planner import SceneTransitionPlan, TurnPlan
 
 
 async def mock_generate_stream(*args, **kwargs):
@@ -178,3 +179,198 @@ def test_new_turn_uses_current_scene_even_if_client_sends_stale_scene(
     assert len(history) == 2
     assert history[0]["scene_id"] == current_scene_id
     assert history[1]["scene_id"] == current_scene_id
+
+
+def _transition_plan() -> TurnPlan:
+    return TurnPlan(
+        player_intent="Снять комнату, уйти из общего зала и лечь спать.",
+        resolution="transition",
+        scene_transition=SceneTransitionPlan(
+            required=True,
+            transition_type="location_transition",
+            destination_location="Гостевая комната №3",
+            destination_parent_location="Таверна «Медный Котёл»",
+            scene_title="Ночь в гостевой комнате",
+            carry_participants=[],
+            reason="Игрок явно покидает общий зал и уходит в приватную комнату.",
+        ),
+        observable_consequences=[
+            "Игрок оказывается в закрытой гостевой комнате."
+        ],
+        canon_constraints=[
+            "Бармен остаётся в общем зале.",
+            "Никто не следует за игроком без явного перемещения.",
+        ],
+        narration_guidance=["Описать спокойное завершение вечера."],
+        ending_hook="Наступает утро.",
+    )
+
+
+def _create_tavern_state(client: TestClient):
+    campaign_id = client.post(
+        "/api/campaigns",
+        json={"name": "Tavern transition"},
+    ).json()["id"]
+    city = client.post(
+        f"/api/campaigns/{campaign_id}/locations",
+        json={"canonical_name": "Лантерн"},
+    ).json()
+    tavern = client.post(
+        f"/api/campaigns/{campaign_id}/locations",
+        json={
+            "canonical_name": "Таверна «Медный Котёл»",
+            "parent_location_id": city["id"],
+        },
+    ).json()
+    common_room = client.post(
+        f"/api/campaigns/{campaign_id}/locations",
+        json={
+            "canonical_name": "Общий зал",
+            "parent_location_id": tavern["id"],
+        },
+    ).json()
+    bedroom = client.post(
+        f"/api/campaigns/{campaign_id}/locations",
+        json={
+            "canonical_name": "Гостевая комната №3",
+            "parent_location_id": tavern["id"],
+            "description": "Небольшая отдельная комната с запираемой дверью.",
+        },
+    ).json()
+    hero = client.post(
+        f"/api/campaigns/{campaign_id}/characters",
+        json={"canonical_name": "Эйдан"},
+    ).json()
+    bartender = client.post(
+        f"/api/campaigns/{campaign_id}/characters",
+        json={"canonical_name": "Криповый бармен"},
+    ).json()
+    client.put(
+        f"/api/campaigns/{campaign_id}",
+        json={"player_character_id": hero["id"]},
+    )
+    source_scene = client.post(
+        f"/api/campaigns/{campaign_id}/scenes",
+        json={
+            "title": "Вечер в общем зале",
+            "location_id": common_room["id"],
+        },
+    ).json()
+    for participant in (hero, bartender):
+        added = client.post(
+            f"/api/scenes/{source_scene['id']}/participants",
+            params={"entity_id": participant["id"]},
+        )
+        assert added.status_code == 200, added.text
+    return {
+        "campaign_id": campaign_id,
+        "source_scene": source_scene,
+        "bedroom": bedroom,
+        "hero": hero,
+        "bartender": bartender,
+    }
+
+
+def test_planner_transition_rebuilds_narrator_context_without_old_npcs(
+    client: TestClient,
+):
+    state = _create_tavern_state(client)
+    captured = {}
+
+    async def capture_narrator(messages, *args, **kwargs):
+        captured["system"] = messages[0].content
+        yield "Ночь проходит спокойно. Утром ты просыпаешься в запертой комнате."
+
+    with patch(
+        "app.services.turn_planner.TurnPlanner.plan",
+        new_callable=AsyncMock,
+        return_value=_transition_plan(),
+    ), patch(
+        "app.providers.llm_provider.LLMProvider.generate_stream",
+        side_effect=capture_narrator,
+    ):
+        response = client.post(
+            f"/api/campaigns/{state['campaign_id']}/turns",
+            json={
+                "role": "user",
+                "content": "Снимаю комнату, иду туда и ложусь спать.",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    history = client.get(
+        f"/api/campaigns/{state['campaign_id']}/turns"
+    ).json()
+    assert history[0]["scene_id"] == state["source_scene"]["id"]
+    target_scene_id = history[1]["scene_id"]
+    assert target_scene_id != state["source_scene"]["id"]
+
+    snapshot = client.get(
+        f"/api/campaigns/{state['campaign_id']}/debugger"
+    ).json()
+    assert snapshot["active_scene"]["id"] == target_scene_id
+    assert snapshot["active_scene"]["location_id"] == state["bedroom"]["id"]
+    assert snapshot["active_scene"]["participant_ids"] == [state["hero"]["id"]]
+    assert snapshot["campaign"]["player_location_id"] == state["bedroom"]["id"]
+    assert len(snapshot["scene_transitions"]) == 1
+    assert snapshot["last_scene_transition"]["transition_type"] == (
+        "location_transition"
+    )
+    assert "Гостевая комната №3" in captured["system"]
+    assert "Криповый бармен" not in captured["system"]
+
+    first_assistant_id = history[1]["id"]
+    with patch(
+        "app.services.turn_planner.TurnPlanner.plan",
+        new_callable=AsyncMock,
+        return_value=_transition_plan(),
+    ), patch(
+        "app.providers.llm_provider.LLMProvider.generate_stream",
+        side_effect=capture_narrator,
+    ):
+        regenerated = client.post(
+            f"/api/campaigns/{state['campaign_id']}/turns/{first_assistant_id}/regenerate"
+        )
+    assert regenerated.status_code == 200, regenerated.text
+    snapshot = client.get(
+        f"/api/campaigns/{state['campaign_id']}/debugger"
+    ).json()
+    assert len(snapshot["scene_transitions"]) == 1
+    assert len(snapshot["scenes"]) == 2
+
+
+def test_failed_narration_rolls_back_new_scene_transition(client: TestClient):
+    state = _create_tavern_state(client)
+
+    with patch(
+        "app.services.turn_planner.TurnPlanner.plan",
+        new_callable=AsyncMock,
+        return_value=_transition_plan(),
+    ), patch(
+        "app.providers.llm_provider.LLMProvider.generate_stream",
+        side_effect=mock_failed_stream,
+    ):
+        response = client.post(
+            f"/api/campaigns/{state['campaign_id']}/turns",
+            json={
+                "role": "user",
+                "content": "Снимаю комнату, иду туда и ложусь спать.",
+            },
+        )
+
+    assert "Generation failed after retry" in response.text
+    snapshot = client.get(
+        f"/api/campaigns/{state['campaign_id']}/debugger"
+    ).json()
+    assert snapshot["active_scene"]["id"] == state["source_scene"]["id"]
+    assert len(snapshot["scene_transitions"]) == 1
+    rolled_back = snapshot["scene_transitions"][0]
+    assert rolled_back["status"] == "rolled_back"
+    assert snapshot["last_scene_transition"] is None
+    target = next(
+        scene
+        for scene in snapshot["scenes"]
+        if scene["id"] == rolled_back["target_scene_id"]
+    )
+    assert target["status"] == "abandoned"
+    assert snapshot["campaign"]["player_location_id"] != state["bedroom"]["id"]

@@ -17,8 +17,11 @@ class TurnRepository(BaseRepository):
         """Bind persisted turns to authoritative structured scene state.
 
         A user turn follows campaign.current_scene_id even when a stale client sends
-        the previous scene. Assistant turns inherit the scene from their parent user
-        turn, preventing a user/assistant pair from being split across scenes.
+        the previous scene. Assistant turns normally inherit their parent user scene.
+        A different explicit target is accepted only when the internal context snapshot
+        proves that the orchestrator prepared, applied or reused that exact transition.
+        The public API never accepts assistant turns, so this authorization marker is
+        not user-controlled input.
         """
         campaign_key = str(campaign_id)
         resolved = str(data.scene_id) if data.scene_id else None
@@ -30,12 +33,35 @@ class TurnRepository(BaseRepository):
         elif data.role == "assistant" and data.parent_turn_id:
             parent = await self._session.get(Turn, str(data.parent_turn_id))
             if parent and parent.campaign_id == campaign_key:
-                resolved = parent.scene_id
+                if not resolved:
+                    resolved = parent.scene_id
+                elif resolved != parent.scene_id:
+                    transition = (data.context_snapshot or {}).get(
+                        "scene_transition"
+                    ) or {}
+                    authorized = (
+                        transition.get("status")
+                        in {"prepared", "applied", "reused"}
+                        and str(transition.get("target_scene_id") or "") == resolved
+                        and str(transition.get("source_scene_id") or "")
+                        == str(parent.scene_id or "")
+                    )
+                    if not authorized:
+                        raise ValueError(
+                            "Assistant turn may change scenes only through an applied transition"
+                        )
 
         if resolved:
-            scene = await self._session.get(Scene, resolved)
-            if not scene or scene.campaign_id != campaign_key:
-                raise ValueError("Turn scene must belong to the same campaign")
+            scene_campaign_id = (
+                await self._session.execute(
+                    select(Scene.campaign_id).where(Scene.id == resolved)
+                )
+            ).scalar_one_or_none()
+            if scene_campaign_id != campaign_key:
+                raise ValueError(
+                    "Turn scene must belong to the same campaign "
+                    f"(scene_id={resolved}, campaign_id={campaign_key})"
+                )
         return resolved
 
     async def create(self, campaign_id: UUID, data: TurnCreate) -> TurnRead:
