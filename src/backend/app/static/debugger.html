@@ -15,6 +15,7 @@
     .metric, section { background: #181b25; border: 1px solid #303544; border-radius: 12px; padding: 14px; }
     .metric strong { display: block; font-size: 24px; }
     section h2 { margin: 0 0 10px; font-size: 17px; }
+    section h3 { margin: 16px 0 8px; font-size: 14px; color: #c7cede; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { border-top: 1px solid #303544; padding: 8px; text-align: left; vertical-align: top; }
     th { color: #aeb7ca; }
@@ -40,6 +41,8 @@
   <section><h2>Все сцены</h2><div id="scenes"></div></section>
   <section><h2>Переходы сцен</h2><div id="transitions"></div></section>
   <section><h2>Иерархия локаций</h2><div id="locations"></div></section>
+  <section><h2>NPC и физическое присутствие</h2><div id="npcPresence"></div></section>
+  <section><h2>Участники событий</h2><div id="eventPresence"></div></section>
   <section><h2>Post-turn jobs</h2><div id="jobs"></div></section>
   <section><h2>Canon proposals и evidence</h2><div id="proposals"></div></section>
   <section><h2>Текущий канон</h2><div class="tabs">
@@ -80,11 +83,12 @@ function renderSceneState() {
   }
   const issues = [
     ...(data.scene_state_issues || []),
-    ...(data.location_state_issues || [])
+    ...(data.location_state_issues || []),
+    ...(data.presence_state_issues || [])
   ];
   $('sceneIssues').innerHTML = issues.length
-    ? `<div class="issues bad"><strong>Рассинхронизация сцены или локации</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
-    : '<p class="ok">Структурное состояние сцены и локации согласовано.</p>';
+    ? `<div class="issues bad"><strong>Рассинхронизация сцены, локации или присутствия</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
+    : '<p class="ok">Структурное состояние сцены, локации и участников согласовано.</p>';
   $('scenes').innerHTML = table(data.scenes,[
     ['Current','is_current',(v)=>v?'<span class="ok">да</span>':''],
     ['Название','title'],
@@ -96,6 +100,7 @@ function renderSceneState() {
   ]);
   $('transitions').innerHTML = table(data.scene_transitions,[
     ['Тип','transition_type'],
+    ['Статус','status'],
     ['Из сцены','source_scene_title'],
     ['В сцену','target_scene_title'],
     ['Из локации','source_location_name'],
@@ -112,6 +117,38 @@ function renderSceneState() {
     ['ID','id']
   ]);
 }
+function renderPresence() {
+  const npcTable = table(data.auto_registered_npcs,[
+    ['Имя','name'],
+    ['Роль','role'],
+    ['Важность','importance'],
+    ['Временное имя','temporary_name',(v)=>v?'<span class="bad">да</span>':'нет'],
+    ['Текущая локация','current_location_name'],
+    ['Сцены','scene_titles',(v)=>esc((v||[]).join(', '))],
+    ['Первое появление','first_seen_scene_id'],
+    ['Source turn','source_turn_id'],
+    ['ID','id']
+  ]);
+  const issues = data.presence_state_issues || [];
+  const issueBlock = issues.length
+    ? `<div class="issues bad"><strong>Ошибки физического присутствия</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
+    : '<p class="ok">Телепортаций и рассинхронизации участников не обнаружено.</p>';
+  $('npcPresence').innerHTML = issueBlock + '<h3>Автоматически зарегистрированные NPC</h3>' + npcTable;
+
+  const participantTable = table(data.event_participants,[
+    ['Тип события','event_type'],
+    ['Участники','participant_names',(v)=>esc((v||[]).join(', '))],
+    ['Participant IDs','participant_ids',(v)=>`<pre>${esc(JSON.stringify(v||[],null,2))}</pre>`],
+    ['Event ID','event_id']
+  ]);
+  const emptyTable = table(data.events_without_participants,[
+    ['Тип','event_type'],
+    ['Описание','description'],
+    ['Локация','location_name'],
+    ['Event ID','id']
+  ]);
+  $('eventPresence').innerHTML = '<h3>События и участники</h3>' + participantTable + '<h3>События без участников</h3>' + emptyTable;
+}
 async function load() {
   const id=$('campaign').value; if(!id)return;
   $('status').textContent='Загрузка…';
@@ -120,6 +157,7 @@ async function load() {
   $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'} · локация: ${heroLocation}`;
   $('health').innerHTML=Object.entries(data.health).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
   renderSceneState();
+  renderPresence();
   $('jobs').innerHTML=table(data.post_turn_jobs,[['Тип','job_type'],['Статус','status'],['Попытки','attempts'],['Ошибка','error'],['Действие','id',(v,r)=>r.status==='completed'?'':`<button onclick="retryJob('${v}')">Повторить</button>`]]);
   $('proposals').innerHTML=table(data.proposals,[['Тип','change_type'],['Статус','status'],['Payload / evidence','payload',(v)=>`<pre>${esc(JSON.stringify(v,null,2))}</pre>`],['Ход','turn_content']]);
   renderCanon();
