@@ -49,6 +49,7 @@ class SceneTransitionExecutor:
             .where(
                 SceneTransition.campaign_id == str(campaign_id),
                 SceneTransition.trigger_turn_id == str(trigger_turn_id),
+                SceneTransition.status == "applied",
             )
             .order_by(SceneTransition.created_at)
             .limit(1)
@@ -144,6 +145,7 @@ class SceneTransitionExecutor:
             target_scene_id=str(target_scene.id),
             trigger_turn_id=(str(trigger_turn_id) if trigger_turn_id else None),
             transition_type=plan.transition_type,
+            status="applied",
             source_location_id=(
                 str(source_location_id) if source_location_id else None
             ),
