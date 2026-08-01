@@ -55,6 +55,7 @@ class SceneTransitionDebugger:
             {
                 "id": row.id,
                 "transition_type": row.transition_type,
+                "status": row.status,
                 "source_scene_id": row.source_scene_id,
                 "source_scene_title": scene_names.get(row.source_scene_id),
                 "target_scene_id": row.target_scene_id,
@@ -69,10 +70,14 @@ class SceneTransitionDebugger:
                 "reason": row.reason,
                 "detector": row.detector,
                 "created_at": row.created_at.isoformat(),
+                "undone_at": (
+                    row.undone_at.isoformat() if row.undone_at else None
+                ),
             }
             for row in rows
         ]
+        applied = [row for row in transitions if row["status"] == "applied"]
         return {
             "scene_transitions": transitions,
-            "last_scene_transition": transitions[-1] if transitions else None,
+            "last_scene_transition": applied[-1] if applied else None,
         }
