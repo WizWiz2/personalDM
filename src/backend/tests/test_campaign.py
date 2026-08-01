@@ -66,3 +66,56 @@ def test_campaign_crud(client: TestClient):
     response = client.delete(f"/api/campaigns/{campaign_id}")
     assert response.status_code == 204
     assert client.get(f"/api/campaigns/{campaign_id}").status_code == 404
+
+
+def test_scene_activation_is_authoritative_and_observable(client: TestClient):
+    campaign_id = client.post(
+        "/api/campaigns",
+        json={"name": "Scene Lifecycle"},
+    ).json()["id"]
+
+    tavern = client.post(
+        f"/api/campaigns/{campaign_id}/scenes",
+        json={
+            "title": "Общий зал таверны",
+            "location_description": "Шумный общий зал",
+        },
+    )
+    assert tavern.status_code == 201
+    tavern_id = tavern.json()["id"]
+
+    room = client.post(
+        f"/api/campaigns/{campaign_id}/scenes",
+        json={
+            "title": "Личная комната",
+            "location_description": "Запертая комната на втором этаже",
+        },
+    )
+    assert room.status_code == 201
+    room_id = room.json()["id"]
+
+    campaign = client.get(f"/api/campaigns/{campaign_id}").json()
+    assert campaign["current_scene_id"] == room_id
+
+    scenes = {
+        scene["id"]: scene
+        for scene in client.get(f"/api/campaigns/{campaign_id}/scenes").json()
+    }
+    assert scenes[tavern_id]["status"] == "completed"
+    assert scenes[room_id]["status"] == "active"
+
+    activated = client.post(
+        f"/api/campaigns/{campaign_id}/scenes/{tavern_id}/activate"
+    )
+    assert activated.status_code == 200
+    assert activated.json()["id"] == tavern_id
+    assert activated.json()["status"] == "active"
+
+    campaign = client.get(f"/api/campaigns/{campaign_id}").json()
+    assert campaign["current_scene_id"] == tavern_id
+
+    debugger = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
+    assert debugger["active_scene"]["id"] == tavern_id
+    assert debugger["active_scene"]["title"] == "Общий зал таверны"
+    assert debugger["scene_state_issues"] == []
+    assert debugger["health"]["scene_state_errors"] == 0
