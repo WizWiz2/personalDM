@@ -4,7 +4,6 @@ from uuid import UUID
 from sqlalchemy import desc, func, select
 
 from app.db.repositories.base import BaseRepository
-from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Scene, Turn
 from app.models.turn import ChatMessage, TurnCreate, TurnRead
 
@@ -19,8 +18,10 @@ class TurnRepository(BaseRepository):
 
         A user turn follows campaign.current_scene_id even when a stale client sends
         the previous scene. Assistant turns normally inherit their parent user scene.
-        An explicit different target is accepted only when an applied structured scene
-        transition links that parent user turn to the target scene.
+        A different explicit target is accepted only when the internal context snapshot
+        proves that the orchestrator applied or reused that exact scene transition.
+        The public API never accepts assistant turns, so this authorization marker is
+        not user-controlled input.
         """
         campaign_key = str(campaign_id)
         resolved = str(data.scene_id) if data.scene_id else None
@@ -35,17 +36,16 @@ class TurnRepository(BaseRepository):
                 if not resolved:
                     resolved = parent.scene_id
                 elif resolved != parent.scene_id:
-                    transition = (
-                        await self._session.execute(
-                            select(SceneTransition.id).where(
-                                SceneTransition.campaign_id == campaign_key,
-                                SceneTransition.trigger_turn_id == parent.id,
-                                SceneTransition.target_scene_id == resolved,
-                                SceneTransition.status == "applied",
-                            )
-                        )
-                    ).scalar_one_or_none()
-                    if not transition:
+                    transition = (data.context_snapshot or {}).get(
+                        "scene_transition"
+                    ) or {}
+                    authorized = (
+                        transition.get("status") in {"applied", "reused"}
+                        and str(transition.get("target_scene_id") or "") == resolved
+                        and str(transition.get("source_scene_id") or "")
+                        == str(parent.scene_id or "")
+                    )
+                    if not authorized:
                         raise ValueError(
                             "Assistant turn may change scenes only through an applied transition"
                         )
