@@ -7,8 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.db.repositories.campaign_repo import CampaignRepository
-from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.job_repo import GenerationRunRepository
+from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import (
@@ -17,7 +17,12 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.role_model_router import ModelRole, RoleModelRouter
-from app.services.turn_planner import TurnPlanner, TurnPlanningError
+from app.services.scene_transition_executor import SceneTransitionExecutor
+from app.services.turn_planner import (
+    SceneTransitionPlan,
+    TurnPlanner,
+    TurnPlanningError,
+)
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -60,11 +65,19 @@ class TurnRunner:
         for size in range(max_overlap, 15, -1):
             if prefix[-size:].casefold() == continuation[:size].casefold():
                 return prefix + continuation[size:]
-        separator = "" if prefix.endswith((" ", "\n")) or continuation.startswith((" ", "\n")) else " "
+        separator = (
+            ""
+            if prefix.endswith((" ", "\n"))
+            or continuation.startswith((" ", "\n"))
+            else " "
+        )
         return prefix + separator + continuation
 
     @staticmethod
-    def _continuation_messages(messages: list[ChatMessage], partial_text: str) -> list[ChatMessage]:
+    def _continuation_messages(
+        messages: list[ChatMessage],
+        partial_text: str,
+    ) -> list[ChatMessage]:
         tail = partial_text[-4000:]
         return [
             *messages,
@@ -86,7 +99,10 @@ class TurnRunner:
         content: str,
     ) -> tuple[list[ChatMessage], dict]:
         """Keep the addressed player's current message even when history fills the budget."""
-        if any(message.role == "user" and message.content == content for message in messages):
+        if any(
+            message.role == "user" and message.content == content
+            for message in messages
+        ):
             snapshot = dict(metadata)
             snapshot["current_user_reserved"] = True
             return messages, snapshot
@@ -158,9 +174,14 @@ class TurnRunner:
             user_turn = await self._turn_repo.create(campaign_id, turn_create)
 
         generation_run = await self._generation_runs.start_or_resume(
-            campaign_id, user_turn.id
+            campaign_id,
+            user_turn.id,
         )
         await self._session.commit()
+
+        source_scene_id = user_turn.scene_id
+        effective_scene_id = source_scene_id
+        transition_created_this_run = False
 
         campaign_key = str(campaign_id)
         if campaign_key in active_tasks:
@@ -198,6 +219,7 @@ class TurnRunner:
 
         from app.services.context_compiler import ContextCompiler
 
+        compiler = ContextCompiler(self._session)
         max_budget_override = None
         if turn_create.acting_character_id is None:
             safety_margin = int(
@@ -210,10 +232,10 @@ class TurnRunner:
                 - safety_margin
                 - settings.PLANNER_CONTEXT_RESERVE_TOKENS,
             )
-        messages, context_metadata = await ContextCompiler(self._session).compile_context(
+        messages, context_metadata = await compiler.compile_context(
             campaign_id=campaign_id,
             acting_character_id=turn_create.acting_character_id,
-            scene_id=turn_create.scene_id,
+            scene_id=source_scene_id,
             current_user_content=turn_create.content,
             max_budget_override=max_budget_override,
         )
@@ -228,7 +250,14 @@ class TurnRunner:
             active_tasks[campaign_key] = current_task
 
         narrator_messages = messages
-        planner_metadata: dict = {"status": "skipped", "reason": "actor_scoped_turn"}
+        planner_metadata: dict = {
+            "status": "skipped",
+            "reason": "actor_scoped_turn",
+        }
+        transition_metadata: dict = {
+            "status": "not_required",
+            "source_scene_id": str(source_scene_id) if source_scene_id else None,
+        }
         if turn_create.acting_character_id is None:
             planner_selection = await role_router.resolve(
                 campaign_id,
@@ -244,7 +273,94 @@ class TurnRunner:
                 planner = TurnPlanner(role_router)
                 try:
                     turn_plan = await planner.plan(planner_selection, messages)
-                    narrator_messages = planner.inject_plan(messages, turn_plan)
+                    executor = SceneTransitionExecutor(self._session)
+                    existing_transition = await executor.existing_for_turn(
+                        campaign_id,
+                        user_turn.id,
+                    )
+                    applied_transition = existing_transition
+                    if not existing_transition and turn_plan.scene_transition.required:
+                        try:
+                            async with self._session.begin_nested():
+                                applied_transition = await executor.apply(
+                                    campaign_id,
+                                    source_scene_id,
+                                    user_turn.id,
+                                    turn_plan.scene_transition,
+                                )
+                        except ValueError as exc:
+                            failed_plan = turn_plan.scene_transition.model_dump()
+                            turn_plan = turn_plan.model_copy(
+                                update={
+                                    "scene_transition": SceneTransitionPlan()
+                                }
+                            )
+                            transition_metadata = {
+                                "status": "failed_open",
+                                "source_scene_id": (
+                                    str(source_scene_id)
+                                    if source_scene_id
+                                    else None
+                                ),
+                                "requested": failed_plan,
+                                "error": str(exc)[:2000],
+                            }
+                        else:
+                            transition_created_this_run = applied_transition is not None
+
+                    if applied_transition:
+                        effective_scene_id = applied_transition.target_scene_id
+                        transition_metadata = {
+                            "status": (
+                                "reused"
+                                if existing_transition
+                                else "applied"
+                            ),
+                            "transition_id": str(
+                                applied_transition.transition_id
+                            ),
+                            "source_scene_id": (
+                                str(applied_transition.source_scene_id)
+                                if applied_transition.source_scene_id
+                                else None
+                            ),
+                            "target_scene_id": str(
+                                applied_transition.target_scene_id
+                            ),
+                            "source_location_id": (
+                                str(applied_transition.source_location_id)
+                                if applied_transition.source_location_id
+                                else None
+                            ),
+                            "target_location_id": (
+                                str(applied_transition.target_location_id)
+                                if applied_transition.target_location_id
+                                else None
+                            ),
+                            "plan": turn_plan.scene_transition.model_dump(),
+                        }
+                        narrator_messages, narrator_context_metadata = (
+                            await compiler.compile_context(
+                                campaign_id=campaign_id,
+                                acting_character_id=None,
+                                scene_id=effective_scene_id,
+                                current_user_content=turn_create.content,
+                                max_budget_override=max_budget_override,
+                            )
+                        )
+                        narrator_messages, narrator_context_metadata = (
+                            self._reserve_current_user(
+                                narrator_messages,
+                                narrator_context_metadata,
+                                turn_create.content,
+                            )
+                        )
+                        context_metadata = narrator_context_metadata
+
+                    narrator_messages = planner.inject_plan(
+                        narrator_messages,
+                        turn_plan,
+                    )
                     planner_metadata = {
                         "status": "completed",
                         "model_name": planner_selection.config.model_name,
@@ -263,7 +379,14 @@ class TurnRunner:
                         "telemetry": planner.telemetry,
                     }
         context_metadata = dict(context_metadata)
+        context_metadata["planner_context_scene_id"] = (
+            str(source_scene_id) if source_scene_id else None
+        )
+        context_metadata["narrator_context_scene_id"] = (
+            str(effective_scene_id) if effective_scene_id else None
+        )
         context_metadata["turn_planner"] = planner_metadata
+        context_metadata["scene_transition"] = transition_metadata
 
         accumulated_text = ""
         attempt_number = 0
@@ -296,14 +419,21 @@ class TurnRunner:
                         attempt_text,
                     )
                     self._annotate_model_role(narrator_selection)
-                    attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
+                    attempt_telemetry.append(
+                        dict(self._llm_provider.last_telemetry or {})
+                    )
                     last_provider_error = None
                     break
                 except LLMProviderTruncatedError as exc:
                     partial = attempt_text or exc.partial_text
-                    accumulated_text = self._merge_continuation(accumulated_text, partial)
+                    accumulated_text = self._merge_continuation(
+                        accumulated_text,
+                        partial,
+                    )
                     self._annotate_model_role(narrator_selection)
-                    attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
+                    attempt_telemetry.append(
+                        dict(self._llm_provider.last_telemetry or {})
+                    )
                     last_provider_error = exc
                     if attempt + 1 < self.MAX_GENERATION_ATTEMPTS:
                         if accumulated_text.strip():
@@ -327,7 +457,9 @@ class TurnRunner:
                         continue
                 except LLMProviderError as exc:
                     self._annotate_model_role(narrator_selection)
-                    attempt_telemetry.append(dict(self._llm_provider.last_telemetry or {}))
+                    attempt_telemetry.append(
+                        dict(self._llm_provider.last_telemetry or {})
+                    )
                     last_provider_error = exc
                     if attempt_text.strip():
                         accumulated_text = self._merge_continuation(
@@ -350,6 +482,10 @@ class TurnRunner:
                 break
 
             if last_provider_error is not None or not accumulated_text.strip():
+                if transition_created_this_run:
+                    await self._session.rollback()
+                    effective_scene_id = source_scene_id
+                    transition_created_this_run = False
                 if accumulated_text.strip():
                     snapshot, token_count = self._snapshot(
                         context_metadata,
@@ -359,18 +495,25 @@ class TurnRunner:
                     partial_turn = TurnCreate(
                         role="assistant",
                         content=accumulated_text + " [generation interrupted]",
-                        scene_id=turn_create.scene_id,
+                        scene_id=effective_scene_id,
                         acting_character_id=turn_create.acting_character_id,
                         parent_turn_id=user_turn.id,
                         model_name=config.model_name,
                         context_snapshot=snapshot,
                         token_count=token_count,
                     )
-                    saved_partial = await self._turn_repo.create(campaign_id, partial_turn)
+                    saved_partial = await self._turn_repo.create(
+                        campaign_id,
+                        partial_turn,
+                    )
                     await self._turn_repo.mark_alternative(saved_partial.id)
-                detail = str(last_provider_error or "provider returned empty text")
+                detail = str(
+                    last_provider_error or "provider returned empty text"
+                )
                 await self._generation_runs.set_status(
-                    generation_run.id, "failed", error=detail
+                    generation_run.id,
+                    "failed",
+                    error=detail,
                 )
                 await self._fail_user_turn(user_turn.id, owns_user_turn)
                 yield f"\n[Generation failed after retry: {detail}]"
@@ -386,7 +529,7 @@ class TurnRunner:
                 TurnCreate(
                     role="assistant",
                     content=accumulated_text,
-                    scene_id=turn_create.scene_id,
+                    scene_id=effective_scene_id,
                     acting_character_id=turn_create.acting_character_id,
                     parent_turn_id=user_turn.id,
                     model_name=config.model_name,
@@ -414,6 +557,10 @@ class TurnRunner:
                 traceback.print_exc()
 
         except asyncio.CancelledError:
+            if transition_created_this_run:
+                await self._session.rollback()
+                effective_scene_id = source_scene_id
+                transition_created_this_run = False
             if accumulated_text.strip():
                 snapshot, token_count = self._snapshot(
                     context_metadata,
@@ -425,7 +572,7 @@ class TurnRunner:
                     TurnCreate(
                         role="assistant",
                         content=accumulated_text + " [generation interrupted]",
-                        scene_id=turn_create.scene_id,
+                        scene_id=effective_scene_id,
                         acting_character_id=turn_create.acting_character_id,
                         parent_turn_id=user_turn.id,
                         model_name=config.model_name,
@@ -435,14 +582,20 @@ class TurnRunner:
                 )
                 await self._turn_repo.mark_alternative(partial.id)
             await self._generation_runs.set_status(
-                generation_run.id, "cancelled", error="Cancellation requested"
+                generation_run.id,
+                "cancelled",
+                error="Cancellation requested",
             )
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
         except Exception as exc:
             traceback.print_exc()
+            if transition_created_this_run:
+                await self._session.rollback()
             await self._generation_runs.set_status(
-                generation_run.id, "failed", error=str(exc)[:4000]
+                generation_run.id,
+                "failed",
+                error=str(exc)[:4000],
             )
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
@@ -455,9 +608,12 @@ class TurnRunner:
 
     @staticmethod
     async def stop_generation(
-        campaign_id: UUID, session: AsyncSession
+        campaign_id: UUID,
+        session: AsyncSession,
     ) -> bool:
-        requested = await GenerationRunRepository(session).request_cancel(campaign_id)
+        requested = await GenerationRunRepository(session).request_cancel(
+            campaign_id
+        )
         await session.commit()
 
         campaign_key = str(campaign_id)
