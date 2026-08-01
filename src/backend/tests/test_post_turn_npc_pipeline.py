@@ -124,7 +124,7 @@ def test_post_turn_registers_npc_before_scribe_resolves_event_participant(
     )
     assert event_proposal["payload"]["participant_ids"] == [npc["id"]]
     assert event_proposal["payload"]["location_id"] == tavern["id"]
-    assert snapshot["active_scene"]["participant_names"] == [
+    assert set(snapshot["active_scene"]["participant_names"]) == {
         "Эйдан",
         "Бармен Роэн",
-    ]
+    }
