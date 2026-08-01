@@ -144,3 +144,37 @@ def test_regeneration_reuses_original_user_turn(client: TestClient, mock_llm):
         turn for turn in all_history if turn["id"] == old_assistant_id
     )
     assert old_assistant["status"] == "alternative"
+
+
+def test_new_turn_uses_current_scene_even_if_client_sends_stale_scene(
+    client: TestClient,
+    mock_llm,
+):
+    campaign_id = client.post(
+        "/api/campaigns",
+        json={"name": "Scene-bound Turns"},
+    ).json()["id"]
+
+    old_scene_id = client.post(
+        f"/api/campaigns/{campaign_id}/scenes",
+        json={"title": "Общий зал", "location_description": "Таверна"},
+    ).json()["id"]
+    current_scene_id = client.post(
+        f"/api/campaigns/{campaign_id}/scenes",
+        json={"title": "Личная комната", "location_description": "Комната"},
+    ).json()["id"]
+
+    response = client.post(
+        f"/api/campaigns/{campaign_id}/turns",
+        json={
+            "role": "user",
+            "content": "Я закрываю дверь и ложусь спать.",
+            "scene_id": old_scene_id,
+        },
+    )
+    assert response.status_code == 200
+
+    history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
+    assert len(history) == 2
+    assert history[0]["scene_id"] == current_scene_id
+    assert history[1]["scene_id"] == current_scene_id

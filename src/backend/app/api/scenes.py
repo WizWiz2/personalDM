@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_session
@@ -11,6 +11,7 @@ from app.models.scene_thesis import (
     SceneThesisRead,
     SceneThesisUpdate,
 )
+from app.services.scene_lifecycle import SceneLifecycleService
 
 router = APIRouter(tags=["scenes"])
 
@@ -23,11 +24,40 @@ router = APIRouter(tags=["scenes"])
 async def create_scene(
     campaign_id: UUID,
     data: SceneCreate,
+    activate: bool = Query(
+        default=True,
+        description="Make the new scene authoritative for subsequent turns.",
+    ),
     session: AsyncSession = Depends(get_session),
 ):
-    scene = await SceneRepository(session).create(campaign_id, data)
+    repo = SceneRepository(session)
+    scene = await repo.create(campaign_id, data)
+    if activate:
+        try:
+            scene = (await SceneLifecycleService(session).activate(campaign_id, scene.id)).scene
+        except ValueError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     await session.commit()
     return scene
+
+
+@router.post(
+    "/api/campaigns/{campaign_id}/scenes/{scene_id}/activate",
+    response_model=SceneRead,
+)
+async def activate_scene(
+    campaign_id: UUID,
+    scene_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        result = await SceneLifecycleService(session).activate(campaign_id, scene_id)
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await session.commit()
+    return result.scene
 
 
 @router.get("/api/campaigns/{campaign_id}/scenes", response_model=list[SceneRead])

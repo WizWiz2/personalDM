@@ -22,6 +22,9 @@
     .ok { color: #7fe3a1; } .bad { color: #ff8d8d; } .muted { color: #98a2b8; }
     .tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
     .hidden { display:none; }
+    .scene-card { display:grid; gap:6px; padding:12px; border:1px solid #41495d; border-radius:10px; background:#131620; }
+    .issues { margin-top:10px; padding:10px 12px; border:1px solid #713f46; border-radius:8px; background:#28171b; }
+    .issues ul { margin:6px 0 0; padding-left:20px; }
   </style>
 </head>
 <body>
@@ -33,6 +36,8 @@
 </header>
 <main>
   <div id="health" class="health"></div>
+  <section><h2>Активная сцена</h2><div id="activeScene"></div><div id="sceneIssues"></div></section>
+  <section><h2>Все сцены</h2><div id="scenes"></div></section>
   <section><h2>Post-turn jobs</h2><div id="jobs"></div></section>
   <section><h2>Canon proposals и evidence</h2><div id="proposals"></div></section>
   <section><h2>Текущий канон</h2><div class="tabs">
@@ -53,16 +58,44 @@ async function campaigns() {
   $('campaign').innerHTML = rows.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('');
   if (rows.length) await load(); else $('status').textContent='Нет кампаний';
 }
+function renderSceneState() {
+  const scene = data.active_scene;
+  if (!scene) {
+    $('activeScene').innerHTML = '<p class="muted">Активная сцена не назначена</p>';
+  } else {
+    const participants = scene.participant_names?.length ? scene.participant_names.join(', ') : 'нет';
+    $('activeScene').innerHTML = `<div class="scene-card">
+      <strong>${esc(scene.title)}</strong>
+      <span><span class="muted">ID:</span> ${esc(scene.id)}</span>
+      <span><span class="muted">Статус:</span> ${esc(scene.status)}</span>
+      <span><span class="muted">Локация:</span> ${esc(scene.location_description || 'не задана')}</span>
+      <span><span class="muted">Участники:</span> ${esc(participants)}</span>
+    </div>`;
+  }
+  const issues = data.scene_state_issues || [];
+  $('sceneIssues').innerHTML = issues.length
+    ? `<div class="issues bad"><strong>Рассинхронизация сцены</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
+    : '<p class="ok">Структурное состояние сцены согласовано.</p>';
+  $('scenes').innerHTML = table(data.scenes,[
+    ['Current','is_current',(v)=>v?'<span class="ok">да</span>':''],
+    ['Название','title'],
+    ['Статус','status'],
+    ['Локация','location_description'],
+    ['Участники','participant_names',(v)=>esc((v||[]).join(', '))],
+    ['ID','id']
+  ]);
+}
 async function load() {
   const id=$('campaign').value; if(!id)return;
   $('status').textContent='Загрузка…';
   data=await fetch(`/api/campaigns/${id}/debugger?turn_limit=120`).then(r=>r.json());
   $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'}`;
   $('health').innerHTML=Object.entries(data.health).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
+  renderSceneState();
   $('jobs').innerHTML=table(data.post_turn_jobs,[['Тип','job_type'],['Статус','status'],['Попытки','attempts'],['Ошибка','error'],['Действие','id',(v,r)=>r.status==='completed'?'':`<button onclick="retryJob('${v}')">Повторить</button>`]]);
   $('proposals').innerHTML=table(data.proposals,[['Тип','change_type'],['Статус','status'],['Payload / evidence','payload',(v)=>`<pre>${esc(JSON.stringify(v,null,2))}</pre>`],['Ход','turn_content']]);
   renderCanon();
-  $('turns').innerHTML=table(data.turns,[['Роль','role'],['Актёр','actor_name'],['Текст','content',(v)=>`<pre>${esc(v)}</pre>`],['Статус','status']]);
+  $('turns').innerHTML=table(data.turns,[['Сцена','scene_title'],['Роль','role'],['Актёр','actor_name'],['Текст','content',(v)=>`<pre>${esc(v)}</pre>`],['Статус','status']]);
 }
 function renderCanon(){
   const configs={

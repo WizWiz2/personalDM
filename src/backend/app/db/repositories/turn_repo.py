@@ -4,11 +4,40 @@ from uuid import UUID
 from sqlalchemy import desc, func, select
 
 from app.db.repositories.base import BaseRepository
-from app.db.tables import Turn
+from app.db.tables import Campaign, Scene, Turn
 from app.models.turn import ChatMessage, TurnCreate, TurnRead
 
 
 class TurnRepository(BaseRepository):
+    async def _resolve_scene_id(
+        self,
+        campaign_id: UUID,
+        data: TurnCreate,
+    ) -> str | None:
+        """Bind persisted turns to authoritative structured scene state.
+
+        A user turn follows campaign.current_scene_id even when a stale client sends
+        the previous scene. Assistant turns inherit the scene from their parent user
+        turn, preventing a user/assistant pair from being split across scenes.
+        """
+        campaign_key = str(campaign_id)
+        resolved = str(data.scene_id) if data.scene_id else None
+
+        if data.role == "user":
+            campaign = await self._session.get(Campaign, campaign_key)
+            if campaign and campaign.current_scene_id:
+                resolved = campaign.current_scene_id
+        elif data.role == "assistant" and data.parent_turn_id:
+            parent = await self._session.get(Turn, str(data.parent_turn_id))
+            if parent and parent.campaign_id == campaign_key:
+                resolved = parent.scene_id
+
+        if resolved:
+            scene = await self._session.get(Scene, resolved)
+            if not scene or scene.campaign_id != campaign_key:
+                raise ValueError("Turn scene must belong to the same campaign")
+        return resolved
+
     async def create(self, campaign_id: UUID, data: TurnCreate) -> TurnRead:
         context_str = (
             json.dumps(data.context_snapshot)
@@ -17,7 +46,7 @@ class TurnRepository(BaseRepository):
         )
         db_turn = Turn(
             campaign_id=str(campaign_id),
-            scene_id=str(data.scene_id) if data.scene_id else None,
+            scene_id=await self._resolve_scene_id(campaign_id, data),
             acting_character_id=(
                 str(data.acting_character_id) if data.acting_character_id else None
             ),
