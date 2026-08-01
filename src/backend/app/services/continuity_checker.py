@@ -49,6 +49,18 @@ class ContinuityChecker:
             return None, f"{field_name} references inactive entity {entity.canonical_name}"
         return entity, None
 
+    async def _scene_context(
+        self,
+        campaign_id: UUID,
+        scene_id: UUID | None,
+    ):
+        if not scene_id:
+            return None, set(), None
+        scene = await self._scene_repo.get_by_id(scene_id)
+        if not scene or scene.campaign_id != campaign_id:
+            return None, set(), "scene_id references a scene outside the campaign"
+        return scene, set(scene.participants), None
+
     @staticmethod
     def _canon_metadata(payload: dict) -> tuple[dict, str | None]:
         metadata = payload.get("_canon")
@@ -75,6 +87,8 @@ class ContinuityChecker:
         self,
         campaign_id: UUID,
         change: ProposedChangeCreate,
+        *,
+        scene_id: UUID | None = None,
     ) -> tuple[bool, str | None]:
         payload = change.payload
         change_type = change.change_type
@@ -89,6 +103,13 @@ class ContinuityChecker:
             return False, "Player intent cannot directly create durable canon"
         if canon.get("authority") == "character_claim" and change_type != ChangeType.KNOWLEDGE:
             return False, "Character claims may create knowledge, not objective world canon"
+
+        scene, scene_participants, scene_error = await self._scene_context(
+            campaign_id,
+            scene_id,
+        )
+        if scene_error:
+            return False, scene_error
 
         if change_type == ChangeType.FACT:
             subject = payload.get("subject")
@@ -120,8 +141,9 @@ class ContinuityChecker:
         elif change_type == ChangeType.EVENT:
             if not payload.get("description"):
                 return False, "Event proposal requires description"
+            event_location = None
             if payload.get("location_id"):
-                _, error = await self._entity(
+                event_location, error = await self._entity(
                     campaign_id,
                     payload.get("location_id"),
                     "location_id",
@@ -129,10 +151,30 @@ class ContinuityChecker:
                 )
                 if error:
                     return False, error
+            if (
+                scene
+                and scene.location_id
+                and event_location
+                and event_location.id != scene.location_id
+            ):
+                return False, "Event location differs from the authoritative scene location"
             for participant in payload.get("participant_ids", []):
-                _, error = await self._entity(campaign_id, participant, "participant_id")
+                entity, error = await self._entity(
+                    campaign_id,
+                    participant,
+                    "participant_id",
+                )
                 if error:
                     return False, error
+                if (
+                    scene
+                    and entity.entity_type == "character"
+                    and entity.id not in scene_participants
+                ):
+                    return False, (
+                        f"Event participant {entity.canonical_name} is not physically "
+                        "present in the authoritative scene"
+                    )
 
         elif change_type == ChangeType.RELATIONSHIP:
             subject, error = await self._entity(
@@ -155,7 +197,7 @@ class ContinuityChecker:
                 return False, "Relationship requires relation_type and description"
 
         elif change_type == ChangeType.MOVEMENT:
-            _, error = await self._entity(
+            character_entity, error = await self._entity(
                 campaign_id,
                 payload.get("character_id"),
                 "character_id",
@@ -171,6 +213,21 @@ class ContinuityChecker:
             )
             if error:
                 return False, error
+            if scene:
+                character = await self._entity_repo.get_character(character_entity.id)
+                starts_in_scene = character_entity.id in scene_participants
+                if (
+                    not starts_in_scene
+                    and scene.location_id
+                    and character
+                    and character.current_location_id == scene.location_id
+                ):
+                    starts_in_scene = True
+                if not starts_in_scene:
+                    return False, (
+                        f"Character {character_entity.canonical_name} cannot move from "
+                        "a scene where they are not physically present"
+                    )
 
         elif change_type == ChangeType.KNOWLEDGE:
             recipient, error = await self._entity(
@@ -239,13 +296,16 @@ class ContinuityChecker:
                 return False, "Item has no item-state row"
 
         elif change_type == ChangeType.SCENE_THESIS:
-            scene_id, scene_error = self._parse_uuid(payload.get("scene_id"), "scene_id")
+            thesis_scene_id, scene_error = self._parse_uuid(
+                payload.get("scene_id"),
+                "scene_id",
+            )
             if scene_error:
                 return False, scene_error
-            if not scene_id or not payload.get("text"):
+            if not thesis_scene_id or not payload.get("text"):
                 return False, "Scene thesis requires scene_id and text"
-            scene = await self._scene_repo.get_by_id(scene_id)
-            if not scene or scene.campaign_id != campaign_id:
+            thesis_scene = await self._scene_repo.get_by_id(thesis_scene_id)
+            if not thesis_scene or thesis_scene.campaign_id != campaign_id:
                 return False, "Scene thesis references another campaign"
 
         return True, None
