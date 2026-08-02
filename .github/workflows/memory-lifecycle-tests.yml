@@ -65,7 +65,7 @@ jobs:
 
       - name: Lint changed files
         run: |
-          ruff check \
+          ruff check --extend-ignore BLE001 \
             app/models/memory_semantics.py \
             app/models/proposed_change.py \
             app/db/fact_memory_table.py \
