@@ -7,6 +7,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Item
+from app.models.memory_taxonomy import MemoryKind, NarrativeDetailType
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 
 
@@ -124,6 +125,42 @@ class ContinuityChecker:
                 return False, "Fact cardinality must be single or multi"
             if operation != "retract" and payload.get("object_value") is None:
                 return False, "Non-retraction fact requires object_value"
+
+            memory_kind = payload.get("memory_kind") or (
+                MemoryKind.SCENE_STATE.value
+                if payload.get("scope") == "scene"
+                else MemoryKind.WORLD_CANON.value
+            )
+            if memory_kind not in {
+                MemoryKind.WORLD_CANON.value,
+                MemoryKind.ENTITY_STATE.value,
+                MemoryKind.SCENE_STATE.value,
+            }:
+                return False, "Fact memory_kind is invalid"
+            fact_scope = payload.get("scope", "campaign")
+            fact_scene_id, fact_scene_error = self._parse_uuid(
+                payload.get("scene_id"),
+                "scene_id",
+            )
+            if fact_scene_error:
+                return False, fact_scene_error
+            if memory_kind == MemoryKind.SCENE_STATE.value:
+                if fact_scope != "scene" or not fact_scene_id:
+                    return False, "scene_state requires scope=scene and scene_id"
+                if not scene_id or fact_scene_id != scene_id:
+                    return False, "scene_state must target the authoritative current scene"
+            elif fact_scope != "campaign" or fact_scene_id is not None:
+                return False, f"{memory_kind} must use campaign scope without scene_id"
+
+            if memory_kind == MemoryKind.ENTITY_STATE.value:
+                _, error = await self._entity(
+                    campaign_id,
+                    payload.get("subject_entity_id"),
+                    "subject_entity_id",
+                )
+                if error:
+                    return False, error
+
             for field_name in ("subject", "object_value"):
                 candidate = payload.get(field_name)
                 if not candidate:
@@ -137,6 +174,45 @@ class ContinuityChecker:
                     return False, f"Fact {field_name} references another campaign"
                 if entity.status in {"dead", "destroyed"}:
                     return False, f"Fact references inactive entity {entity.canonical_name}"
+
+        elif change_type == ChangeType.NARRATIVE_DETAIL:
+            detail_scene_id, detail_scene_error = self._parse_uuid(
+                payload.get("scene_id"),
+                "scene_id",
+            )
+            if detail_scene_error:
+                return False, detail_scene_error
+            if not detail_scene_id or not scene_id or detail_scene_id != scene_id:
+                return False, "Narrative detail must target the authoritative current scene"
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                return False, "Narrative detail requires text"
+            if len(text) > 2000:
+                return False, "Narrative detail text is too long"
+            if payload.get("detail_type", "other") not in {
+                item.value for item in NarrativeDetailType
+            }:
+                return False, "Narrative detail_type is invalid"
+            turn_window = payload.get("turn_window", 3)
+            if not isinstance(turn_window, int) or not 1 <= turn_window <= 12:
+                return False, "Narrative detail turn_window must be between 1 and 12"
+            if payload.get("subject_entity_id"):
+                subject_entity, error = await self._entity(
+                    campaign_id,
+                    payload.get("subject_entity_id"),
+                    "subject_entity_id",
+                )
+                if error:
+                    return False, error
+                if (
+                    scene
+                    and subject_entity.entity_type == "character"
+                    and subject_entity.id not in scene_participants
+                ):
+                    return False, (
+                        f"Narrative detail subject {subject_entity.canonical_name} "
+                        "is not physically present in the scene"
+                    )
 
         elif change_type == ChangeType.EVENT:
             if not payload.get("description"):
