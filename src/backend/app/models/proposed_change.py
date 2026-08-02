@@ -14,6 +14,7 @@ class ChangeType(str, Enum):
     MOVEMENT = "movement"
     KNOWLEDGE = "knowledge"
     ITEM_TRANSFER = "item_transfer"
+    NARRATIVE_DETAIL = "narrative_detail"
     CANON_GAP = "canon_gap"
 
 
