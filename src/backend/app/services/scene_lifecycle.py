@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories.narrative_detail_repo import NarrativeDetailRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.scene_state_table import SceneRuntimeState
@@ -25,12 +26,13 @@ class SceneLifecycleService:
     active, every other active scene is completed, the campaign pointer is updated,
     and every physical participant must agree with the scene location. The player is
     inserted automatically; an NPC already located elsewhere is rejected rather than
-    silently teleported.
+    silently teleported. Short-lived narrative details expire with their scene.
     """
 
     def __init__(self, session: AsyncSession):
         self._session = session
         self._scene_repo = SceneRepository(session)
+        self._narrative_details = NarrativeDetailRepository(session)
 
     async def activate(
         self,
@@ -63,6 +65,7 @@ class SceneLifecycleService:
         for scene in active_scenes:
             if scene.id != target.id:
                 scene.status = "completed"
+                await self._narrative_details.expire_scene(UUID(scene.id))
 
         target.status = "active"
         campaign.current_scene_id = target.id
