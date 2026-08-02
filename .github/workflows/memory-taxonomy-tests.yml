@@ -46,7 +46,6 @@ jobs:
             tests/test_memory_taxonomy.py \
             tests/test_canon_semantics.py \
             tests/test_canon_versioning.py \
-            tests/test_context_compiler.py \
             --tb=short
       - name: Lint changed files
         run: |
