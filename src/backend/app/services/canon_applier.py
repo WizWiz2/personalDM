@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.event_repo import EventRepository
+from app.db.repositories.fact_memory_repo import FactMemoryRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
@@ -16,6 +17,7 @@ from app.models.belief import BeliefCreate
 from app.models.character import CharacterUpdate
 from app.models.event import EventCreate
 from app.models.fact import FactCreate
+from app.models.memory_semantics import MemoryClass
 from app.models.proposed_change import ChangeType
 from app.models.relationship import RelationshipCreate
 from app.models.scene_thesis import SceneThesisCreate, ThesisType
@@ -29,6 +31,7 @@ class CanonApplier:
         self._session = session
         self._entities = EntityRepository(session)
         self._facts = FactRepository(session)
+        self._fact_memory = FactMemoryRepository(session)
         self._beliefs = BeliefRepository(session)
         self._relationships = RelationshipRepository(session)
         self._events = EventRepository(session)
@@ -47,6 +50,21 @@ class CanonApplier:
         value = str(payload.get("cardinality") or canon.get("cardinality") or "single")
         return value if value in {"single", "multi"} else "single"
 
+    @staticmethod
+    def _memory_class(payload: dict) -> MemoryClass:
+        memory = payload.get("_memory") if isinstance(payload.get("_memory"), dict) else {}
+        raw = payload.get("memory_class") or memory.get("class")
+        if raw:
+            try:
+                return MemoryClass(str(raw))
+            except ValueError:
+                pass
+        return (
+            MemoryClass.SCENE_STATE
+            if payload.get("scope") == "scene"
+            else MemoryClass.WORLD_CANON
+        )
+
     async def apply(
         self,
         campaign_id: UUID,
@@ -58,6 +76,8 @@ class CanonApplier:
     ) -> None:
         if change_type == ChangeType.CANON_GAP:
             raise ValueError("A canon gap is evidence of a missing delta and cannot be applied")
+        if change_type == ChangeType.NARRATIVE_DETAIL:
+            raise ValueError("Narrative details are transient memory and cannot enter canon")
 
         if change_type in {ChangeType.MOVEMENT, ChangeType.ITEM_TRANSFER}:
             await self._initial_state.ensure_snapshot(
@@ -68,7 +88,7 @@ class CanonApplier:
         operation = self._operation(payload)
 
         if change_type == ChangeType.FACT:
-            await self._facts.apply_change(
+            applied = await self._facts.apply_change(
                 campaign_id,
                 FactCreate(
                     subject=payload.get("subject"),
@@ -89,6 +109,17 @@ class CanonApplier:
                 cardinality=self._cardinality(payload),
                 previous_object_value=payload.get("previous_object_value"),
             )
+            if applied is not None:
+                subject_entity_id = (
+                    UUID(payload["subject_entity_id"])
+                    if payload.get("subject_entity_id")
+                    else None
+                )
+                await self._fact_memory.assign(
+                    applied.id,
+                    self._memory_class(payload),
+                    subject_entity_id,
+                )
             return
 
         if change_type == ChangeType.MOVEMENT:
