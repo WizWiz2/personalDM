@@ -15,6 +15,7 @@ class ModelRole(str, Enum):
     NARRATOR = "narrator"
     GAME_MASTER = "game_master"
     PLANNER = "planner"
+    NARRATION_VALIDATOR = "narration_validator"
     ENTITY_REGISTRAR = "entity_registrar"
     SCRIBE = "scribe"
     CURATOR = "curator"
@@ -27,6 +28,7 @@ class ModelRole(str, Enum):
 
 CONTROL_ROLES = {
     ModelRole.PLANNER,
+    ModelRole.NARRATION_VALIDATOR,
     ModelRole.ENTITY_REGISTRAR,
     ModelRole.SCRIBE,
     ModelRole.CURATOR,
@@ -69,6 +71,7 @@ class RoleModelRouter:
     def _model_override(role: ModelRole) -> str | None:
         return {
             ModelRole.PLANNER: settings.PLANNER_LLM_MODEL,
+            ModelRole.NARRATION_VALIDATOR: settings.NARRATION_VALIDATOR_LLM_MODEL,
             ModelRole.SCRIBE: settings.SCRIBE_LLM_MODEL,
             ModelRole.CURATOR: settings.CURATOR_LLM_MODEL,
             ModelRole.EVALUATOR: settings.EVALUATOR_LLM_MODEL,
