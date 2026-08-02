@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
+from typing import ClassVar
 from uuid import UUID
 
 from sqlalchemy import select
@@ -21,7 +22,7 @@ from app.models.memory_ops import (
 class MemoryOperationsService:
     """Inspect and safely maintain working memory without rewriting canon."""
 
-    THESIS_TTL = {
+    THESIS_TTL: ClassVar[dict[str, int]] = {
         "canon": 16,
         "intention": 8,
         "relationship_dynamic": 10,
@@ -373,7 +374,7 @@ class MemoryOperationsService:
                 if thesis.id != keeper_thesis.id:
                     maintenance_reasons[thesis.id] = "duplicate_scope"
 
-        for scene_id, rows in active_by_scene.items():
+        for rows in active_by_scene.values():
             candidates = [pair for pair in rows if not pair[0].pinned]
             if len(candidates) <= self.MAX_ACTIVE_THESES:
                 continue
