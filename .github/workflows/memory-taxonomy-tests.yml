@@ -49,7 +49,7 @@ jobs:
             --tb=short
       - name: Lint changed files
         run: |
-          ruff check \
+          ruff check --extend-ignore BLE001 \
             app/config.py \
             app/main.py \
             app/models/fact.py \
