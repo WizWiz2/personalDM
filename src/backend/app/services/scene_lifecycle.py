@@ -86,15 +86,17 @@ class SceneLifecycleService:
                 )
             ).scalars().all()
         )
-        if campaign.player_character_id:
-            if campaign.player_character_id not in participant_ids:
-                self._session.add(
-                    SceneParticipant(
-                        scene_id=target.id,
-                        entity_id=campaign.player_character_id,
-                    )
+        if (
+            campaign.player_character_id
+            and campaign.player_character_id not in participant_ids
+        ):
+            self._session.add(
+                SceneParticipant(
+                    scene_id=target.id,
+                    entity_id=campaign.player_character_id,
                 )
-                participant_ids.add(campaign.player_character_id)
+            )
+            participant_ids.add(campaign.player_character_id)
 
         if location_id:
             for participant_id in participant_ids:
