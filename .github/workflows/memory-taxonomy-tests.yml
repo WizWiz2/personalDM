@@ -1,0 +1,67 @@
+name: Memory taxonomy
+
+on:
+  pull_request:
+    paths:
+      - "src/backend/app/models/memory_taxonomy.py"
+      - "src/backend/app/db/memory_taxonomy_table.py"
+      - "src/backend/app/db/repositories/fact_repo.py"
+      - "src/backend/app/db/repositories/narrative_detail_repo.py"
+      - "src/backend/app/services/memory_taxonomy.py"
+      - "src/backend/app/services/memory_context_guard.py"
+      - "src/backend/app/services/memory_scribe.py"
+      - "src/backend/app/services/canon_semantics.py"
+      - "src/backend/app/services/canon_applier.py"
+      - "src/backend/app/services/continuity_checker.py"
+      - "src/backend/app/services/post_turn_processor.py"
+      - "src/backend/alembic/**"
+      - "src/backend/tests/test_memory_taxonomy.py"
+      - ".github/workflows/memory-taxonomy-tests.yml"
+
+jobs:
+  memory-taxonomy:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: src/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: Compile backend
+        run: python -m compileall -q app tests
+      - name: Validate migration cycle
+        run: |
+          rm -rf data
+          alembic upgrade head
+          alembic downgrade f0a1b2c3d4e5
+          alembic upgrade head
+      - name: Run memory taxonomy contracts
+        run: |
+          pytest -q \
+            tests/test_memory_taxonomy.py \
+            tests/test_canon_semantics.py \
+            tests/test_canon_versioning.py \
+            --tb=short
+      - name: Lint changed files
+        run: |
+          ruff check --extend-ignore BLE001 \
+            app/config.py \
+            app/main.py \
+            app/models/fact.py \
+            app/models/memory_taxonomy.py \
+            app/models/proposed_change.py \
+            app/db/memory_taxonomy_table.py \
+            app/db/repositories/fact_repo.py \
+            app/db/repositories/narrative_detail_repo.py \
+            app/services/memory_taxonomy.py \
+            app/services/memory_context_guard.py \
+            app/services/canon_semantics.py \
+            app/services/canon_applier.py \
+            app/services/continuity_checker.py \
+            app/services/post_turn_processor.py \
+            tests/test_memory_taxonomy.py

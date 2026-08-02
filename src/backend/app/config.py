@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     NARRATOR_TEMPERATURE: float = 0.55
     NARRATOR_RETRY_TEMPERATURE: float = 0.3
 
+    # Transient narrative texture is remembered briefly inside the current scene only.
+    NARRATIVE_DETAIL_TURN_WINDOW: int = 3
+    NARRATIVE_DETAIL_MAX_ITEMS: int = 8
+
     # The planner is a compact structured control call before prose generation.
     PLANNER_TEMPERATURE: float = 0.15
     PLANNER_MAX_TOKENS: int = 900

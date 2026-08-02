@@ -240,7 +240,7 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
 def test_simulation_database_runs_real_alembic_chain(tmp_path):
     path = tmp_path / "simulation.db"
     revision = upgrade_simulation_database(path)
-    assert revision == "f0a1b2c3d4e5"
+    assert revision == "a1b2c3d4e5f6"
     assert current_revision(path) == revision
     with sqlite3.connect(path) as connection:
         columns = {
@@ -373,6 +373,33 @@ def test_simulation_database_runs_real_alembic_chain(tmp_path):
             "validator_model_name",
             "failure_reason",
         } <= validation_columns
+        profile_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(fact_memory_profiles)"
+            ).fetchall()
+        }
+        assert {
+            "fact_id",
+            "memory_kind",
+            "subject_entity_id",
+        } <= profile_columns
+        detail_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(narrative_details)"
+            ).fetchall()
+        }
+        assert {
+            "campaign_id",
+            "scene_id",
+            "source_turn_id",
+            "subject_entity_id",
+            "detail_type",
+            "text",
+            "visibility",
+            "turn_window",
+        } <= detail_columns
 
 
 @pytest.mark.asyncio

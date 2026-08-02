@@ -14,6 +14,7 @@ from app.models.proposed_change import ChangeType
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar
 from app.services.memory_scribe import MemoryScribe
+from app.services.memory_taxonomy import MemoryTaxonomyService
 from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.thesis_curator import ThesisCurator
 
@@ -120,6 +121,28 @@ class PostTurnProcessor:
                         for proposal in proposals
                         if proposal.change_type != ChangeType.SCENE_THESIS
                     ]
+                    taxonomy = MemoryTaxonomyService(self._session)
+                    proposals = await taxonomy.classify_batch(
+                        campaign_id,
+                        assistant.scene_id,
+                        proposals,
+                    )
+                    texture = await taxonomy.extract_narrative_details(
+                        campaign_id,
+                        assistant.scene_id,
+                        assistant.content,
+                    )
+                    existing_detail_texts = {
+                        str(proposal.payload.get("text") or "").casefold().strip()
+                        for proposal in proposals
+                        if proposal.change_type == ChangeType.NARRATIVE_DETAIL
+                    }
+                    proposals.extend(
+                        proposal
+                        for proposal in texture
+                        if str(proposal.payload.get("text") or "").casefold().strip()
+                        not in existing_detail_texts
+                    )
                     proposals.extend(registration.gap_proposals(assistant.scene_id))
                     proposals = await ProposalPresenceResolver(
                         self._session
