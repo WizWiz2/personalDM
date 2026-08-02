@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.scene_repo import SceneRepository
 from app.models.memory_taxonomy import MemoryKind, NarrativeDetailType
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 
@@ -88,38 +89,11 @@ class MemoryTaxonomyService:
         r"\bcapital\b",
         r"\btrue name\b",
     )
-    SCENE_STATE_PATTERNS = (
-        r"\bдвер\w*\b",
-        r"\bокн\w*\b",
-        r"\bворот\w*\b",
-        r"\bогон\w*\b",
-        r"\bплам\w*\b",
-        r"\bслед\w*\b",
-        r"\bкров\w*\b",
-        r"\bзамок\w*\b",
-        r"\bкомнат\w*\b",
-        r"\bпроход\w*\b",
-        r"\bоткрыт\w*\b",
-        r"\bзакрыт\w*\b",
-        r"\bзаперт\w*\b",
-        r"\bразруш\w*\b",
-        r"\bгорит\w*\b",
-        r"\bdoor\b",
-        r"\bwindow\b",
-        r"\bgate\b",
-        r"\bfire\b",
-        r"\btrail\b",
-        r"\bblood\b",
-        r"\bopen\b",
-        r"\bclosed\b",
-        r"\blocked\b",
-        r"\bbroken\b",
-        r"\bburning\b",
-    )
 
     def __init__(self, session: AsyncSession):
         self._session = session
         self._entities = EntityRepository(session)
+        self._scenes = SceneRepository(session)
 
     async def classify_batch(
         self,
@@ -130,13 +104,7 @@ class MemoryTaxonomyService:
         if not proposals:
             return proposals
 
-        aliases: dict[str, str] = {}
-        for entity in await self._entities.list_by_campaign(campaign_id):
-            for name in (entity.canonical_name, *entity.aliases):
-                normalized = self._normalize(name)
-                if normalized:
-                    aliases[normalized] = str(entity.id)
-
+        aliases = await self._entity_aliases(campaign_id)
         results: list[ProposedChangeCreate] = []
         for proposal in proposals:
             if proposal.change_type == ChangeType.FACT:
@@ -164,6 +132,117 @@ class MemoryTaxonomyService:
                 continue
             results.append(proposal)
         return results
+
+    async def extract_narrative_details(
+        self,
+        campaign_id: UUID,
+        scene_id: UUID | None,
+        assistant_content: str,
+    ) -> list[ProposedChangeCreate]:
+        """Extract a bounded scene-texture cache independently from durable Scribe output."""
+        if not scene_id or not assistant_content.strip():
+            return []
+        scene = await self._scenes.get_by_id(scene_id)
+        if not scene or scene.campaign_id != campaign_id:
+            return []
+
+        entities = await self._entities.list_by_campaign(campaign_id)
+        present_ids = {str(value) for value in scene.participants}
+        present_aliases: dict[str, str] = {}
+        absent_character_aliases: set[str] = set()
+        for entity in entities:
+            if entity.entity_type != "character":
+                continue
+            target = (
+                present_aliases
+                if str(entity.id) in present_ids
+                else absent_character_aliases
+            )
+            for name in (entity.canonical_name, *entity.aliases):
+                normalized = self._normalize(name)
+                if len(normalized) < 3:
+                    continue
+                if isinstance(target, dict):
+                    target[normalized] = str(entity.id)
+                else:
+                    target.add(normalized)
+
+        results: list[ProposedChangeCreate] = []
+        seen: set[str] = set()
+        sentences = re.split(r"(?<=[.!?…])\s+|[\r\n]+", assistant_content)
+        for index, raw_sentence in enumerate(sentences):
+            sentence = " ".join(raw_sentence.split()).strip()
+            normalized = self._normalize(sentence)
+            if len(sentence) < 8 or len(sentence) > 500:
+                continue
+            if not self._matches(self.TRANSIENT_PATTERNS, normalized):
+                continue
+            if any(
+                self._contains_alias(normalized, alias)
+                for alias in absent_character_aliases
+            ):
+                continue
+            signature = normalized
+            if signature in seen:
+                continue
+            seen.add(signature)
+
+            subject_entity_id = next(
+                (
+                    entity_id
+                    for alias, entity_id in sorted(
+                        present_aliases.items(),
+                        key=lambda item: len(item[0]),
+                        reverse=True,
+                    )
+                    if self._contains_alias(normalized, alias)
+                ),
+                None,
+            )
+            payload = {
+                "scene_id": str(scene_id),
+                "text": sentence,
+                "detail_type": self._detail_type(sentence).value,
+                "visibility": "public",
+                "turn_window": max(
+                    1,
+                    min(12, int(settings.NARRATIVE_DETAIL_TURN_WINDOW)),
+                ),
+                "_memory": {
+                    "kind": MemoryKind.NARRATIVE_DETAIL.value,
+                    "classifier": "deterministic-texture-v1",
+                },
+                "_canon": {
+                    "outcome_id": f"texture-{index + 1}",
+                    "kind": "narrative_detail",
+                    "description": sentence,
+                    "evidence": sentence,
+                    "authority": "public_observation",
+                    "operation": "assert",
+                    "cardinality": "multi",
+                    "durable": False,
+                },
+            }
+            if subject_entity_id:
+                payload["subject_entity_id"] = subject_entity_id
+            results.append(
+                ProposedChangeCreate(
+                    change_type=ChangeType.NARRATIVE_DETAIL,
+                    payload=payload,
+                )
+            )
+            if len(results) >= settings.NARRATIVE_DETAIL_MAX_ITEMS:
+                break
+        return results
+
+    async def _entity_aliases(self, campaign_id: UUID) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for entity in await self._entities.list_by_campaign(campaign_id):
+            for name in (entity.canonical_name, *entity.aliases):
+                normalized = self._normalize(name)
+                if normalized:
+                    aliases[normalized] = str(entity.id)
+        return aliases
 
     def _classify_fact(
         self,
@@ -206,7 +285,6 @@ class MemoryTaxonomyService:
                 subject_entity_id=subject_entity_id,
             )
             if not normalized:
-                # Without an authoritative scene, transient prose cannot be retained.
                 return None
             return ProposedChangeCreate(
                 change_type=ChangeType.NARRATIVE_DETAIL,
@@ -327,7 +405,10 @@ class MemoryTaxonomyService:
     @classmethod
     def _detail_type(cls, text: str) -> NarrativeDetailType:
         normalized = cls._normalize(text)
-        if re.search(r"\b(взгляд|посмотр|глянул|отвел|отвела|gaze|glanc)\w*\b", normalized):
+        if re.search(
+            r"\b(взгляд|посмотр|глянул|отвел|отвела|gaze|glanc)\w*\b",
+            normalized,
+        ):
             return NarrativeDetailType.GAZE
         if re.search(r"\b(улыб|выражени|лиц|smil|expression)\w*\b", normalized):
             return NarrativeDetailType.EXPRESSION
@@ -337,9 +418,15 @@ class MemoryTaxonomyService:
             return NarrativeDetailType.POSE
         if re.search(r"\b(дожд|ветер|шум|свет|ambient|rain|wind)\w*\b", normalized):
             return NarrativeDetailType.AMBIENT
-        if re.search(r"\b(запах|звук|вкус|холод|тепл|smell|sound|cold|warm)\w*\b", normalized):
+        if re.search(
+            r"\b(запах|звук|вкус|холод|тепл|smell|sound|cold|warm)\w*\b",
+            normalized,
+        ):
             return NarrativeDetailType.SENSORY
-        if re.search(r"\b(слева|справа|рядом|позади|у двери|left|right|behind|near)\b", normalized):
+        if re.search(
+            r"\b(слева|справа|рядом|позади|у двери|left|right|behind|near)\b",
+            normalized,
+        ):
             return NarrativeDetailType.SPATIAL
         return NarrativeDetailType.OTHER
 
@@ -374,6 +461,10 @@ class MemoryTaxonomyService:
     @staticmethod
     def _matches(patterns: tuple[str, ...], text: str) -> bool:
         return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
+
+    @staticmethod
+    def _contains_alias(text: str, alias: str) -> bool:
+        return bool(re.search(rf"(?<!\w){re.escape(alias)}(?!\w)", text))
 
     @staticmethod
     def _normalize(value: object) -> str:
