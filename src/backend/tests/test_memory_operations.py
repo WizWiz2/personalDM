@@ -58,6 +58,10 @@ async def _setup(db_session: AsyncSession):
             scope="campaign",
         ),
     )
+    generated_profile = await db_session.get(FactMemoryProfile, str(fact.id))
+    assert generated_profile is not None
+    await db_session.delete(generated_profile)
+    await db_session.flush()
 
     detail = await NarrativeDetailRepository(db_session).create(
         campaign_id,
