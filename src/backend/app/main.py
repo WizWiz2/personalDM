@@ -19,6 +19,9 @@ from app.api.world_state import router as world_state_router
 from app.config import settings
 from app.db.engine import get_session
 from app.services.post_turn_processor import PostTurnWorker
+from app.services.scene_context_guard import install as install_scene_context_guard
+
+install_scene_context_guard()
 
 
 @asynccontextmanager
