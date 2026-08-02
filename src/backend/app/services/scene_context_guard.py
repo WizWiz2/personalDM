@@ -78,9 +78,14 @@ async def _memory_packages(
                     else MemoryClass.WORLD_CANON
                 )
                 subject_entity_id = None
-            if memory_class == MemoryClass.ENTITY_STATE:
-                if not subject_entity_id or subject_entity_id not in relevant_entities:
-                    continue
+            if (
+                memory_class == MemoryClass.ENTITY_STATE
+                and (
+                    not subject_entity_id
+                    or subject_entity_id not in relevant_entities
+                )
+            ):
+                continue
             if memory_class == MemoryClass.SCENE_STATE and fact.scene_id != scene_id:
                 continue
             buckets[memory_class].append(fact)
