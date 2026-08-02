@@ -1,6 +1,13 @@
+from contextvars import ContextVar
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+
+_current_execution: ContextVar["ActionSequenceExecution | None"] = ContextVar(
+    "current_action_sequence_execution",
+    default=None,
+)
 
 
 class ExecutedActionStep(BaseModel):
@@ -30,6 +37,11 @@ class ActionSequenceExecution(BaseModel):
     blocked_step_index: int | None = None
     steps: list[ExecutedActionStep] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def publish_for_narrator(self):
+        _current_execution.set(self)
+        return self
+
     @property
     def blocked(self) -> bool:
         return self.blocked_step_index is not None
@@ -37,3 +49,13 @@ class ActionSequenceExecution(BaseModel):
     @property
     def prepared(self) -> bool:
         return self.status == "prepared"
+
+
+def set_current_execution(execution: ActionSequenceExecution | None) -> None:
+    _current_execution.set(execution)
+
+
+def take_current_execution() -> ActionSequenceExecution | None:
+    execution = _current_execution.get()
+    _current_execution.set(None)
+    return execution
