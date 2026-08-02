@@ -88,9 +88,12 @@ class NarrativeDetailRepository(BaseRepository):
             if age is None or age >= row.ttl_turns:
                 continue
             item = self._to_read(row)
-            if acting_character_id and item.participant_ids:
-                if acting_character_id not in item.participant_ids:
-                    continue
+            if (
+                acting_character_id
+                and item.participant_ids
+                and acting_character_id not in item.participant_ids
+            ):
+                continue
             details.append(item)
             if len(details) >= max(1, max_items):
                 break
