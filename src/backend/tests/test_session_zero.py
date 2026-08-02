@@ -1,8 +1,12 @@
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.services.entity_registrar import EntityRegistrationResult
+
+
+pytestmark = pytest.mark.session_zero_enforced
 
 
 async def narrator_stream(*args, **kwargs):
