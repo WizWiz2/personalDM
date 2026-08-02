@@ -14,6 +14,7 @@ from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant
 from app.models.action_sequence import ActionSequenceExecution
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate, SceneRead
+from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.scene_state_service import SceneStateService
 from app.services.turn_planner import ActionSequencePlan, SceneTransitionPlan
@@ -39,6 +40,7 @@ class SceneTransitionExecutor:
         self._scenes = SceneRepository(session)
         self._locations = LocationRepository(session)
         self._state = SceneStateService(session)
+        self._bridges = SceneBridgeService(session)
 
     async def existing_for_turn(
         self,
@@ -193,6 +195,16 @@ class SceneTransitionExecutor:
         )
         self._session.add(row)
         await self._session.flush()
+        await self._bridges.create_for_transition(
+            campaign_id,
+            transition_id,
+            source_scene_id,
+            target_scene.id,
+            reason=plan.reason,
+            requested_summary=plan.bridge_summary,
+            carryover_goals=plan.carryover_goals,
+            unresolved_threads=plan.unresolved_threads,
+        )
         return self._to_applied(row, target_scene)
 
     async def _apply_action_sequence(
@@ -265,6 +277,7 @@ class SceneTransitionExecutor:
                 return False
         if row.status == "prepared":
             row.status = "applied"
+            await self._bridges.mark_status(transition_id, "applied")
             await self._session.flush()
         return row.status == "applied"
 
@@ -319,6 +332,7 @@ class SceneTransitionExecutor:
             target.status = "abandoned"
         row.status = "rolled_back"
         row.undone_at = datetime.utcnow()
+        await self._bridges.mark_status(transition_id, "rolled_back")
         await self._session.flush()
         return True
 
