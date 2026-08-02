@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PersonalDM Memory Operations</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    body { margin: 0; background: #11131a; color: #e9edf5; }
+    header { position: sticky; top: 0; padding: 14px 20px; background: #181b25; border-bottom: 1px solid #303544; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    main { padding:18px; display:grid; gap:16px; }
+    select, button, a { background:#252a38; color:inherit; border:1px solid #41495d; border-radius:8px; padding:8px 10px; text-decoration:none; }
+    button { cursor:pointer; }
+    section, .metric { background:#181b25; border:1px solid #303544; border-radius:12px; padding:14px; }
+    .health { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }
+    .metric strong { display:block; font-size:24px; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { border-top:1px solid #303544; padding:8px; text-align:left; vertical-align:top; }
+    th { color:#aeb7ca; }
+    pre { white-space:pre-wrap; margin:0; }
+    .ok { color:#7fe3a1; } .bad { color:#ff8d8d; } .muted { color:#98a2b8; }
+    .issues { padding:10px 12px; border:1px solid #713f46; border-radius:8px; background:#28171b; }
+  </style>
+</head>
+<body>
+<header>
+  <strong>Memory Operations</strong>
+  <select id="campaign"></select>
+  <button id="reload">Обновить</button>
+  <button id="preview">Dry-run</button>
+  <button id="apply">Применить показанный cleanup</button>
+  <a href="/api/debugger">Campaign Debugger</a>
+  <span id="status" class="muted"></span>
+</header>
+<main>
+  <div id="health" class="health"></div>
+  <section><h2>Проблемы</h2><div id="issues"></div></section>
+  <section><h2>План обслуживания</h2><div id="maintenance"></div></section>
+  <section><h2>Слои facts</h2><div id="facts"></div></section>
+  <section><h2>Transient narrative details</h2><div id="details"></div></section>
+  <section><h2>Scene theses и lifecycle</h2><div id="theses"></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let snapshot = null;
+function table(rows, cols) {
+  if (!rows?.length) return '<p class="muted">Пусто</p>';
+  return `<table><thead><tr>${cols.map(c=>`<th>${esc(c[0])}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${cols.map(c=>`<td>${c[2] ? c[2](r[c[1]],r) : esc(r[c[1]])}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+}
+async function campaigns() {
+  const rows = await fetch('/api/campaigns').then(r=>r.json());
+  $('campaign').innerHTML = rows.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  if (rows.length) await load(); else $('status').textContent='Нет кампаний';
+}
+async function load() {
+  const id=$('campaign').value; if(!id)return;
+  $('status').textContent='Загрузка…';
+  snapshot=await fetch(`/api/campaigns/${id}/memory-ops`).then(r=>r.json());
+  $('status').textContent='Диагностика обновлена';
+  $('health').innerHTML=Object.entries(snapshot.health||{}).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
+  $('issues').innerHTML=(snapshot.issues||[]).length
+    ? `<div class="issues"><ul>${snapshot.issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
+    : '<p class="ok">Проблем не обнаружено.</p>';
+  $('facts').innerHTML=table(snapshot.facts,[
+    ['Kind','memory_kind',(v,r)=>esc(v||`missing → ${r.inferred_kind}`)],
+    ['Subject','subject'],['Predicate','predicate'],['Value','object_value'],['Scope','scope'],
+    ['Entity','subject_entity_name'],['Current','is_current'],['Issues','issues',(v)=>esc((v||[]).join(', '))]
+  ]);
+  $('details').innerHTML=table(snapshot.narrative_details,[
+    ['Scene','scene_title'],['Type','detail_type'],['Text','text'],['Entity','subject_entity_name'],
+    ['Age','age_turns'],['Window','turn_window'],['Expired','expired_candidate',(v)=>v?'<span class="bad">да</span>':'нет'],
+    ['Reason','expiry_reason'],['Issues','issues',(v)=>esc((v||[]).join(', '))]
+  ]);
+  $('theses').innerHTML=table(snapshot.theses,[
+    ['Scene','scene_title'],['Type','type'],['Text','text'],['Priority','priority'],['Pinned','pinned'],
+    ['Age','age_turns'],['TTL','ttl_turns'],['Status','status'],['Maintenance','maintenance_reason'],['Closure','closure_reason']
+  ]);
+}
+async function maintain(applyChanges) {
+  const id=$('campaign').value; if(!id)return;
+  if (applyChanges && !confirm('Применить именно показанный безопасный cleanup? Канон не переписывается.')) return;
+  $('status').textContent=applyChanges?'Применение…':'Расчёт dry-run…';
+  const result=await fetch(`/api/campaigns/${id}/memory-ops/maintenance`,{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({apply_changes:applyChanges})
+  }).then(r=>r.json());
+  $('maintenance').innerHTML=`<p><strong>${result.applied?'Применено':'Только план'}</strong></p>`+table(result.actions,[
+    ['Action','action'],['Type','target_type'],['ID','target_id'],['Reason','reason']
+  ]);
+  $('status').textContent=result.applied?'Cleanup применён':'Dry-run готов';
+  if (result.applied) await load();
+}
+$('reload').onclick=load;
+$('campaign').onchange=load;
+$('preview').onclick=()=>maintain(false);
+$('apply').onclick=()=>maintain(true);
+campaigns();
+</script>
+</body>
+</html>
