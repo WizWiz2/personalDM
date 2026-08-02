@@ -41,6 +41,7 @@ class OutcomeAtom(BaseModel):
         "relationship_change",
         "movement",
         "item_transfer",
+        "narrative_detail",
     ]
     description: str = Field(min_length=3, max_length=600)
     evidence: str = Field(min_length=1, max_length=600)
@@ -132,7 +133,7 @@ def proposals_from_envelope(
     data: dict[str, Any],
     authoritative_text: str,
 ) -> tuple[list[ProposedChangeCreate], CanonAudit]:
-    """Validate outcome evidence, authority and proposal coverage deterministically."""
+    """Validate evidence, authority, durability and proposal coverage."""
     if not isinstance(data, dict):
         return [], CanonAudit(envelope_valid=False, error="Scribe response is not an object")
 
@@ -188,6 +189,12 @@ def proposals_from_envelope(
         if proposal.change_type in {ChangeType.SCENE_THESIS, ChangeType.CANON_GAP}:
             audit.rejected_schema_count += 1
             continue
+        if outcome.durable and proposal.change_type == ChangeType.NARRATIVE_DETAIL:
+            audit.rejected_schema_count += 1
+            continue
+        if not outcome.durable and proposal.change_type != ChangeType.NARRATIVE_DETAIL:
+            audit.rejected_schema_count += 1
+            continue
         if not proposal.payload:
             audit.rejected_schema_count += 1
             continue
@@ -201,6 +208,7 @@ def proposals_from_envelope(
             "authority": outcome.authority.value,
             "operation": proposal.operation.value,
             "cardinality": proposal.cardinality.value,
+            "durable": outcome.durable,
         }
         if proposal.change_type == ChangeType.FACT:
             payload.setdefault("operation", proposal.operation.value)
@@ -239,6 +247,7 @@ def proposals_from_envelope(
                         "description": outcome.description,
                         "evidence": outcome.evidence,
                         "authority": outcome.authority.value,
+                        "durable": True,
                     },
                 },
             )
