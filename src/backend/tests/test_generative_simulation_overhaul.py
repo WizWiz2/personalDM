@@ -179,7 +179,10 @@ def generated_arc_payload():
 
 
 def test_generated_catalog_converts_to_runtime_scenario():
-    catalog = CampaignCatalog(seed="unit", arcs=[GeneratedArc.model_validate(generated_arc_payload())])
+    catalog = CampaignCatalog(
+        seed="unit",
+        arcs=[GeneratedArc.model_validate(generated_arc_payload())],
+    )
     phases = catalog.runtime_phases()
     assert len(phases) == 2
     assert phases[0].completion_criteria[1].key == "gate_crossed"
@@ -202,8 +205,16 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
         pulses=(),
         director_note="Cross it",
         completion_criteria=(
-            ObjectiveCriterion("method", "A passage method is chosen", ("fact", "event")),
-            ObjectiveCriterion("crossed", "The party crossed", ("movement", "event")),
+            ObjectiveCriterion(
+                "method",
+                "A passage method is chosen",
+                ("fact", "event"),
+            ),
+            ObjectiveCriterion(
+                "crossed",
+                "The party crossed",
+                ("movement", "event"),
+            ),
         ),
     )
     phase_runtime = SimpleNamespace(
@@ -229,7 +240,7 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
 def test_simulation_database_runs_real_alembic_chain(tmp_path):
     path = tmp_path / "simulation.db"
     revision = upgrade_simulation_database(path)
-    assert revision == "e9f0a1b2c3d4"
+    assert revision == "f0a1b2c3d4e5"
     assert current_revision(path) == revision
     with sqlite3.connect(path) as connection:
         columns = {
@@ -343,6 +354,25 @@ def test_simulation_database_runs_real_alembic_chain(tmp_path):
             "departed_participant_ids",
             "negative_placement_facts",
         } <= bridge_columns
+        validation_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(narration_validation_runs)"
+            ).fetchall()
+        }
+        assert {
+            "trigger_turn_id",
+            "assistant_turn_id",
+            "scene_id",
+            "status",
+            "draft_text",
+            "final_text",
+            "attempts_json",
+            "violation_count",
+            "repair_attempts",
+            "validator_model_name",
+            "failure_reason",
+        } <= validation_columns
 
 
 @pytest.mark.asyncio
