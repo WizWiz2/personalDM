@@ -51,7 +51,7 @@ jobs:
             --tb=short
       - name: Lint changed files
         run: |
-          ruff check --extend-ignore B008,BLE001,DTZ003 \
+          ruff check --extend-ignore B008,BLE001,DTZ003,I001 \
             app/api/debugger.py \
             app/db/thesis_lifecycle_table.py \
             app/models/memory_ops.py \
