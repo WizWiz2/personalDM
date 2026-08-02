@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from app.config import settings
@@ -8,8 +9,9 @@ from app.models.turn import ChatMessage
 from app.services.context_compiler import ContextCompiler, count_tokens
 
 
+CompileContext = Callable[..., Awaitable[tuple[list[ChatMessage], dict]]]
 _INSTALLED = False
-_ORIGINAL_COMPILE_CONTEXT = ContextCompiler.compile_context
+_ORIGINAL_COMPILE_CONTEXT: CompileContext | None = None
 
 
 async def _compile_context_with_memory_taxonomy(
@@ -20,6 +22,8 @@ async def _compile_context_with_memory_taxonomy(
     current_user_content: str | None = None,
     max_budget_override: int | None = None,
 ):
+    if _ORIGINAL_COMPILE_CONTEXT is None:
+        raise RuntimeError("Memory context guard was not installed")
     messages, metadata = await _ORIGINAL_COMPILE_CONTEXT(
         self,
         campaign_id,
@@ -74,8 +78,9 @@ async def _compile_context_with_memory_taxonomy(
 
 
 def install() -> None:
-    global _INSTALLED
+    global _INSTALLED, _ORIGINAL_COMPILE_CONTEXT
     if _INSTALLED:
         return
+    _ORIGINAL_COMPILE_CONTEXT = ContextCompiler.compile_context
     ContextCompiler.compile_context = _compile_context_with_memory_taxonomy
     _INSTALLED = True
