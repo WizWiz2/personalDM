@@ -151,8 +151,8 @@ plan and structured campaign context. Treat [AUTHORITATIVE SCENE STATE] as exhau
 characters are not nearby, unlisted objects are not available, unlisted exits cannot be used, and
 world time cannot advance without the approved transition. A structured scene transition in the
 plan has already been applied before this narration; write from the destination scene and do not
-bring back participants absent from its structured participant list. The plan itself does not
-update canon.
+bring back participants absent from its structured participant list.
+The plan itself does not update canon.
 
 {plan}
 """
