@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -270,7 +270,7 @@ async def test_context_includes_only_recent_details_from_current_scene(
         campaign_id,
         SceneCreate(title="Общий зал"),
     )
-    base_time = datetime.utcnow() - timedelta(minutes=10)
+    base_time = datetime.now(UTC) - timedelta(minutes=10)
     turn_ids: list[UUID] = []
     for index in range(4):
         turn_id = uuid4()
