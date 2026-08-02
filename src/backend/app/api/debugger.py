@@ -1,5 +1,3 @@
-# ruff: noqa: I001
-
 from pathlib import Path
 from uuid import UUID
 
