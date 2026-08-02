@@ -5,8 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.repositories.campaign_repo import CampaignRepository
-from app.db.repositories.provider_config_repo import ProviderConfigRepository
+from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
 from app.models.provider_config import ProviderConfigCreate, ProviderConfigRead
 from app.providers.llm_provider import LLMProvider
@@ -16,6 +17,7 @@ class CampaignService:
     def __init__(self, session: AsyncSession):
         self._session = session
         self._campaign_repo = CampaignRepository(session)
+        self._setup_repo = CampaignSetupRepository(session)
         self._config_repo = ProviderConfigRepository(session)
         self._entity_repo = EntityRepository(session)
         self._llm_provider = LLMProvider()
@@ -31,6 +33,12 @@ class CampaignService:
                 api_key=settings.LLM_API_KEY,
                 context_window=settings.LLM_CONTEXT_WINDOW,
             ),
+        )
+        await self._setup_repo.create_draft(
+            campaign_id,
+            campaign_name=campaign.name,
+            description=campaign.description,
+            narrative_style=campaign.narrative_style,
         )
         return campaign
 
