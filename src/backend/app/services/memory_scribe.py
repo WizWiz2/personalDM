@@ -8,6 +8,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.models.memory_semantics import MemoryClass
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
@@ -33,7 +34,7 @@ HTML_PATTERN = re.compile(r"<[^>]+>")
 
 
 class MemoryScribe:
-    """Extract evidence-backed durable canon candidates from one authoritative turn."""
+    """Extract evidence-backed canon, mutable state and short-lived scene details."""
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -86,7 +87,10 @@ class MemoryScribe:
         player_name = display_by_id.get(str(player_character_id), "player")
         entity_lines = [
             f"- {display_by_id[entity_id]} [{type_by_id[entity_id]}]"
-            for entity_id in sorted(display_by_id, key=lambda value: display_by_id[value].casefold())
+            for entity_id in sorted(
+                display_by_id,
+                key=lambda value: display_by_id[value].casefold(),
+            )
         ]
         participant_names = [
             display_by_id.get(entity_id, entity_id) for entity_id in scene_participant_ids
@@ -97,13 +101,12 @@ class MemoryScribe:
         )
         fact_lines = [
             f"- {fact.subject} | {fact.predicate} | {fact.object_value or 'null'} "
-            f"[{fact.truth_status}]"
+            f"[{fact.truth_status}; scope={fact.scope}]"
             for fact in current_facts[-40:]
         ]
 
         system_prompt = f"""Ты Memory Scribe русскоязычной настольной RPG.
-Сначала выдели подтверждённые последствия одного завершённого хода, затем предложи структурированные изменения канона.
-Верни только один JSON-объект. Все тексты пиши на русском.
+Разбери только один уже завершённый ход и верни один JSON-объект. Все тексты пиши на русском.
 
 КТО ГОВОРИЛ В ОТВЕТЕ: {actor_name}
 ПЕРСОНАЖ ИГРОКА: {player_name}
@@ -115,33 +118,56 @@ class MemoryScribe:
 ТЕКУЩИЕ ОБЪЕКТИВНЫЕ FACTS:
 {chr(10).join(fact_lines) or '- нет'}
 
-КРИТИЧЕСКИЕ ПРАВИЛА:
-- Сообщение игрока является попыткой, вопросом или гипотезой, но не доказательством результата.
-- Авторитетным источником результата является только ответ ДМа.
-- Реплика NPC является character_claim: она создаёт knowledge слушателя, но не объективный fact.
-- Публично описанное ДМом наблюдение является public_observation.
-- Прямо подтверждённое ДМом изменение мира является dm_confirmed.
-- Не сохраняй атмосферу, намерения, планы и повтор уже известного.
-- Для evidence скопируй короткий точный фрагмент из ответа ДМа.
+ИСТОЧНИК ИСТИНЫ:
+- Сообщение игрока — попытка, вопрос или гипотеза, но не доказательство результата.
+- Авторитетный источник результата — только ответ ДМа.
+- Реплика NPC — character_claim: она создаёт knowledge слушателя, но не объективный fact.
+- Публичное наблюдение ДМа — public_observation.
+- Прямое подтверждение изменения мира ДМом — dm_confirmed.
+- Evidence скопируй коротким точным фрагментом из ответа ДМа.
 - Используй точные ИМЕНА сущностей, не UUID и не SELF/USER/all/N/A.
 - Scene Thesis обслуживается отдельным Curator и запрещён.
+
+КЛАССЫ ПАМЯТИ — ВЫБЕРИ РОВНО ОДИН ДЛЯ КАЖДОГО OUTCOME:
+1. world_canon + durable:
+   неизменный или исторический канон, который должен пережить любые сцены: личность,
+   происхождение, глобальный лор, установленная история, значимое завершённое событие.
+2. entity_state + until_superseded:
+   текущее изменяемое состояние конкретной сущности: местоположение, владение предметом,
+   отношение, знание, рана, статус, текущая форма. Оно живёт до следующего значения.
+3. scene_state + scene_lifetime:
+   объективное состояние, истинное только в текущей сцене: открытая дверь, локальный след,
+   разбитое окно, положение рычага, временное препятствие. Оно не переносится в следующую сцену.
+4. narrative_detail + recent_turns:
+   полезная для ближайшей прозы, но не каноническая деталь: поза, взгляд, жест, шум дождя,
+   запах, складка одежды, краткая мимика, положение руки. durable обязательно false,
+   ttl_turns от 1 до 8. Не превращай такую деталь в fact или event.
+
+НЕ СОХРАНЯЙ ВООБЩЕ:
+- стилистические формулировки без полезной непрерывности;
+- пересказ уже известного;
+- намерение игрока, не подтверждённое результатом;
+- скрытое чувство или решение героя, которое ДМ не мог объективно установить.
 
 ФОРМАТ:
 {{
   "outcomes": [
     {{
       "id": "o1",
-      "kind": "world_state|event|knowledge_transfer|relationship_change|movement|item_transfer",
-      "description": "что устойчиво изменилось",
+      "kind": "world_state|event|knowledge_transfer|relationship_change|movement|item_transfer|narrative_detail",
+      "description": "что изменилось или какая деталь временно важна",
       "evidence": "точная цитата из ответа ДМа",
       "authority": "dm_confirmed|public_observation|character_claim|player_intent",
-      "durable": true
+      "durable": true,
+      "memory_class": "world_canon|entity_state|scene_state|narrative_detail",
+      "retention": "durable|until_superseded|scene_lifetime|recent_turns",
+      "ttl_turns": null
     }}
   ],
   "proposals": [
     {{
       "outcome_id": "o1",
-      "change_type": "fact|event|relationship|movement|knowledge|item_transfer",
+      "change_type": "fact|event|relationship|movement|knowledge|item_transfer|narrative_detail",
       "operation": "assert|revise|retract|contradict",
       "cardinality": "single|multi",
       "payload": {{}}
@@ -149,24 +175,32 @@ class MemoryScribe:
   ]
 }}
 
+СОВМЕСТИМОСТЬ ТИПОВ:
+- world_canon: fact(scope=campaign) или event;
+- entity_state: fact(scope=campaign, subject_entity_id обязательно), relationship,
+  movement, knowledge или item_transfer;
+- scene_state: только fact(scope=scene);
+- narrative_detail: только narrative_detail.
+
 PAYLOAD:
-- fact: {{"subject":"устойчивый субъект","predicate":"стабильная связь","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public","scope":"scene|campaign"}}
-- scope=scene для следов, положения, состояния двери, локальной находки и любых наблюдений, истинных только здесь.
-- scope=campaign только для личности, происхождения, владения, глобального лора или устойчивого состояния, которое должно пережить смену сцены.
-- event: {{"event_type":"тип","description":"что произошло","location_id":"имя локации или null","participant_ids":["имена"]}}
+- fact: {{"subject":"понятный субъект","subject_entity_id":"точное имя сущности или null","predicate":"стабильная связь","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public","scope":"scene|campaign"}}
+- event: {{"event_type":"тип","description":"значимое завершённое событие","location_id":"имя локации или null","participant_ids":["имена"]}}
 - movement: {{"character_id":"имя","location_id":"имя локации","description":"что переместилось"}}
 - relationship: {{"subject_id":"имя","object_id":"имя","relation_type":"стабильный тип","description":"новое состояние","reason":"подтверждённая причина","intensity":0.0}}
 - knowledge: {{"recipient_id":"имя слушателя","proposition":"что он узнал или услышал","source_character_id":"имя говорящего или null","confidence":0.8,"status":"known|believed|doubted","previous_proposition":"что исправляется или null"}}
 - item_transfer: {{"item_id":"точное имя предмета","owner_id":"имя владельца или null","location_id":"имя локации или null","description":"передача"}}
+- narrative_detail: {{"detail_type":"gesture|pose|sensory|appearance|spatial|other","text":"краткая объективная деталь","participant_ids":["имена присутствующих"],"salience":0.5,"ttl_turns":3}}
 
 FACT SEMANTICS:
 - assert: нового текущего значения ещё нет;
 - revise: прежнее текущее значение уточнено или заменено;
 - contradict: ДМ прямо опроверг прежнее текущее значение;
 - retract: прежнее значение больше не считается текущим;
-- cardinality=single, если одновременно допустимо только одно значение; multi, если значений может быть несколько.
+- cardinality=single, если одновременно допустимо только одно значение; multi, если несколько.
 
-Каждый durable outcome должен иметь хотя бы один proposal. Если устойчивых изменений нет, верни пустые outcomes и proposals.
+Каждый durable outcome должен иметь хотя бы один proposal. Narrative detail тоже должен иметь
+proposal, но он будет сохранён автоматически в короткой памяти и не попадёт в canon review.
+Если полезных изменений и деталей нет, верни пустые outcomes и proposals.
 """
 
         try:
@@ -185,7 +219,7 @@ FACT SEMANTICS:
                         ),
                     ),
                 ],
-                max_tokens=1400,
+                max_tokens=1800,
                 temperature=0.0,
                 response_model=CanonEnvelope,
             )
@@ -234,14 +268,14 @@ FACT SEMANTICS:
                         f"{assistant_content}\n\n"
                         "ПРЕДЫДУЩИЙ JSON СЕМАНТИЧЕСКИ ОТКЛОНЁН:\n"
                         f"{reason}\n"
-                        "Сформируй envelope заново. Evidence должен быть точным "
-                        "фрагментом результата ДМа. Каждый durable outcome должен "
-                        "иметь нормализуемый proposal с именами только из списка "
-                        "известных сущностей."
+                        "Сформируй envelope заново. Evidence должен быть точным фрагментом "
+                        "результата ДМа. Не смешивай world_canon, entity_state, scene_state "
+                        "и narrative_detail. Каждый durable outcome должен иметь совместимый "
+                        "нормализуемый proposal с именами только из списка сущностей."
                     ),
                 ),
             ],
-            max_tokens=1400,
+            max_tokens=1800,
             temperature=0.0,
             response_model=CanonEnvelope,
         )
@@ -326,6 +360,9 @@ FACT SEMANTICS:
                     )
                 )
         audit.proposal_count = len(results)
+        audit.detail_count = sum(
+            1 for item in results if item.change_type == ChangeType.NARRATIVE_DETAIL
+        )
         self.last_audit = audit.model_dump()
         return results
 
@@ -366,7 +403,9 @@ FACT SEMANTICS:
         if match and match.group(0) in known_ids:
             return match.group(0)
         for alias, entity_id in sorted(
-            known_entities.items(), key=lambda item: len(item[0]), reverse=True
+            known_entities.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
         ):
             if alias and alias in folded:
                 return entity_id
@@ -420,12 +459,22 @@ FACT SEMANTICS:
         scene_participant_ids: list[str],
     ) -> dict | None:
         resolved = dict(payload)
-        canon_meta = resolved.get("_canon") if isinstance(resolved.get("_canon"), dict) else {}
+        canon_meta = (
+            resolved.get("_canon")
+            if isinstance(resolved.get("_canon"), dict)
+            else {}
+        )
+        memory_meta = (
+            resolved.get("_memory")
+            if isinstance(resolved.get("_memory"), dict)
+            else {}
+        )
 
         for key in (
             "character_id",
             "location_id",
             "subject_id",
+            "subject_entity_id",
             "object_id",
             "recipient_id",
             "source_character_id",
@@ -460,6 +509,8 @@ FACT SEMANTICS:
             "reason",
             "proposition",
             "previous_proposition",
+            "detail_type",
+            "text",
         ):
             if key in resolved:
                 resolved[key] = self._clean_text(resolved.get(key))
@@ -502,11 +553,45 @@ FACT SEMANTICS:
             if not resolved.get("event_type") or not resolved.get("description"):
                 return None
             resolved.setdefault("participant_ids", [])
+        elif change_type == ChangeType.NARRATIVE_DETAIL:
+            if not resolved.get("text"):
+                return None
+            participants = [
+                value
+                for value in resolved.get("participant_ids", [])
+                if value in scene_participant_ids
+            ]
+            resolved["participant_ids"] = participants
+            try:
+                salience = float(resolved.get("salience", 0.5))
+            except (TypeError, ValueError):
+                salience = 0.5
+            try:
+                ttl_turns = int(
+                    resolved.get("ttl_turns") or memory_meta.get("ttl_turns") or 3
+                )
+            except (TypeError, ValueError):
+                ttl_turns = 3
+            resolved["salience"] = min(1.0, max(0.0, salience))
+            resolved["ttl_turns"] = min(8, max(1, ttl_turns))
+            resolved["detail_type"] = resolved.get("detail_type") or "other"
+            current_scene_id = getattr(self, "_current_scene_id", None)
+            if current_scene_id is None:
+                return None
+            resolved["scene_id"] = str(current_scene_id)
         elif change_type == ChangeType.FACT:
             if not resolved.get("subject") or not resolved.get("predicate"):
                 return None
-            operation = str(resolved.get("operation") or canon_meta.get("operation") or "assert")
-            cardinality = str(resolved.get("cardinality") or canon_meta.get("cardinality") or "single")
+            operation = str(
+                resolved.get("operation")
+                or canon_meta.get("operation")
+                or "assert"
+            )
+            cardinality = str(
+                resolved.get("cardinality")
+                or canon_meta.get("cardinality")
+                or "single"
+            )
             if operation not in {"assert", "revise", "retract", "contradict"}:
                 operation = "assert"
             if cardinality not in {"single", "multi"}:
@@ -515,17 +600,42 @@ FACT SEMANTICS:
             resolved["cardinality"] = cardinality
             if operation != "retract" and not resolved.get("object_value"):
                 return None
-            scope = str(resolved.get("scope") or "scene").casefold()
-            if scope not in {"campaign", "scene"}:
-                scope = "scene"
+
+            raw_memory_class = (
+                resolved.get("memory_class")
+                or memory_meta.get("class")
+                or (
+                    MemoryClass.SCENE_STATE.value
+                    if resolved.get("scope") == "scene"
+                    else MemoryClass.WORLD_CANON.value
+                )
+            )
+            try:
+                memory_class = MemoryClass(str(raw_memory_class))
+            except ValueError:
+                return None
+            if memory_class == MemoryClass.NARRATIVE_DETAIL:
+                return None
+            resolved["memory_class"] = memory_class.value
             current_scene_id = getattr(self, "_current_scene_id", None)
-            if scope == "scene" and current_scene_id is not None:
+            if memory_class == MemoryClass.SCENE_STATE:
+                if current_scene_id is None:
+                    return None
                 resolved["scope"] = "scene"
                 resolved["scene_id"] = str(current_scene_id)
+                resolved.pop("subject_entity_id", None)
+            elif memory_class == MemoryClass.ENTITY_STATE:
+                if not resolved.get("subject_entity_id"):
+                    return None
+                resolved["scope"] = "campaign"
+                resolved.pop("scene_id", None)
             else:
                 resolved["scope"] = "campaign"
                 resolved.pop("scene_id", None)
+                resolved.pop("subject_entity_id", None)
 
         if canon_meta:
             resolved["_canon"] = canon_meta
+        if memory_meta:
+            resolved["_memory"] = memory_meta
         return {key: value for key, value in resolved.items() if value is not None}
