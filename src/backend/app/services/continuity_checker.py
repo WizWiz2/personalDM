@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -7,11 +8,12 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Item
+from app.models.memory_semantics import MemoryClass, MemoryMetadata, MemoryRetention
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 
 
 class ContinuityChecker:
-    """Perform deterministic validation of structured canon changes."""
+    """Perform deterministic validation of structured canon and memory changes."""
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -83,6 +85,81 @@ class ContinuityChecker:
             return metadata, "_canon.operation is invalid"
         return metadata, None
 
+    @staticmethod
+    def _legacy_memory(change_type: ChangeType, payload: dict) -> MemoryMetadata:
+        if change_type == ChangeType.NARRATIVE_DETAIL:
+            return MemoryMetadata(
+                memory_class=MemoryClass.NARRATIVE_DETAIL,
+                retention=MemoryRetention.RECENT_TURNS,
+                ttl_turns=payload.get("ttl_turns", 3),
+            )
+        if change_type == ChangeType.FACT:
+            if payload.get("scope") == "scene":
+                return MemoryMetadata(
+                    memory_class=MemoryClass.SCENE_STATE,
+                    retention=MemoryRetention.SCENE_LIFETIME,
+                )
+            return MemoryMetadata(
+                memory_class=MemoryClass.WORLD_CANON,
+                retention=MemoryRetention.DURABLE,
+            )
+        if change_type == ChangeType.EVENT:
+            return MemoryMetadata(
+                memory_class=MemoryClass.WORLD_CANON,
+                retention=MemoryRetention.DURABLE,
+            )
+        return MemoryMetadata(
+            memory_class=MemoryClass.ENTITY_STATE,
+            retention=MemoryRetention.UNTIL_SUPERSEDED,
+        )
+
+    @classmethod
+    def _memory_metadata(
+        cls,
+        change_type: ChangeType,
+        payload: dict,
+    ) -> tuple[MemoryMetadata | None, str | None]:
+        raw = payload.get("_memory")
+        if raw is None:
+            try:
+                return cls._legacy_memory(change_type, payload), None
+            except ValidationError as exc:
+                return None, str(exc)
+        if not isinstance(raw, dict):
+            return None, "_memory must be an object"
+        try:
+            return (
+                MemoryMetadata(
+                    memory_class=raw.get("class"),
+                    retention=raw.get("retention"),
+                    ttl_turns=raw.get("ttl_turns"),
+                ),
+                None,
+            )
+        except ValidationError as exc:
+            return None, f"Invalid memory lifecycle: {exc}"
+
+    @staticmethod
+    def _expected_memory(change_type: ChangeType) -> set[MemoryClass]:
+        if change_type == ChangeType.FACT:
+            return {
+                MemoryClass.WORLD_CANON,
+                MemoryClass.ENTITY_STATE,
+                MemoryClass.SCENE_STATE,
+            }
+        if change_type == ChangeType.EVENT:
+            return {MemoryClass.WORLD_CANON}
+        if change_type == ChangeType.NARRATIVE_DETAIL:
+            return {MemoryClass.NARRATIVE_DETAIL}
+        if change_type in {
+            ChangeType.RELATIONSHIP,
+            ChangeType.MOVEMENT,
+            ChangeType.KNOWLEDGE,
+            ChangeType.ITEM_TRANSFER,
+        }:
+            return {MemoryClass.ENTITY_STATE}
+        return set(MemoryClass)
+
     async def validate_change(
         self,
         campaign_id: UUID,
@@ -100,9 +177,18 @@ class ContinuityChecker:
         if canon_error:
             return False, canon_error
         if canon.get("authority") == "player_intent":
-            return False, "Player intent cannot directly create durable canon"
+            return False, "Player intent cannot directly create memory"
         if canon.get("authority") == "character_claim" and change_type != ChangeType.KNOWLEDGE:
-            return False, "Character claims may create knowledge, not objective world canon"
+            return False, "Character claims may create knowledge, not objective world memory"
+
+        memory, memory_error = self._memory_metadata(change_type, payload)
+        if memory_error or memory is None:
+            return False, memory_error or "Memory lifecycle is missing"
+        if memory.memory_class not in self._expected_memory(change_type):
+            return (
+                False,
+                f"{change_type.value} cannot use memory class {memory.memory_class.value}",
+            )
 
         scene, scene_participants, scene_error = await self._scene_context(
             campaign_id,
@@ -124,6 +210,29 @@ class ContinuityChecker:
                 return False, "Fact cardinality must be single or multi"
             if operation != "retract" and payload.get("object_value") is None:
                 return False, "Non-retraction fact requires object_value"
+
+            scope = payload.get("scope", "campaign")
+            if memory.memory_class == MemoryClass.WORLD_CANON and scope != "campaign":
+                return False, "world_canon fact must use campaign scope"
+            if memory.memory_class == MemoryClass.SCENE_STATE:
+                if scope != "scene" or not scene_id:
+                    return False, "scene_state fact requires the authoritative scene"
+                fact_scene_id, error = self._parse_uuid(payload.get("scene_id"), "scene_id")
+                if error:
+                    return False, error
+                if fact_scene_id != scene_id:
+                    return False, "scene_state fact must reference the current scene"
+            if memory.memory_class == MemoryClass.ENTITY_STATE:
+                if scope != "campaign":
+                    return False, "entity_state fact persists until superseded and uses campaign scope"
+                _, error = await self._entity(
+                    campaign_id,
+                    payload.get("subject_entity_id"),
+                    "subject_entity_id",
+                )
+                if error:
+                    return False, error
+
             for field_name in ("subject", "object_value"):
                 candidate = payload.get(field_name)
                 if not candidate:
@@ -294,6 +403,30 @@ class ContinuityChecker:
             )
             if not result.scalar_one_or_none():
                 return False, "Item has no item-state row"
+
+        elif change_type == ChangeType.NARRATIVE_DETAIL:
+            if not scene or not scene_id:
+                return False, "Narrative detail requires an active scene"
+            if not payload.get("text"):
+                return False, "Narrative detail requires text"
+            ttl_turns = payload.get("ttl_turns", memory.ttl_turns or 3)
+            if not isinstance(ttl_turns, int) or not 1 <= ttl_turns <= 8:
+                return False, "Narrative detail ttl_turns must be between 1 and 8"
+            salience = payload.get("salience", 0.5)
+            if not isinstance(salience, (int, float)) or not 0 <= salience <= 1:
+                return False, "Narrative detail salience must be between 0 and 1"
+            for participant in payload.get("participant_ids", []):
+                entity, error = await self._entity(
+                    campaign_id,
+                    participant,
+                    "participant_id",
+                )
+                if error:
+                    return False, error
+                if entity.entity_type == "character" and entity.id not in scene_participants:
+                    return False, (
+                        f"Narrative detail references absent character {entity.canonical_name}"
+                    )
 
         elif change_type == ChangeType.SCENE_THESIS:
             thesis_scene_id, scene_error = self._parse_uuid(
