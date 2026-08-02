@@ -35,6 +35,8 @@ class SceneTransitionPlan(BaseModel):
     time_after: str | None = Field(default=None, max_length=255)
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
     reason: str | None = Field(default=None, max_length=500)
+    sequence_payload: dict | None = Field(default=None, exclude=True)
+    execution_report: dict | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
     def validate_transition(self):
@@ -124,8 +126,13 @@ class TurnPlan(BaseModel):
 
     @model_validator(mode="after")
     def prefer_sequence_boundaries(self):
-        if self.action_sequence.steps and self.scene_transition.required:
-            self.scene_transition = SceneTransitionPlan()
+        if self.action_sequence.steps:
+            self.scene_transition = SceneTransitionPlan(
+                required=True,
+                transition_type="focus_transition",
+                reason="Execute the ordered player action sequence.",
+                sequence_payload=self.action_sequence.model_dump(),
+            )
         return self
 
     def narrator_payload(self) -> str:
@@ -292,6 +299,10 @@ The plan itself does not update canon.
     ) -> list[ChatMessage]:
         if not context_messages:
             raise TurnPlanningError("narrator received an empty context")
+        if execution is None:
+            from app.services.action_sequence_context import take_action_execution
+
+            execution = take_action_execution()
         first, *rest = context_messages
         contract = cls.NARRATOR_CONTRACT.format(plan=plan.narrator_payload())
         if execution:
