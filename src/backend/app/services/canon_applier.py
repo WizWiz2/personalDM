@@ -9,6 +9,7 @@ from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.event_repo import EventRepository
 from app.db.repositories.fact_repo import FactRepository
+from app.db.repositories.narrative_detail_repo import NarrativeDetailRepository
 from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Item, Turn
@@ -16,6 +17,7 @@ from app.models.belief import BeliefCreate
 from app.models.character import CharacterUpdate
 from app.models.event import EventCreate
 from app.models.fact import FactCreate
+from app.models.memory_taxonomy import NarrativeDetailCreate, NarrativeDetailType
 from app.models.proposed_change import ChangeType
 from app.models.relationship import RelationshipCreate
 from app.models.scene_thesis import SceneThesisCreate, ThesisType
@@ -33,6 +35,7 @@ class CanonApplier:
         self._relationships = RelationshipRepository(session)
         self._events = EventRepository(session)
         self._scenes = SceneRepository(session)
+        self._details = NarrativeDetailRepository(session)
         self._initial_state = InitialWorldStateService(session)
 
     @staticmethod
@@ -84,10 +87,37 @@ class CanonApplier:
                         if payload.get("scene_id")
                         else None
                     ),
+                    memory_kind=payload.get("memory_kind"),
+                    subject_entity_id=(
+                        UUID(payload["subject_entity_id"])
+                        if payload.get("subject_entity_id")
+                        else None
+                    ),
                 ),
                 operation=operation,
                 cardinality=self._cardinality(payload),
                 previous_object_value=payload.get("previous_object_value"),
+            )
+            return
+
+        if change_type == ChangeType.NARRATIVE_DETAIL:
+            await self._details.create(
+                campaign_id,
+                NarrativeDetailCreate(
+                    scene_id=UUID(payload["scene_id"]),
+                    text=payload.get("text"),
+                    detail_type=NarrativeDetailType(
+                        payload.get("detail_type", "other")
+                    ),
+                    subject_entity_id=(
+                        UUID(payload["subject_entity_id"])
+                        if payload.get("subject_entity_id")
+                        else None
+                    ),
+                    visibility=payload.get("visibility", "public"),
+                    source_turn_id=source_turn_id,
+                    turn_window=payload.get("turn_window", 3),
+                ),
             )
             return
 
