@@ -12,6 +12,7 @@ from app.api.entities import router as entities_router
 from app.api.locations import router as locations_router
 from app.api.memory import router as memory_router
 from app.api.scenes import router as scenes_router
+from app.api.session_zero import router as session_zero_router
 from app.api.turns import router as turns_router
 from app.api.world_state import router as world_state_router
 from app.config import settings
@@ -61,6 +62,7 @@ app.add_middleware(
 )
 
 app.include_router(campaigns_router)
+app.include_router(session_zero_router)
 app.include_router(turns_router)
 app.include_router(scenes_router)
 app.include_router(entities_router)
