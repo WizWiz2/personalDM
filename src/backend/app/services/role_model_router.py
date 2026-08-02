@@ -14,6 +14,7 @@ from app.providers.llm_provider import LLMProvider, LLMProviderError
 class ModelRole(str, Enum):
     NARRATOR = "narrator"
     PLANNER = "planner"
+    ENTITY_REGISTRAR = "entity_registrar"
     SCRIBE = "scribe"
     CURATOR = "curator"
     EVALUATOR = "evaluator"
@@ -25,6 +26,7 @@ class ModelRole(str, Enum):
 
 CONTROL_ROLES = {
     ModelRole.PLANNER,
+    ModelRole.ENTITY_REGISTRAR,
     ModelRole.SCRIBE,
     ModelRole.CURATOR,
     ModelRole.EVALUATOR,

@@ -5,7 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Campaign, Scene
+from app.db.scene_location_table import SceneLocationLink
+from app.db.tables import Campaign, Character, Scene
 from app.models.scene import SceneRead
 
 
@@ -21,8 +22,8 @@ class SceneLifecycleService:
 
     Scene prose may mention movement, but only this service changes the structured
     scene state. Activation is atomic inside the caller's transaction: the target
-    scene becomes active, every other active scene is completed, and the campaign
-    pointer is updated.
+    scene becomes active, every other active scene is completed, the campaign
+    pointer is updated, and the player character follows the scene's location.
     """
 
     def __init__(self, session: AsyncSession):
@@ -63,6 +64,18 @@ class SceneLifecycleService:
 
         target.status = "active"
         campaign.current_scene_id = target.id
+
+        location_result = await self._session.execute(
+            select(SceneLocationLink.location_id).where(
+                SceneLocationLink.scene_id == target.id
+            )
+        )
+        location_id = location_result.scalar_one_or_none()
+        if campaign.player_character_id and location_id:
+            player = await self._session.get(Character, campaign.player_character_id)
+            if player:
+                player.current_location_id = location_id
+
         await self._session.flush()
 
         scene = await self._scene_repo.get_by_id(scene_id)

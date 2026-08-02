@@ -99,6 +99,7 @@ async def resolve_proposal(
     valid, warning = await ContinuityChecker(session).validate_change(
         campaign_id,
         ProposedChangeCreate(change_type=change_type, payload=payload),
+        scene_id=turn.scene_id,
     )
     if not valid:
         await session.rollback()

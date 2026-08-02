@@ -11,7 +11,7 @@ from app.db.repositories.event_repo import EventRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Item
+from app.db.tables import Item, Turn
 from app.models.belief import BeliefCreate
 from app.models.character import CharacterUpdate
 from app.models.event import EventCreate
@@ -104,6 +104,23 @@ class CanonApplier:
                     character_id,
                     CharacterUpdate(current_location_id=location_id),
                 )
+
+            source_turn = await self._session.get(Turn, str(source_turn_id))
+            if source_turn and source_turn.scene_id:
+                source_scene_id = UUID(source_turn.scene_id)
+                scene_location_id = await self._scenes.get_location_id(source_scene_id)
+                if scene_location_id == location_id:
+                    await self._scenes.add_participant(
+                        source_scene_id,
+                        character_id,
+                        allow_movement=True,
+                    )
+                else:
+                    await self._scenes.remove_participant(
+                        source_scene_id,
+                        character_id,
+                    )
+
             await self._events.create(
                 campaign_id,
                 EventCreate(

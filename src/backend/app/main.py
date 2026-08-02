@@ -9,6 +9,7 @@ from app.api.archive import router as archive_router
 from app.api.campaigns import router as campaigns_router
 from app.api.debugger import router as debugger_router
 from app.api.entities import router as entities_router
+from app.api.locations import router as locations_router
 from app.api.memory import router as memory_router
 from app.api.scenes import router as scenes_router
 from app.api.turns import router as turns_router
@@ -63,6 +64,7 @@ app.include_router(campaigns_router)
 app.include_router(turns_router)
 app.include_router(scenes_router)
 app.include_router(entities_router)
+app.include_router(locations_router)
 app.include_router(memory_router)
 app.include_router(world_state_router)
 app.include_router(debugger_router)

@@ -69,9 +69,9 @@ jobs:
         working-directory: src/backend
         run: pytest -q tests/test_simulation_director.py tests/test_simulation_quality_controls.py --tb=short
 
-      - name: Test turn lifecycle
+      - name: Test turn lifecycle and scene transitions
         working-directory: src/backend
-        run: pytest -q tests/test_turns.py --tb=short
+        run: pytest -q tests/test_turns.py tests/test_turn_planner.py tests/test_scene_transition_undo.py --tb=short
 
       - name: Test legacy provider and Scribe contracts
         working-directory: src/backend

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import settings
 from app.models.turn import ChatMessage
@@ -15,8 +15,40 @@ class TurnPlanningError(RuntimeError):
     """Raised when the advisory turn plan cannot be produced or validated."""
 
 
+class SceneTransitionPlan(BaseModel):
+    """A typed scene boundary proposed by the planner before narration."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    required: bool = False
+    transition_type: Literal[
+        "none",
+        "location_transition",
+        "time_transition",
+        "focus_transition",
+    ] = "none"
+    destination_location: str | None = Field(default=None, max_length=255)
+    destination_parent_location: str | None = Field(default=None, max_length=255)
+    scene_title: str | None = Field(default=None, max_length=255)
+    elapsed_time: str | None = Field(default=None, max_length=255)
+    time_after: str | None = Field(default=None, max_length=255)
+    carry_participants: list[str] = Field(default_factory=list, max_length=8)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_transition(self):
+        if not self.required:
+            self.transition_type = "none"
+            return self
+        if self.transition_type == "none":
+            raise ValueError("required scene transition needs a transition_type")
+        if self.transition_type == "location_transition" and not self.destination_location:
+            raise ValueError("location transition needs destination_location")
+        return self
+
+
 class TurnPlan(BaseModel):
-    """Advisory, non-canonical plan used to constrain the prose narrator."""
+    """Advisory plan used to constrain prose and structured scene transitions."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -30,6 +62,9 @@ class TurnPlan(BaseModel):
         "observation",
         "transition",
     ]
+    scene_transition: SceneTransitionPlan = Field(
+        default_factory=SceneTransitionPlan
+    )
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
@@ -42,11 +77,7 @@ class TurnPlan(BaseModel):
 
 
 class TurnPlanner:
-    """Plan a narrator turn without mutating campaign truth.
-
-    The plan is intentionally advisory. Canonical mutations still flow exclusively through
-    Memory Scribe, Continuity Checker, and user-reviewed proposed changes after narration.
-    """
+    """Plan a narrator turn without directly authoring campaign prose."""
 
     SYSTEM_PROMPT = """[TURN PLANNER]
 You are the strategic planner for one tabletop RPG turn. You do not write prose or dialogue.
@@ -59,15 +90,39 @@ Your task:
 - Preserve every structured fact, scene thesis, character limitation, location, owned item, and
   knowledge boundary in the context.
 - Distinguish an attempted action from a successful outcome. Do not grant an absent ability,
-  item, movement, relationship change, or private knowledge.
+  item, relationship change, or private knowledge.
 - Keep new_fact_candidates conservative. They are proposals for later extraction, never canon.
 - Move the scene forward, but do not force a twist or major event every turn.
 - The narrator must end on a situation the player can meaningfully answer.
+
+Scene boundary rules:
+- Set scene_transition.required=true only when the player's explicit intent or its already
+  approved resolution changes physical location, advances time enough to start a new episode,
+  or clearly changes the interaction focus and participant set.
+- A private room, another building, another district, a journey, sleep until morning, or a
+  substantially later meeting is a new scene.
+- Do not keep previous participants by default. carry_participants contains only characters
+  explicitly moving with the player or explicitly present after the boundary.
+- For a location transition, destination_location must be a short canonical place name.
+  destination_parent_location should name the containing place when clear from context.
+- For a time transition, describe elapsed_time and time_after when known.
+- Do not invent a transition merely to create drama.
 
 Return only this schema:
 {
   "player_intent": "short interpretation of the player's actual intent",
   "resolution": "success|partial_success|failure|uncertain|conversation|observation|transition",
+  "scene_transition": {
+    "required": false,
+    "transition_type": "none|location_transition|time_transition|focus_transition",
+    "destination_location": null,
+    "destination_parent_location": null,
+    "scene_title": null,
+    "elapsed_time": null,
+    "time_after": null,
+    "carry_participants": [],
+    "reason": null
+  },
   "observable_consequences": ["1-4 concrete physical, informational, or social consequences"],
   "character_beats": ["who may react and what dramatic function that reaction serves"],
   "canon_constraints": ["specific facts or limits the narrator must not violate"],
@@ -81,7 +136,9 @@ Return only this schema:
 The JSON below is an internal, advisory plan. Never reveal, quote, summarize, or mention it.
 Write only the final in-world response. Follow the approved resolution and constraints. Do not
 add durable facts, abilities, items, movement, private knowledge, or outcomes absent from the
-plan and structured campaign context. The plan itself does not update canon.
+plan and structured campaign context. A structured scene transition in the plan has already
+been applied before this narration; write from the destination scene and do not bring back
+participants absent from its structured participant list. The plan itself does not update canon.
 
 {plan}
 """

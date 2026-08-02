@@ -4,7 +4,8 @@ from uuid import UUID
 from sqlalchemy import delete, select
 
 from app.db.repositories.base import BaseRepository
-from app.db.tables import Entity, Scene, SceneParticipant, SceneThesis
+from app.db.scene_location_table import SceneLocationLink
+from app.db.tables import Character, Entity, Scene, SceneParticipant, SceneThesis
 from app.models.scene import SceneCreate, SceneRead, SceneUpdate
 from app.models.scene_thesis import (
     SceneThesisCreate,
@@ -25,7 +26,13 @@ class SceneRepository(BaseRepository):
         )
         self._session.add(db_scene)
         await self._session.flush()
-        return SceneRead.model_validate(db_scene)
+        if data.location_id:
+            await self._set_location(
+                UUID(db_scene.id),
+                campaign_id,
+                data.location_id,
+            )
+        return await self._to_scene_read(db_scene)
 
     async def get_by_id(self, scene_id: UUID) -> SceneRead | None:
         result = await self._session.execute(
@@ -34,10 +41,7 @@ class SceneRepository(BaseRepository):
         db_scene = result.scalar_one_or_none()
         if not db_scene:
             return None
-
-        scene_read = SceneRead.model_validate(db_scene)
-        scene_read.participants = await self.get_participants(scene_id)
-        return scene_read
+        return await self._to_scene_read(db_scene)
 
     async def list_by_campaign(self, campaign_id: UUID) -> list[SceneRead]:
         result = await self._session.execute(
@@ -45,12 +49,10 @@ class SceneRepository(BaseRepository):
             .where(Scene.campaign_id == str(campaign_id))
             .order_by(Scene.created_at.desc())
         )
-        results = []
-        for db_scene in result.scalars().all():
-            scene_read = SceneRead.model_validate(db_scene)
-            scene_read.participants = await self.get_participants(UUID(db_scene.id))
-            results.append(scene_read)
-        return results
+        return [
+            await self._to_scene_read(db_scene)
+            for db_scene in result.scalars().all()
+        ]
 
     async def update(
         self,
@@ -64,10 +66,19 @@ class SceneRepository(BaseRepository):
         if not db_scene:
             return None
 
-        for key, value in data.model_dump(exclude_unset=True).items():
+        values = data.model_dump(exclude_unset=True)
+        location_was_set = "location_id" in values
+        location_id = values.pop("location_id", None)
+        for key, value in values.items():
             setattr(db_scene, key, value)
+        if location_was_set:
+            await self._set_location(
+                scene_id,
+                UUID(db_scene.campaign_id),
+                location_id,
+            )
         await self._session.flush()
-        return await self.get_by_id(scene_id)
+        return await self._to_scene_read(db_scene)
 
     async def delete(self, scene_id: UUID) -> bool:
         result = await self._session.execute(
@@ -80,7 +91,22 @@ class SceneRepository(BaseRepository):
         await self._session.flush()
         return True
 
-    async def add_participant(self, scene_id: UUID, entity_id: UUID) -> bool:
+    async def get_location_id(self, scene_id: UUID) -> UUID | None:
+        result = await self._session.execute(
+            select(SceneLocationLink.location_id).where(
+                SceneLocationLink.scene_id == str(scene_id)
+            )
+        )
+        value = result.scalar_one_or_none()
+        return UUID(value) if value else None
+
+    async def add_participant(
+        self,
+        scene_id: UUID,
+        entity_id: UUID,
+        *,
+        allow_movement: bool = False,
+    ) -> bool:
         scene_result = await self._session.execute(
             select(Scene).where(Scene.id == str(scene_id))
         )
@@ -97,6 +123,21 @@ class SceneRepository(BaseRepository):
         if entity.entity_type != "character":
             raise ValueError("Only character entities may participate in a scene")
 
+        character = await self._session.get(Character, str(entity_id))
+        if not character:
+            raise ValueError("Character participant has no character-state row")
+        scene_location_id = await self.get_location_id(scene_id)
+        if scene_location_id:
+            target = str(scene_location_id)
+            current = character.current_location_id
+            if current and current != target and not allow_movement:
+                raise ValueError(
+                    f"Character is at location {current} and cannot appear at {target} "
+                    "without an explicit structured movement"
+                )
+            if current != target:
+                character.current_location_id = target
+
         result = await self._session.execute(
             select(SceneParticipant).where(
                 SceneParticipant.scene_id == str(scene_id),
@@ -104,6 +145,7 @@ class SceneRepository(BaseRepository):
             )
         )
         if result.scalar_one_or_none():
+            await self._session.flush()
             return True
 
         self._session.add(
@@ -174,10 +216,7 @@ class SceneRepository(BaseRepository):
         if active_only:
             query = query.where(SceneThesis.status == "active")
         result = await self._session.execute(query)
-        return [
-            self._to_thesis_read(item)
-            for item in result.scalars().all()
-        ]
+        return [self._to_thesis_read(item) for item in result.scalars().all()]
 
     async def update_thesis(
         self,
@@ -231,6 +270,63 @@ class SceneRepository(BaseRepository):
         db_thesis.status = "resolved"
         await self._session.flush()
         return True
+
+    async def _set_location(
+        self,
+        scene_id: UUID,
+        campaign_id: UUID,
+        location_id: UUID | None,
+    ) -> None:
+        await self._session.execute(
+            delete(SceneLocationLink).where(
+                SceneLocationLink.scene_id == str(scene_id)
+            )
+        )
+        if location_id is None:
+            return
+        location = await self._session.get(Entity, str(location_id))
+        if (
+            not location
+            or location.campaign_id != str(campaign_id)
+            or location.entity_type != "location"
+        ):
+            raise ValueError("Scene location must be a location in the same campaign")
+        self._session.add(
+            SceneLocationLink(
+                scene_id=str(scene_id),
+                location_id=str(location_id),
+            )
+        )
+        await self._session.flush()
+
+    async def _to_scene_read(self, db_scene: Scene) -> SceneRead:
+        result = await self._session.execute(
+            select(SceneLocationLink.location_id, Entity)
+            .join(Entity, Entity.id == SceneLocationLink.location_id)
+            .where(SceneLocationLink.scene_id == db_scene.id)
+        )
+        location_row = result.first()
+        location_id = UUID(location_row[0]) if location_row else None
+        location_entity = location_row[1] if location_row else None
+        location_description = db_scene.location_description
+        if location_entity and not location_description:
+            location_description = location_entity.canonical_name
+            if location_entity.description:
+                location_description += f" — {location_entity.description}"
+
+        return SceneRead(
+            id=UUID(db_scene.id),
+            campaign_id=UUID(db_scene.campaign_id),
+            title=db_scene.title,
+            location_id=location_id,
+            location_description=location_description,
+            mood=db_scene.mood,
+            tension=db_scene.tension,
+            status=db_scene.status,
+            participants=await self.get_participants(UUID(db_scene.id)),
+            created_at=db_scene.created_at,
+            updated_at=db_scene.updated_at,
+        )
 
     @staticmethod
     def _to_thesis_read(db_thesis: SceneThesis) -> SceneThesisRead:

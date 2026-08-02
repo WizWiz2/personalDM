@@ -9,6 +9,8 @@ from app.db.engine import get_session
 from app.db.repositories.job_repo import PostTurnJobRepository
 from app.services.debugger_service import DebuggerService
 from app.services.post_turn_processor import PostTurnProcessor
+from app.services.presence_debugger import PresenceDebugger
+from app.services.scene_transition_debugger import SceneTransitionDebugger
 
 
 router = APIRouter(prefix="/api", tags=["debugger"])
@@ -27,7 +29,18 @@ async def campaign_debugger(
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        return await DebuggerService(session).snapshot(campaign_id, turn_limit)
+        snapshot = await DebuggerService(session).snapshot(campaign_id, turn_limit)
+        snapshot.update(
+            await SceneTransitionDebugger(session).snapshot(
+                campaign_id,
+                limit=turn_limit,
+            )
+        )
+        presence = await PresenceDebugger(session).snapshot(campaign_id)
+        presence_health = presence.pop("health", {})
+        snapshot.update(presence)
+        snapshot.setdefault("health", {}).update(presence_health)
+        return snapshot
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

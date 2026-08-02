@@ -14,6 +14,7 @@ from app.db.tables import Turn
 from app.models.turn import TurnCreate, TurnRead
 from app.services.memory_scribe_guard import install as install_memory_scribe_guard
 from app.services.turn_runner import TurnRunner
+from app.services.turn_undo_service import TurnUndoService
 
 
 install_memory_scribe_guard()
@@ -96,8 +97,7 @@ async def undo_last_pair(
     campaign_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    repo = TurnRepository(session)
-    success = await repo.undo_last_pair(campaign_id)
+    success = await TurnUndoService(session).undo_last_pair(campaign_id)
     if not success:
         raise HTTPException(
             status_code=400,
