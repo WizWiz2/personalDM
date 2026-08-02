@@ -11,6 +11,7 @@ from app.api.debugger import router as debugger_router
 from app.api.entities import router as entities_router
 from app.api.locations import router as locations_router
 from app.api.memory import router as memory_router
+from app.api.scene_state import router as scene_state_router
 from app.api.scenes import router as scenes_router
 from app.api.session_zero import router as session_zero_router
 from app.api.turns import router as turns_router
@@ -65,6 +66,7 @@ app.include_router(campaigns_router)
 app.include_router(session_zero_router)
 app.include_router(turns_router)
 app.include_router(scenes_router)
+app.include_router(scene_state_router)
 app.include_router(entities_router)
 app.include_router(locations_router)
 app.include_router(memory_router)
