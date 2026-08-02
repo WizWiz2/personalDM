@@ -8,19 +8,27 @@ _ORIGINAL_RECONCILE = ThesisCurator.reconcile
 _ORIGINAL_CLOSE_SCENE = ThesisCurator.close_scene
 
 
+def _supports_lifecycle(session) -> bool:
+    return callable(getattr(session, "execute", None)) and callable(
+        getattr(session, "flush", None)
+    )
+
+
 async def _reconcile_with_lifecycle(self, scene_id, source_turn_id, desired):
     result = await _ORIGINAL_RECONCILE(self, scene_id, source_turn_id, desired)
-    await MemoryOperationsService(self._session).record_reconcile(
-        scene_id,
-        source_turn_id,
-        desired,
-    )
+    if _supports_lifecycle(self._session):
+        await MemoryOperationsService(self._session).record_reconcile(
+            scene_id,
+            source_turn_id,
+            desired,
+        )
     return result
 
 
 async def _close_scene_with_lifecycle(self, scene_id):
     result = await _ORIGINAL_CLOSE_SCENE(self, scene_id)
-    await MemoryOperationsService(self._session).record_closed_scene(scene_id)
+    if _supports_lifecycle(self._session):
+        await MemoryOperationsService(self._session).record_closed_scene(scene_id)
     return result
 
 
