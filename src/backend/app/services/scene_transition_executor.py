@@ -13,6 +13,7 @@ from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate, SceneRead
 from app.services.scene_lifecycle import SceneLifecycleService
+from app.services.scene_state_service import SceneStateService
 from app.services.turn_planner import SceneTransitionPlan
 
 
@@ -28,18 +29,13 @@ class AppliedSceneTransition:
 
 
 class SceneTransitionExecutor:
-    """Prepare, finalize and compensate structured scene boundaries.
-
-    A transition is committed as ``prepared`` before the narrator starts streaming.
-    This prevents a second SQLite session from accidentally rolling back an open
-    write transaction. A successful assistant turn finalizes it as ``applied``;
-    generation failure performs an explicit compensating rollback.
-    """
+    """Prepare, finalize and compensate structured scene boundaries."""
 
     def __init__(self, session: AsyncSession):
         self._session = session
         self._scenes = SceneRepository(session)
         self._locations = LocationRepository(session)
+        self._state = SceneStateService(session)
 
     async def existing_for_turn(
         self,
@@ -102,11 +98,20 @@ class SceneTransitionExecutor:
             else None
         )
         target_location_id = source_location_id
+        destination_created = False
         if plan.transition_type == "location_transition":
-            target_location_id = await self._resolve_or_create_location(
+            target_location_id, destination_created = (
+                await self._resolve_or_create_location(
+                    campaign_id,
+                    plan.destination_location or "",
+                    plan.destination_parent_location,
+                )
+            )
+            await self._state.ensure_destination(
                 campaign_id,
-                plan.destination_location or "",
-                plan.destination_parent_location,
+                source_location_id,
+                target_location_id,
+                allow_discovery=destination_created,
             )
 
         target_scene = await self._scenes.create(
@@ -116,6 +121,12 @@ class SceneTransitionExecutor:
                 location_id=target_location_id,
                 location_description=None,
             ),
+        )
+        await self._state.inherit_transition_state(
+            source_scene_id,
+            target_scene.id,
+            elapsed_time=plan.elapsed_time,
+            time_after=plan.time_after,
         )
 
         participant_ids = await self._participants_to_carry(
@@ -183,6 +194,9 @@ class SceneTransitionExecutor:
 
         campaign_id = UUID(row.campaign_id)
         if row.source_scene_id:
+            await self._restore_scene_participant_locations(
+                UUID(row.source_scene_id)
+            )
             await SceneLifecycleService(self._session).activate(
                 campaign_id,
                 UUID(row.source_scene_id),
@@ -212,7 +226,7 @@ class SceneTransitionExecutor:
         campaign_id: UUID,
         destination: str,
         parent_name: str | None,
-    ) -> UUID:
+    ) -> tuple[UUID, bool]:
         clean_destination = " ".join(destination.split())
         if not clean_destination:
             raise ValueError("Destination location is empty")
@@ -220,7 +234,7 @@ class SceneTransitionExecutor:
         locations = await self._locations.list_by_campaign(campaign_id)
         match = self._match_location(locations, clean_destination)
         if match:
-            return match.id
+            return match.id, False
 
         parent_id = None
         if parent_name:
@@ -239,7 +253,7 @@ class SceneTransitionExecutor:
                 custom_fields={"created_by": "turn_planner"},
             ),
         )
-        return created.id
+        return created.id, True
 
     @staticmethod
     def _match_location(locations, name: str):
@@ -289,6 +303,17 @@ class SceneTransitionExecutor:
             if carry_all or names & requested:
                 selected.append(entity_id)
         return selected
+
+    async def _restore_scene_participant_locations(self, scene_id: UUID) -> None:
+        location_id = await self._scenes.get_location_id(scene_id)
+        if not location_id:
+            return
+        participant_ids = await self._scenes.get_participants(scene_id)
+        for participant_id in participant_ids:
+            character = await self._session.get(Character, str(participant_id))
+            if character:
+                character.current_location_id = str(location_id)
+        await self._session.flush()
 
     @staticmethod
     def _scene_title(

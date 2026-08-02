@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Scene
@@ -16,12 +17,14 @@ class TurnUndoService:
     def __init__(self, session: AsyncSession):
         self._session = session
         self._turns = TurnRepository(session)
+        self._scenes = SceneRepository(session)
 
     async def undo_last_pair(self, campaign_id: UUID) -> bool:
         turns = await self._turns.get_history(
             campaign_id,
             limit=2,
             active_only=True,
+            channel="narrative",
         )
         if len(turns) != 2:
             return False
@@ -51,9 +54,11 @@ class TurnUndoService:
 
         if transition:
             if transition.source_scene_id:
+                source_scene_id = UUID(transition.source_scene_id)
+                await self._restore_scene_participant_locations(source_scene_id)
                 await SceneLifecycleService(self._session).activate(
                     campaign_id,
-                    UUID(transition.source_scene_id),
+                    source_scene_id,
                 )
             else:
                 campaign = await self._session.get(Campaign, str(campaign_id))
@@ -75,3 +80,13 @@ class TurnUndoService:
             await self._session.flush()
 
         return True
+
+    async def _restore_scene_participant_locations(self, scene_id: UUID) -> None:
+        location_id = await self._scenes.get_location_id(scene_id)
+        if not location_id:
+            return
+        for participant_id in await self._scenes.get_participants(scene_id):
+            character = await self._session.get(Character, str(participant_id))
+            if character:
+                character.current_location_id = str(location_id)
+        await self._session.flush()

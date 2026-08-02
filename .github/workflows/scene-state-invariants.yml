@@ -1,0 +1,65 @@
+name: Scene state invariants
+
+on:
+  push:
+    branches:
+      - "agent/scene-state-invariants"
+  pull_request:
+    paths:
+      - "src/backend/app/api/scene_state.py"
+      - "src/backend/app/db/scene_state_table.py"
+      - "src/backend/app/models/scene_state.py"
+      - "src/backend/app/services/scene_context_guard.py"
+      - "src/backend/app/services/scene_lifecycle.py"
+      - "src/backend/app/services/scene_state_service.py"
+      - "src/backend/app/services/scene_transition_executor.py"
+      - "src/backend/app/services/turn_planner.py"
+      - "src/backend/app/services/turn_undo_service.py"
+      - "src/backend/alembic/versions/c7d8e9f0a1b2_add_scene_runtime_state_and_exits.py"
+      - "src/backend/tests/test_scene_state_invariants.py"
+      - ".github/workflows/scene-state-invariants.yml"
+
+jobs:
+  scene-state-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - run: python -m pip install -e "src/backend[dev]"
+      - name: Compile backend
+        run: python -m compileall -q src/backend/app src/backend/tests
+      - name: Validate migration cycle
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+          alembic downgrade b6f7c8d9e0a1
+          alembic upgrade head
+      - name: Run scene-state contracts
+        working-directory: src/backend
+        run: >-
+          pytest -q
+          tests/test_scene_state_invariants.py
+          tests/test_scene_transition_executor.py
+          tests/test_scene_transition_undo.py
+          tests/test_turns.py
+          --tb=short
+      - name: Lint scene-state files
+        working-directory: src/backend
+        run: >-
+          ruff check --ignore B008,I001,SIM102,F401,DTZ003
+          app/api/scene_state.py
+          app/db/scene_state_table.py
+          app/models/scene_state.py
+          app/services/scene_context_guard.py
+          app/services/scene_lifecycle.py
+          app/services/scene_state_service.py
+          app/services/scene_transition_executor.py
+          app/services/turn_planner.py
+          app/services/turn_undo_service.py
+          tests/test_scene_state_invariants.py

@@ -229,7 +229,7 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
 def test_simulation_database_runs_real_alembic_chain(tmp_path):
     path = tmp_path / "simulation.db"
     revision = upgrade_simulation_database(path)
-    assert revision == "b6f7c8d9e0a1"
+    assert revision == "c7d8e9f0a1b2"
     assert current_revision(path) == revision
     with sqlite3.connect(path) as connection:
         columns = {
@@ -270,6 +270,33 @@ def test_simulation_database_runs_real_alembic_chain(tmp_path):
             "boundaries_confirmed",
             "completed_at",
         } <= setup_columns
+        scene_state_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(scene_runtime_states)"
+            ).fetchall()
+        }
+        assert {
+            "scene_id",
+            "world_time_label",
+            "world_time_order",
+            "scene_goal",
+            "active_conflict",
+        } <= scene_state_columns
+        exit_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(location_exits)"
+            ).fetchall()
+        }
+        assert {
+            "campaign_id",
+            "from_location_id",
+            "to_location_id",
+            "label",
+            "discovered",
+            "active",
+        } <= exit_columns
 
 
 @pytest.mark.asyncio
