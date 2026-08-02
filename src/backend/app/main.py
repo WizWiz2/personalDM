@@ -24,10 +24,12 @@ from app.services.narration_validation_guard import (
 )
 from app.services.post_turn_processor import PostTurnWorker
 from app.services.scene_context_guard import install as install_scene_context_guard
+from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle_guard
 
 install_scene_context_guard()
 install_memory_context_guard()
 install_narration_validation_guard()
+install_thesis_lifecycle_guard()
 
 
 @asynccontextmanager
