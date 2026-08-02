@@ -9,6 +9,7 @@ from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Scene
 from app.services.action_sequence_executor import ActionSequenceExecutor
+from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 
 
@@ -19,6 +20,7 @@ class TurnUndoService:
         self._session = session
         self._turns = TurnRepository(session)
         self._scenes = SceneRepository(session)
+        self._bridges = SceneBridgeService(session)
 
     async def undo_last_pair(self, campaign_id: UUID) -> bool:
         turns = await self._turns.get_history(
@@ -106,6 +108,7 @@ class TurnUndoService:
                 target.status = "abandoned"
             transition.status = "undone"
             transition.undone_at = datetime.utcnow()
+            await self._bridges.mark_status(UUID(transition.id), "undone")
             await self._session.flush()
 
         return True
