@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -251,7 +251,7 @@ async def test_context_separates_memory_layers_and_expires_old_scene_details(
         role="assistant",
         content="Дождь стучит по окну.",
         status="active",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
     )
     db_session.add(source_turn)
     await db_session.flush()
@@ -305,7 +305,7 @@ async def test_narrative_detail_is_idempotent_and_expires_after_ttl(
     db_session: AsyncSession,
 ):
     campaign_id, hero, _, first, _ = await _setup_two_scene_campaign(db_session)
-    base = datetime.utcnow()
+    base = datetime.now(UTC)
     first_turn = Turn(
         campaign_id=str(campaign_id),
         scene_id=str(first.id),
