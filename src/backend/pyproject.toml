@@ -24,6 +24,11 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.pytest.ini_options]
+markers = [
+    "session_zero_enforced: run through the real mandatory session-zero gate",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

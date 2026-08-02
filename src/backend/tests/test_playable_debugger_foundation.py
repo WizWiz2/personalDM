@@ -93,17 +93,23 @@ def test_turn_creates_durable_runs_jobs_and_debugger_snapshot(client: TestClient
     assert response.status_code == 200
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["campaign"]["player_character_id"] == hero["id"]
-    assert snapshot["health"] == {
-        "auto_registered_npcs": 0,
-        "canon_gaps": 0,
-        "events_without_participants": 0,
-        "failed_jobs": 0,
-        "location_state_errors": 0,
-        "pending_jobs": 0,
-        "presence_state_errors": 0,
-        "running_generations": 0,
-        "scene_state_errors": 0,
-    }
+    for metric in (
+        "auto_registered_npcs",
+        "canon_gaps",
+        "events_without_participants",
+        "failed_jobs",
+        "location_state_errors",
+        "pending_jobs",
+        "presence_state_errors",
+        "running_generations",
+        "scene_state_errors",
+    ):
+        assert snapshot["health"][metric] == 0
+    # This legacy unit test intentionally bypasses only the turn-entry gate. The
+    # debugger must still reveal that its hand-built campaign has no real setup/card.
+    assert snapshot["health"]["session_zero_incomplete"] == 1
+    assert snapshot["health"]["session_zero_missing_fields"] > 0
+    assert snapshot["health"]["character_card_missing_fields"] > 0
     assert {job["job_type"] for job in snapshot["post_turn_jobs"]} == {
         "memory_scribe",
         "thesis_curator",
@@ -117,5 +123,6 @@ def test_debugger_page_is_served(client: TestClient):
     response = client.get("/api/debugger")
     assert response.status_code == 200
     assert "Campaign Debugger" in response.text
+    assert "Нулевая сессия" in response.text
     assert "NPC и физическое присутствие" in response.text
     assert "Участники событий" in response.text

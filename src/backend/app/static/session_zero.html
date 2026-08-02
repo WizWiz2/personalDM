@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PersonalDM — Нулевая сессия</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0f1118; color: #edf1f8; }
+    header { position: sticky; top: 0; z-index: 2; padding: 14px 20px; background: #181b25; border-bottom: 1px solid #303544; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    main { max-width: 1100px; margin: 0 auto; padding: 20px; display: grid; gap: 16px; }
+    section { background: #181b25; border: 1px solid #303544; border-radius: 14px; padding: 16px; }
+    h1 { font-size: 19px; margin: 0 10px 0 0; }
+    h2 { font-size: 17px; margin: 0 0 12px; }
+    h3 { font-size: 14px; margin: 16px 0 8px; color: #cbd3e4; }
+    .grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+    .wide { grid-column: 1 / -1; }
+    label { display: grid; gap: 6px; font-size: 13px; color: #aeb7ca; }
+    input, textarea, select, button { width: 100%; border: 1px solid #41495d; border-radius: 9px; background: #242938; color: #edf1f8; padding: 9px 10px; font: inherit; }
+    textarea { min-height: 82px; resize: vertical; }
+    button { cursor: pointer; width: auto; font-weight: 600; }
+    button.primary { background: #315fce; border-color: #4778e8; }
+    button.success { background: #176840; border-color: #258558; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .status { padding: 12px; border-radius: 10px; background: #131620; border: 1px solid #303544; white-space: pre-wrap; }
+    .ok { color: #7fe3a1; } .bad { color: #ff9292; } .muted { color: #98a2b8; }
+    .issues { padding: 12px; border: 1px solid #713f46; border-radius: 10px; background: #28171b; }
+    .issues ul { margin: 8px 0 0; padding-left: 20px; columns: 2; }
+    .hidden { display: none; }
+    @media(max-width:760px){ .grid{grid-template-columns:1fr}.wide{grid-column:auto}.issues ul{columns:1} }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Нулевая сессия</h1>
+  <select id="campaign"></select>
+  <button id="reload">Обновить</button>
+  <span id="headerStatus" class="muted"></span>
+</header>
+<main>
+  <section>
+    <h2>1. Кампания</h2>
+    <div class="grid">
+      <label>Название новой кампании<input id="newCampaignName" placeholder="Например: Серый Брод"></label>
+      <label>Краткое описание<input id="newCampaignDescription" placeholder="Необязательно"></label>
+      <div class="wide actions"><button id="createCampaign">Создать кампанию</button></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Мир и договорённости</h2>
+    <div class="grid">
+      <label>Название сеттинга<input id="settingName"></label>
+      <label>Жанр<input id="genre" placeholder="низкое фэнтези, космоопера..."></label>
+      <label class="wide">Завязка кампании<textarea id="premise"></textarea></label>
+      <label>Тон<input id="tone" placeholder="приземлённый, тревожный..."></label>
+      <label>Система правил<input id="rulesSystem" placeholder="свободная повествовательная"></label>
+      <label class="wide">Сводка мира<textarea id="worldSummary"></textarea></label>
+      <label>Темы, через запятую<input id="themes"></label>
+      <label>Возрастной рейтинг<input id="contentRating" placeholder="18+"></label>
+      <label class="wide">Стиль игры<textarea id="playStyle" placeholder="исследование, диалоги, конкретные последствия..."></textarea></label>
+      <label class="wide">Границы, по одной на строку<textarea id="boundaries" placeholder="не управлять героем игрока&#10;без сексуального насилия"></textarea></label>
+      <label class="wide"><span><input id="boundariesConfirmed" type="checkbox" style="width:auto"> Я подтверждаю эти границы и готов начать игру с ними</span></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. Персонаж игрока</h2>
+    <div class="grid">
+      <label class="wide">Использовать существующего героя<select id="heroSelect"></select></label>
+      <label>Имя<input id="heroName"></label>
+      <label>Краткое описание<input id="heroDescription"></label>
+      <label class="wide">Внешность<textarea id="heroAppearance"></textarea></label>
+      <label class="wide">Характер<textarea id="heroPersonality"></textarea></label>
+      <label>Ценности, через запятую<input id="heroValues"></label>
+      <label>Страхи, через запятую<input id="heroFears"></label>
+      <label>Желания, через запятую<input id="heroDesires"></label>
+      <label>Голос<input id="heroVoice"></label>
+      <label>Речевые особенности<input id="heroSpeech"></label>
+      <label class="wide">Биография<textarea id="heroBiography"></textarea></label>
+      <label class="wide">Публичная предыстория<textarea id="heroBackstory"></textarea></label>
+      <label>Способности, через запятую<input id="heroCapabilities"></label>
+      <label>Ограничения, через запятую<input id="heroLimitations"></label>
+      <label class="wide">Первая цель героя<input id="heroGoal" placeholder="найти след пропавшей экспедиции"></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. Начальная точка</h2>
+    <div class="grid">
+      <label class="wide">Использовать существующую локацию<select id="locationSelect"></select></label>
+      <label>Название новой локации<input id="locationName"></label>
+      <label>Название первой сцены<input id="startingSceneTitle"></label>
+      <label class="wide">Описание новой локации<textarea id="locationDescription"></textarea></label>
+      <label class="wide">Начальная ситуация<textarea id="startingSituation" placeholder="Что конкретно происходит в момент начала игры"></textarea></label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Проверка и запуск</h2>
+    <div class="actions">
+      <button id="saveDraft" class="primary">Сохранить черновик</button>
+      <button id="complete" class="success">Завершить нулевую сессию</button>
+      <a href="/api/debugger" style="align-self:center;color:#9eb8ff">Открыть Campaign Debugger</a>
+    </div>
+    <h3>Состояние</h3>
+    <div id="result" class="status muted">Выберите или создайте кампанию.</div>
+    <div id="missing"></div>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let setup = null;
+const splitComma = value => value.split(',').map(v=>v.trim()).filter(Boolean);
+const splitLines = value => value.split(/\n+/).map(v=>v.trim()).filter(Boolean);
+const api = async (url, options={}) => {
+  const response = await fetch(url, {headers:{'Content-Type':'application/json'}, ...options});
+  const text = await response.text();
+  let body = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = text; }
+  if (!response.ok) {
+    const error = new Error(typeof body?.detail === 'string' ? body.detail : (body?.detail?.message || response.statusText));
+    error.body = body;
+    throw error;
+  }
+  return body;
+};
+const setValue = (id, value) => { $(id).value = value ?? ''; };
+const getCampaignId = () => $('campaign').value;
+function renderMissing(state) {
+  const missing = state?.missing_fields || [];
+  $('complete').disabled = state?.status === 'completed';
+  $('saveDraft').disabled = state?.status === 'completed';
+  $('headerStatus').textContent = state ? `${state.status} · ${missing.length} незаполнено` : '';
+  $('headerStatus').className = state?.status === 'completed' ? 'ok' : 'bad';
+  if (!missing.length) {
+    $('missing').innerHTML = state ? '<p class="ok">Все обязательные поля заполнены.</p>' : '';
+    return;
+  }
+  $('missing').innerHTML = `<div class="issues"><strong>Не заполнено</strong><ul>${missing.map(v=>`<li>${v}</li>`).join('')}</ul></div>`;
+}
+async function loadCampaigns(selectId=null) {
+  const rows = await api('/api/campaigns');
+  $('campaign').innerHTML = '<option value="">Выберите кампанию</option>' + rows.map(row=>`<option value="${row.id}">${row.name}</option>`).join('');
+  if (selectId) $('campaign').value = selectId;
+  if ($('campaign').value) await loadSetup();
+}
+async function loadSetup() {
+  const id = getCampaignId();
+  if (!id) return;
+  setup = await api(`/api/campaigns/${id}/session-zero`);
+  setValue('settingName', setup.setting_name);
+  setValue('genre', setup.genre);
+  setValue('premise', setup.premise);
+  setValue('tone', setup.tone);
+  setValue('rulesSystem', setup.rules_system);
+  setValue('worldSummary', setup.world_summary);
+  setValue('themes', (setup.themes||[]).join(', '));
+  setValue('contentRating', setup.content_rating);
+  setValue('playStyle', setup.play_style);
+  setValue('boundaries', (setup.boundaries||[]).join('\n'));
+  $('boundariesConfirmed').checked = !!setup.boundaries_confirmed;
+  setValue('startingSceneTitle', setup.starting_scene_title);
+  setValue('startingSituation', setup.starting_situation);
+
+  const [entities, locations] = await Promise.all([
+    api(`/api/campaigns/${id}/entities?entity_type=character`),
+    api(`/api/campaigns/${id}/locations`)
+  ]);
+  $('heroSelect').innerHTML = '<option value="">Создать нового героя</option>' + entities.map(row=>`<option value="${row.id}">${row.canonical_name}</option>`).join('');
+  $('locationSelect').innerHTML = '<option value="">Создать новую локацию</option>' + locations.map(row=>`<option value="${row.id}">${row.canonical_name}</option>`).join('');
+  $('heroSelect').value = setup.player_character_id || '';
+  $('locationSelect').value = setup.starting_location_id || '';
+  if (setup.player_character_id) await loadHero(setup.player_character_id);
+  if (setup.starting_location_id) await loadLocation(setup.starting_location_id);
+  $('result').textContent = setup.status === 'completed' ? 'Нулевая сессия завершена. Кампания готова к игре.' : 'Черновик загружен.';
+  $('result').className = `status ${setup.status === 'completed' ? 'ok' : 'muted'}`;
+  renderMissing(setup);
+}
+async function loadHero(id) {
+  if (!id) return;
+  const card = await api(`/api/characters/${id}/card`);
+  const hero = card.character;
+  setValue('heroName', hero.canonical_name);
+  setValue('heroDescription', hero.description);
+  setValue('heroAppearance', hero.appearance);
+  setValue('heroPersonality', hero.personality);
+  setValue('heroValues', (hero.values||[]).join(', '));
+  setValue('heroFears', (hero.fears||[]).join(', '));
+  setValue('heroDesires', (hero.desires||[]).join(', '));
+  setValue('heroVoice', hero.voice);
+  setValue('heroSpeech', hero.speech_patterns);
+  setValue('heroBiography', hero.biography);
+  setValue('heroBackstory', hero.backstory_public);
+  setValue('heroCapabilities', (card.capabilities||[]).join(', '));
+  setValue('heroLimitations', (card.limitations||[]).join(', '));
+  setValue('heroGoal', card.goals?.[0]?.description || '');
+}
+async function loadLocation(id) {
+  if (!id) return;
+  const row = await api(`/api/locations/${id}`);
+  setValue('locationName', row.canonical_name);
+  setValue('locationDescription', row.description);
+}
+async function ensureHero(campaignId) {
+  let heroId = $('heroSelect').value;
+  const core = {
+    canonical_name: $('heroName').value.trim(),
+    description: $('heroDescription').value.trim() || null,
+    appearance: $('heroAppearance').value.trim() || null,
+    personality: $('heroPersonality').value.trim() || null,
+    values: splitComma($('heroValues').value),
+    fears: splitComma($('heroFears').value),
+    desires: splitComma($('heroDesires').value),
+    voice: $('heroVoice').value.trim() || null,
+    speech_patterns: $('heroSpeech').value.trim() || null,
+    biography: $('heroBiography').value.trim() || null,
+    backstory_public: $('heroBackstory').value.trim() || null
+  };
+  if (!heroId) {
+    if (!core.canonical_name) throw new Error('Укажите имя героя.');
+    const created = await api(`/api/campaigns/${campaignId}/characters`, {method:'POST',body:JSON.stringify(core)});
+    heroId = created.id;
+    $('heroSelect').innerHTML += `<option value="${heroId}">${created.canonical_name}</option>`;
+    $('heroSelect').value = heroId;
+  } else {
+    await api(`/api/characters/${heroId}`, {method:'PUT',body:JSON.stringify(core)});
+  }
+  await api(`/api/characters/${heroId}/card`, {method:'PUT',body:JSON.stringify({
+    capabilities: splitComma($('heroCapabilities').value),
+    limitations: splitComma($('heroLimitations').value)
+  })});
+  const goals = await api(`/api/characters/${heroId}/goals`);
+  const goalText = $('heroGoal').value.trim();
+  if (goalText && !goals.some(goal=>goal.description === goalText)) {
+    await api(`/api/characters/${heroId}/goals`, {method:'POST',body:JSON.stringify({description:goalText,priority:10,is_secret:false})});
+  }
+  return heroId;
+}
+async function ensureLocation(campaignId) {
+  let locationId = $('locationSelect').value;
+  if (!locationId) {
+    const name = $('locationName').value.trim();
+    if (!name) throw new Error('Укажите стартовую локацию.');
+    const created = await api(`/api/campaigns/${campaignId}/locations`, {method:'POST',body:JSON.stringify({
+      canonical_name:name,
+      description:$('locationDescription').value.trim() || null
+    })});
+    locationId = created.id;
+    $('locationSelect').innerHTML += `<option value="${locationId}">${created.canonical_name}</option>`;
+    $('locationSelect').value = locationId;
+  }
+  return locationId;
+}
+async function saveDraft() {
+  const campaignId = getCampaignId();
+  if (!campaignId) throw new Error('Сначала выберите или создайте кампанию.');
+  const [heroId, locationId] = await Promise.all([ensureHero(campaignId), ensureLocation(campaignId)]);
+  setup = await api(`/api/campaigns/${campaignId}/session-zero`, {method:'PUT',body:JSON.stringify({
+    setting_name:$('settingName').value.trim() || null,
+    genre:$('genre').value.trim() || null,
+    premise:$('premise').value.trim() || null,
+    tone:$('tone').value.trim() || null,
+    themes:splitComma($('themes').value),
+    boundaries:splitLines($('boundaries').value),
+    boundaries_confirmed:$('boundariesConfirmed').checked,
+    rules_system:$('rulesSystem').value.trim() || null,
+    world_summary:$('worldSummary').value.trim() || null,
+    starting_situation:$('startingSituation').value.trim() || null,
+    starting_location_id:locationId,
+    starting_scene_title:$('startingSceneTitle').value.trim() || null,
+    play_style:$('playStyle').value.trim() || null,
+    content_rating:$('contentRating').value.trim() || null,
+    player_character_id:heroId,
+    narrative_style:$('playStyle').value.trim() || $('tone').value.trim() || null
+  })});
+  $('result').textContent = setup.ready_to_complete ? 'Черновик сохранён. Все проверки пройдены.' : 'Черновик сохранён, но обязательные поля ещё не заполнены.';
+  $('result').className = `status ${setup.ready_to_complete ? 'ok' : 'bad'}`;
+  renderMissing(setup);
+  return setup;
+}
+async function runAction(fn) {
+  try {
+    $('saveDraft').disabled = true; $('complete').disabled = true;
+    await fn();
+  } catch (error) {
+    const missing = error.body?.detail?.missing_fields || [];
+    $('result').textContent = error.message;
+    $('result').className = 'status bad';
+    if (missing.length) renderMissing({missing_fields:missing,status:'draft'});
+  } finally {
+    if (setup?.status !== 'completed') { $('saveDraft').disabled = false; $('complete').disabled = false; }
+  }
+}
+$('createCampaign').onclick = () => runAction(async()=>{
+  const name = $('newCampaignName').value.trim();
+  if (!name) throw new Error('Укажите название кампании.');
+  const created = await api('/api/campaigns',{method:'POST',body:JSON.stringify({name,description:$('newCampaignDescription').value.trim()||null})});
+  await loadCampaigns(created.id);
+});
+$('saveDraft').onclick = () => runAction(saveDraft);
+$('complete').onclick = () => runAction(async()=>{
+  await saveDraft();
+  const completed = await api(`/api/campaigns/${getCampaignId()}/session-zero/complete`,{method:'POST',body:'{}'});
+  setup = completed.setup;
+  $('result').textContent = `Готово. Первая сцена: ${completed.scene.title}. Кампания открыта для игры.`;
+  $('result').className = 'status ok';
+  renderMissing(setup);
+});
+$('reload').onclick = loadSetup;
+$('campaign').onchange = loadSetup;
+$('heroSelect').onchange = event => event.target.value && loadHero(event.target.value);
+$('locationSelect').onchange = event => event.target.value && loadLocation(event.target.value);
+loadCampaigns();
+</script>
+</body>
+</html>
