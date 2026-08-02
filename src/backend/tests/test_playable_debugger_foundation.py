@@ -123,5 +123,6 @@ def test_debugger_page_is_served(client: TestClient):
     response = client.get("/api/debugger")
     assert response.status_code == 200
     assert "Campaign Debugger" in response.text
+    assert "Нулевая сессия" in response.text
     assert "NPC и физическое присутствие" in response.text
     assert "Участники событий" in response.text
