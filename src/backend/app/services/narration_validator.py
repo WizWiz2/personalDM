@@ -117,7 +117,7 @@ Rejected candidate:
             validator_model_name=validator_model_name,
         )
         self._session.add(row)
-        await self._session.flush()
+        await self._session.commit()
         return row
 
     async def record_attempt(
@@ -147,7 +147,7 @@ Rejected candidate:
             for item in attempt.get("violations", [])
             if item.get("severity") == "error"
         )
-        await self._session.flush()
+        await self._session.commit()
 
     async def finalize(
         self,
@@ -164,7 +164,7 @@ Rejected candidate:
         row.repair_attempts = repair_attempts
         row.failure_reason = failure_reason
         row.assistant_turn_id = str(assistant_turn_id) if assistant_turn_id else None
-        await self._session.flush()
+        await self._session.commit()
         attempts = json.loads(row.attempts_json or "[]")
         return NarrationGateResult(
             status=status,
@@ -202,7 +202,10 @@ Rejected candidate:
         messages = [
             ChatMessage(
                 role="system",
-                content=f"{self.SYSTEM_PROMPT}\n\n[AUTHORITATIVE TURN CONTEXT]\n{first.content}",
+                content=(
+                    f"{self.SYSTEM_PROMPT}\n\n"
+                    f"[AUTHORITATIVE TURN CONTEXT]\n{first.content}"
+                ),
             ),
             *rest,
             ChatMessage(
