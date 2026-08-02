@@ -1,6 +1,6 @@
 import asyncio
-import sys
 import os
+import sys
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -16,6 +16,7 @@ from app.db.engine import Base
 import app.db.tables  # Important: import all core tables so Base.metadata is populated
 import app.db.action_sequence_table  # Ordered compound action records
 import app.db.campaign_setup_table  # Session-zero contract table
+import app.db.memory_taxonomy_table  # Fact profiles and transient narrative details
 import app.db.narration_validation_table  # Post-generation validation audit
 import app.db.scene_bridge_table  # Persistent scene hand-off records
 import app.db.scene_location_table  # Structured scene location link
