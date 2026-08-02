@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.models.turn import ChatMessage
 from app.services.context_compiler import ContextCompiler
+from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_state_service import SceneStateService
 
 _INSTALLED = False
@@ -24,12 +25,18 @@ async def _compile_context_with_scene_state(self, *args, **kwargs):
     except ValueError:
         return messages, metadata
 
+    bridge = await SceneBridgeService(self._session).get_for_target_scene(
+        campaign_id,
+        scene_id,
+    )
     first, *rest = messages
-    contract = SceneStateService.prompt_contract(state)
+    contracts = [SceneStateService.prompt_contract(state)]
+    if bridge:
+        contracts.append(SceneBridgeService.prompt_contract(bridge))
     messages = [
         ChatMessage(
             role="system",
-            content=f"{first.content}\n\n{contract}",
+            content=f"{first.content}\n\n" + "\n".join(contracts),
         ),
         *rest,
     ]
@@ -48,9 +55,13 @@ async def _compile_context_with_scene_state(self, *args, **kwargs):
         ],
         "invariant_errors": state.invariant_errors,
     }
+    if bridge:
+        enriched["scene_bridge"] = bridge.model_dump(mode="json")
     layers = list(enriched.get("included_layers") or [])
     if "layer_1_authoritative_scene_state" not in layers:
         layers.append("layer_1_authoritative_scene_state")
+    if bridge and "layer_1_scene_bridge" not in layers:
+        layers.append("layer_1_scene_bridge")
     enriched["included_layers"] = layers
     return messages, enriched
 

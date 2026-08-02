@@ -11,6 +11,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Scene
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
+from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_planner import ActionSequencePlan
@@ -28,6 +29,7 @@ class ActionSequenceExecutor:
         self._session = session
         self._scenes = SceneRepository(session)
         self._transitions = SceneTransitionExecutor(session)
+        self._bridges = SceneBridgeService(session)
 
     async def existing_for_turn(
         self,
@@ -309,6 +311,7 @@ class ActionSequenceExecutor:
             target.status = "abandoned"
         transition.status = final_status
         transition.undone_at = datetime.utcnow()
+        await self._bridges.mark_status(UUID(transition.id), final_status)
 
     async def _restore_scene_participant_locations(self, scene_id: UUID) -> None:
         location_id = await self._scenes.get_location_id(scene_id)

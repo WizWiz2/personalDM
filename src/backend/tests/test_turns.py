@@ -317,7 +317,10 @@ def test_planner_transition_rebuilds_narrator_context_without_old_npcs(
         "location_transition"
     )
     assert "Гостевая комната №3" in captured["system"]
-    assert "Криповый бармен" not in captured["system"]
+    authoritative_state = captured["system"].split("[SCENE BRIDGE]", 1)[0]
+    assert "Криповый бармен" not in authoritative_state
+    assert "Криповый бармен remained" in captured["system"]
+    assert "is not present" in captured["system"]
 
     first_assistant_id = history[1]["id"]
     with patch(

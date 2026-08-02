@@ -1,0 +1,64 @@
+name: Scene bridge and narrator discipline
+
+on:
+  push:
+    branches:
+      - "agent/scene-bridge-narrator-discipline"
+  pull_request:
+    paths:
+      - "src/backend/app/db/scene_bridge_table.py"
+      - "src/backend/app/models/scene_bridge.py"
+      - "src/backend/app/services/scene_bridge_service.py"
+      - "src/backend/app/services/scene_context_guard.py"
+      - "src/backend/app/services/scene_transition_executor.py"
+      - "src/backend/app/services/action_sequence_executor.py"
+      - "src/backend/app/services/turn_planner.py"
+      - "src/backend/app/services/turn_undo_service.py"
+      - "src/backend/alembic/versions/e9f0a1b2c3d4_add_scene_bridges.py"
+      - "src/backend/tests/test_scene_bridge_narrator_discipline.py"
+      - ".github/workflows/scene-bridge-narrator-discipline.yml"
+
+jobs:
+  bridge-and-discipline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - run: python -m pip install -e "src/backend[dev]"
+      - name: Compile backend
+        run: python -m compileall -q src/backend/app src/backend/tests
+      - name: Validate migration cycle
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+          alembic downgrade d8e9f0a1b2c3
+          alembic upgrade head
+      - name: Run bridge and discipline contracts
+        working-directory: src/backend
+        run: >-
+          pytest -q
+          tests/test_scene_bridge_narrator_discipline.py
+          tests/test_turn_planner.py
+          tests/test_scene_transition_executor.py
+          tests/test_scene_transition_undo.py
+          tests/test_compound_action_sequence.py
+          --tb=short
+      - name: Lint changed files
+        working-directory: src/backend
+        run: >-
+          ruff check --ignore B008,I001,DTZ003,SIM102,F401,F841,ISC004
+          app/db/scene_bridge_table.py
+          app/models/scene_bridge.py
+          app/services/scene_bridge_service.py
+          app/services/scene_context_guard.py
+          app/services/scene_transition_executor.py
+          app/services/action_sequence_executor.py
+          app/services/turn_planner.py
+          app/services/turn_undo_service.py
+          tests/test_scene_bridge_narrator_discipline.py
