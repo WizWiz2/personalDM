@@ -269,6 +269,7 @@ def proposals_from_envelope(
 
     audit.supported_outcome_count = len(supported)
     covered: set[str] = set()
+    inferred_outcomes: set[str] = set()
     results: list[ProposedChangeCreate] = []
     seen: set[str] = set()
 
@@ -292,13 +293,15 @@ def proposals_from_envelope(
         if outcome_id not in explicit_memory:
             inferred = _infer_memory(proposal.change_type, proposal.payload)
             previous = memories.get(outcome_id)
+            if outcome_id not in inferred_outcomes:
+                inferred_outcomes.add(outcome_id)
+                audit.inferred_memory_count += 1
             if previous != inferred:
                 if outcome_id in covered:
                     audit.rejected_schema_count += 1
                     continue
                 memories[outcome_id] = inferred
                 memory = inferred
-                audit.inferred_memory_count += 1
         if not _memory_matches(proposal.change_type, memory.memory_class):
             audit.rejected_schema_count += 1
             continue
