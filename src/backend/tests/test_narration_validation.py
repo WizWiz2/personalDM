@@ -1,8 +1,8 @@
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +15,6 @@ from app.services.narration_validator import (
     NarrationValidationError,
     NarrationValidator,
 )
-
 
 INVALID_DRAFT = (
     "Криповый бармен уже стоит у кровати. "
