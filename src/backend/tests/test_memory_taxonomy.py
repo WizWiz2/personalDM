@@ -97,6 +97,29 @@ async def test_gaze_is_demoted_from_fact_to_narrative_detail(
 
 
 @pytest.mark.asyncio
+async def test_transient_texture_is_extracted_without_scribe_fact(
+    db_session: AsyncSession,
+):
+    campaign_id, scene, character = await campaign_scene_character(db_session)
+    details = await MemoryTaxonomyService(db_session).extract_narrative_details(
+        campaign_id,
+        scene.id,
+        (
+            "София на миг отвела взгляд к окну. "
+            "За стеклом ветер шевельнул мокрые ветви. "
+            "Дверь спальни теперь заперта на ключ."
+        ),
+    )
+
+    assert len(details) == 2
+    assert {item.payload["detail_type"] for item in details} == {"gaze", "ambient"}
+    gaze = next(item for item in details if item.payload["detail_type"] == "gaze")
+    assert gaze.payload["subject_entity_id"] == str(character.id)
+    assert gaze.payload["_canon"]["durable"] is False
+    assert all(item.change_type == ChangeType.NARRATIVE_DETAIL for item in details)
+
+
+@pytest.mark.asyncio
 async def test_persistent_wound_becomes_entity_state(
     db_session: AsyncSession,
 ):
