@@ -4,7 +4,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-
 FactMemoryKind = Literal["world_canon", "entity_state", "scene_state"]
 
 
