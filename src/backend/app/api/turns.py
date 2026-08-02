@@ -13,6 +13,10 @@ from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.turn import TurnCreate, TurnRead
 from app.services.memory_scribe_guard import install as install_memory_scribe_guard
+from app.services.session_zero_service import (
+    SessionZeroIncompleteError,
+    SessionZeroService,
+)
 from app.services.turn_runner import TurnRunner
 from app.services.turn_undo_service import TurnUndoService
 
@@ -27,10 +31,23 @@ async def _bind_current_scene(
     data: TurnCreate,
     session: AsyncSession,
 ) -> TurnCreate:
-    """Use campaign.current_scene_id as the authoritative scene for a new turn."""
+    """Require setup and bind the authoritative current scene for a new turn."""
     campaign = await CampaignRepository(session).get_by_id(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    try:
+        await SessionZeroService(session).require_completed(campaign_id)
+    except SessionZeroIncompleteError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "session_zero_required",
+                "message": "Complete session zero before starting narrative play",
+                "missing_fields": exc.missing_fields,
+                "session_zero_url": f"/api/campaigns/{campaign_id}/session-zero",
+            },
+        ) from exc
 
     effective_scene_id = campaign.current_scene_id or data.scene_id
     if effective_scene_id:
