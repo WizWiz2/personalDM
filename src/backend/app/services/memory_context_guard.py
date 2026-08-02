@@ -8,7 +8,6 @@ from app.db.repositories.narrative_detail_repo import NarrativeDetailRepository
 from app.models.turn import ChatMessage
 from app.services.context_compiler import ContextCompiler, count_tokens
 
-
 CompileContext = Callable[..., Awaitable[tuple[list[ChatMessage], dict]]]
 _INSTALLED = False
 _ORIGINAL_COMPILE_CONTEXT: CompileContext | None = None
