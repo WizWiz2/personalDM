@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     PLAYER_LLM_MODEL: str | None = None
     SCENARIO_BUILDER_LLM_MODEL: str | None = None
     CHARACTER_BUILDER_LLM_MODEL: str | None = None
+    NARRATION_VALIDATOR_LLM_MODEL: str | None = None
 
     # Expensive maintenance agents do not need to run after every narrative turn.
     CURATOR_INTERVAL_TURNS: int = 3
@@ -43,6 +44,13 @@ class Settings(BaseSettings):
     PLANNER_TEMPERATURE: float = 0.15
     PLANNER_MAX_TOKENS: int = 900
     PLANNER_CONTEXT_RESERVE_TOKENS: int = 700
+
+    # Narration is buffered until a control-model validation pass accepts it.
+    NARRATION_VALIDATOR_TEMPERATURE: float = 0.0
+    NARRATION_VALIDATOR_MAX_TOKENS: int = 1100
+    NARRATION_REPAIR_TEMPERATURE: float = 0.25
+    NARRATION_REPAIR_ATTEMPTS: int = 2
+    NARRATION_VALIDATOR_FAIL_OPEN: bool = True
 
     # Narrative and structured control calls have different completion needs.
     RESPONSE_RESERVE_TOKENS: int = 1536
