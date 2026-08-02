@@ -35,6 +35,9 @@ class SceneTransitionPlan(BaseModel):
     time_after: str | None = Field(default=None, max_length=255)
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
     reason: str | None = Field(default=None, max_length=500)
+    bridge_summary: str | None = Field(default=None, max_length=1200)
+    carryover_goals: list[str] = Field(default_factory=list, max_length=6)
+    unresolved_threads: list[str] = Field(default_factory=list, max_length=8)
     sequence_payload: dict | None = Field(default=None, exclude=True)
     execution_report: dict | None = Field(default=None, exclude=True)
 
@@ -97,6 +100,28 @@ class ActionSequencePlan(BaseModel):
     steps: list[ActionStepPlan] = Field(default_factory=list, max_length=8)
 
 
+class NarrationPolicy(BaseModel):
+    """Structured limits on dramatic escalation and player agency."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    dramatic_mode: Literal["calm", "routine", "tense", "dangerous"] = "calm"
+    allow_new_complication: bool = False
+    complication_source: str | None = Field(default=None, max_length=1000)
+    pending_player_choice: str | None = Field(default=None, max_length=1000)
+    protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_complication(self):
+        if self.allow_new_complication and not self.complication_source:
+            raise ValueError(
+                "allow_new_complication requires an established complication_source"
+            )
+        if not self.allow_new_complication:
+            self.complication_source = None
+        return self
+
+
 class TurnPlan(BaseModel):
     """Advisory plan used to constrain prose and structured scene transitions."""
 
@@ -114,9 +139,8 @@ class TurnPlan(BaseModel):
         "sequence",
     ]
     action_sequence: ActionSequencePlan = Field(default_factory=ActionSequencePlan)
-    scene_transition: SceneTransitionPlan = Field(
-        default_factory=SceneTransitionPlan
-    )
+    scene_transition: SceneTransitionPlan = Field(default_factory=SceneTransitionPlan)
+    narration_policy: NarrationPolicy = Field(default_factory=NarrationPolicy)
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
@@ -153,8 +177,29 @@ Your task:
 - Preserve every structured fact, scene thesis, character limitation, location, owned item, and
   knowledge boundary in the context.
 - Keep new_fact_candidates conservative. They are proposals for later extraction, never canon.
-- Move the scene forward, but do not force a twist or major event every turn.
+- Move the scene forward when the player's action or an established threat demands it. A quiet,
+  complete, or uneventful turn is valid and often preferable to invented drama.
 - The narrator must end on a situation the player can meaningfully answer.
+
+Player agency rules:
+- The player controls the protagonist's voluntary speech, choices, plans, beliefs, consent,
+  emotional conclusions, and intentional movement not already stated in the latest input.
+- Never plan a line of dialogue, decision, promise, attraction, fear, trust, refusal, attack, or
+  next action for the player character unless the player explicitly supplied it.
+- You may plan external consequences, sensory information, involuntary physical effects caused by
+  established forces, and NPC behavior.
+- Put every still-open protagonist decision in narration_policy.pending_player_choice and list the
+  protected decisions in narration_policy.protected_player_decisions.
+
+Dramatic discipline rules:
+- Set narration_policy.dramatic_mode from established scene state, not from a desire for pacing.
+- calm/routine is the default when no active conflict, threat, contest, or urgent consequence is
+  present. Such a scene may end peacefully.
+- Set allow_new_complication=true only when a specific established source already exists in the
+  supplied context or follows directly from the player's risky action. Name that source precisely.
+- Do not manufacture ominous sounds, suspicious strangers, accidents, refusals, hidden prices,
+  sudden hostility, theft, ambushes, secrets, or countdowns merely to create a hook.
+- Existing tension may continue; new tension requires evidence.
 
 Ordered intention rules:
 - If the player asks for two or more actions in an explicit order, decompose them into
@@ -191,13 +236,19 @@ Authoritative scene-state rules:
 - If the scene-state block contains invariant errors, do not normalize them in prose. Preserve the
   current structure and put the inconsistency into canon_constraints for explicit repair.
 
-Scene boundary rules:
+Scene boundary and bridge rules:
 - A private room, another building, another district, a journey, sleep until morning, or a
   substantially later meeting is a new scene.
 - Do not keep previous participants by default. carry_participants contains only characters
   explicitly moving with the player or explicitly present after the boundary.
 - For a location transition, destination_location must match an available exit when one is listed.
 - For a time transition, describe elapsed_time and time_after when known.
+- bridge_summary must summarize only the durable result of the scene being left, never its full
+  transcript or incidental atmosphere.
+- carryover_goals contains only goals still active after the boundary. unresolved_threads contains
+  only concrete open matters that remain relevant in the new scene.
+- Characters not carried will be recorded as explicitly left behind. Do not use bridge fields to
+  smuggle them into the next scene.
 - Do not invent a transition merely to create drama.
 
 Return only this schema:
@@ -223,7 +274,10 @@ Return only this schema:
           "elapsed_time": null,
           "time_after": null,
           "carry_participants": [],
-          "reason": null
+          "reason": null,
+          "bridge_summary": null,
+          "carryover_goals": [],
+          "unresolved_threads": []
         }
       }
     ]
@@ -237,7 +291,17 @@ Return only this schema:
     "elapsed_time": null,
     "time_after": null,
     "carry_participants": [],
-    "reason": null
+    "reason": null,
+    "bridge_summary": null,
+    "carryover_goals": [],
+    "unresolved_threads": []
+  },
+  "narration_policy": {
+    "dramatic_mode": "calm|routine|tense|dangerous",
+    "allow_new_complication": false,
+    "complication_source": null,
+    "pending_player_choice": null,
+    "protected_player_decisions": []
   },
   "observable_consequences": ["1-4 concrete physical, informational, or social consequences"],
   "character_beats": ["who may react and what dramatic function that reaction serves"],
@@ -256,6 +320,22 @@ plan and structured campaign context. Treat [AUTHORITATIVE SCENE STATE] as exhau
 characters are not nearby, unlisted objects are not available, unlisted exits cannot be used, and
 world time cannot advance without the approved transition.
 
+Player agency is a hard boundary:
+- Never write the protagonist's unprovided dialogue, choice, plan, belief, consent, emotional
+  conclusion, trust, attraction, fear, promise, refusal, attack, or voluntary next action.
+- Do not disguise an authored decision as bodily instinct, inevitability, remembered intention,
+  inner certainty, or a rhetorical question answered on the player's behalf.
+- You may describe what the protagonist perceives and externally caused involuntary effects, but
+  stop before the protagonist decides what those perceptions mean or what to do next.
+- Respect narration_policy.pending_player_choice and every protected_player_decision.
+
+Dramatic escalation is evidence-bound:
+- Follow narration_policy.dramatic_mode. Calm and routine scenes may remain calm and may end
+  without a threat, mystery, interruption, countdown, ominous beat, or forced hook.
+- If allow_new_complication=false, introduce no new complication of any kind.
+- If allow_new_complication=true, use only the named complication_source and do not amplify it
+  beyond the approved observable consequences.
+
 When [EXECUTED ACTION SEQUENCE] is present, it overrides dramatic pacing preferences:
 - every COMPLETED step already happened and must remain completed;
 - narrate completed safe mundane steps briefly and in order;
@@ -265,7 +345,9 @@ When [EXECUTED ACTION SEQUENCE] is present, it overrides dramatic pacing prefere
 - write from the final structured scene after the completed steps.
 
 A structured scene transition in the plan has already been applied before this narration; do not
-bring back participants absent from the destination scene's structured participant list.
+bring back participants absent from the destination scene's structured participant list. Treat a
+[SCENE BRIDGE] as the complete active hand-off from the prior scene: carry only its explicit goals,
+threads, and participants, and obey every negative placement fact.
 The plan itself does not update canon.
 
 {plan}
