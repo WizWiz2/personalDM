@@ -53,7 +53,7 @@ def passed() -> NarrationValidationResult:
     )
 
 
-async def raw_narrator(messages, *args, **kwargs):
+async def raw_narrator(_provider, messages, *args, **kwargs):
     if "[REPAIR REJECTED NARRATION]" in messages[-1].content:
         yield REPAIRED_TEXT
     else:
