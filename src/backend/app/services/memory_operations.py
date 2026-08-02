@@ -340,8 +340,14 @@ class MemoryOperationsService:
                 .order_by(SceneThesis.created_at)
             )
         ).all()
-        active_groups: dict[tuple[str, str], list[tuple[SceneThesis, ThesisLifecycleProfile | None]]] = defaultdict(list)
-        active_by_scene: dict[str, list[tuple[SceneThesis, ThesisLifecycleProfile | None]]] = defaultdict(list)
+        active_groups: dict[
+            tuple[str, str],
+            list[tuple[SceneThesis, ThesisLifecycleProfile | None]],
+        ] = defaultdict(list)
+        active_by_scene: dict[
+            str,
+            list[tuple[SceneThesis, ThesisLifecycleProfile | None]],
+        ] = defaultdict(list)
         for thesis, profile in thesis_rows:
             if thesis.status == "active":
                 active_groups[(thesis.scene_id, self.thesis_scope(thesis))].append(
@@ -353,7 +359,7 @@ class MemoryOperationsService:
         for rows in active_groups.values():
             if len(rows) <= 1:
                 continue
-            keeper, *_ = sorted(
+            (keeper_thesis, _), *_ = sorted(
                 rows,
                 key=lambda pair: (
                     int(pair[0].pinned),
@@ -364,7 +370,7 @@ class MemoryOperationsService:
                 reverse=True,
             )
             for thesis, _ in rows:
-                if thesis.id != keeper.id:
+                if thesis.id != keeper_thesis.id:
                     maintenance_reasons[thesis.id] = "duplicate_scope"
 
         for scene_id, rows in active_by_scene.items():
@@ -385,7 +391,10 @@ class MemoryOperationsService:
             }
             for thesis, _ in candidates:
                 if thesis.id not in keep:
-                    maintenance_reasons.setdefault(thesis.id, "active_limit_exceeded")
+                    maintenance_reasons.setdefault(
+                        thesis.id,
+                        "active_limit_exceeded",
+                    )
 
         thesis_items = []
         thesis_issues = []
@@ -427,7 +436,9 @@ class MemoryOperationsService:
                     "pinned": thesis.pinned,
                     "scope": self.thesis_scope(thesis),
                     "semantic_key": (
-                        profile.semantic_key if profile else self.semantic_key(thesis.text)
+                        profile.semantic_key
+                        if profile
+                        else self.semantic_key(thesis.text)
                     ),
                     "ttl_turns": ttl,
                     "age_turns": age,
@@ -451,7 +462,9 @@ class MemoryOperationsService:
                 "stale_thesis_ids": stale_thesis_ids,
                 "missing_thesis_profile_ids": missing_thesis_profiles,
                 "missing_fact_profile_ids": [
-                    item["id"] for item in fact_items if "missing_profile" in item["issues"]
+                    item["id"]
+                    for item in fact_items
+                    if "missing_profile" in item["issues"]
                 ],
             },
             "health": {
@@ -546,7 +559,11 @@ class MemoryOperationsService:
                 thesis = await self._session.get(SceneThesis, raw_id)
                 if thesis is None or thesis.pinned or thesis.status != "active":
                     continue
-                item = next(value for value in snapshot["theses"] if value["id"] == raw_id)
+                item = next(
+                    value
+                    for value in snapshot["theses"]
+                    if value["id"] == raw_id
+                )
                 reason = item["maintenance_reason"] or "stale"
                 actions.append(
                     MemoryMaintenanceAction(
