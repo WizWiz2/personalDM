@@ -229,7 +229,7 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
 def test_simulation_database_runs_real_alembic_chain(tmp_path):
     path = tmp_path / "simulation.db"
     revision = upgrade_simulation_database(path)
-    assert revision == "a5e6f7b8c9d0"
+    assert revision == "b6f7c8d9e0a1"
     assert current_revision(path) == revision
     with sqlite3.connect(path) as connection:
         columns = {
@@ -256,6 +256,20 @@ def test_simulation_database_runs_real_alembic_chain(tmp_path):
             "status",
             "trigger_turn_id",
         } <= transition_columns
+        setup_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(campaign_setups)"
+            ).fetchall()
+        }
+        assert {
+            "campaign_id",
+            "status",
+            "setting_name",
+            "starting_location_id",
+            "boundaries_confirmed",
+            "completed_at",
+        } <= setup_columns
 
 
 @pytest.mark.asyncio
