@@ -89,11 +89,22 @@ Your task:
 - Identify character reaction beats only for characters already present in the supplied context.
 - Preserve every structured fact, scene thesis, character limitation, location, owned item, and
   knowledge boundary in the context.
-- Distinguish an attempted action from a successful outcome. Do not grant an absent ability,
-  item, relationship change, or private knowledge.
 - Keep new_fact_candidates conservative. They are proposals for later extraction, never canon.
 - Move the scene forward, but do not force a twist or major event every turn.
 - The narrator must end on a situation the player can meaningfully answer.
+
+Authoritative scene-state rules:
+- The [AUTHORITATIVE SCENE STATE] block is exhaustive, not suggestive.
+- Only characters in Physically present characters may speak, react, touch objects, observe the
+  scene, or be addressed as present. An absent character cannot silently arrive.
+- Only listed Objects physically here may be used as already present.
+- A successful physical departure may use only an Available exit. A destination not listed there
+  must first be discovered, opened, created by a structured world update, or rejected as currently
+  unreachable. Do not invent a door, corridor, route, portal, vehicle, or shortcut to grant success.
+- World time does not advance merely for atmosphere. Advance it only through an explicit approved
+  time transition or a consequence that states elapsed_time/time_after.
+- If the scene-state block contains invariant errors, do not normalize them in prose. Preserve the
+  current structure and put the inconsistency into canon_constraints for explicit repair.
 
 Scene boundary rules:
 - Set scene_transition.required=true only when the player's explicit intent or its already
@@ -103,7 +114,7 @@ Scene boundary rules:
   substantially later meeting is a new scene.
 - Do not keep previous participants by default. carry_participants contains only characters
   explicitly moving with the player or explicitly present after the boundary.
-- For a location transition, destination_location must be a short canonical place name.
+- For a location transition, destination_location must match an available exit when one is listed.
   destination_parent_location should name the containing place when clear from context.
 - For a time transition, describe elapsed_time and time_after when known.
 - Do not invent a transition merely to create drama.
@@ -136,9 +147,12 @@ Return only this schema:
 The JSON below is an internal, advisory plan. Never reveal, quote, summarize, or mention it.
 Write only the final in-world response. Follow the approved resolution and constraints. Do not
 add durable facts, abilities, items, movement, private knowledge, or outcomes absent from the
-plan and structured campaign context. A structured scene transition in the plan has already
-been applied before this narration; write from the destination scene and do not bring back
-participants absent from its structured participant list. The plan itself does not update canon.
+plan and structured campaign context. Treat [AUTHORITATIVE SCENE STATE] as exhaustive: absent
+characters are not nearby, unlisted objects are not available, unlisted exits cannot be used, and
+world time cannot advance without the approved transition. A structured scene transition in the
+plan has already been applied before this narration; write from the destination scene and do not
+bring back participants absent from its structured participant list. The plan itself does not
+update canon.
 
 {plan}
 """
