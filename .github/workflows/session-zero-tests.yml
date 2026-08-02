@@ -1,0 +1,44 @@
+name: Session zero and character cards
+
+on:
+  push:
+    branches:
+      - "agent/session-zero-character-card"
+  pull_request:
+    paths:
+      - "src/backend/app/api/session_zero.py"
+      - "src/backend/app/api/turns.py"
+      - "src/backend/app/services/session_zero_service.py"
+      - "src/backend/app/services/character_card_service.py"
+      - "src/backend/app/db/campaign_setup_table.py"
+      - "src/backend/app/db/repositories/campaign_setup_repo.py"
+      - "src/backend/app/models/session_zero.py"
+      - "src/backend/app/models/character_card.py"
+      - "src/backend/alembic/versions/b6f7c8d9e0a1_add_campaign_setups.py"
+      - "src/backend/tests/test_session_zero.py"
+      - ".github/workflows/session-zero-tests.yml"
+
+jobs:
+  session-zero-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - run: python -m pip install -e "src/backend[dev]"
+      - name: Compile backend
+        run: python -m compileall -q src/backend/app src/backend/tests
+      - name: Validate migration cycle
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+          alembic downgrade a5e6f7b8c9d0
+          alembic upgrade head
+      - name: Run session-zero contracts
+        working-directory: src/backend
+        run: pytest -q tests/test_session_zero.py tests/test_world_state.py --tb=short
