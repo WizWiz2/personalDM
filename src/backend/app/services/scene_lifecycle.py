@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
-from app.db.tables import Campaign, Character, Scene
+from app.db.scene_state_table import SceneRuntimeState
+from app.db.tables import Campaign, Character, Scene, SceneParticipant
 from app.models.scene import SceneRead
 
 
@@ -20,10 +21,11 @@ class SceneActivationResult:
 class SceneLifecycleService:
     """Own the authoritative active-scene pointer for a campaign.
 
-    Scene prose may mention movement, but only this service changes the structured
-    scene state. Activation is atomic inside the caller's transaction: the target
-    scene becomes active, every other active scene is completed, the campaign
-    pointer is updated, and the player character follows the scene's location.
+    Activation is atomic inside the caller's transaction: the target scene becomes
+    active, every other active scene is completed, the campaign pointer is updated,
+    and every physical participant must agree with the scene location. The player is
+    inserted automatically; an NPC already located elsewhere is rejected rather than
+    silently teleported.
     """
 
     def __init__(self, session: AsyncSession):
@@ -71,15 +73,54 @@ class SceneLifecycleService:
             )
         )
         location_id = location_result.scalar_one_or_none()
-        if campaign.player_character_id and location_id:
-            player = await self._session.get(Character, campaign.player_character_id)
-            if player:
-                player.current_location_id = location_id
+
+        participant_ids = set(
+            (
+                await self._session.execute(
+                    select(SceneParticipant.entity_id).where(
+                        SceneParticipant.scene_id == target.id
+                    )
+                )
+            ).scalars().all()
+        )
+        if campaign.player_character_id:
+            if campaign.player_character_id not in participant_ids:
+                self._session.add(
+                    SceneParticipant(
+                        scene_id=target.id,
+                        entity_id=campaign.player_character_id,
+                    )
+                )
+                participant_ids.add(campaign.player_character_id)
+
+        if location_id:
+            for participant_id in participant_ids:
+                character = await self._session.get(Character, participant_id)
+                if not character:
+                    raise ValueError(
+                        f"Scene participant {participant_id} has no character state"
+                    )
+                if participant_id == campaign.player_character_id:
+                    character.current_location_id = location_id
+                    continue
+                if character.current_location_id is None:
+                    character.current_location_id = location_id
+                elif character.current_location_id != location_id:
+                    raise ValueError(
+                        "Cannot activate scene: participant is physically located "
+                        f"elsewhere ({participant_id}: {character.current_location_id})"
+                    )
+
+        runtime = await self._session.get(SceneRuntimeState, target.id)
+        if runtime is None:
+            self._session.add(
+                SceneRuntimeState(scene_id=target.id, world_time_order=0)
+            )
 
         await self._session.flush()
 
         scene = await self._scene_repo.get_by_id(scene_id)
-        if not scene:  # Defensive: the row was loaded above and must still exist.
+        if not scene:
             raise ValueError("Activated scene disappeared")
         return SceneActivationResult(
             scene=scene,

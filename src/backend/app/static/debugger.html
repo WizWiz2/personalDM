@@ -37,6 +37,7 @@
 </header>
 <main>
   <div id="health" class="health"></div>
+  <section><h2>Нулевая сессия</h2><div id="sessionZero"></div></section>
   <section><h2>Активная сцена</h2><div id="activeScene"></div><div id="sceneIssues"></div></section>
   <section><h2>Все сцены</h2><div id="scenes"></div></section>
   <section><h2>Переходы сцен</h2><div id="transitions"></div></section>
@@ -63,6 +64,35 @@ async function campaigns() {
   const rows = await fetch('/api/campaigns').then(r=>r.json());
   $('campaign').innerHTML = rows.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('');
   if (rows.length) await load(); else $('status').textContent='Нет кампаний';
+}
+function renderSessionZero() {
+  const setup = data.session_zero;
+  if (!setup) {
+    $('sessionZero').innerHTML = '<p class="muted">Контракт нулевой сессии отсутствует.</p>';
+    return;
+  }
+  const missing = setup.missing_fields || [];
+  const cardMissing = setup.character_card_missing_fields || [];
+  const statusClass = setup.status === 'completed' ? 'ok' : 'bad';
+  const summary = `<div class="scene-card">
+    <strong class="${statusClass}">${esc(setup.status)}</strong>
+    <span><span class="muted">Сеттинг:</span> ${esc(setup.setting_name || 'не задан')}</span>
+    <span><span class="muted">Жанр:</span> ${esc(setup.genre || 'не задан')}</span>
+    <span><span class="muted">Завязка:</span> ${esc(setup.premise || 'не задана')}</span>
+    <span><span class="muted">Тон:</span> ${esc(setup.tone || 'не задан')}</span>
+    <span><span class="muted">Герой:</span> ${esc(setup.player_character_name || 'не назначен')}</span>
+    <span><span class="muted">Стартовая локация:</span> ${esc(setup.starting_location_name || 'не назначена')}</span>
+    <span><span class="muted">Стартовая ситуация:</span> ${esc(setup.starting_situation || 'не задана')}</span>
+    <span><span class="muted">Границы подтверждены:</span> ${setup.boundaries_confirmed ? '<span class="ok">да</span>' : '<span class="bad">нет</span>'}</span>
+    <span><span class="muted">Legacy import:</span> ${setup.legacy_imported ? 'да' : 'нет'}</span>
+  </div>`;
+  const missingBlock = missing.length
+    ? `<div class="issues bad"><strong>До начала игры не заполнено</strong><ul>${missing.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
+    : '<p class="ok">Нулевая сессия и карточка героя готовы к игре.</p>';
+  const cardBlock = cardMissing.length
+    ? `<h3>Незаполненные поля карточки героя</h3><pre>${esc(JSON.stringify(cardMissing,null,2))}</pre>`
+    : '';
+  $('sessionZero').innerHTML = summary + missingBlock + cardBlock;
 }
 function renderSceneState() {
   const scene = data.active_scene;
@@ -156,6 +186,7 @@ async function load() {
   const heroLocation = pathText(data.campaign.player_location_path) || data.campaign.player_location_name || 'не задана';
   $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'} · локация: ${heroLocation}`;
   $('health').innerHTML=Object.entries(data.health).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
+  renderSessionZero();
   renderSceneState();
   renderPresence();
   $('jobs').innerHTML=table(data.post_turn_jobs,[['Тип','job_type'],['Статус','status'],['Попытки','attempts'],['Ошибка','error'],['Действие','id',(v,r)=>r.status==='completed'?'':`<button onclick="retryJob('${v}')">Повторить</button>`]]);

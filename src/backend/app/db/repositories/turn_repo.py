@@ -8,22 +8,39 @@ from app.db.tables import Campaign, Scene, Turn
 from app.models.turn import ChatMessage, TurnCreate, TurnRead
 
 
+NARRATIVE_ROLES = ("user", "assistant", "system")
+META_ROLES = ("meta_user", "meta_assistant")
+
+
 class TurnRepository(BaseRepository):
     async def _resolve_scene_id(
         self,
         campaign_id: UUID,
         data: TurnCreate,
     ) -> str | None:
-        """Bind persisted turns to authoritative structured scene state.
+        """Bind narrative turns to scene state and isolate meta dialogue.
 
-        A user turn follows campaign.current_scene_id even when a stale client sends
-        the previous scene. Assistant turns normally inherit their parent user scene.
-        A different explicit target is accepted only when the internal context snapshot
-        proves that the orchestrator prepared, applied or reused that exact transition.
-        The public API never accepts assistant turns, so this authorization marker is
-        not user-controlled input.
+        Meta turns are deliberately scene-less. They may inspect the current scene in
+        their compiled context, but persisting them must never imply movement, presence
+        or a scene transition.
         """
         campaign_key = str(campaign_id)
+
+        if data.role in META_ROLES:
+            if data.role == "meta_assistant":
+                if not data.parent_turn_id:
+                    raise ValueError("Meta assistant turn requires a parent meta user turn")
+                parent = await self._session.get(Turn, str(data.parent_turn_id))
+                if (
+                    not parent
+                    or parent.campaign_id != campaign_key
+                    or parent.role != "meta_user"
+                ):
+                    raise ValueError(
+                        "Meta assistant parent must be a meta user turn in the same campaign"
+                    )
+            return None
+
         resolved = str(data.scene_id) if data.scene_id else None
 
         if data.role == "user":
@@ -102,8 +119,15 @@ class TurnRepository(BaseRepository):
         campaign_id: UUID,
         limit: int = 50,
         active_only: bool = True,
+        channel: str = "narrative",
     ) -> list[TurnRead]:
         query = select(Turn).where(Turn.campaign_id == str(campaign_id))
+        if channel == "narrative":
+            query = query.where(Turn.role.in_(NARRATIVE_ROLES))
+        elif channel == "meta":
+            query = query.where(Turn.role.in_(META_ROLES))
+        elif channel != "all":
+            raise ValueError("Turn history channel must be narrative, meta or all")
         if active_only:
             query = query.where(Turn.status == "active")
         query = query.order_by(Turn.created_at.desc()).limit(limit)
@@ -111,6 +135,18 @@ class TurnRepository(BaseRepository):
         result = await self._session.execute(query)
         turns = result.scalars().all()
         return [TurnRead.model_validate(turn) for turn in reversed(turns)]
+
+    async def get_meta_history(
+        self,
+        campaign_id: UUID,
+        limit: int = 10,
+    ) -> list[TurnRead]:
+        return await self.get_history(
+            campaign_id,
+            limit=limit,
+            active_only=True,
+            channel="meta",
+        )
 
     async def assistant_turn_number_in_scene(self, turn_id: UUID) -> int:
         turn = await self._session.get(Turn, str(turn_id))
@@ -138,6 +174,7 @@ class TurnRepository(BaseRepository):
             .where(
                 Turn.campaign_id == str(campaign_id),
                 Turn.status == "active",
+                Turn.role.in_(NARRATIVE_ROLES),
             )
             .order_by(desc(Turn.created_at))
             .limit(max_turns)
@@ -154,6 +191,7 @@ class TurnRepository(BaseRepository):
             .where(
                 Turn.campaign_id == str(campaign_id),
                 Turn.status == "active",
+                Turn.role.in_(("user", "assistant")),
             )
             .order_by(desc(Turn.created_at))
             .limit(2)

@@ -44,6 +44,25 @@ def mock_turn_planner():
         yield
 
 
+@pytest.fixture(autouse=True)
+def legacy_test_session_zero_bootstrap(request):
+    """Do not rewrite every pre-session-zero unit test as a full game setup.
+
+    Production code has no bypass. Existing tests that exercise unrelated turn,
+    proposal or replay behavior mock only the new entry gate. Tests marked
+    ``session_zero_enforced`` run through the real gate and full completion flow.
+    """
+    if request.node.get_closest_marker("session_zero_enforced"):
+        yield
+        return
+    with patch(
+        "app.services.session_zero_service.SessionZeroService.require_completed",
+        new_callable=AsyncMock,
+        return_value=None,
+    ):
+        yield
+
+
 @pytest_asyncio.fixture(scope="function")
 async def test_engine():
     engine = create_async_engine(

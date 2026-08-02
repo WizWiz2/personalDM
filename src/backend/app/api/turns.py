@@ -1,4 +1,5 @@
 import json
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,6 +14,11 @@ from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.turn import TurnCreate, TurnRead
 from app.services.memory_scribe_guard import install as install_memory_scribe_guard
+from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
+from app.services.session_zero_service import (
+    SessionZeroIncompleteError,
+    SessionZeroService,
+)
 from app.services.turn_runner import TurnRunner
 from app.services.turn_undo_service import TurnUndoService
 
@@ -27,10 +33,23 @@ async def _bind_current_scene(
     data: TurnCreate,
     session: AsyncSession,
 ) -> TurnCreate:
-    """Use campaign.current_scene_id as the authoritative scene for a new turn."""
+    """Require setup and bind the authoritative current scene for a narrative turn."""
     campaign = await CampaignRepository(session).get_by_id(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    try:
+        await SessionZeroService(session).require_completed(campaign_id)
+    except SessionZeroIncompleteError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "session_zero_required",
+                "message": "Complete session zero before starting narrative play",
+                "missing_fields": exc.missing_fields,
+                "session_zero_url": f"/api/campaigns/{campaign_id}/session-zero",
+            },
+        ) from exc
 
     effective_scene_id = campaign.current_scene_id or data.scene_id
     if effective_scene_id:
@@ -55,6 +74,22 @@ async def send_turn(
             detail="The public turn endpoint accepts only role='user'",
         )
 
+    meta_command = parse_meta_command(data.content)
+    if meta_command:
+        if not await CampaignRepository(session).get_by_id(campaign_id):
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        runner = MetaCommandRunner(session)
+
+        async def meta_generator():
+            async for token in runner.run_stream(campaign_id, meta_command):
+                yield token
+
+        return StreamingResponse(
+            meta_generator(),
+            media_type="text/plain; charset=utf-8",
+            headers={"X-PersonalDM-Channel": "meta"},
+        )
+
     data = await _bind_current_scene(campaign_id, data, session)
     runner = TurnRunner(session)
 
@@ -65,6 +100,7 @@ async def send_turn(
     return StreamingResponse(
         token_generator(),
         media_type="text/plain; charset=utf-8",
+        headers={"X-PersonalDM-Channel": "narrative"},
     )
 
 
@@ -83,12 +119,14 @@ async def get_history(
     campaign_id: UUID,
     limit: int = 50,
     active_only: bool = True,
+    channel: Literal["all", "narrative", "meta"] = "all",
     session: AsyncSession = Depends(get_session),
 ):
     return await TurnRepository(session).get_history(
         campaign_id,
         limit,
         active_only,
+        channel=channel,
     )
 
 
@@ -101,7 +139,7 @@ async def undo_last_pair(
     if not success:
         raise HTTPException(
             status_code=400,
-            detail="The latest active turns are not a user/assistant pair",
+            detail="The latest active narrative turns are not a user/assistant pair",
         )
     await session.commit()
     return {"success": True}
@@ -123,7 +161,7 @@ async def regenerate_turn(
     if not db_assistant or db_assistant.role != "assistant":
         raise HTTPException(
             status_code=404,
-            detail="Assistant turn to regenerate not found",
+            detail="Narrative assistant turn to regenerate not found",
         )
     if not db_assistant.parent_turn_id:
         raise HTTPException(
@@ -170,4 +208,5 @@ async def regenerate_turn(
     return StreamingResponse(
         token_generator(),
         media_type="text/plain; charset=utf-8",
+        headers={"X-PersonalDM-Channel": "narrative"},
     )

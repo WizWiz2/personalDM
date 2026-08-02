@@ -229,7 +229,7 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
 def test_simulation_database_runs_real_alembic_chain(tmp_path):
     path = tmp_path / "simulation.db"
     revision = upgrade_simulation_database(path)
-    assert revision == "a5e6f7b8c9d0"
+    assert revision == "d8e9f0a1b2c3"
     assert current_revision(path) == revision
     with sqlite3.connect(path) as connection:
         columns = {
@@ -256,6 +256,76 @@ def test_simulation_database_runs_real_alembic_chain(tmp_path):
             "status",
             "trigger_turn_id",
         } <= transition_columns
+        setup_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(campaign_setups)"
+            ).fetchall()
+        }
+        assert {
+            "campaign_id",
+            "status",
+            "setting_name",
+            "starting_location_id",
+            "boundaries_confirmed",
+            "completed_at",
+        } <= setup_columns
+        scene_state_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(scene_runtime_states)"
+            ).fetchall()
+        }
+        assert {
+            "scene_id",
+            "world_time_label",
+            "world_time_order",
+            "scene_goal",
+            "active_conflict",
+        } <= scene_state_columns
+        exit_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(location_exits)"
+            ).fetchall()
+        }
+        assert {
+            "campaign_id",
+            "from_location_id",
+            "to_location_id",
+            "label",
+            "discovered",
+            "active",
+        } <= exit_columns
+        sequence_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(action_sequences)"
+            ).fetchall()
+        }
+        assert {
+            "trigger_turn_id",
+            "source_scene_id",
+            "final_scene_id",
+            "planned_steps",
+            "completed_steps",
+            "blocked_step_index",
+        } <= sequence_columns
+        step_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(action_steps)"
+            ).fetchall()
+        }
+        assert {
+            "sequence_id",
+            "step_index",
+            "action_type",
+            "resolution",
+            "safe_mundane",
+            "status",
+            "transition_id",
+        } <= step_columns
 
 
 @pytest.mark.asyncio
