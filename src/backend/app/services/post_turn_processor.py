@@ -8,8 +8,10 @@ from app.config import settings
 from app.db.engine import AsyncSessionLocal
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
+from app.db.repositories.narrative_detail_repo import NarrativeDetailRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.turn_repo import TurnRepository
+from app.models.memory_semantics import NarrativeDetailCreate
 from app.models.proposed_change import ChangeType
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar
@@ -92,9 +94,8 @@ class PostTurnProcessor:
                             assistant_content=assistant.content,
                         )
             elif row.job_type == "memory_scribe":
-                existing = await ProposedChangeRepository(self._session).get_for_turn(
-                    assistant.id
-                )
+                proposed_repo = ProposedChangeRepository(self._session)
+                existing = await proposed_repo.get_for_turn(assistant.id)
                 if not existing:
                     campaign = await self._campaigns.get_by_id(campaign_id)
                     registration = await EntityRegistrar(
@@ -105,7 +106,7 @@ class PostTurnProcessor:
                         source_turn_id=assistant.id,
                         assistant_content=assistant.content,
                     )
-                    proposals = await MemoryScribe(self._session).extract_proposals(
+                    extracted = await MemoryScribe(self._session).extract_proposals(
                         campaign_id=campaign_id,
                         scene_id=assistant.scene_id,
                         user_content=user_turn.content,
@@ -115,10 +116,20 @@ class PostTurnProcessor:
                             campaign.player_character_id if campaign else None
                         ),
                     )
+                    extracted = [
+                        proposal
+                        for proposal in extracted
+                        if proposal.change_type != ChangeType.SCENE_THESIS
+                    ]
+                    detail_changes = [
+                        proposal
+                        for proposal in extracted
+                        if proposal.change_type == ChangeType.NARRATIVE_DETAIL
+                    ]
                     proposals = [
                         proposal
-                        for proposal in proposals
-                        if proposal.change_type != ChangeType.SCENE_THESIS
+                        for proposal in extracted
+                        if proposal.change_type != ChangeType.NARRATIVE_DETAIL
                     ]
                     proposals.extend(registration.gap_proposals(assistant.scene_id))
                     proposals = await ProposalPresenceResolver(
@@ -128,6 +139,7 @@ class PostTurnProcessor:
                         assistant.scene_id,
                         proposals,
                     )
+
                     checker = ContinuityChecker(self._session)
                     for proposal in proposals:
                         valid, warning = await checker.validate_change(
@@ -139,10 +151,37 @@ class PostTurnProcessor:
                             proposal.payload["_validation_error"] = (
                                 warning or "Proposal failed deterministic validation"
                             )
+
+                    if assistant.scene_id:
+                        detail_repo = NarrativeDetailRepository(self._session)
+                        for detail in detail_changes:
+                            valid, _ = await checker.validate_change(
+                                campaign_id,
+                                detail,
+                                scene_id=assistant.scene_id,
+                            )
+                            if not valid:
+                                continue
+                            payload = detail.payload
+                            await detail_repo.capture(
+                                campaign_id,
+                                assistant.scene_id,
+                                assistant.id,
+                                NarrativeDetailCreate(
+                                    detail_type=payload.get("detail_type", "other"),
+                                    text=payload["text"],
+                                    participant_ids=[
+                                        UUID(value)
+                                        for value in payload.get("participant_ids", [])
+                                    ],
+                                    salience=payload.get("salience", 0.5),
+                                    ttl_turns=payload.get("ttl_turns", 3),
+                                ),
+                            )
+                        await detail_repo.prune_scene(assistant.scene_id)
+
                     if proposals:
-                        await ProposedChangeRepository(self._session).create_batch(
-                            assistant.id, proposals
-                        )
+                        await proposed_repo.create_batch(assistant.id, proposals)
             else:
                 raise ValueError(f"Unknown post-turn job type: {row.job_type}")
 
