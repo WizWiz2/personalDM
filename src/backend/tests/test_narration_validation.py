@@ -3,7 +3,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.narration_validation_table import NarrationValidationRun
 from app.models.narration_validation import (
     NarrationValidationResult,
     NarrationViolation,
@@ -60,6 +63,18 @@ async def raw_narrator(_provider, messages, *args, **kwargs):
         yield INVALID_DRAFT
 
 
+async def latest_validation(db_session: AsyncSession) -> NarrationValidationRun:
+    row = (
+        await db_session.execute(
+            select(NarrationValidationRun)
+            .order_by(NarrationValidationRun.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    assert row is not None
+    return row
+
+
 def test_validation_result_rejects_pass_with_errors():
     with pytest.raises(ValidationError):
         NarrationValidationResult(
@@ -89,7 +104,11 @@ def test_repair_prompt_contains_only_actionable_contract():
     assert "Return only the repaired narrative prose" in prompt
 
 
-def test_invalid_draft_is_repaired_before_delivery(client: TestClient):
+@pytest.mark.asyncio
+async def test_invalid_draft_is_repaired_before_delivery(
+    client: TestClient,
+    db_session: AsyncSession,
+):
     campaign_id = client.post(
         "/api/campaigns",
         json={"name": "Validation gate"},
@@ -115,16 +134,19 @@ def test_invalid_draft_is_repaired_before_delivery(client: TestClient):
 
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
     assert history[-1]["content"] == REPAIRED_TEXT
-    validation = history[-1]["context_snapshot"]["provider_telemetry"][
-        "narration_validation"
-    ]
-    assert validation["status"] == "repaired"
-    assert validation["repair_attempts"] == 1
-    assert validation["violation_count"] == 2
-    assert validation["buffered_before_delivery"] is True
+    validation = await latest_validation(db_session)
+    assert validation.status == "repaired"
+    assert validation.draft_text == INVALID_DRAFT
+    assert validation.final_text == REPAIRED_TEXT
+    assert validation.repair_attempts == 1
+    assert validation.violation_count == 2
 
 
-def test_validator_failure_is_explicitly_failed_open(client: TestClient):
+@pytest.mark.asyncio
+async def test_validator_failure_is_explicitly_failed_open(
+    client: TestClient,
+    db_session: AsyncSession,
+):
     campaign_id = client.post(
         "/api/campaigns",
         json={"name": "Validator outage"},
@@ -147,11 +169,11 @@ def test_validator_failure_is_explicitly_failed_open(client: TestClient):
     assert response.status_code == 200, response.text
     assert response.text == INVALID_DRAFT
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
-    validation = history[-1]["context_snapshot"]["provider_telemetry"][
-        "narration_validation"
-    ]
-    assert validation["status"] == "failed_open"
-    assert "control model unavailable" in validation["failure_reason"]
+    assert history[-1]["content"] == INVALID_DRAFT
+    validation = await latest_validation(db_session)
+    assert validation.status == "failed_open"
+    assert validation.final_text == INVALID_DRAFT
+    assert "control model unavailable" in (validation.failure_reason or "")
 
 
 def test_exhausted_repairs_never_publish_rejected_text(client: TestClient):
