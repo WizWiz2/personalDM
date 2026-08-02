@@ -229,7 +229,7 @@ class PostTurnWorker:
                             job.id,
                             already_claimed=True,
                         )
-            except Exception:
+            except Exception:  # noqa: BLE001 - worker must survive malformed jobs
                 traceback.print_exc()
             if not processed:
                 try:
