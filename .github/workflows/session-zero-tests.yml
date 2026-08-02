@@ -8,6 +8,7 @@ on:
     paths:
       - "src/backend/app/api/session_zero.py"
       - "src/backend/app/api/turns.py"
+      - "src/backend/app/static/session_zero.html"
       - "src/backend/app/services/session_zero_service.py"
       - "src/backend/app/services/character_card_service.py"
       - "src/backend/app/db/campaign_setup_table.py"
@@ -16,6 +17,7 @@ on:
       - "src/backend/app/models/character_card.py"
       - "src/backend/alembic/versions/b6f7c8d9e0a1_add_campaign_setups.py"
       - "src/backend/tests/test_session_zero.py"
+      - "src/backend/tests/test_session_zero_ui.py"
       - ".github/workflows/session-zero-tests.yml"
 
 jobs:
@@ -41,4 +43,9 @@ jobs:
           alembic upgrade head
       - name: Run session-zero contracts
         working-directory: src/backend
-        run: pytest -q tests/test_session_zero.py tests/test_world_state.py --tb=short
+        run: >-
+          pytest -q
+          tests/test_session_zero.py
+          tests/test_session_zero_ui.py
+          tests/test_world_state.py
+          --tb=short
