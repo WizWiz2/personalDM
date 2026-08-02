@@ -240,7 +240,7 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
 def test_simulation_database_runs_real_alembic_chain(tmp_path):
     path = tmp_path / "simulation.db"
     revision = upgrade_simulation_database(path)
-    assert revision == "a1b2c3d4e5f6"
+    assert revision == "b2c3d4e5f6a7"
     assert current_revision(path) == revision
     with sqlite3.connect(path) as connection:
         columns = {
@@ -400,6 +400,19 @@ def test_simulation_database_runs_real_alembic_chain(tmp_path):
             "visibility",
             "turn_window",
         } <= detail_columns
+        thesis_lifecycle_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(thesis_lifecycle_profiles)"
+            ).fetchall()
+        }
+        assert {
+            "thesis_id",
+            "semantic_key",
+            "ttl_turns",
+            "last_reinforced_turn_id",
+            "closure_reason",
+        } <= thesis_lifecycle_columns
 
 
 @pytest.mark.asyncio
