@@ -1,6 +1,8 @@
+from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_session
@@ -20,6 +22,16 @@ from app.services.session_zero_service import (
 
 
 router = APIRouter(tags=["session-zero"])
+
+
+@router.get(
+    "/api/session-zero-ui",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def session_zero_page():
+    path = Path(__file__).resolve().parent.parent / "static" / "session_zero.html"
+    return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
 @router.get(
