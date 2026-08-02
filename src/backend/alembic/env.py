@@ -22,6 +22,7 @@ import app.db.scene_bridge_table  # Persistent scene hand-off records
 import app.db.scene_location_table  # Structured scene location link
 import app.db.scene_state_table  # Authoritative scene runtime state and exits
 import app.db.scene_transition_table  # Scene transition audit records
+import app.db.thesis_lifecycle_table  # Thesis TTL and reinforcement metadata
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
