@@ -13,6 +13,7 @@ from app.providers.llm_provider import LLMProvider, LLMProviderError
 
 class ModelRole(str, Enum):
     NARRATOR = "narrator"
+    GAME_MASTER = "game_master"
     PLANNER = "planner"
     ENTITY_REGISTRAR = "entity_registrar"
     SCRIBE = "scribe"
@@ -56,9 +57,9 @@ class RoleModelSelection:
 class RoleModelRouter:
     """Resolve one campaign provider into role-specific model selections.
 
-    The campaign provider remains the source of truth for narration. Control roles can
-    override the model and endpoint through process settings, while retaining a safe
-    fallback to the campaign provider when the control model is unavailable.
+    Narration and direct out-of-character game-master dialogue use the campaign's
+    primary model. Control roles may use a cheaper isolated endpoint, while retaining
+    a safe fallback that never forwards campaign credentials to another host.
     """
 
     def __init__(self, config_repo: ProviderConfigRepository):
@@ -89,7 +90,7 @@ class RoleModelRouter:
         primary_key = await self._config_repo.get_decrypted_key(campaign_id)
 
         explicit_model = self._model_override(role)
-        if role == ModelRole.NARRATOR or (
+        if role in {ModelRole.NARRATOR, ModelRole.GAME_MASTER} or (
             role == ModelRole.CHARACTER_BUILDER and not explicit_model
         ):
             return RoleModelSelection(
