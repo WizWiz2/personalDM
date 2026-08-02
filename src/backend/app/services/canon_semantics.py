@@ -79,6 +79,7 @@ class CanonAudit(BaseModel):
     rejected_authority_count: int = 0
     rejected_schema_count: int = 0
     duplicate_proposal_count: int = 0
+    inferred_memory_count: int = 0
     proposal_count: int = 0
     detail_count: int = 0
     coverage_ratio: float = 1.0
@@ -145,6 +146,48 @@ def _memory_metadata(outcome: OutcomeAtom) -> MemoryMetadata | None:
         return None
 
 
+def _memory_is_explicit(outcome: OutcomeAtom) -> bool:
+    return bool(
+        {"memory_class", "retention", "ttl_turns"} & outcome.model_fields_set
+    )
+
+
+def _infer_memory(
+    change_type: ChangeType,
+    payload: dict[str, Any],
+) -> MemoryMetadata:
+    if change_type == ChangeType.NARRATIVE_DETAIL:
+        return MemoryMetadata(
+            memory_class=MemoryClass.NARRATIVE_DETAIL,
+            retention=MemoryRetention.RECENT_TURNS,
+            ttl_turns=payload.get("ttl_turns", 3),
+        )
+    if change_type == ChangeType.FACT:
+        if payload.get("scope") == "scene":
+            return MemoryMetadata(
+                memory_class=MemoryClass.SCENE_STATE,
+                retention=MemoryRetention.SCENE_LIFETIME,
+            )
+        if payload.get("subject_entity_id"):
+            return MemoryMetadata(
+                memory_class=MemoryClass.ENTITY_STATE,
+                retention=MemoryRetention.UNTIL_SUPERSEDED,
+            )
+        return MemoryMetadata(
+            memory_class=MemoryClass.WORLD_CANON,
+            retention=MemoryRetention.DURABLE,
+        )
+    if change_type == ChangeType.EVENT:
+        return MemoryMetadata(
+            memory_class=MemoryClass.WORLD_CANON,
+            retention=MemoryRetention.DURABLE,
+        )
+    return MemoryMetadata(
+        memory_class=MemoryClass.ENTITY_STATE,
+        retention=MemoryRetention.UNTIL_SUPERSEDED,
+    )
+
+
 def _memory_matches(change_type: ChangeType, memory_class: MemoryClass) -> bool:
     if change_type == ChangeType.NARRATIVE_DETAIL:
         return memory_class == MemoryClass.NARRATIVE_DETAIL
@@ -172,7 +215,10 @@ def proposals_from_envelope(
 ) -> tuple[list[ProposedChangeCreate], CanonAudit]:
     """Validate evidence, authority, memory lifecycle and proposal coverage."""
     if not isinstance(data, dict):
-        return [], CanonAudit(envelope_valid=False, error="Scribe response is not an object")
+        return [], CanonAudit(
+            envelope_valid=False,
+            error="Scribe response is not an object",
+        )
 
     if "outcomes" not in data:
         proposals = _legacy_proposals(data)
@@ -192,16 +238,10 @@ def proposals_from_envelope(
             error=str(exc),
         )
 
-    audit = CanonAudit(
-        outcome_count=len(envelope.outcomes),
-        durable_outcome_count=sum(
-            1
-            for item in envelope.outcomes
-            if item.durable and item.memory_class != MemoryClass.NARRATIVE_DETAIL
-        ),
-    )
+    audit = CanonAudit(outcome_count=len(envelope.outcomes))
     outcomes: dict[str, OutcomeAtom] = {}
     memories: dict[str, MemoryMetadata] = {}
+    explicit_memory: set[str] = set()
     supported: set[str] = set()
     for outcome in envelope.outcomes[:12]:
         outcome_id = normalize_key(outcome.id)
@@ -212,12 +252,14 @@ def proposals_from_envelope(
         if memory is None:
             audit.rejected_schema_count += 1
             continue
-        if outcome.memory_class == MemoryClass.NARRATIVE_DETAIL and outcome.durable:
-            audit.rejected_schema_count += 1
-            continue
-        if outcome.memory_class != MemoryClass.NARRATIVE_DETAIL and not outcome.durable:
-            audit.rejected_schema_count += 1
-            continue
+        if _memory_is_explicit(outcome):
+            explicit_memory.add(outcome_id)
+            if memory.memory_class == MemoryClass.NARRATIVE_DETAIL and outcome.durable:
+                audit.rejected_schema_count += 1
+                continue
+            if memory.memory_class != MemoryClass.NARRATIVE_DETAIL and not outcome.durable:
+                audit.rejected_schema_count += 1
+                continue
         outcomes[outcome_id] = outcome
         memories[outcome_id] = memory
         if evidence_supported(outcome.evidence, authoritative_text):
@@ -243,10 +285,21 @@ def proposals_from_envelope(
         if proposal.change_type in {ChangeType.SCENE_THESIS, ChangeType.CANON_GAP}:
             audit.rejected_schema_count += 1
             continue
-        if not _memory_matches(proposal.change_type, memory.memory_class):
+        if not proposal.payload:
             audit.rejected_schema_count += 1
             continue
-        if not proposal.payload:
+
+        if outcome_id not in explicit_memory:
+            inferred = _infer_memory(proposal.change_type, proposal.payload)
+            previous = memories.get(outcome_id)
+            if previous != inferred:
+                if outcome_id in covered:
+                    audit.rejected_schema_count += 1
+                    continue
+                memories[outcome_id] = inferred
+                memory = inferred
+                audit.inferred_memory_count += 1
+        if not _memory_matches(proposal.change_type, memory.memory_class):
             audit.rejected_schema_count += 1
             continue
 
@@ -292,9 +345,17 @@ def proposals_from_envelope(
         outcome_id
         for outcome_id, outcome in outcomes.items()
         if outcome.durable
-        and outcome.memory_class != MemoryClass.NARRATIVE_DETAIL
+        and memories[outcome_id].memory_class != MemoryClass.NARRATIVE_DETAIL
         and outcome_id in supported
     }
+    audit.durable_outcome_count = len(
+        {
+            outcome_id
+            for outcome_id, outcome in outcomes.items()
+            if outcome.durable
+            and memories[outcome_id].memory_class != MemoryClass.NARRATIVE_DETAIL
+        }
+    )
     gaps = sorted(durable_supported - covered)
     for outcome_id in gaps:
         outcome = outcomes[outcome_id]
@@ -303,7 +364,9 @@ def proposals_from_envelope(
             ProposedChangeCreate(
                 change_type=ChangeType.CANON_GAP,
                 payload={
-                    "_validation_error": "Durable confirmed outcome has no structured canon delta",
+                    "_validation_error": (
+                        "Durable confirmed outcome has no structured canon delta"
+                    ),
                     "_canon": {
                         "outcome_id": outcome_id,
                         "kind": outcome.kind,
