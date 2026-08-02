@@ -7,9 +7,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from app.models.memory_semantics import MemoryClass, MemoryMetadata, MemoryRetention
+from app.models.memory_semantics import (
+    MemoryClass,
+    MemoryMetadata,
+    MemoryRetention,
+)
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
-
 
 WORD_PATTERN = re.compile(r"[\w-]+", flags=re.UNICODE)
 
