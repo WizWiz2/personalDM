@@ -8,7 +8,8 @@ on:
       - "src/backend/app/db/repositories/fact_repo.py"
       - "src/backend/app/db/repositories/narrative_detail_repo.py"
       - "src/backend/app/services/memory_taxonomy.py"
-      - "src/backend/app/services/memory_context_guard.py"
+      - "src/backend/app/services/context_compiler.py"
+      - "src/backend/app/services/context_pipeline.py"
       - "src/backend/app/services/memory_scribe.py"
       - "src/backend/app/services/canon_semantics.py"
       - "src/backend/app/services/canon_applier.py"
@@ -59,7 +60,8 @@ jobs:
             app/db/repositories/fact_repo.py \
             app/db/repositories/narrative_detail_repo.py \
             app/services/memory_taxonomy.py \
-            app/services/memory_context_guard.py \
+            app/services/context_compiler.py \
+            app/services/context_pipeline.py \
             app/services/canon_semantics.py \
             app/services/canon_applier.py \
             app/services/continuity_checker.py \
