@@ -15,6 +15,12 @@ async def narrator_stream(*args, **kwargs):
 
 
 async def role_json(self, provider, selection, messages, **kwargs):
+    if selection.role == ModelRole.NARRATION_VALIDATOR:
+        return {
+            "verdict": "pass",
+            "summary": "Narration respects scene state and player agency.",
+            "violations": [],
+        }
     if selection.role == ModelRole.ENTITY_REGISTRAR:
         return {
             "characters": [
