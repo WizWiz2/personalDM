@@ -1,65 +1,23 @@
-import json
 from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.engine import get_session
-from app.db.repositories.campaign_repo import CampaignRepository
-from app.db.repositories.scene_repo import SceneRepository
-from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import Turn
-from app.models.turn import TurnCreate, TurnRead
-from app.services.memory_scribe_guard import install as install_memory_scribe_guard
-from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
-from app.services.session_zero_service import (
-    SessionZeroIncompleteError,
-    SessionZeroService,
+from app.application import (
+    CampaignNotFoundError,
+    CurrentSceneError,
+    GameApplication,
+    GameNotReadyError,
+    TurnNotFoundError,
+    TurnRegenerationError,
 )
-from app.services.turn_runner import TurnRunner
-from app.services.turn_undo_service import TurnUndoService
-
-
-install_memory_scribe_guard()
+from app.db.engine import get_session
+from app.db.repositories.turn_repo import TurnRepository
+from app.models.turn import TurnCreate, TurnRead
 
 router = APIRouter(prefix="/api/campaigns/{campaign_id}/turns", tags=["turns"])
-
-
-async def _bind_current_scene(
-    campaign_id: UUID,
-    data: TurnCreate,
-    session: AsyncSession,
-) -> TurnCreate:
-    """Require setup and bind the authoritative current scene for a narrative turn."""
-    campaign = await CampaignRepository(session).get_by_id(campaign_id)
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-
-    try:
-        await SessionZeroService(session).require_completed(campaign_id)
-    except SessionZeroIncompleteError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "session_zero_required",
-                "message": "Complete session zero before starting narrative play",
-                "missing_fields": exc.missing_fields,
-                "session_zero_url": f"/api/campaigns/{campaign_id}/session-zero",
-            },
-        ) from exc
-
-    effective_scene_id = campaign.current_scene_id or data.scene_id
-    if effective_scene_id:
-        scene = await SceneRepository(session).get_by_id(effective_scene_id)
-        if not scene or scene.campaign_id != campaign_id:
-            raise HTTPException(
-                status_code=409,
-                detail="Campaign current scene is missing or belongs to another campaign",
-            )
-    return data.model_copy(update={"scene_id": effective_scene_id})
 
 
 @router.post("", response_class=StreamingResponse)
@@ -74,33 +32,27 @@ async def send_turn(
             detail="The public turn endpoint accepts only role='user'",
         )
 
-    meta_command = parse_meta_command(data.content)
-    if meta_command:
-        if not await CampaignRepository(session).get_by_id(campaign_id):
-            raise HTTPException(status_code=404, detail="Campaign not found")
-        runner = MetaCommandRunner(session)
-
-        async def meta_generator():
-            async for token in runner.run_stream(campaign_id, meta_command):
-                yield token
-
-        return StreamingResponse(
-            meta_generator(),
-            media_type="text/plain; charset=utf-8",
-            headers={"X-PersonalDM-Channel": "meta"},
-        )
-
-    data = await _bind_current_scene(campaign_id, data, session)
-    runner = TurnRunner(session)
-
-    async def token_generator():
-        async for token in runner.run_turn_stream(campaign_id, data):
-            yield token
+    try:
+        route = await GameApplication(session).route_input(campaign_id, data)
+    except CampaignNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GameNotReadyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "session_zero_required",
+                "message": "Complete session zero before starting narrative play",
+                "missing_fields": exc.missing_fields,
+                "session_zero_url": f"/api/campaigns/{campaign_id}/session-zero",
+            },
+        ) from exc
+    except CurrentSceneError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return StreamingResponse(
-        token_generator(),
+        route.stream,
         media_type="text/plain; charset=utf-8",
-        headers={"X-PersonalDM-Channel": "narrative"},
+        headers={"X-PersonalDM-Channel": route.channel},
     )
 
 
@@ -110,7 +62,7 @@ async def stop_generation(
     session: AsyncSession = Depends(get_session),
 ):
     return {
-        "success": await TurnRunner.stop_generation(campaign_id, session)
+        "success": await GameApplication(session).stop_generation(campaign_id)
     }
 
 
@@ -135,13 +87,12 @@ async def undo_last_pair(
     campaign_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    success = await TurnUndoService(session).undo_last_pair(campaign_id)
+    success = await GameApplication(session).undo_last_turn(campaign_id)
     if not success:
         raise HTTPException(
             status_code=400,
             detail="The latest active narrative turns are not a user/assistant pair",
         )
-    await session.commit()
     return {"success": True}
 
 
@@ -151,62 +102,15 @@ async def regenerate_turn(
     turn_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    result = await session.execute(
-        select(Turn).where(
-            Turn.id == str(turn_id),
-            Turn.campaign_id == str(campaign_id),
-        )
-    )
-    db_assistant = result.scalar_one_or_none()
-    if not db_assistant or db_assistant.role != "assistant":
-        raise HTTPException(
-            status_code=404,
-            detail="Narrative assistant turn to regenerate not found",
-        )
-    if not db_assistant.parent_turn_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot regenerate a turn without a parent user turn",
-        )
-
-    repo = TurnRepository(session)
-    user_turn = await repo.get_by_id(UUID(db_assistant.parent_turn_id))
-    if not user_turn or user_turn.campaign_id != campaign_id:
-        raise HTTPException(status_code=404, detail="Parent user turn not found")
-
-    actor_id = None
-    if db_assistant.context_snapshot:
-        try:
-            snapshot = json.loads(db_assistant.context_snapshot)
-            actor_value = snapshot.get("acting_character_id")
-            if actor_value:
-                actor_id = UUID(actor_value)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            actor_id = None
-
-    await repo.mark_alternative(turn_id)
-    await session.commit()
-
-    runner = TurnRunner(session)
-    regeneration_input = TurnCreate(
-        role="user",
-        content=user_turn.content,
-        scene_id=user_turn.scene_id,
-        acting_character_id=actor_id,
-        parent_turn_id=user_turn.parent_turn_id,
-        model_name=user_turn.model_name,
-    )
-
-    async def token_generator():
-        async for token in runner.run_turn_stream(
-            campaign_id,
-            regeneration_input,
-            existing_user_turn_id=user_turn.id,
-        ):
-            yield token
+    try:
+        route = await GameApplication(session).regenerate_turn(campaign_id, turn_id)
+    except TurnNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TurnRegenerationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return StreamingResponse(
-        token_generator(),
+        route.stream,
         media_type="text/plain; charset=utf-8",
-        headers={"X-PersonalDM-Channel": "narrative"},
+        headers={"X-PersonalDM-Channel": route.channel},
     )

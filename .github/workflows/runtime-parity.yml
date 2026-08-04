@@ -1,0 +1,65 @@
+name: Runtime parity
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+    paths:
+      - "src/backend/cli.py"
+      - "src/backend/app/runtime.py"
+      - "src/backend/app/application/**"
+      - "src/backend/app/main.py"
+      - "src/backend/app/api/turns.py"
+      - "src/backend/tests/test_runtime_parity.py"
+      - ".github/workflows/runtime-parity.yml"
+  pull_request:
+    paths:
+      - "src/backend/cli.py"
+      - "src/backend/app/runtime.py"
+      - "src/backend/app/application/**"
+      - "src/backend/app/main.py"
+      - "src/backend/app/api/turns.py"
+      - "src/backend/tests/test_runtime_parity.py"
+      - ".github/workflows/runtime-parity.yml"
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+
+      - run: python -m pip install -e "src/backend[dev]"
+
+      - name: Compile shared runtime and adapters
+        run: >-
+          python -m compileall -q src/backend/cli.py src/backend/app/runtime.py
+          src/backend/app/application src/backend/app/api/turns.py
+          src/backend/tests/test_runtime_parity.py
+
+      - name: Validate migrations
+        working-directory: src/backend
+        run: |
+          rm -rf data
+          alembic upgrade head
+          alembic downgrade 293b3517b6ac
+          alembic upgrade head
+
+      - name: Prove cold-start CLI and API parity
+        working-directory: src/backend
+        run: pytest -q tests/test_runtime_parity.py --tb=short
+
+      - name: Lint parity boundary
+        working-directory: src/backend
+        run: |
+          ruff check --extend-ignore SIM102 cli.py
+          ruff check app/runtime.py app/application app/main.py tests/test_runtime_parity.py
+          ruff check --extend-ignore B008 app/api/turns.py

@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import cli
+from app.application import GameApplication
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
@@ -265,4 +266,4 @@ async def test_scribe_429_is_nonfatal_and_does_not_create_regex_bartender(
     memory_job = next(job for job in jobs if job.job_type == "memory_scribe")
     assert memory_job.status == "failed"
     assert "429" in (memory_job.error or "")
-    assert cli._rate_limited(memory_job.error) is True
+    assert GameApplication.is_rate_limited_error(memory_job.error) is True
