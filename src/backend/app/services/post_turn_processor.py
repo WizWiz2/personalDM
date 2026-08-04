@@ -12,7 +12,6 @@ from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.models.proposed_change import ChangeType
 from app.services.continuity_checker import ContinuityChecker
-from app.services.deterministic_entity_fallback import DeterministicEntityFallback
 from app.services.entity_registrar import EntityRegistrar
 from app.services.memory_scribe import MemoryScribe
 from app.services.memory_taxonomy import MemoryTaxonomyService
@@ -43,10 +42,26 @@ class PostTurnProcessor:
     async def process_turn(self, assistant_turn_id: UUID) -> None:
         jobs = await self._jobs.list_for_turn(assistant_turn_id)
         for job in jobs:
-            if job.status in {"pending", "failed"}:
+            if job.status not in {"pending", "failed"}:
+                continue
+            try:
                 await self.process_job(job.id)
+            except Exception as exc:
+                # process_job has already stored a durable failed status and error.
+                # A post-turn control-model outage must never turn a saved narrative
+                # response into an interactive Python traceback.
+                logger.info(
+                    "Post-turn job %s deferred after failure: %s",
+                    job.id,
+                    exc,
+                )
 
-    async def process_job(self, job_id: UUID, *, already_claimed: bool = False) -> None:
+    async def process_job(
+        self,
+        job_id: UUID,
+        *,
+        already_claimed: bool = False,
+    ) -> None:
         from app.db.tables import PostTurnJob
 
         row = await self._session.get(PostTurnJob, str(job_id))
@@ -109,23 +124,6 @@ class PostTurnProcessor:
                         source_turn_id=assistant.id,
                         assistant_content=assistant.content,
                     )
-                    if not registration.present_ids:
-                        fallback = await DeterministicEntityFallback(
-                            self._session
-                        ).register_from_turn(
-                            campaign_id=campaign_id,
-                            scene_id=assistant.scene_id,
-                            source_turn_id=assistant.id,
-                            assistant_content=assistant.content,
-                        )
-                        registration.created_ids.extend(fallback.created_ids)
-                        registration.resolved_ids.extend(fallback.resolved_ids)
-                        registration.present_ids.extend(fallback.present_ids)
-                        registration.conflicts.extend(fallback.conflicts)
-
-                    # NPC identity and physical presence are a separate durable
-                    # checkpoint. A later cloud rate limit in Memory Scribe must
-                    # not roll an already observed character out of the scene.
                     await self._session.commit()
 
                     proposals = await MemoryScribe(self._session).extract_proposals(
@@ -236,11 +234,12 @@ class PostTurnWorker:
                             already_claimed=True,
                         )
             except Exception as exc:
-                # The durable job already contains the actionable error. Keep
-                # background failures out of the interactive game console.
                 logger.debug("Post-turn worker job failed: %s", exc, exc_info=True)
             if not processed:
                 try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=self.poll_interval)
+                    await asyncio.wait_for(
+                        self._stop.wait(),
+                        timeout=self.poll_interval,
+                    )
                 except TimeoutError:
                     pass

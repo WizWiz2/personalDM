@@ -19,138 +19,166 @@ from app.models.turn import TurnCreate
 from app.providers.llm_provider import LLMProviderError
 from app.services.campaign_service import CampaignService
 from app.services.character_card_service import CharacterCardService
-from app.services.conversational_session_zero import ConversationalSessionZeroService
 from app.services.entity_registrar import EntityRegistrationResult
 from app.services.post_turn_processor import PostTurnProcessor
+from app.services.session_zero_interview import SessionZeroInterviewService
 from app.services.session_zero_service import SessionZeroService
 
-ANSWERS = {
-    "world": "Приземлённое фэнтези пограничных городов, редкая магия.",
-    "adventure": "Искать работу, знакомиться с людьми и постепенно влиять на город.",
-    "play_style": "Диалоги, исследование и управление последствиями без спешки.",
-    "tone": "Атмосферно и серьёзно, но без постоянной угрозы.",
-    "wanted": "Живые NPC, бытовые сцены, отношения и долгие сюжетные линии.",
-    "boundaries": "Не принимать решения и не описывать чувства за героя.",
-    "hero_name": "Эйдан",
-    "hero_concept": "Странствующий искатель приключений с опытом проводника.",
-    "hero_capabilities": "ориентирование, переговоры, владение мечом",
-    "hero_limitations": "не владеет магией, плохо разбирается в дворцовых интригах",
-    "hero_goal": "найти достойную работу и закрепиться в городе",
-    "hero_values": "свобода, верность слову, страх потерять самостоятельность",
-    "hero_appearance": "Высокий мужчина в дорожном плаще со старым шрамом.",
-    "hero_voice": "Говорит спокойно, коротко и задаёт прямые вопросы.",
-    "opening_location": "Площадь у гильдии проводников",
-    "opening_situation": "Эйдан только прибыл и видит доску доступной работы.",
-    "relationship_style": (
-        "Медленное развитие; NPC могут проявлять инициативу, "
-        "но решения и чувства Эйдана остаются за игроком."
+
+INTERVIEW_DECISION = {
+    "assistant_message": (
+        "Кажется, основа уже ясна. Я собрал договорённости; проверь их перед стартом."
     ),
-    "additional_context": "Не форсировать сюжетный крючок в каждой спокойной сцене.",
+    "ready_to_finalize": True,
+    "missing_topics": [],
+    "summary": "Городское фэнтези Pathfinder 2e про самостоятельного искателя.",
+    "draft": {
+        "world": {
+            "setting_name": "Лаэрн",
+            "genre": "приземлённое городское фэнтези",
+            "premise": "Искатель приключений ищет работу и постепенно влияет на город.",
+            "tone": "атмосферно, спокойно, без обязательной угрозы",
+            "themes": ["живые NPC", "бытовые сцены", "долгие линии"],
+            "boundaries": ["не решать и не чувствовать за героя"],
+            "boundaries_confirmed": True,
+            "rules_system": "Pathfinder 2e",
+            "world_summary": "Пограничный торговый город с редкой магией.",
+            "play_style": "диалоги, исследование и последствия без спешки",
+            "narrative_style": "романная атмосферная проза",
+            "content_rating": "16+",
+            "starting_location_name": "Площадь у гильдии проводников",
+            "starting_situation": (
+                "Эйдан только прибыл и видит доску доступной работы; "
+                "его первый выбор остаётся за игроком."
+            ),
+            "starting_scene_title": "Первый день в Лаэрне",
+        },
+        "character": {
+            "name": "Эйдан",
+            "description": "Странствующий искатель приключений и проводник.",
+            "appearance": "Высокий мужчина в дорожном плаще со старым шрамом.",
+            "personality": "Спокойный, самостоятельный и прямой.",
+            "values": ["свобода", "верность слову"],
+            "fears": ["потерять самостоятельность"],
+            "desires": ["закрепиться в городе"],
+            "voice": "спокойный низкий голос",
+            "speech_patterns": "говорит коротко и задаёт прямые вопросы",
+            "biography": "Работал проводником на пограничных трактах.",
+            "capabilities": ["ориентирование", "переговоры", "владение мечом"],
+            "limitations": ["не владеет магией", "не знает местную знать"],
+            "first_goal": "найти достойную работу",
+        },
+    },
 }
 
 
 @pytest.mark.asyncio
-async def test_conversational_session_zero_persists_resumes_and_completes(
+async def test_real_cli_interview_materializes_once_through_session_zero(
     db_session: AsyncSession,
 ):
     campaign = await CampaignService(db_session).create_campaign(
-        CampaignCreate(name="Живая нулевая сессия")
+        CampaignCreate(name="Живая модельная нулевая сессия")
     )
     await db_session.commit()
-    interview = ConversationalSessionZeroService(db_session)
 
-    for key, value in list(ANSWERS.items())[:5]:
-        await interview.save_answer(campaign.id, key, value)
-    resumed = ConversationalSessionZeroService(db_session)
-    stored = await resumed.get_answers(campaign.id)
-    assert stored["world"] == ANSWERS["world"]
-    missing = await resumed.missing_questions(campaign.id)
-    missing_keys = {question.key for question in missing}
-    assert len(missing) == len(ANSWERS) - 5
-    assert "relationship_style" in missing_keys
-    assert "combat_style" not in missing_keys
-    assert "horror_safety" not in missing_keys
+    with (
+        patch(
+            "app.services.session_zero_interview.RoleModelRouter.generate_json",
+            new_callable=AsyncMock,
+            return_value=INTERVIEW_DECISION,
+        ),
+        patch("builtins.input", side_effect=["Хочу городское фэнтези.", "да"]),
+    ):
+        completed = await cli.run_session_zero_interview(campaign.id, db_session)
 
-    for key, value in list(ANSWERS.items())[5:]:
-        await resumed.save_answer(campaign.id, key, value)
-    completed = await resumed.finalize(campaign.id)
-
+    assert completed is True
     setup = await SessionZeroService(db_session).get(campaign.id)
     assert setup.status == "completed"
-    assert setup.missing_fields == []
-    assert setup.starting_location_name == ANSWERS["opening_location"]
-    assert completed.scene.title == f"Начало: {ANSWERS['opening_location']}"
-    assert "tavern" not in (completed.scene.location_description or "").casefold()
-    assert "Медленное развитие" in (setup.play_style or "")
-    assert setup.custom_fields["interview_version"] == 2
-    assert setup.custom_fields["adaptive_preferences"] == {
-        "relationship_style": ANSWERS["relationship_style"]
-    }
+    assert setup.rules_system == "Pathfinder 2e"
+    assert setup.content_rating == "16+"
+    assert setup.starting_location_name == "Площадь у гильдии проводников"
+    assert "tavern" not in (setup.starting_location_name or "").casefold()
 
     card = await CharacterCardService(db_session).get_card(
         setup.player_character_id,
         campaign.id,
     )
     assert card.ready_for_play is True
-    assert card.character.canonical_name == "Эйдан"
-    assert card.capabilities == ["ориентирование", "переговоры", "владение мечом"]
-    assert card.limitations == [
-        "не владеет магией",
-        "плохо разбирается в дворцовых интригах",
+    assert card.character.values == ["свобода", "верность слову"]
+    assert card.character.fears == ["потерять самостоятельность"]
+    assert card.character.values != card.character.fears
+    assert card.capabilities == [
+        "ориентирование",
+        "переговоры",
+        "владение мечом",
     ]
-    assert card.goals[0].description == ANSWERS["hero_goal"]
+    assert card.limitations == ["не владеет магией", "не знает местную знать"]
+
+    scenes = await SceneRepository(db_session).list_by_campaign(campaign.id)
+    locations = await LocationRepository(db_session).list_by_campaign(campaign.id)
+    assert len(scenes) == 1
+    assert len(locations) == 1
+    assert scenes[0].title == "Первый день в Лаэрне"
 
 
 @pytest.mark.asyncio
-async def test_adaptive_questions_follow_only_relevant_preferences(
+async def test_rate_limited_interview_saves_pending_answer_without_world_objects(
     db_session: AsyncSession,
 ):
     campaign = await CampaignService(db_session).create_campaign(
-        CampaignCreate(name="Ветвящаяся беседа")
+        CampaignCreate(name="Отложенная беседа")
     )
     await db_session.commit()
-    interview = ConversationalSessionZeroService(db_session)
-    await interview.save_answer(
-        campaign.id,
-        "world",
-        "Космический хоррор во вселенной известного канона.",
-    )
-    await interview.save_answer(
-        campaign.id,
-        "play_style",
-        "Тактические бои и свободная песочница.",
-    )
-    questions = interview.questions_for_answers(
-        await interview.get_answers(campaign.id)
-    )
-    keys = {question.key for question in questions}
-    assert {"combat_style", "horror_safety", "sandbox_style", "canon_fidelity"} <= keys
-    assert "relationship_style" not in keys
-    assert "management_style" not in keys
+    interview = SessionZeroInterviewService(db_session)
 
-
-@pytest.mark.asyncio
-async def test_incomplete_cli_campaign_never_bootstraps_default_tavern(
-    db_session: AsyncSession,
-):
-    campaign = await CampaignService(db_session).create_campaign(
-        CampaignCreate(name="Без дефолтной таверны")
-    )
-    await db_session.commit()
-
-    with patch.object(
-        cli,
-        "run_session_zero_interview",
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
         new_callable=AsyncMock,
-        return_value=False,
-    ) as interview:
-        await cli.play_game_loop(
-            campaign.id,
-            db_session,
-            CampaignService(db_session),
-        )
+        side_effect=LLMProviderError("HTTP 429 rate_limit_exceeded"),
+    ), pytest.raises(LLMProviderError, match="429"):
+        await interview.answer(campaign.id, "Хочу медленную политическую игру.")
 
-    interview.assert_awaited_once()
+    state = await interview.get_state(campaign.id)
+    assert state.pending_user_message == "Хочу медленную политическую игру."
+    assert state.messages[-1] == {
+        "role": "user",
+        "content": "Хочу медленную политическую игру.",
+    }
+    assert await SceneRepository(db_session).list_by_campaign(campaign.id) == []
+    assert await LocationRepository(db_session).list_by_campaign(campaign.id) == []
+    assert await EntityRepository(db_session).list_by_campaign(campaign.id) == []
+
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
+        new_callable=AsyncMock,
+        return_value=INTERVIEW_DECISION,
+    ):
+        decision = await interview.retry_pending(campaign.id)
+    assert decision is not None
+    assert decision.ready_to_finalize is True
+    assert (await interview.get_state(campaign.id)).pending_user_message is None
+
+
+@pytest.mark.asyncio
+async def test_cli_rate_limit_never_bootstraps_default_tavern(
+    db_session: AsyncSession,
+):
+    campaign = await CampaignService(db_session).create_campaign(
+        CampaignCreate(name="Без таверны при 429")
+    )
+    await db_session.commit()
+
+    with (
+        patch(
+            "app.services.session_zero_interview.RoleModelRouter.generate_json",
+            new_callable=AsyncMock,
+            side_effect=LLMProviderError("HTTP 429 rate_limit_exceeded"),
+        ),
+        patch("builtins.input", side_effect=["Хочу научную фантастику."]),
+    ):
+        completed = await cli.run_session_zero_interview(campaign.id, db_session)
+
+    assert completed is False
     current = await CampaignRepository(db_session).get_by_id(campaign.id)
     assert current.current_scene_id is None
     assert await SceneRepository(db_session).list_by_campaign(campaign.id) == []
@@ -158,7 +186,7 @@ async def test_incomplete_cli_campaign_never_bootstraps_default_tavern(
 
 
 @pytest.mark.asyncio
-async def test_scribe_429_keeps_registered_bartender_and_failed_job_audit(
+async def test_scribe_429_is_nonfatal_and_does_not_create_regex_bartender(
     db_session: AsyncSession,
 ):
     campaign_id = uuid4()
@@ -171,7 +199,7 @@ async def test_scribe_429_keeps_registered_bartender_and_failed_job_audit(
     await campaigns.create(campaign_id, CampaignCreate(name="Rate limit resilience"))
     location = await locations.create(
         campaign_id,
-        LocationCreate(canonical_name="Общий зал Медного Котла"),
+        LocationCreate(canonical_name="Общий зал"),
     )
     hero = await entities.create_character(
         campaign_id,
@@ -186,7 +214,10 @@ async def test_scribe_429_keeps_registered_bartender_and_failed_job_audit(
         SceneCreate(title="Общий зал", location_id=location.id),
     )
     await scenes.add_participant(scene.id, hero.id)
-    await campaigns.update(campaign_id, CampaignUpdate(current_scene_id=scene.id))
+    await campaigns.update(
+        campaign_id,
+        CampaignUpdate(current_scene_id=scene.id),
+    )
     user = await turns.create(
         campaign_id,
         TurnCreate(role="user", content="Я ищу работу.", scene_id=scene.id),
@@ -213,23 +244,22 @@ async def test_scribe_429_keeps_registered_bartender_and_failed_job_audit(
         patch(
             "app.services.memory_scribe.MemoryScribe.extract_proposals",
             new_callable=AsyncMock,
-            side_effect=LLMProviderError(
-                "LLM returned HTTP 429: rate_limit_exceeded; retry after 4.76s"
-            ),
+            side_effect=LLMProviderError("HTTP 429 rate_limit_exceeded"),
         ),
         patch(
             "app.services.thesis_curator.ThesisCurator.curate_after_turn",
             new_callable=AsyncMock,
             return_value=None,
         ),
-        pytest.raises(LLMProviderError, match="429"),
     ):
         await processor.process_turn(assistant.id)
 
     participants = await entities.get_characters_in_scene(scene.id)
-    assert {item.canonical_name for item in participants} == {"Эйдан", "Бармен"}
-    bartender = next(item for item in participants if item.canonical_name == "Бармен")
-    assert bartender.custom_fields["registrar"] == "deterministic_role_fallback"
+    assert {item.canonical_name for item in participants} == {"Эйдан"}
+    assert not any(
+        item.canonical_name == "Бармен"
+        for item in await entities.list_by_campaign(campaign_id)
+    )
 
     jobs = await PostTurnJobRepository(db_session).list_for_turn(assistant.id)
     memory_job = next(job for job in jobs if job.job_type == "memory_scribe")

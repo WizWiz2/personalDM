@@ -14,6 +14,7 @@ from app.providers.llm_provider import LLMProvider, LLMProviderError
 class ModelRole(str, Enum):
     NARRATOR = "narrator"
     GAME_MASTER = "game_master"
+    SESSION_ZERO = "session_zero"
     PLANNER = "planner"
     NARRATION_VALIDATOR = "narration_validator"
     ENTITY_REGISTRAR = "entity_registrar"
@@ -51,7 +52,8 @@ class RoleModelSelection:
     @property
     def has_distinct_fallback(self) -> bool:
         return (
-            self.config.base_url.rstrip("/") != self.fallback_config.base_url.rstrip("/")
+            self.config.base_url.rstrip("/")
+            != self.fallback_config.base_url.rstrip("/")
             or self.config.model_name != self.fallback_config.model_name
         )
 
@@ -59,9 +61,10 @@ class RoleModelSelection:
 class RoleModelRouter:
     """Resolve one campaign provider into role-specific model selections.
 
-    Narration and direct out-of-character game-master dialogue use the campaign's
-    primary model. Control roles may use a cheaper isolated endpoint, while retaining
-    a safe fallback that never forwards campaign credentials to another host.
+    Narration, session zero, and direct out-of-character game-master dialogue use
+    the campaign's primary model. Control roles may use a cheaper isolated endpoint,
+    while retaining a safe fallback that never forwards campaign credentials to
+    another host.
     """
 
     def __init__(self, config_repo: ProviderConfigRepository):
@@ -87,15 +90,19 @@ class RoleModelRouter:
         role: ModelRole,
         primary_config: ProviderConfigRead | None = None,
     ) -> RoleModelSelection | None:
-        primary = primary_config or await self._config_repo.get_by_campaign_id(campaign_id)
+        primary = primary_config or await self._config_repo.get_by_campaign_id(
+            campaign_id
+        )
         if primary is None:
             return None
         primary_key = await self._config_repo.get_decrypted_key(campaign_id)
 
         explicit_model = self._model_override(role)
-        if role in {ModelRole.NARRATOR, ModelRole.GAME_MASTER} or (
-            role == ModelRole.CHARACTER_BUILDER and not explicit_model
-        ):
+        if role in {
+            ModelRole.NARRATOR,
+            ModelRole.GAME_MASTER,
+            ModelRole.SESSION_ZERO,
+        } or (role == ModelRole.CHARACTER_BUILDER and not explicit_model):
             return RoleModelSelection(
                 role=role,
                 config=primary,
@@ -118,13 +125,14 @@ class RoleModelRouter:
 
         model_name = explicit_model or settings.CONTROL_LLM_MODEL or primary.model_name
         base_url = settings.CONTROL_LLM_BASE_URL or primary.base_url
-        context_window = settings.CONTROL_LLM_CONTEXT_WINDOW or primary.context_window
+        context_window = (
+            settings.CONTROL_LLM_CONTEXT_WINDOW or primary.context_window
+        )
         if settings.CONTROL_LLM_API_KEY is not None:
             api_key = settings.CONTROL_LLM_API_KEY
         elif base_url.rstrip("/") == primary.base_url.rstrip("/"):
             api_key = primary_key
         else:
-            # Never forward a campaign secret to a different endpoint implicitly.
             api_key = None
 
         source = "role_override" if explicit_model else "control_default"
