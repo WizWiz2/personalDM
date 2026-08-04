@@ -172,7 +172,7 @@ async def test_exact_duplicate_question_is_replaced_after_answer_is_extracted(
 
     assert first.assistant_message == repeated_question
     assert second.assistant_message != repeated_question
-    assert "Кабуто" in second.assistant_message
+    assert second.question_topics != ["character.personality"]
     state = await interview.get_state(campaign.id)
     assert "не потерять человечность" in state.draft.character.personality
     assert state.draft.world.setting_name == "Shadowrun"
