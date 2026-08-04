@@ -13,6 +13,7 @@ from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.tables import Campaign, Turn
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services import narration_validation_guard as legacy_narration_stream
 from app.services.narration_validator import (
     NarrationValidationError,
     NarrationValidator,
@@ -68,6 +69,26 @@ class NarrationPipelineProvider:
         finally:
             self._context = previous
 
+    def _raw_stream(self, messages, config, api_key, **kwargs):
+        compatibility_override = legacy_narration_stream._ORIGINAL_GENERATE_STREAM
+        if (
+            compatibility_override
+            is legacy_narration_stream._DEFAULT_GENERATE_STREAM
+        ):
+            return self._provider.generate_stream(
+                messages,
+                config,
+                api_key,
+                **kwargs,
+            )
+        return compatibility_override(
+            self._provider,
+            messages,
+            config,
+            api_key,
+            **kwargs,
+        )
+
     async def _collect_raw(
         self,
         messages,
@@ -76,7 +97,7 @@ class NarrationPipelineProvider:
         **kwargs,
     ) -> str:
         chunks: list[str] = []
-        async for token in self._provider.generate_stream(
+        async for token in self._raw_stream(
             messages,
             config,
             api_key,
