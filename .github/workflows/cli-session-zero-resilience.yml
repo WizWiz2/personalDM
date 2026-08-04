@@ -33,7 +33,7 @@ jobs:
           cache: pip
           cache-dependency-path: src/backend/pyproject.toml
       - run: python -m pip install -e ".[dev]"
-      - name: Compile CLI and services
+      - name: Compile CLI and session-zero services
         run: >-
           python -m compileall -q cli.py app/models/session_zero_interview.py
           app/services/session_zero_interview.py app/services/role_model_router.py
@@ -43,11 +43,11 @@ jobs:
         run: |
           rm -rf data
           alembic upgrade head
-      - name: Run focused acceptance
+      - name: Run session-zero conversation acceptance
         run: >-
           pytest -q tests/test_cli_session_zero_resilience.py
           tests/test_session_zero_conversation_guards.py --tb=short
-      - name: Lint changed Python files
+      - name: Lint session-zero guard files
         run: >-
           ruff check --extend-ignore BLE001,ISC004,SIM102,I001 cli.py
           app/models/session_zero_interview.py app/services/session_zero_interview.py
