@@ -114,8 +114,8 @@ async def test_invalid_draft_is_repaired_before_delivery(
     ).json()["id"]
 
     with patch(
-        "app.services.narration_validation_guard._ORIGINAL_GENERATE_STREAM",
-        side_effect=raw_narrator,
+        "app.services.narration_pipeline.LLMProvider.generate_stream",
+        new=raw_narrator,
     ), patch.object(
         NarrationValidator,
         "validate",
@@ -152,8 +152,8 @@ async def test_validator_failure_is_explicitly_failed_open(
     ).json()["id"]
 
     with patch(
-        "app.services.narration_validation_guard._ORIGINAL_GENERATE_STREAM",
-        side_effect=raw_narrator,
+        "app.services.narration_pipeline.LLMProvider.generate_stream",
+        new=raw_narrator,
     ), patch.object(
         NarrationValidator,
         "validate",
@@ -182,8 +182,8 @@ def test_exhausted_repairs_never_publish_rejected_text(client: TestClient):
     ).json()["id"]
 
     with patch(
-        "app.services.narration_validation_guard._ORIGINAL_GENERATE_STREAM",
-        side_effect=raw_narrator,
+        "app.services.narration_pipeline.LLMProvider.generate_stream",
+        new=raw_narrator,
     ), patch.object(
         NarrationValidator,
         "validate",

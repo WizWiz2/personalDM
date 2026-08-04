@@ -15,10 +15,14 @@ from app.application import GameApplication
 from app.db.tables import Campaign, Scene
 from app.models.campaign import CampaignCreate
 from app.models.turn import TurnCreate
+from app.providers.llm_provider import LLMProvider
 from app.runtime import install_runtime
 from app.services.base_context_compiler import ContextCompiler as BaseContextCompiler
+from app.services.base_turn_runner import TurnRunner as BaseTurnRunner
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
+from app.services.narration_pipeline import NarrationPipelineProvider
+from app.services.turn_runner import TurnRunner
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,7 +59,6 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest == api_manifest
     assert cli_manifest["installed"] is True
     assert cli_manifest["guards"] == [
-        "narration_validation",
         "memory_scribe",
         "thesis_lifecycle",
     ]
@@ -63,11 +66,16 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "authoritative_scene_state",
         "recent_narrative_details",
     ]
-    assert cli_manifest["turn_stream"].endswith(
-        "_run_turn_stream_with_validation"
-    )
-    assert cli_manifest["provider_stream"].endswith(
-        "_generate_stream_validated"
+    assert cli_manifest["narration_pipeline"] == [
+        "generate_draft",
+        "validate",
+        "repair",
+        "publish_accepted",
+    ]
+    assert cli_manifest["turn_stream"].endswith("TurnRunner.run_turn_stream")
+    assert cli_manifest["provider_stream"].endswith("LLMProvider.generate_stream")
+    assert cli_manifest["narration_provider_stream"].endswith(
+        "NarrationPipelineProvider.generate_stream"
     )
     assert cli_manifest["context_compiler"].endswith(
         "ContextCompiler.compile_context"
@@ -90,6 +98,26 @@ def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
     )
     assert ContextCompiler.compile_context.__module__ == (
         "app.services.context_compiler"
+    )
+
+
+def test_narration_pipeline_is_explicit_and_not_runtime_patched() -> None:
+    raw_provider_method = LLMProvider.generate_stream
+    base_turn_method = BaseTurnRunner.run_turn_stream
+    install_runtime()
+
+    assert LLMProvider.generate_stream is raw_provider_method
+    assert BaseTurnRunner.run_turn_stream is base_turn_method
+    assert TurnRunner.__mro__[1] is BaseTurnRunner
+    assert NarrationPipelineProvider.STAGES == (
+        "generate_draft",
+        "validate",
+        "repair",
+        "publish_accepted",
+    )
+    assert TurnRunner.run_turn_stream.__module__ == "app.services.turn_runner"
+    assert NarrationPipelineProvider.generate_stream.__module__ == (
+        "app.services.narration_pipeline"
     )
 
 
