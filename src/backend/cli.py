@@ -4,30 +4,23 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application import GameApplication
 from app.config import settings
 from app.db.engine import AsyncSessionLocal, Base, engine
-from app.db.repositories.campaign_repo import CampaignRepository
-from app.db.repositories.entity_repo import EntityRepository
-from app.db.repositories.fact_repo import FactRepository
-from app.db.repositories.job_repo import PostTurnJobRepository
-from app.db.repositories.location_repo import LocationRepository
-from app.db.repositories.scene_repo import SceneRepository
-from app.db.repositories.turn_repo import TurnRepository
-from app.models.campaign import CampaignCreate, CampaignUpdate
+from app.models.campaign import CampaignCreate
 from app.models.character import CharacterCreate
-from app.models.location import LocationCreate
 from app.models.provider_config import ProviderConfigCreate
-from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.providers.llm_provider import LLMProviderError
+from app.runtime import install_runtime
 from app.services.campaign_service import CampaignService
-from app.services.post_turn_processor import PostTurnProcessor
 from app.services.session_zero_interview import (
     SessionZeroInterviewIncompleteError,
     SessionZeroInterviewService,
 )
 from app.services.session_zero_service import SessionZeroService
-from app.services.turn_runner import TurnRunner
+
+install_runtime()
 
 
 def clear_screen() -> None:
@@ -36,11 +29,6 @@ def clear_screen() -> None:
 
 def _yes(value: str) -> bool:
     return value.strip().casefold() in {"y", "yes", "д", "да"}
-
-
-def _rate_limited(error: str | None) -> bool:
-    text = (error or "").casefold()
-    return "429" in text or "rate limit" in text or "rate_limit" in text
 
 
 async def run_session_zero_interview(
@@ -238,7 +226,7 @@ async def configure_llm_menu(
 
 async def create_character_menu(
     campaign_id: UUID,
-    session: AsyncSession,
+    application: GameApplication,
 ) -> None:
     clear_screen()
     print("=== Создать NPC вручную ===")
@@ -248,7 +236,7 @@ async def create_character_menu(
         return
     description = input("Кто это: ").strip()
     personality = input("Характер: ").strip()
-    await EntityRepository(session).create_character(
+    await application.create_character(
         campaign_id,
         CharacterCreate(
             canonical_name=name,
@@ -256,14 +244,12 @@ async def create_character_menu(
             personality=personality,
         ),
     )
-    await session.commit()
     print(f"NPC «{name}» создан.")
 
 
 async def create_scene_menu(
     campaign_id: UUID,
-    session: AsyncSession,
-    campaign_service: CampaignService,
+    application: GameApplication,
 ) -> None:
     clear_screen()
     print("=== Создать локацию и сцену ===")
@@ -273,62 +259,37 @@ async def create_scene_menu(
         return
     description = input("Описание места: ").strip()
     mood = input("Настроение сцены: ").strip()
-    location = await LocationRepository(session).create(
+    scene = await application.create_and_activate_scene(
         campaign_id,
-        LocationCreate(
-            canonical_name=location_name,
-            description=description,
-            atmosphere=mood,
-        ),
+        location_name=location_name,
+        description=description,
+        mood=mood,
     )
-    scene = await SceneRepository(session).create(
-        campaign_id,
-        SceneCreate(
-            title=location_name,
-            location_id=location.id,
-            mood=mood,
-        ),
-    )
-    await campaign_service.update_campaign(
-        campaign_id,
-        CampaignUpdate(current_scene_id=scene.id),
-    )
-    await session.commit()
     print(f"Сцена «{scene.title}» создана и активирована.")
 
 
 async def manage_participants_menu(
     campaign_id: UUID,
-    session: AsyncSession,
+    application: GameApplication,
 ) -> None:
-    campaigns = CampaignRepository(session)
-    scenes = SceneRepository(session)
-    entities = EntityRepository(session)
-    campaign = await campaigns.get_by_id(campaign_id)
-    if not campaign or not campaign.current_scene_id:
-        print("Активной сцены нет.")
-        return
-
     while True:
-        campaign = await campaigns.get_by_id(campaign_id)
-        scene = await scenes.get_by_id(campaign.current_scene_id)
-        participants = await entities.get_characters_in_scene(scene.id)
-        all_characters = await entities.list_by_campaign(
-            campaign_id,
-            entity_type="character",
-        )
-        participant_ids = {item.id for item in participants}
-        available = [item for item in all_characters if item.id not in participant_ids]
+        try:
+            view, available = await application.participant_roster(campaign_id)
+        except ValueError as exc:
+            print(f"[Система] {exc}")
+            return
+
         clear_screen()
-        print(f"=== Участники: {scene.title} ===")
+        print(f"=== Участники: {view.scene.title} ===")
         print("Сейчас:")
-        for item in participants:
-            print(f" - {item.canonical_name}")
-        if not participants:
+        for item in view.participants:
+            suffix = " (герой игрока)" if item.id == view.player_character_id else ""
+            print(f" - {item.name}{suffix}")
+        if not view.participants:
             print(" - никого")
         print("\nМожно добавить:")
         for index, item in enumerate(available, start=1):
-            print(f" [{index}] {item.canonical_name}")
+            print(f" [{index}] {item.name}")
         print("\n[R имя] удалить   [Q] назад")
         choice = input("Выбор: ").strip()
         if choice.casefold() == "q":
@@ -336,31 +297,30 @@ async def manage_participants_menu(
         if choice.casefold().startswith("r "):
             name = choice[2:].strip().casefold()
             matched = next(
-                (
-                    item
-                    for item in participants
-                    if item.canonical_name.casefold() == name
-                ),
+                (item for item in view.participants if item.name.casefold() == name),
                 None,
             )
             if matched:
-                await scenes.remove_participant(scene.id, matched.id)
-                await session.commit()
+                try:
+                    await application.remove_participant(campaign_id, matched.id)
+                except ValueError as exc:
+                    print(f"[Система] {exc}")
             continue
         if choice.isdigit() and 0 <= int(choice) - 1 < len(available):
-            await scenes.add_participant(scene.id, available[int(choice) - 1].id)
-            await session.commit()
+            await application.add_participant(
+                campaign_id,
+                available[int(choice) - 1].id,
+            )
 
 
 async def _show_post_turn_status(
-    session: AsyncSession,
+    application: GameApplication,
     assistant_turn_id: UUID,
 ) -> None:
-    jobs = await PostTurnJobRepository(session).list_for_turn(assistant_turn_id)
-    failed = [job for job in jobs if job.status == "failed"]
-    if not failed:
+    status = await application.post_turn_status(assistant_turn_id)
+    if not status.failed_count:
         return
-    if any(_rate_limited(job.error) for job in failed):
+    if status.rate_limited:
         print(
             "[Система] Ход сохранён, но облачная модель достигла лимита. "
             "Обновление памяти отложено; введи /retry-memory позже."
@@ -374,56 +334,38 @@ async def _show_post_turn_status(
 
 async def _retry_failed_memory(
     campaign_id: UUID,
-    session: AsyncSession,
+    application: GameApplication,
 ) -> None:
-    jobs = await PostTurnJobRepository(session).list_for_campaign(
-        campaign_id,
-        limit=200,
-    )
-    failed = [job for job in jobs if job.status == "failed"]
-    if not failed:
+    result = await application.retry_failed_post_turn(campaign_id)
+    if result.succeeded == 0 and result.remaining == 0:
         print("[Система] Неудачных задач памяти нет.")
         return
-    succeeded = 0
-    remaining = 0
-    processor = PostTurnProcessor(session)
-    repo = PostTurnJobRepository(session)
-    for job in reversed(failed):
-        await repo.retry(job.id)
-        await session.commit()
-        try:
-            await processor.process_job(job.id)
-            succeeded += 1
-        except Exception:
-            remaining += 1
     print(
-        f"[Система] Повторено успешно: {succeeded}; всё ещё ожидают: {remaining}."
+        f"[Система] Повторено успешно: {result.succeeded}; "
+        f"всё ещё ожидают: {result.remaining}."
     )
 
 
 async def play_game_loop(
     campaign_id: UUID,
     session: AsyncSession,
-    campaign_service: CampaignService,
 ) -> None:
     setup = await SessionZeroService(session).get(campaign_id)
     if setup.status != "completed":
         if not await run_session_zero_interview(campaign_id, session):
             return
 
-    campaigns = CampaignRepository(session)
-    scenes = SceneRepository(session)
-    entities = EntityRepository(session)
-    turns = TurnRepository(session)
-    runner = TurnRunner(session)
+    application = GameApplication(session)
     active_listener_id: UUID | None = None
     active_listener_name = "Narrator / DM"
-    last_assistant_turn_id: UUID | None = None
 
     clear_screen()
-    campaign = await campaigns.get_by_id(campaign_id)
+    view = await application.current_scene_view(campaign_id)
+    if view is None:
+        print("[Система] Активная сцена отсутствует.")
+        return
     print("=" * 80)
-    print(f"   STARTING ADVENTURE: {campaign.name}")
+    print(f"   STARTING ADVENTURE: {view.campaign_name}")
     print("=" * 80)
     print("Commands:")
     print("  /DM <вопрос>      - спросить мастера вне сцены")
@@ -431,30 +373,24 @@ async def play_game_loop(
     print("  /talk narrator    - вернуться к общему Narrator")
     print("  /facts            - показать активные факты")
     print("  /retry-memory     - повторить фоновые задачи")
-    print("  /undo             - отменить последний игровой ход")
+    print("  /undo             - отменить последний игровой ход и его последствия")
     print("  /exit             - вернуться в меню")
     print("=" * 80)
 
     while True:
-        campaign = await campaigns.get_by_id(campaign_id)
-        if not campaign or not campaign.current_scene_id:
+        view = await application.current_scene_view(campaign_id)
+        if view is None:
             print("[Система] Активная сцена отсутствует.")
             return
-        scene = await scenes.get_by_id(campaign.current_scene_id)
-        participants = await entities.get_characters_in_scene(scene.id)
-        npcs = [
-            item
-            for item in participants
-            if item.id != campaign.player_character_id
-        ]
+        npcs = list(view.npcs)
         if active_listener_id and all(
             item.id != active_listener_id for item in npcs
         ):
             active_listener_id = None
             active_listener_name = "Narrator / DM"
 
-        print(f"\n[Scene: {scene.title}] | [Mood: {scene.mood or '—'}]")
-        names = ", ".join(item.canonical_name for item in npcs) or "None"
+        print(f"\n[Scene: {view.scene.title}] | [Mood: {view.scene.mood or '—'}]")
+        names = ", ".join(item.name for item in npcs) or "None"
         print(f"[Present NPCs: {names}] | [Talking to: {active_listener_name}]")
         print("-" * 80)
         user_input = input("\nYou: ").strip()
@@ -464,12 +400,13 @@ async def play_game_loop(
         if command == "/exit":
             return
         if command == "/undo":
-            await turns.undo_last_pair(campaign_id)
-            await session.commit()
-            print("[Система] Последняя игровая пара отменена.")
+            if await application.undo_last_turn(campaign_id):
+                print("[Система] Последний игровой ход и его последствия отменены.")
+            else:
+                print("[Система] Последнюю игровую пару отменить нельзя.")
             continue
         if command == "/facts":
-            facts = await FactRepository(session).list_active(campaign_id)
+            facts = await application.list_active_facts(campaign_id)
             if not facts:
                 print("[Система] Фактов пока нет.")
             for fact in facts:
@@ -479,7 +416,7 @@ async def play_game_loop(
                 )
             continue
         if command == "/retry-memory":
-            await _retry_failed_memory(campaign_id, session)
+            await _retry_failed_memory(campaign_id, application)
             continue
         if command.startswith("/talk "):
             target = user_input[6:].strip().casefold()
@@ -488,38 +425,39 @@ async def play_game_loop(
                 active_listener_name = "Narrator / DM"
             else:
                 matched = next(
-                    (
-                        item
-                        for item in npcs
-                        if item.canonical_name.casefold() == target
-                    ),
+                    (item for item in npcs if item.name.casefold() == target),
                     None,
                 )
                 if matched:
                     active_listener_id = matched.id
-                    active_listener_name = matched.canonical_name
+                    active_listener_name = matched.name
                 else:
                     print("[Система] Этого персонажа нет в текущей сцене.")
             continue
 
-        print("\nDM: ", end="", flush=True)
-        async for token in runner.run_turn_stream(
-            campaign_id,
-            TurnCreate(
-                role="user",
-                content=user_input,
-                scene_id=scene.id,
-                acting_character_id=active_listener_id,
-            ),
-        ):
+        try:
+            route = await application.route_input(
+                campaign_id,
+                TurnCreate(
+                    role="user",
+                    content=user_input,
+                    acting_character_id=active_listener_id,
+                ),
+            )
+        except ValueError as exc:
+            print(f"[Система] {exc}")
+            continue
+
+        label = "DM (OOC)" if route.channel == "meta" else "DM"
+        print(f"\n{label}: ", end="", flush=True)
+        async for token in route.stream:
             print(token, end="", flush=True)
         print()
 
-        history = await turns.get_history(campaign_id, limit=20, channel="all")
-        assistants = [item for item in history if item.role == "assistant"]
-        if assistants:
-            last_assistant_turn_id = assistants[-1].id
-            await _show_post_turn_status(session, last_assistant_turn_id)
+        if route.channel == "narrative":
+            assistant_turn_id = await application.latest_assistant_turn_id(campaign_id)
+            if assistant_turn_id:
+                await _show_post_turn_status(application, assistant_turn_id)
 
 
 async def main() -> None:
@@ -528,6 +466,7 @@ async def main() -> None:
 
     async with AsyncSessionLocal() as session:
         campaign_service = CampaignService(session)
+        application = GameApplication(session)
         while True:
             clear_screen()
             print("=" * 40)
@@ -568,23 +507,15 @@ async def main() -> None:
                     break
                 if selected == "1":
                     if setup.status == "completed":
-                        await play_game_loop(
-                            campaign_id,
-                            session,
-                            campaign_service,
-                        )
+                        await play_game_loop(campaign_id, session)
                     else:
                         await run_session_zero_interview(campaign_id, session)
                 elif selected == "2":
-                    await create_character_menu(campaign_id, session)
+                    await create_character_menu(campaign_id, application)
                 elif selected == "3":
-                    await create_scene_menu(
-                        campaign_id,
-                        session,
-                        campaign_service,
-                    )
+                    await create_scene_menu(campaign_id, application)
                 elif selected == "4":
-                    await manage_participants_menu(campaign_id, session)
+                    await manage_participants_menu(campaign_id, application)
                 elif selected == "5":
                     await configure_llm_menu(
                         campaign_id,
