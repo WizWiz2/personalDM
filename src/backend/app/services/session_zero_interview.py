@@ -37,9 +37,10 @@ class SessionZeroInterviewIncompleteError(ValueError):
 class SessionZeroInterviewService:
     """LLM-led conversation that feeds the authoritative session-zero service.
 
-    The model extracts campaign intent, while deterministic guards preserve already
-    accepted details, enforce the CLI language, and prevent repeated questions.
-    Materialization still happens once through SessionZeroService.complete().
+    The model extracts campaign intent, while deterministic guards preserve accepted
+    details, keep meta-commands out of the campaign draft, and prevent stalled or
+    repeated questions. Materialization still happens once through
+    SessionZeroService.complete().
     """
 
     STATE_KEY = "session_zero_interview"
@@ -64,8 +65,13 @@ class SessionZeroInterviewService:
 - Сохраняй все подтверждённые детали из CURRENT DRAFT, если игрок явно их не исправил.
 - Не стирай заполненное поле только потому, что последний ответ был коротким или мета-командой.
 - Не задавай снова вопрос, на который игрок уже ответил или который уже отражён в CURRENT DRAFT.
-- Если игрок не имеет предпочтений по старту, тону или форме подачи, разреши мастеру выбрать
-  подходящий вариант и переходи к другой теме.
+- Если поле перечислено в ПОЛЯ, ПЕРЕДАННЫЕ МАСТЕРУ, выбери конкретное подходящее значение
+  самостоятельно уже в текущем snapshot. Не сохраняй заглушки вроде «на усмотрение мастера»
+  или «стартовая точка в сеттинге».
+- Если игрок передал мастеру выбор старта, придумай конкретные место и ситуацию, связанные с
+  сеттингом, героем и его целью. Первые слова, решения и чувства героя всё равно оставь игроку.
+- Не трактуй короткое «нет» или «не очень» как автоматическую передачу выбора мастеру:
+  учитывай смысл вопроса и при необходимости уточняй.
 - Не выдумывай предпочтения, границы, страхи, ценности, биографию, систему правил или эмоции
   героя только ради заполнения поля.
 - Различай ценности и страхи, характер и биографию, голос и манеру речи, способности и
@@ -74,7 +80,6 @@ class SessionZeroInterviewService:
 - Узнавай желаемую инициативу игрока и NPC, тон, темп, границы agency и сложность только
   настолько, насколько это уместно для выбранной кампании.
 - Если назван готовый сеттинг или система, уточняй верность канону лишь при необходимости.
-- Стартовая ситуация должна оставить первые слова, решение и чувства героя за игроком.
 - boundaries_confirmed может стать true только после явного указания границ или фразы, что
   дополнительных границ нет.
 - ready_to_finalize может быть true только когда все REQUIRED FIELD поддержаны диалогом.
@@ -117,9 +122,17 @@ assistant_message должен звучать как живой персонал
         "ты повторяешь",
         "опять тот же вопрос",
     )
+    CORRECTION_MARKERS = (
+        "исправ",
+        "не так",
+        "замени",
+        "передумал",
+        "на самом деле",
+        "точнее",
+        "поправка",
+        "пусть будет",
+    )
     NO_PREFERENCE_ANSWERS: ClassVar[set[str]] = {
-        "не очень",
-        "нет",
         "неважно",
         "без разницы",
         "как хочешь",
@@ -128,6 +141,8 @@ assistant_message должен звучать как живой персонал
         "на усмотрение мастера",
         "нет особых предпочтений",
         "особых предпочтений нет",
+        "выбери сам",
+        "решай сам",
     }
     DELEGATABLE_FIELDS: ClassVar[set[str]] = {
         "world.premise",
@@ -140,102 +155,100 @@ assistant_message должен звучать как живой персонал
         "world.starting_location_name",
         "world.starting_situation",
     }
-
-    QUESTION_GROUPS = (
-        (
-            (
-                "world.setting_name",
-                "world.genre",
-                "world.world_summary",
-            ),
-            "Какой именно мир берём за основу и насколько строго держимся его канона?",
-        ),
-        (
-            (
-                "character.name",
-                "character.description",
-                "character.appearance",
-            ),
-            "Расскажи о герое: как его зовут, кто он и как выглядит?",
-        ),
-        (
-            (
-                "character.personality",
-                "character.values",
-                "character.fears",
-            ),
-            "Что помогает герою не потерять себя: как он обычно ведёт себя, какие принципы "
-            "не готов переступить и чего по-настоящему боится?",
-        ),
-        (
-            (
-                "character.desires",
-                "character.first_goal",
-            ),
-            "К чему герой стремится в долгую и чего хочет добиться в самом начале кампании?",
-        ),
-        (
-            (
-                "character.capabilities",
-                "character.limitations",
-            ),
-            "Что герой уже умеет делать хорошо и какие слабости или ограничения у него есть?",
-        ),
-        (
-            (
-                "world.premise",
-                "world.tone",
-                "world.play_style",
-            ),
-            "Что тебе важнее получать от этой игры: уличное выживание, задания и рост силы, "
-            "отношения, расследования, тактику или что-то другое? Какой темп и тон хочется?",
-        ),
-        (
-            (
-                "character.biography",
-                "character.voice",
-                "character.speech_patterns",
-            ),
-            "Что важно знать о прошлом героя и как он обычно говорит с людьми?",
-        ),
-        (
-            (
-                "world.starting_location_name",
-                "world.starting_situation",
-            ),
-            "С какой ситуации начать кампанию? Можно назвать место и момент самому или прямо "
-            "отдать выбор старта мастеру.",
-        ),
-        (
-            ("world.boundaries_confirmed",),
-            "Есть ли темы или способы ведения игры, которых точно не должно быть? Можно просто "
-            "сказать, что дополнительных границ нет.",
-        ),
+    QUESTION_ORDER: ClassVar[tuple[str, ...]] = (
+        "world.setting_name",
+        "world.genre",
+        "world.world_summary",
+        "character.name",
+        "character.description",
+        "character.appearance",
+        "character.personality",
+        "character.values",
+        "character.fears",
+        "character.desires",
+        "character.first_goal",
+        "character.capabilities",
+        "character.limitations",
+        "world.premise",
+        "world.tone",
+        "world.play_style",
+        "character.biography",
+        "character.voice",
+        "character.speech_patterns",
+        "world.starting_location_name",
+        "world.starting_situation",
+        "world.boundaries_confirmed",
     )
-
+    QUESTION_TEXT: ClassVar[dict[str, str]] = {
+        "world.setting_name": "Какой мир или сеттинг берём за основу?",
+        "world.genre": "Какой жанр должен быть у этой кампании?",
+        "world.world_summary": (
+            "Какие черты выбранного мира особенно важны для этой кампании?"
+        ),
+        "world.premise": "Вокруг чего должна строиться кампания?",
+        "world.tone": "Какой тон и темп игры тебе сейчас хочется?",
+        "world.play_style": (
+            "Что должно быть в центре игры: задания, выживание, отношения, "
+            "расследования, тактика или что-то другое?"
+        ),
+        "world.starting_location_name": "В каком конкретном месте начнётся игра?",
+        "world.starting_situation": "Что именно происходит в первой сцене?",
+        "world.boundaries_confirmed": (
+            "Есть ли темы или способы ведения игры, которых точно не должно быть? "
+            "Можно просто сказать, что дополнительных границ нет."
+        ),
+        "character.name": "Как зовут героя?",
+        "character.description": "Кто этот герой и чем он занимается?",
+        "character.appearance": "Как выглядит герой?",
+        "character.personality": "Какой у героя характер и как он обычно себя ведёт?",
+        "character.values": "Какие принципы герой не готов переступить?",
+        "character.fears": "Чего герой по-настоящему боится?",
+        "character.desires": "К чему герой стремится в долгую?",
+        "character.first_goal": "Чего герой хочет добиться в самом начале кампании?",
+        "character.capabilities": "Что герой уже умеет делать хорошо?",
+        "character.limitations": "Какие слабости или ограничения есть у героя?",
+        "character.biography": "Что важно знать о прошлом героя?",
+        "character.voice": "Как звучит голос героя?",
+        "character.speech_patterns": "Как герой обычно говорит с людьми?",
+    }
     TOPIC_KEYWORDS: ClassVar[dict[str, tuple[str, ...]]] = {
         "world.setting_name": ("мир", "сеттинг", "вселен", "канон"),
         "world.genre": ("жанр",),
-        "world.world_summary": ("мир", "сеттинг", "вселен"),
-        "world.premise": ("кампани", "сюжет", "приключ", "игра"),
+        "world.world_summary": ("черты мира", "особенно важны", "описание мира"),
+        "world.premise": ("кампани", "сюжет", "приключ"),
         "world.tone": ("тон", "темп", "атмосфер"),
-        "world.play_style": ("стиль игры", "важнее от игры", "геймплей"),
-        "world.starting_location_name": ("где начать", "место", "локац", "начале игры"),
-        "world.starting_situation": ("старт", "ситуац", "начале игры", "первой сцен"),
+        "world.play_style": ("центр игры", "важнее от игры", "геймплей"),
+        "world.starting_location_name": ("где начать", "место", "локац"),
+        "world.starting_situation": ("старт", "ситуац", "первой сцен"),
         "world.boundaries_confirmed": ("границ", "не должно", "не хочется видеть"),
         "character.name": ("как зовут", "имя персонаж", "имя героя"),
-        "character.description": ("кто он", "кто герой", "концепц"),
+        "character.description": ("кто он", "кто герой", "концепц", "занимается"),
         "character.appearance": ("внешност", "выгляд"),
         "character.personality": ("характер", "личност", "ведёт себя", "повед"),
         "character.values": ("ценност", "принцип"),
         "character.fears": ("страх", "боится"),
-        "character.desires": ("хочет", "стремится", "желани"),
-        "character.voice": ("голос",),
+        "character.desires": ("хочет", "стремится", "желани", "в долгую"),
+        "character.voice": ("голос", "звучит"),
         "character.speech_patterns": ("говорит", "манер", "речь"),
         "character.biography": ("прошл", "биограф", "истори"),
         "character.capabilities": ("умеет", "навык", "способност", "сил"),
         "character.limitations": ("слаб", "огранич", "не умеет"),
         "character.first_goal": ("первая цель", "в начале", "добиться"),
+    }
+    LEGACY_DELEGATION_VALUES: ClassVar[dict[str, set[str]]] = {
+        "world.premise": {
+            "Герой начинает с личной цели и постепенно вовлекается в события мира."
+        },
+        "world.tone": {
+            "На усмотрение мастера в рамках согласованных тем и границ."
+        },
+        "world.play_style": {
+            "Гибкий стиль с учётом решений игрока и естественных последствий."
+        },
+        "world.starting_situation": {
+            "Мастер выбирает подходящую для сеттинга стартовую ситуацию; первые слова, "
+            "решения и чувства героя остаются за игроком."
+        },
     }
 
     def __init__(self, session: AsyncSession):
@@ -253,9 +266,11 @@ assistant_message должен звучать как живой персонал
         if not isinstance(raw, dict):
             return SessionZeroInterviewState()
         try:
-            return SessionZeroInterviewState.model_validate(raw)
+            state = SessionZeroInterviewState.model_validate(raw)
         except ValueError:
             return SessionZeroInterviewState()
+        self._clear_legacy_delegation_placeholders(state)
+        return state
 
     async def answer(
         self,
@@ -303,7 +318,7 @@ assistant_message должен звучать как живой персонал
                 state,
                 clean,
                 "Да. Дальше говорю только по-русски.",
-                exclude_topics=state.last_question_topics,
+                preferred_topics=state.last_question_topics,
             )
 
         if any(item.replace("ё", "е") in folded for item in self.REPEAT_COMPLAINTS):
@@ -323,17 +338,6 @@ assistant_message должен звучать как живой персонал
             state.delegated_fields = sorted(
                 set(state.delegated_fields) | delegatable
             )
-            state.draft = self._apply_delegations(
-                state.draft,
-                state.delegated_fields,
-            )
-            return await self._direct_decision(
-                campaign_id,
-                state,
-                clean,
-                "Хорошо, это оставим на усмотрение мастера и не будем буксовать на этой теме.",
-                exclude_topics=state.last_question_topics,
-            )
         return None
 
     async def _direct_decision(
@@ -343,15 +347,22 @@ assistant_message должен звучать как живой персонал
         user_message: str,
         prefix: str,
         *,
-        exclude_topics: list[str],
+        preferred_topics: list[str] | None = None,
+        exclude_topics: list[str] | None = None,
     ) -> SessionZeroInterviewDecision:
         state.messages.append({"role": "user", "content": user_message})
         missing = self.missing_fields(state.draft)
-        question, topics = self._next_question(
-            state.draft,
-            missing,
-            exclude_topics=exclude_topics,
-        )
+        current_topics = [
+            topic for topic in (preferred_topics or []) if topic in set(missing)
+        ]
+        if current_topics:
+            question, topics = self._question_for_topics(current_topics, state.draft)
+        else:
+            question, topics = self._next_question(
+                state.draft,
+                missing,
+                exclude_topics=exclude_topics or [],
+            )
         ready = not missing
         assistant_message = prefix if ready else f"{prefix} {question}"
         decision = SessionZeroInterviewDecision(
@@ -418,8 +429,13 @@ assistant_message должен звучать как живой персонал
             response_model=SessionZeroInterviewDecision,
         )
         decision = SessionZeroInterviewDecision.model_validate(data)
-        merged = self._merge_drafts(state.draft, decision.draft)
-        merged = self._apply_delegations(merged, state.delegated_fields)
+        latest_user_message = state.pending_user_message or ""
+        merged = self._merge_drafts(
+            state.draft,
+            decision.draft,
+            allowed_topics=state.last_question_topics,
+            explicit_correction=self._is_explicit_correction(latest_user_message),
+        )
         missing = self.missing_fields(merged)
         decision.draft = merged
         decision.missing_topics = missing
@@ -471,8 +487,12 @@ assistant_message должен звучать как живой персонал
         repeated = self._normalize_text(clean_message) in previous_messages
         wrong_language = not self._is_russian_text(clean_message)
         asks_only_filled = bool(declared_topics) and not valid_topics
+        mentioned_topics = set(self._infer_topics(clean_message, list(self.QUESTION_ORDER)))
+        mentions_filled_topics = bool(mentioned_topics - set(missing))
 
-        if wrong_language or repeated or asks_only_filled or not valid_topics:
+        if wrong_language and valid_topics:
+            return self._question_for_topics(valid_topics, draft)
+        if repeated or asks_only_filled or not valid_topics or mentions_filled_topics:
             return self._next_question(
                 draft,
                 missing,
@@ -485,55 +505,31 @@ assistant_message должен звучать как живой персонал
         cls,
         previous: SessionZeroInterviewDraft,
         proposed: SessionZeroInterviewDraft,
+        *,
+        allowed_topics: list[str] | None = None,
+        explicit_correction: bool = False,
     ) -> SessionZeroInterviewDraft:
         merged = proposed.model_copy(deep=True)
+        allowed = set(allowed_topics or [])
         for section_name in ("world", "character"):
             old_section = getattr(previous, section_name)
             new_section = getattr(merged, section_name)
             for field_name in old_section.__class__.model_fields:
+                topic = f"{section_name}.{field_name}"
                 old_value = getattr(old_section, field_name)
                 new_value = getattr(new_section, field_name)
                 if cls._has_value(old_value) and not cls._has_value(new_value):
                     setattr(new_section, field_name, old_value)
-        if previous.world.boundaries_confirmed:
-            merged.world.boundaries_confirmed = True
+                    continue
+                if (
+                    cls._has_value(old_value)
+                    and cls._has_value(new_value)
+                    and old_value != new_value
+                    and topic not in allowed
+                    and not explicit_correction
+                ):
+                    setattr(new_section, field_name, old_value)
         return merged
-
-    @classmethod
-    def _apply_delegations(
-        cls,
-        draft: SessionZeroInterviewDraft,
-        delegated_fields: list[str],
-    ) -> SessionZeroInterviewDraft:
-        result = draft.model_copy(deep=True)
-        delegated = set(delegated_fields)
-        setting = result.world.setting_name or "выбранном сеттинге"
-        if "world.premise" in delegated and not cls._text(result.world.premise):
-            result.world.premise = (
-                "Герой начинает с личной цели и постепенно вовлекается в события мира."
-            )
-        if "world.tone" in delegated and not cls._text(result.world.tone):
-            result.world.tone = (
-                "На усмотрение мастера в рамках согласованных тем и границ."
-            )
-        if "world.play_style" in delegated and not cls._text(result.world.play_style):
-            result.world.play_style = (
-                "Гибкий стиль с учётом решений игрока и естественных последствий."
-            )
-        if (
-            "world.starting_location_name" in delegated
-            and not cls._text(result.world.starting_location_name)
-        ):
-            result.world.starting_location_name = f"Стартовая точка в {setting}"
-        if (
-            "world.starting_situation" in delegated
-            and not cls._text(result.world.starting_situation)
-        ):
-            result.world.starting_situation = (
-                "Мастер выбирает подходящую для сеттинга стартовую ситуацию; первые слова, "
-                "решения и чувства героя остаются за игроком."
-            )
-        return result
 
     @classmethod
     def _next_question(
@@ -547,18 +543,39 @@ assistant_message должен звучать как живой персонал
             return "", []
         missing_set = set(missing)
         excluded = set(exclude_topics)
-        candidates: list[tuple[list[str], str]] = []
-        for fields, question in cls.QUESTION_GROUPS:
-            topics = [field for field in fields if field in missing_set]
-            if topics:
-                candidates.append((topics, question))
-        for topics, question in candidates:
-            if not (set(topics) & excluded):
-                return cls._personalize_question(question, draft), topics
-        if candidates:
-            topics, question = candidates[0]
-            return cls._personalize_question(question, draft), topics
+        for topic in cls.QUESTION_ORDER:
+            if topic in missing_set and topic not in excluded:
+                return cls._question_for_topics([topic], draft)
+        for topic in cls.QUESTION_ORDER:
+            if topic in missing_set:
+                return cls._question_for_topics([topic], draft)
         return "Расскажи, что ещё важно закрепить перед началом игры?", missing[:1]
+
+    @classmethod
+    def _question_for_topics(
+        cls,
+        topics: list[str],
+        draft: SessionZeroInterviewDraft,
+    ) -> tuple[str, list[str]]:
+        topic_set = set(topics)
+        ordered = [topic for topic in cls.QUESTION_ORDER if topic in topic_set]
+        if not ordered:
+            return "Расскажи, что ещё важно закрепить перед началом игры?", topics[:1]
+        if set(ordered) >= cls.START_FIELDS:
+            return (
+                "С какой конкретной ситуации начать кампанию? Можно назвать место и момент "
+                "самому или прямо отдать выбор старта мастеру.",
+                [
+                    "world.starting_location_name",
+                    "world.starting_situation",
+                ],
+            )
+        topic = ordered[0]
+        question = cls.QUESTION_TEXT.get(
+            topic,
+            "Расскажи, что ещё важно закрепить перед началом игры?",
+        )
+        return cls._personalize_question(question, draft), [topic]
 
     @staticmethod
     def _personalize_question(
@@ -571,10 +588,10 @@ assistant_message должен звучать как живой персонал
         return question
 
     @classmethod
-    def _infer_topics(cls, message: str, missing: list[str]) -> list[str]:
+    def _infer_topics(cls, message: str, candidates: list[str]) -> list[str]:
         folded = message.casefold().replace("ё", "е")
         inferred: list[str] = []
-        for topic in missing:
+        for topic in candidates:
             keywords = cls.TOPIC_KEYWORDS.get(topic, ())
             if any(keyword.replace("ё", "е") in folded for keyword in keywords):
                 inferred.append(topic)
@@ -593,6 +610,11 @@ assistant_message должен звучать как живой персонал
         return " ".join(normalized.split())
 
     @classmethod
+    def _is_explicit_correction(cls, value: str) -> bool:
+        folded = cls._normalize_text(value)
+        return any(marker in folded for marker in cls.CORRECTION_MARKERS)
+
+    @classmethod
     def _has_value(cls, value: object) -> bool:
         if isinstance(value, bool):
             return value
@@ -600,14 +622,29 @@ assistant_message должен звучать как живой персонал
             return bool(value)
         return bool(cls._text(value))
 
+    @classmethod
+    def _clear_legacy_delegation_placeholders(
+        cls,
+        state: SessionZeroInterviewState,
+    ) -> None:
+        delegated = set(state.delegated_fields)
+        world = state.draft.world
+        for topic, values in cls.LEGACY_DELEGATION_VALUES.items():
+            if topic not in delegated:
+                continue
+            field_name = topic.split(".", maxsplit=1)[1]
+            if getattr(world, field_name) in values:
+                setattr(world, field_name, None)
+        if (
+            "world.starting_location_name" in delegated
+            and cls._text(world.starting_location_name).startswith("Стартовая точка в ")
+        ):
+            world.starting_location_name = None
+
     async def finalize(self, campaign_id: UUID):
         state = await self.get_state(campaign_id)
         if state.pending_user_message:
             raise ValueError("The last answer has not been processed yet")
-        state.draft = self._apply_delegations(
-            state.draft,
-            state.delegated_fields,
-        )
         missing = self.missing_fields(state.draft)
         if missing:
             raise SessionZeroInterviewIncompleteError(missing)
