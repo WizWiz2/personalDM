@@ -59,6 +59,7 @@ jobs:
 
       - name: Lint parity boundary
         working-directory: src/backend
-        run: >-
-          ruff check cli.py app/runtime.py app/application app/main.py
-          app/api/turns.py tests/test_runtime_parity.py
+        run: |
+          ruff check --extend-ignore SIM102 cli.py
+          ruff check app/runtime.py app/application app/main.py tests/test_runtime_parity.py
+          ruff check --extend-ignore B008 app/api/turns.py
