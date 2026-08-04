@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import ClassVar
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +33,7 @@ class DeterministicEntityFallback:
         r"says|asks|answers|nods|looks|smiles|puts|takes|approaches|leaves)\b",
         re.IGNORECASE,
     )
-    NAME_STOP_WORDS = {
+    NAME_STOP_WORDS: ClassVar[set[str]] = {
         "говорит",
         "спрашивает",
         "отвечает",
