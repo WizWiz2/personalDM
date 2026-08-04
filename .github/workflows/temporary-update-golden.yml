@@ -1,0 +1,39 @@
+name: Temporary golden test migration
+
+on:
+  push:
+    branches:
+      - agent/explicit-narration-pipeline
+    paths:
+      - .github/workflows/temporary-update-golden.yml
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/explicit-narration-pipeline
+      - name: Replace legacy narration patch target
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/backend/tests/test_golden_playthrough.py')
+          text = path.read_text(encoding='utf-8')
+          old = 'app.services.narration_validation_guard._ORIGINAL_GENERATE_STREAM'
+          new = 'app.services.narration_pipeline.NarrationPipelineProvider._collect_raw'
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f'expected 2 legacy targets, found {count}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+      - name: Commit migration
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/backend/tests/test_golden_playthrough.py
+          git commit -m 'Обновить golden playthrough под явный narration pipeline'
+          git push origin HEAD:agent/explicit-narration-pipeline
