@@ -10,6 +10,8 @@ from app.application.game_application import (
     GameSceneView,
     ParticipantView,
     RetryPostTurnResult,
+    TurnNotFoundError,
+    TurnRegenerationError,
 )
 
 __all__ = [
@@ -22,4 +24,6 @@ __all__ = [
     "GameSceneView",
     "ParticipantView",
     "RetryPostTurnResult",
+    "TurnNotFoundError",
+    "TurnRegenerationError",
 ]
