@@ -9,7 +9,8 @@ on:
       - "src/backend/app/db/scene_bridge_table.py"
       - "src/backend/app/models/scene_bridge.py"
       - "src/backend/app/services/scene_bridge_service.py"
-      - "src/backend/app/services/scene_context_guard.py"
+      - "src/backend/app/services/context_compiler.py"
+      - "src/backend/app/services/context_pipeline.py"
       - "src/backend/app/services/scene_transition_executor.py"
       - "src/backend/app/services/action_sequence_executor.py"
       - "src/backend/app/services/turn_planner.py"
@@ -56,7 +57,8 @@ jobs:
           app/db/scene_bridge_table.py
           app/models/scene_bridge.py
           app/services/scene_bridge_service.py
-          app/services/scene_context_guard.py
+          app/services/context_compiler.py
+          app/services/context_pipeline.py
           app/services/scene_transition_executor.py
           app/services/action_sequence_executor.py
           app/services/turn_planner.py
