@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -22,18 +23,52 @@ class InterviewQuestion:
     prompt: str
     hint: str
     allow_empty: bool = False
+    source_keys: tuple[str, ...] = ()
+    trigger_terms: tuple[str, ...] = ()
+
+
+class _QuestionSequence(Sequence[InterviewQuestion]):
+    """Compatibility sequence that can grow while the CLI interview runs."""
+
+    def __init__(self, service: ConversationalSessionZeroService):
+        self._service = service
+
+    def __iter__(self) -> Iterator[InterviewQuestion]:
+        yielded: set[str] = set()
+        while True:
+            current = self._service.questions_for_answers(
+                self._service._answers_cache
+            )
+            question = next(
+                (item for item in current if item.key not in yielded),
+                None,
+            )
+            if question is None:
+                return
+            yielded.add(question.key)
+            yield question
+
+    def __len__(self) -> int:
+        return len(
+            self._service.questions_for_answers(self._service._answers_cache)
+        )
+
+    def __getitem__(self, index):
+        return self._service.questions_for_answers(
+            self._service._answers_cache
+        )[index]
 
 
 class ConversationalSessionZeroService:
-    """Persist and materialize a friendly CLI session-zero conversation.
+    """Persist and materialize a friendly adaptive session-zero conversation.
 
     The interview stores the player's own free-form answers after every question.
-    It deliberately does not require an LLM: onboarding must remain usable before
-    a provider is configured or while a cloud provider is rate-limited.
+    A deterministic branching layer asks only relevant follow-ups, while the core
+    onboarding remains usable before a provider is configured or during rate limits.
     """
 
     ANSWERS_KEY = "conversational_session_zero"
-    QUESTIONS = (
+    CORE_QUESTIONS = (
         InterviewQuestion(
             "world",
             "Во что хочется играть? Опиши мир, жанр, эпоху и уровень магии/технологий.",
@@ -116,6 +151,72 @@ class ConversationalSessionZeroService:
             "Задай ситуацию, но оставь решение и первую реплику за героем.",
         ),
     )
+    ADAPTIVE_QUESTIONS = (
+        InterviewQuestion(
+            "combat_style",
+            "Ты упомянул бои. Какими они должны быть: редкими или частыми, тактическими или быстрыми, насколько опасными?",
+            "Можно отдельно указать желаемую летальность и отношение к случайной смерти.",
+            source_keys=("adventure", "play_style", "wanted"),
+            trigger_terms=("бой", "боев", "сраж", "тактик", "combat"),
+        ),
+        InterviewQuestion(
+            "relationship_style",
+            "Ты упомянул романтику или близкие отношения. Какой темп, инициативу NPC и уровень откровенности ты хочешь?",
+            "Например: медленное развитие, NPC могут проявлять инициативу, интимные сцены остаются за кадром.",
+            source_keys=("play_style", "wanted", "adventure"),
+            trigger_terms=(
+                "роман",
+                "любов",
+                "отношен",
+                "эрот",
+                "гарем",
+                "romance",
+            ),
+        ),
+        InterviewQuestion(
+            "horror_safety",
+            "Ты выбрал хоррор или страшные темы. Что должно пугать, а где проходит жёсткая граница?",
+            "Можно разделить психологический ужас, телесный хоррор, беспомощность и скримеры.",
+            source_keys=("world", "tone", "wanted", "adventure"),
+            trigger_terms=("хорр", "ужас", "страш", "кошмар", "horror"),
+        ),
+        InterviewQuestion(
+            "management_style",
+            "Ты упомянул политику, власть или управление. Каким масштабом герой должен реально распоряжаться?",
+            "Например: маленькая организация, город, королевство; лично или через советников.",
+            source_keys=("adventure", "play_style", "wanted"),
+            trigger_terms=(
+                "полит",
+                "интриг",
+                "власть",
+                "организац",
+                "королев",
+                "управлять",
+                "management",
+            ),
+        ),
+        InterviewQuestion(
+            "sandbox_style",
+            "Ты описал свободную игру или песочницу. Насколько активно мир должен сам подбрасывать возможности и последствия?",
+            "От полностью player-driven игры до активного мира с несколькими параллельными линиями.",
+            source_keys=("adventure", "play_style"),
+            trigger_terms=("песоч", "sandbox", "открытый мир", "свободная игра"),
+        ),
+        InterviewQuestion(
+            "canon_fidelity",
+            "Похоже, это известный сеттинг. Насколько строго держаться официального канона и можно ли его менять решениями героя?",
+            "Можно выбрать строгий канон, мягкую адаптацию или альтернативную версию мира.",
+            source_keys=("world",),
+            trigger_terms=("канон", "вселенн", "по мотивам", "setting of"),
+        ),
+    )
+    FINAL_QUESTION = InterviewQuestion(
+        "additional_context",
+        "Есть ли о тебе как об игроке или об этой кампании что-то важное, чего я ещё не спросил?",
+        "Можно написать «нет» или добавить любую привычку, пожелание либо особенность игры.",
+        allow_empty=True,
+    )
+    ALL_QUESTIONS = (*CORE_QUESTIONS, *ADAPTIVE_QUESTIONS, FINAL_QUESTION)
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -124,17 +225,24 @@ class ConversationalSessionZeroService:
         self._goals = GoalRepository(session)
         self._locations = LocationRepository(session)
         self._session_zero = SessionZeroService(session)
+        self._answers_cache: dict[str, str] = {}
+        # Legacy CLI reads this public attribute; the sequence recomputes branches
+        # after every saved answer instead of freezing a questionnaire up front.
+        self.QUESTIONS = _QuestionSequence(self)
 
     async def get_answers(self, campaign_id: UUID) -> dict[str, str]:
         setup = await self._session_zero.get(campaign_id)
         raw = setup.custom_fields.get(self.ANSWERS_KEY, {})
         if not isinstance(raw, dict):
+            self._answers_cache = {}
             return {}
-        return {
+        answers = {
             str(key): self._text(value)
             for key, value in raw.items()
             if self._text(value)
         }
+        self._answers_cache = answers
+        return answers
 
     async def save_answer(
         self,
@@ -142,7 +250,7 @@ class ConversationalSessionZeroService:
         key: str,
         value: str,
     ) -> dict[str, str]:
-        if key not in {question.key for question in self.QUESTIONS}:
+        if key not in {question.key for question in self.ALL_QUESTIONS}:
             raise ValueError(f"Unknown session-zero interview key: {key}")
         setup = await self._session_zero.get(campaign_id)
         custom = dict(setup.custom_fields or {})
@@ -158,17 +266,41 @@ class ConversationalSessionZeroService:
             SessionZeroUpdate(custom_fields=custom),
         )
         await self._session.commit()
-        return answers
+        self._answers_cache = {
+            str(answer_key): self._text(answer_value)
+            for answer_key, answer_value in answers.items()
+            if self._text(answer_value)
+        }
+        return dict(self._answers_cache)
+
+    def questions_for_answers(
+        self,
+        answers: dict[str, str],
+    ) -> list[InterviewQuestion]:
+        questions = list(self.CORE_QUESTIONS)
+        for question in self.ADAPTIVE_QUESTIONS:
+            source = " ".join(
+                answers.get(key, "") for key in question.source_keys
+            ).casefold()
+            if any(term.casefold() in source for term in question.trigger_terms):
+                questions.append(question)
+        questions.append(self.FINAL_QUESTION)
+        return questions
 
     async def missing_questions(self, campaign_id: UUID) -> list[InterviewQuestion]:
         answers = await self.get_answers(campaign_id)
-        return [question for question in self.QUESTIONS if question.key not in answers]
+        return [
+            question
+            for question in self.questions_for_answers(answers)
+            if question.key not in answers
+        ]
 
     async def finalize(self, campaign_id: UUID):
         answers = await self.get_answers(campaign_id)
+        active_questions = self.questions_for_answers(answers)
         missing = [
             question.key
-            for question in self.QUESTIONS
+            for question in active_questions
             if question.key not in answers and not question.allow_empty
         ]
         if missing:
@@ -227,6 +359,11 @@ class ConversationalSessionZeroService:
         }:
             boundaries = []
         themes = self._items(answers["wanted"])
+        adaptive = self._adaptive_preferences(answers)
+        adaptive_text = "; ".join(adaptive.values())
+        play_style = answers["play_style"]
+        if adaptive_text:
+            play_style += f". Уточнения по ответам игрока: {adaptive_text}"
         await self._session_zero.update(
             campaign_id,
             SessionZeroUpdate(
@@ -242,17 +379,18 @@ class ConversationalSessionZeroService:
                 starting_situation=answers["opening_situation"],
                 starting_location_id=location.id,
                 starting_scene_title=f"Начало: {answers['opening_location']}",
-                play_style=answers["play_style"],
+                play_style=play_style,
                 content_rating="18+",
                 player_character_id=hero.id,
                 narrative_style=(
-                    f"{answers['tone']}. В центре: {answers['play_style']}. "
+                    f"{answers['tone']}. В центре: {play_style}. "
                     "Не принимать решения и не описывать чувства за героя игрока."
                 ),
                 custom_fields={
                     self.ANSWERS_KEY: answers,
                     "wanted_content": answers["wanted"],
-                    "interview_version": 1,
+                    "adaptive_preferences": adaptive,
+                    "interview_version": 2,
                 },
             ),
         )
@@ -260,8 +398,8 @@ class ConversationalSessionZeroService:
         await self._session.commit()
         return completed
 
-    @staticmethod
-    def summary(answers: dict[str, str]) -> str:
+    @classmethod
+    def summary(cls, answers: dict[str, str]) -> str:
         lines = [
             f"Мир и жанр: {answers.get('world', '—')}",
             f"Приключение: {answers.get('adventure', '—')}",
@@ -275,7 +413,21 @@ class ConversationalSessionZeroService:
             f"Первая цель: {answers.get('hero_goal', '—')}",
             f"Старт: {answers.get('opening_location', '—')} — {answers.get('opening_situation', '—')}",
         ]
+        labels = {question.key: question.prompt for question in cls.ADAPTIVE_QUESTIONS}
+        for key, value in cls._adaptive_preferences(answers).items():
+            lines.append(f"Уточнение — {labels.get(key, key)}: {value}")
+        extra = answers.get("additional_context")
+        if extra and extra.casefold() not in {"нет", "none", "no"}:
+            lines.append(f"Дополнительно: {extra}")
         return "\n".join(lines)
+
+    @classmethod
+    def _adaptive_preferences(cls, answers: dict[str, str]) -> dict[str, str]:
+        return {
+            question.key: answers[question.key]
+            for question in cls.ADAPTIVE_QUESTIONS
+            if question.key in answers
+        }
 
     @staticmethod
     def _setting_name(world: str, fallback: str) -> str:
