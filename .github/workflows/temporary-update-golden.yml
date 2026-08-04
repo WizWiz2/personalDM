@@ -1,4 +1,4 @@
-name: Temporary golden test migration
+name: Temporary narration cleanup
 
 on:
   push:
@@ -11,29 +11,60 @@ permissions:
   contents: write
 
 jobs:
-  migrate:
+  cleanup:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/explicit-narration-pipeline
-      - name: Replace legacy narration patch target
+      - name: Remove compatibility seam
         run: |
           python - <<'PY'
           from pathlib import Path
-          path = Path('src/backend/tests/test_golden_playthrough.py')
+          path = Path('src/backend/app/services/narration_pipeline.py')
           text = path.read_text(encoding='utf-8')
-          old = 'app.services.narration_validation_guard._ORIGINAL_GENERATE_STREAM'
-          new = 'app.services.narration_pipeline.NarrationPipelineProvider._collect_raw'
-          count = text.count(old)
-          if count != 2:
-              raise SystemExit(f'expected 2 legacy targets, found {count}')
+          text = text.replace(
+              'from app.services import narration_validation_guard as legacy_narration_stream\n',
+              '',
+          )
+          old = '''    def _raw_stream(self, messages, config, api_key, **kwargs):
+        compatibility_override = legacy_narration_stream._ORIGINAL_GENERATE_STREAM
+        if (
+            compatibility_override
+            is legacy_narration_stream._DEFAULT_GENERATE_STREAM
+        ):
+            return self._provider.generate_stream(
+                messages,
+                config,
+                api_key,
+                **kwargs,
+            )
+        return compatibility_override(
+            self._provider,
+            messages,
+            config,
+            api_key,
+            **kwargs,
+        )
+'''
+          new = '''    def _raw_stream(self, messages, config, api_key, **kwargs):
+        return self._provider.generate_stream(
+            messages,
+            config,
+            api_key,
+            **kwargs,
+        )
+'''
+          if old not in text:
+              raise SystemExit('compatibility block not found')
           path.write_text(text.replace(old, new), encoding='utf-8')
           PY
-      - name: Commit migration
+          rm src/backend/app/services/narration_validation_guard.py
+          rm .github/workflows/temporary-update-golden.yml
+      - name: Commit cleanup
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/backend/tests/test_golden_playthrough.py
-          git commit -m 'Обновить golden playthrough под явный narration pipeline'
+          git add -A
+          git commit -m 'Удалить временный narration compatibility seam'
           git push origin HEAD:agent/explicit-narration-pipeline
