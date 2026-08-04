@@ -1,0 +1,27 @@
+name: Repository architecture audit
+
+on:
+  pull_request:
+    paths:
+      - "scripts/repository_architecture_audit.py"
+      - ".github/workflows/repository-architecture-audit.yml"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Generate architecture report
+        run: python scripts/repository_architecture_audit.py
+      - name: Upload architecture report
+        uses: actions/upload-artifact@v4
+        with:
+          name: repository-architecture-audit
+          path: audit-output/
+          if-no-files-found: error
