@@ -157,7 +157,16 @@ class ConversationalSessionZeroService:
             "Ты упомянул бои. Какими они должны быть: редкими или частыми, тактическими или быстрыми, насколько опасными?",
             "Можно отдельно указать желаемую летальность и отношение к случайной смерти.",
             source_keys=("adventure", "play_style", "wanted"),
-            trigger_terms=("бой", "боев", "сраж", "тактик", "combat"),
+            trigger_terms=(
+                "бой",
+                "бои",
+                "боев",
+                "боёв",
+                "сраж",
+                "тактик",
+                "тактич",
+                "combat",
+            ),
         ),
         InterviewQuestion(
             "relationship_style",
