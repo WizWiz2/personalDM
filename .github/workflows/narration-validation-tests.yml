@@ -8,7 +8,9 @@ on:
       - "src/backend/app/db/narration_validation_table.py"
       - "src/backend/app/models/narration_validation.py"
       - "src/backend/app/services/narration_validator.py"
-      - "src/backend/app/services/narration_validation_guard.py"
+      - "src/backend/app/services/narration_pipeline.py"
+      - "src/backend/app/services/turn_runner.py"
+      - "src/backend/app/services/base_turn_runner.py"
       - "src/backend/app/services/role_model_router.py"
       - "src/backend/alembic/**"
       - "src/backend/tests/test_narration_validation.py"
@@ -47,6 +49,8 @@ jobs:
           app/db/narration_validation_table.py
           app/models/narration_validation.py
           app/services/narration_validator.py
-          app/services/narration_validation_guard.py
+          app/services/narration_pipeline.py
+          app/services/turn_runner.py
+          app/services/base_turn_runner.py
           app/services/role_model_router.py
           tests/test_narration_validation.py
