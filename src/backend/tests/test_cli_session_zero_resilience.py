@@ -41,6 +41,11 @@ ANSWERS = {
     "hero_voice": "Говорит спокойно, коротко и задаёт прямые вопросы.",
     "opening_location": "Площадь у гильдии проводников",
     "opening_situation": "Эйдан только прибыл и видит доску доступной работы.",
+    "relationship_style": (
+        "Медленное развитие; NPC могут проявлять инициативу, "
+        "но решения и чувства Эйдана остаются за игроком."
+    ),
+    "additional_context": "Не форсировать сюжетный крючок в каждой спокойной сцене.",
 }
 
 
@@ -59,7 +64,12 @@ async def test_conversational_session_zero_persists_resumes_and_completes(
     resumed = ConversationalSessionZeroService(db_session)
     stored = await resumed.get_answers(campaign.id)
     assert stored["world"] == ANSWERS["world"]
-    assert len(await resumed.missing_questions(campaign.id)) == len(ANSWERS) - 5
+    missing = await resumed.missing_questions(campaign.id)
+    missing_keys = {question.key for question in missing}
+    assert len(missing) == len(ANSWERS) - 5
+    assert "relationship_style" in missing_keys
+    assert "combat_style" not in missing_keys
+    assert "horror_safety" not in missing_keys
 
     for key, value in list(ANSWERS.items())[5:]:
         await resumed.save_answer(campaign.id, key, value)
@@ -71,6 +81,11 @@ async def test_conversational_session_zero_persists_resumes_and_completes(
     assert setup.starting_location_name == ANSWERS["opening_location"]
     assert completed.scene.title == f"Начало: {ANSWERS['opening_location']}"
     assert "tavern" not in (completed.scene.location_description or "").casefold()
+    assert "Медленное развитие" in (setup.play_style or "")
+    assert setup.custom_fields["interview_version"] == 2
+    assert setup.custom_fields["adaptive_preferences"] == {
+        "relationship_style": ANSWERS["relationship_style"]
+    }
 
     card = await CharacterCardService(db_session).get_card(
         setup.player_character_id,
@@ -84,6 +99,34 @@ async def test_conversational_session_zero_persists_resumes_and_completes(
         "плохо разбирается в дворцовых интригах",
     ]
     assert card.goals[0].description == ANSWERS["hero_goal"]
+
+
+@pytest.mark.asyncio
+async def test_adaptive_questions_follow_only_relevant_preferences(
+    db_session: AsyncSession,
+):
+    campaign = await CampaignService(db_session).create_campaign(
+        CampaignCreate(name="Ветвящаяся беседа")
+    )
+    await db_session.commit()
+    interview = ConversationalSessionZeroService(db_session)
+    await interview.save_answer(
+        campaign.id,
+        "world",
+        "Космический хоррор во вселенной известного канона.",
+    )
+    await interview.save_answer(
+        campaign.id,
+        "play_style",
+        "Тактические бои и свободная песочница.",
+    )
+    questions = interview.questions_for_answers(
+        await interview.get_answers(campaign.id)
+    )
+    keys = {question.key for question in questions}
+    assert {"combat_style", "horror_safety", "sandbox_style", "canon_fidelity"} <= keys
+    assert "relationship_style" not in keys
+    assert "management_style" not in keys
 
 
 @pytest.mark.asyncio
