@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
@@ -14,6 +16,7 @@ from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
+from app.db.tables import Turn
 from app.models.character import CharacterCreate, CharacterRead
 from app.models.fact import FactRead
 from app.models.location import LocationCreate
@@ -43,6 +46,14 @@ class GameNotReadyError(ValueError):
     def __init__(self, missing_fields: list[str]):
         self.missing_fields = missing_fields
         super().__init__("Session zero is incomplete")
+
+
+class TurnNotFoundError(ValueError):
+    pass
+
+
+class TurnRegenerationError(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -82,7 +93,7 @@ class GameApplication:
     """The single application boundary used by CLI and HTTP adapters.
 
     UI code may format input and output, but it must not choose a different narrator,
-    meta-command, undo, scene-lifecycle or post-turn pipeline.  All runtime composition
+    meta-command, undo, scene-lifecycle or post-turn pipeline. All runtime composition
     is installed here before any operation is routed.
     """
 
@@ -126,6 +137,58 @@ class GameApplication:
                 campaign_id,
                 bound,
                 existing_user_turn_id=existing_user_turn_id,
+            ),
+        )
+
+    async def regenerate_turn(
+        self,
+        campaign_id: UUID,
+        assistant_turn_id: UUID,
+    ) -> GameInputRoute:
+        result = await self._session.execute(
+            select(Turn).where(
+                Turn.id == str(assistant_turn_id),
+                Turn.campaign_id == str(campaign_id),
+            )
+        )
+        assistant = result.scalar_one_or_none()
+        if not assistant or assistant.role != "assistant":
+            raise TurnNotFoundError("Narrative assistant turn to regenerate not found")
+        if not assistant.parent_turn_id:
+            raise TurnRegenerationError(
+                "Cannot regenerate a turn without a parent user turn"
+            )
+
+        user_turn = await self._turns.get_by_id(UUID(assistant.parent_turn_id))
+        if not user_turn or user_turn.campaign_id != campaign_id:
+            raise TurnNotFoundError("Parent user turn not found")
+
+        actor_id = None
+        if assistant.context_snapshot:
+            try:
+                snapshot = json.loads(assistant.context_snapshot)
+                actor_value = snapshot.get("acting_character_id")
+                if actor_value:
+                    actor_id = UUID(actor_value)
+            except (json.JSONDecodeError, ValueError, TypeError):
+                actor_id = None
+
+        await self._turns.mark_alternative(assistant_turn_id)
+        await self._session.commit()
+        regeneration_input = TurnCreate(
+            role="user",
+            content=user_turn.content,
+            scene_id=user_turn.scene_id,
+            acting_character_id=actor_id,
+            parent_turn_id=user_turn.parent_turn_id,
+            model_name=user_turn.model_name,
+        )
+        return GameInputRoute(
+            channel="narrative",
+            stream=TurnRunner(self._session).run_turn_stream(
+                campaign_id,
+                regeneration_input,
+                existing_user_turn_id=user_turn.id,
             ),
         )
 
@@ -289,10 +352,11 @@ class GameApplication:
             campaign_id,
             entity_type="character",
         )
+        participant_ids = {participant.id for participant in view.participants}
         available = tuple(
             ParticipantView(id=item.id, name=item.canonical_name)
             for item in all_characters
-            if item.id not in {participant.id for participant in view.participants}
+            if item.id not in participant_ids
         )
         return view, available
 
