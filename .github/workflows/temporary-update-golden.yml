@@ -17,54 +17,53 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: agent/explicit-narration-pipeline
-      - name: Remove compatibility seam
+      - name: Finalize explicit pipeline
         run: |
           python - <<'PY'
           from pathlib import Path
-          path = Path('src/backend/app/services/narration_pipeline.py')
-          text = path.read_text(encoding='utf-8')
+          import re
+
+          golden = Path('src/backend/tests/test_golden_playthrough.py')
+          text = golden.read_text(encoding='utf-8')
+          old = 'app.services.narration_pipeline.NarrationPipelineProvider._collect_raw'
+          new = 'app.services.narration_pipeline.NarrationPipelineProvider._raw_stream'
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f'expected 2 collect_raw targets, found {count}')
+          golden.write_text(text.replace(old, new), encoding='utf-8')
+
+          pipeline = Path('src/backend/app/services/narration_pipeline.py')
+          text = pipeline.read_text(encoding='utf-8')
           text = text.replace(
               'from app.services import narration_validation_guard as legacy_narration_stream\n',
               '',
           )
-          old = '''    def _raw_stream(self, messages, config, api_key, **kwargs):
-        compatibility_override = legacy_narration_stream._ORIGINAL_GENERATE_STREAM
-        if (
-            compatibility_override
-            is legacy_narration_stream._DEFAULT_GENERATE_STREAM
-        ):
-            return self._provider.generate_stream(
-                messages,
-                config,
-                api_key,
-                **kwargs,
-            )
-        return compatibility_override(
-            self._provider,
-            messages,
-            config,
-            api_key,
-            **kwargs,
-        )
-'''
-          new = '''    def _raw_stream(self, messages, config, api_key, **kwargs):
+          pattern = re.compile(
+              r'    def _raw_stream\(self, messages, config, api_key, \*\*kwargs\):\n'
+              r'.*?'
+              r'(?=    async def _collect_raw)',
+              re.S,
+          )
+          replacement = '''    def _raw_stream(self, messages, config, api_key, **kwargs):
         return self._provider.generate_stream(
             messages,
             config,
             api_key,
             **kwargs,
         )
+
 '''
-          if old not in text:
-              raise SystemExit('compatibility block not found')
-          path.write_text(text.replace(old, new), encoding='utf-8')
+          text, replaced = pattern.subn(replacement, text, count=1)
+          if replaced != 1:
+              raise SystemExit(f'expected one raw_stream block, replaced {replaced}')
+          pipeline.write_text(text, encoding='utf-8')
           PY
-          rm src/backend/app/services/narration_validation_guard.py
+          rm -f src/backend/app/services/narration_validation_guard.py
           rm .github/workflows/temporary-update-golden.yml
       - name: Commit cleanup
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
-          git commit -m 'Удалить временный narration compatibility seam'
+          git commit -m 'Завершить явный narration pipeline'
           git push origin HEAD:agent/explicit-narration-pipeline
