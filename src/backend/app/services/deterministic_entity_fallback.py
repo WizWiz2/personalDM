@@ -32,6 +32,34 @@ class DeterministicEntityFallback:
         r"says|asks|answers|nods|looks|smiles|puts|takes|approaches|leaves)\b",
         re.IGNORECASE,
     )
+    NAME_STOP_WORDS = {
+        "говорит",
+        "спрашивает",
+        "отвечает",
+        "кивает",
+        "смотрит",
+        "улыбается",
+        "кладет",
+        "кладёт",
+        "ставит",
+        "берет",
+        "берёт",
+        "наклоняется",
+        "подходит",
+        "уходит",
+        "произносит",
+        "шепчет",
+        "says",
+        "asks",
+        "answers",
+        "nods",
+        "looks",
+        "smiles",
+        "puts",
+        "takes",
+        "approaches",
+        "leaves",
+    }
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -111,12 +139,16 @@ class DeterministicEntityFallback:
             if part.strip()
         ]
 
-    @staticmethod
-    def _canonical_name(value: str) -> str | None:
+    @classmethod
+    def _canonical_name(cls, value: str) -> str | None:
         clean = " ".join(value.split()).strip(" .,:;!?—–-")
         if not clean:
             return None
         words = clean.split()
+        while len(words) > 1 and words[-1].casefold() in cls.NAME_STOP_WORDS:
+            words.pop()
+        if not words:
+            return None
         normalized = " ".join(
             word if any(char.isupper() for char in word[1:]) else word.capitalize()
             for word in words
