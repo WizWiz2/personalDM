@@ -51,14 +51,18 @@ class SessionZeroInterviewDecision(BaseModel):
         default_factory=SessionZeroInterviewDraft
     )
     missing_topics: list[str] = Field(default_factory=list)
+    question_topics: list[str] = Field(default_factory=list)
     summary: str | None = None
 
 
 class SessionZeroInterviewState(BaseModel):
-    version: int = 3
+    version: int = 4
+    response_language: str = "ru"
     messages: list[dict[str, str]] = Field(default_factory=list)
     draft: SessionZeroInterviewDraft = Field(
         default_factory=SessionZeroInterviewDraft
     )
     pending_user_message: str | None = None
     last_summary: str | None = None
+    last_question_topics: list[str] = Field(default_factory=list)
+    delegated_fields: list[str] = Field(default_factory=list)

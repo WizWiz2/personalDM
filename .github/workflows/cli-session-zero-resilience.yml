@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - "agent/**"
+      - "fix/**"
   pull_request:
     paths:
       - "src/backend/cli.py"
@@ -13,6 +14,7 @@ on:
       - "src/backend/app/services/role_model_router.py"
       - "src/backend/app/services/post_turn_processor.py"
       - "src/backend/tests/test_cli_session_zero_resilience.py"
+      - "src/backend/tests/test_session_zero_conversation_guards.py"
       - ".github/workflows/cli-session-zero-resilience.yml"
 
 jobs:
@@ -31,20 +33,24 @@ jobs:
           cache: pip
           cache-dependency-path: src/backend/pyproject.toml
       - run: python -m pip install -e ".[dev]"
-      - name: Compile CLI and services
+      - name: Compile CLI and session-zero services
         run: >-
           python -m compileall -q cli.py app/models/session_zero_interview.py
           app/services/session_zero_interview.py app/services/role_model_router.py
           app/services/post_turn_processor.py tests/test_cli_session_zero_resilience.py
+          tests/test_session_zero_conversation_guards.py
       - name: Validate migrations
         run: |
           rm -rf data
           alembic upgrade head
-      - name: Run focused acceptance
-        run: pytest -q tests/test_cli_session_zero_resilience.py --tb=short
-      - name: Lint changed Python files
+      - name: Run session-zero conversation acceptance
+        run: >-
+          pytest -q tests/test_cli_session_zero_resilience.py
+          tests/test_session_zero_conversation_guards.py --tb=short
+      - name: Lint session-zero guard files
         run: >-
           ruff check --extend-ignore BLE001,ISC004,SIM102,I001 cli.py
           app/models/session_zero_interview.py app/services/session_zero_interview.py
           app/services/role_model_router.py app/services/post_turn_processor.py
           tests/test_cli_session_zero_resilience.py
+          tests/test_session_zero_conversation_guards.py
