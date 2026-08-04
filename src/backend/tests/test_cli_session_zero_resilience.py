@@ -1,10 +1,10 @@
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
-import cli
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import cli
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
