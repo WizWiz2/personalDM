@@ -1,10 +1,10 @@
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import cli
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import cli
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
@@ -164,23 +164,27 @@ async def test_scribe_429_keeps_registered_bartender_and_failed_job_audit(
     await processor.enqueue(campaign_id, assistant.id)
     await db_session.commit()
 
-    with patch(
-        "app.services.entity_registrar.EntityRegistrar.register_from_turn",
-        new_callable=AsyncMock,
-        return_value=EntityRegistrationResult(),
-    ), patch(
-        "app.services.memory_scribe.MemoryScribe.extract_proposals",
-        new_callable=AsyncMock,
-        side_effect=LLMProviderError(
-            "LLM returned HTTP 429: rate_limit_exceeded; retry after 4.76s"
+    with (
+        patch(
+            "app.services.entity_registrar.EntityRegistrar.register_from_turn",
+            new_callable=AsyncMock,
+            return_value=EntityRegistrationResult(),
         ),
-    ), patch(
-        "app.services.thesis_curator.ThesisCurator.curate_after_turn",
-        new_callable=AsyncMock,
-        return_value=None,
+        patch(
+            "app.services.memory_scribe.MemoryScribe.extract_proposals",
+            new_callable=AsyncMock,
+            side_effect=LLMProviderError(
+                "LLM returned HTTP 429: rate_limit_exceeded; retry after 4.76s"
+            ),
+        ),
+        patch(
+            "app.services.thesis_curator.ThesisCurator.curate_after_turn",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        pytest.raises(LLMProviderError, match="429"),
     ):
-        with pytest.raises(LLMProviderError, match="429"):
-            await processor.process_turn(assistant.id)
+        await processor.process_turn(assistant.id)
 
     participants = await entities.get_characters_in_scene(scene.id)
     assert {item.canonical_name for item in participants} == {"Эйдан", "Бармен"}
