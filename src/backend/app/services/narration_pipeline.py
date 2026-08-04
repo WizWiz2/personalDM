@@ -14,7 +14,6 @@ from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.tables import Campaign, Turn
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services import narration_validation_guard as legacy_narration_stream
 from app.services.narration_validator import (
     NarrationValidationError,
     NarrationValidator,
@@ -71,24 +70,29 @@ class NarrationPipelineProvider:
             self._context = previous
 
     def _raw_stream(self, messages, config, api_key, **kwargs):
-        compatibility_override = legacy_narration_stream._ORIGINAL_GENERATE_STREAM
-        if (
-            compatibility_override
-            is legacy_narration_stream._DEFAULT_GENERATE_STREAM
-        ):
-            return self._provider.generate_stream(
-                messages,
-                config,
-                api_key,
-                **kwargs,
-            )
-        return compatibility_override(
-            self._provider,
+        return self._provider.generate_stream(
             messages,
             config,
             api_key,
             **kwargs,
         )
+
+    @classmethod
+    async def _as_text(cls, result) -> str:
+        """Normalize provider/test seams to accepted text without global patching."""
+        while inspect.isawaitable(result):
+            result = await result
+        if isinstance(result, str):
+            return result
+        if hasattr(result, "__aiter__"):
+            chunks: list[str] = []
+            async for token in result:
+                if hasattr(token, "__aiter__") or inspect.isawaitable(token):
+                    chunks.append(await cls._as_text(token))
+                else:
+                    chunks.append(str(token))
+            return "".join(chunks)
+        return str(result)
 
     async def _collect_raw(
         self,
@@ -97,18 +101,9 @@ class NarrationPipelineProvider:
         api_key,
         **kwargs,
     ) -> str:
-        stream = self._raw_stream(messages, config, api_key, **kwargs)
-        if inspect.isawaitable(stream):
-            stream = await stream
-
-        chunks: list[str] = []
-        async for token in stream:
-            if hasattr(token, "__aiter__"):
-                async for nested in token:
-                    chunks.append(str(nested))
-            else:
-                chunks.append(str(token))
-        return "".join(chunks)
+        return await self._as_text(
+            self._raw_stream(messages, config, api_key, **kwargs)
+        )
 
     async def _current_turn_and_scene(
         self,
@@ -189,7 +184,9 @@ class NarrationPipelineProvider:
                 yield token
             return
 
-        draft = await self._collect_raw(messages, config, api_key, **kwargs)
+        draft = await self._as_text(
+            self._collect_raw(messages, config, api_key, **kwargs)
+        )
         narrator_telemetry = dict(self.last_telemetry or {})
         trigger_turn_id, scene_id = await self._current_turn_and_scene(context)
         router = RoleModelRouter(ProviderConfigRepository(self._session))
@@ -299,11 +296,13 @@ class NarrationPipelineProvider:
                         f"{gate.failure_reason or 'continuity violation'}"
                     )
 
-                candidate = await self._collect_raw(
-                    validator.repair_messages(messages, candidate, result),
-                    config,
-                    api_key,
-                    temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+                candidate = await self._as_text(
+                    self._collect_raw(
+                        validator.repair_messages(messages, candidate, result),
+                        config,
+                        api_key,
+                        temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+                    )
                 )
                 repair_attempts += 1
                 run.repair_attempts = repair_attempts
