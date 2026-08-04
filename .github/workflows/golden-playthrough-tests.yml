@@ -1,0 +1,36 @@
+name: Golden playthrough acceptance
+
+on:
+  push:
+    branches:
+      - "agent/golden-playthrough-acceptance"
+  pull_request:
+    paths:
+      - "src/backend/tests/test_golden_playthrough.py"
+      - ".github/workflows/golden-playthrough-tests.yml"
+
+jobs:
+  golden-playthrough:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    defaults:
+      run:
+        working-directory: src/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: Compile acceptance scenario
+        run: python -m compileall -q tests/test_golden_playthrough.py
+      - name: Validate migrations
+        run: |
+          rm -rf data
+          alembic upgrade head
+      - name: Run golden playthrough
+        run: pytest -q tests/test_golden_playthrough.py --tb=short
+      - name: Lint acceptance scenario
+        run: ruff check --extend-ignore B008,BLE001,DTZ003 tests/test_golden_playthrough.py
