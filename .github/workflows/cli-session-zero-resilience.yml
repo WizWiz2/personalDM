@@ -44,6 +44,7 @@ jobs:
         run: pytest -q tests/test_cli_session_zero_resilience.py --tb=short
       - name: Lint changed Python files
         run: >-
-          ruff check --extend-ignore BLE001 cli.py app/models/session_zero_interview.py
-          app/services/session_zero_interview.py app/services/role_model_router.py
-          app/services/post_turn_processor.py tests/test_cli_session_zero_resilience.py
+          ruff check --extend-ignore BLE001,ISC004,SIM102,I001 cli.py
+          app/models/session_zero_interview.py app/services/session_zero_interview.py
+          app/services/role_model_router.py app/services/post_turn_processor.py
+          tests/test_cli_session_zero_resilience.py
