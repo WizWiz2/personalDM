@@ -22,6 +22,7 @@ from app.models.belief import BeliefCreate
 from app.models.turn import TurnCreate
 from app.models.provider_config import ProviderConfigCreate
 from app.models.proposed_change import ProposalAction
+from app.config import settings
 
 def clear_screen():
     print("\n" * 3)
@@ -80,11 +81,11 @@ async def configure_llm_menu(campaign_id: UUID, campaign_service: CampaignServic
     else:
         print("No LLM configuration found (using system defaults).")
         
-    base_url = input("\nEnter Base URL (default: http://localhost:11434/v1): ").strip() or "http://localhost:11434/v1"
-    model_name = input("Enter Model Name (default: gemma4:e4b): ").strip() or "gemma4:e4b"
-    api_key = input("Enter API Key (press Enter if local/Ollama): ").strip() or None
-    context_win_str = input("Enter Context Window size (default: 8192): ").strip() or "8192"
-    context_window = int(context_win_str) if context_win_str.isdigit() else 8192
+    base_url = input(f"\nEnter Base URL (default: {settings.LLM_BASE_URL}): ").strip() or settings.LLM_BASE_URL
+    model_name = input(f"Enter Model Name (default: {settings.LLM_MODEL}): ").strip() or settings.LLM_MODEL
+    api_key = input("Enter API Key (press Enter to keep the configured default): ").strip() or settings.LLM_API_KEY
+    context_win_str = input(f"Enter Context Window size (default: {settings.LLM_CONTEXT_WINDOW}): ").strip()
+    context_window = int(context_win_str) if context_win_str.isdigit() else settings.LLM_CONTEXT_WINDOW
     
     await campaign_service.configure_provider(campaign_id, ProviderConfigCreate(
         base_url=base_url,

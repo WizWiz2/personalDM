@@ -29,29 +29,87 @@ cd src\backend
 alembic upgrade head
 cd ..\..
 echo [Setup] Database initialized.
-goto :check_ollama
+goto :check_llm
 
 :activate_venv
 echo [Setup] Virtual environment found. Activating...
 call src\backend\venv\Scripts\activate.bat
 
+:check_llm
+rem 3. Use either a configured cloud provider or a local Ollama installation.
+set "ENV_FILE=src\backend\.env"
+set "CLOUD_API_KEY="
+if exist "%ENV_FILE%" (
+    for /f "tokens=1,* delims==" %%A in ('findstr /b /c:"PDM_LLM_API_KEY=" "%ENV_FILE%"') do set "CLOUD_API_KEY=%%B"
+)
+if not "%CLOUD_API_KEY%"=="" goto :cloud_ok
+
+call :find_ollama
+if defined OLLAMA_CMD goto :ollama_ok
+
+echo [Setup] No local Ollama installation or cloud LLM key was found.
+echo.
+echo Choose how Personal DM should run:
+echo   [1] Install and use local Ollama with Gemma 4 (downloads a model)
+echo   [2] Configure a cloud OpenAI-compatible provider
+choice /c 12 /n /m "Select 1 or 2"
+if errorlevel 2 goto :configure_cloud
+goto :err_ollama
+
+:configure_cloud
+echo.
+echo Cloud settings are saved only to %ENV_FILE% (this file is ignored by Git).
+set /p "CLOUD_BASE_URL=Base URL (for OpenAI: https://api.openai.com/v1): "
+if "%CLOUD_BASE_URL%"=="" set "CLOUD_BASE_URL=https://api.openai.com/v1"
+set /p "CLOUD_MODEL=Model (for example: gpt-4.1-mini): "
+if "%CLOUD_MODEL%"=="" set "CLOUD_MODEL=gpt-4.1-mini"
+set /p "CLOUD_API_KEY=API key: "
+if "%CLOUD_API_KEY%"=="" (
+    echo [ERROR] An API key is required for a cloud provider.
+    pause
+    goto :check_llm
+)
+set /p "CLOUD_CONTEXT=Context window (default: 128000): "
+if "%CLOUD_CONTEXT%"=="" set "CLOUD_CONTEXT=128000"
+> "%ENV_FILE%" (
+    echo PDM_LLM_BASE_URL=%CLOUD_BASE_URL%
+    echo PDM_LLM_MODEL=%CLOUD_MODEL%
+    echo PDM_LLM_API_KEY=%CLOUD_API_KEY%
+    echo PDM_LLM_CONTEXT_WINDOW=%CLOUD_CONTEXT%
+    rem Use the same cloud model for structured control tasks unless overridden later.
+    echo PDM_CONTROL_LLM_MODEL=%CLOUD_MODEL%
+)
+echo [Setup] Cloud provider configured.
+goto :cloud_ok
+
+:cloud_ok
+echo [Setup] Cloud LLM configuration found in %ENV_FILE%.
+goto :run_cli
+
 :check_ollama
-rem 3. Verify Ollama Installation (checking PATH first, then default install paths)
+rem Compatibility entry point for the installer below.
+call :find_ollama
+if defined OLLAMA_CMD goto :ollama_ok
+goto :err_ollama
+
+:find_ollama
+rem Check PATH first, then the default install paths.
 set "OLLAMA_CMD=ollama"
 ollama --version >nul 2>&1
-if %errorlevel% EQU 0 goto :ollama_ok
+if %errorlevel% EQU 0 exit /b 0
 
 if exist "%LocalAppData%\Programs\Ollama\ollama.exe" (
     set "OLLAMA_CMD=%LocalAppData%\Programs\Ollama\ollama.exe"
-    goto :ollama_ok
+    exit /b 0
 )
 
 if exist "%ProgramFiles%\Ollama\ollama.exe" (
     set "OLLAMA_CMD=%ProgramFiles%\Ollama\ollama.exe"
-    goto :ollama_ok
+    exit /b 0
 )
 
-goto :err_ollama
+set "OLLAMA_CMD="
+exit /b 0
 
 :ollama_ok
 rem 4. Verify/Start Ollama Service
@@ -85,6 +143,7 @@ echo Running: %OLLAMA_CMD% pull gemma4:e4b
 if %errorlevel% neq 0 goto :err_gemma
 echo [Setup] Gemma 4 model is ready!
 
+:run_cli
 rem 6. Run CLI
 echo [Launch] Starting Game Console Mirror...
 echo.
