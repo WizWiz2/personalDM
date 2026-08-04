@@ -1,0 +1,48 @@
+name: CLI session zero and cloud resilience
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  pull_request:
+    paths:
+      - "src/backend/cli.py"
+      - "src/backend/app/services/conversational_session_zero.py"
+      - "src/backend/app/services/deterministic_entity_fallback.py"
+      - "src/backend/app/services/post_turn_processor.py"
+      - "src/backend/tests/test_cli_session_zero_resilience.py"
+      - ".github/workflows/cli-session-zero-resilience.yml"
+
+jobs:
+  cli-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: src/backend
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - name: Compile CLI and services
+        run: >-
+          python -m compileall -q cli.py app/services/conversational_session_zero.py
+          app/services/deterministic_entity_fallback.py app/services/post_turn_processor.py
+          tests/test_cli_session_zero_resilience.py
+      - name: Validate migrations
+        run: |
+          rm -rf data
+          alembic upgrade head
+      - name: Run focused acceptance
+        run: pytest -q tests/test_cli_session_zero_resilience.py --tb=short
+      - name: Lint changed Python files
+        run: >-
+          ruff check cli.py app/services/conversational_session_zero.py
+          app/services/deterministic_entity_fallback.py app/services/post_turn_processor.py
+          tests/test_cli_session_zero_resilience.py
