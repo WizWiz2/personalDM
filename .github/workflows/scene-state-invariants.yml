@@ -9,7 +9,8 @@ on:
       - "src/backend/app/api/scene_state.py"
       - "src/backend/app/db/scene_state_table.py"
       - "src/backend/app/models/scene_state.py"
-      - "src/backend/app/services/scene_context_guard.py"
+      - "src/backend/app/services/context_compiler.py"
+      - "src/backend/app/services/context_pipeline.py"
       - "src/backend/app/services/scene_lifecycle.py"
       - "src/backend/app/services/scene_state_service.py"
       - "src/backend/app/services/scene_transition_executor.py"
@@ -56,7 +57,8 @@ jobs:
           app/api/scene_state.py
           app/db/scene_state_table.py
           app/models/scene_state.py
-          app/services/scene_context_guard.py
+          app/services/context_compiler.py
+          app/services/context_pipeline.py
           app/services/scene_lifecycle.py
           app/services/scene_state_service.py
           app/services/scene_transition_executor.py
