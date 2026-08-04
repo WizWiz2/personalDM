@@ -69,8 +69,8 @@ class NarrationPipelineProvider:
         finally:
             self._context = previous
 
-    def _raw_stream(self, messages, config, api_key, **kwargs):
-        return self._provider.generate_stream(
+    def _raw_stream(self, provider, messages, config, api_key, **kwargs):
+        return provider.generate_stream(
             messages,
             config,
             api_key,
@@ -96,13 +96,14 @@ class NarrationPipelineProvider:
 
     async def _collect_raw(
         self,
+        provider,
         messages,
         config,
         api_key,
         **kwargs,
     ) -> str:
         return await self._as_text(
-            self._raw_stream(messages, config, api_key, **kwargs)
+            self._raw_stream(provider, messages, config, api_key, **kwargs)
         )
 
     async def _current_turn_and_scene(
@@ -185,7 +186,13 @@ class NarrationPipelineProvider:
             return
 
         draft = await self._as_text(
-            self._collect_raw(messages, config, api_key, **kwargs)
+            self._collect_raw(
+                self._provider,
+                messages,
+                config,
+                api_key,
+                **kwargs,
+            )
         )
         narrator_telemetry = dict(self.last_telemetry or {})
         trigger_turn_id, scene_id = await self._current_turn_and_scene(context)
@@ -298,6 +305,7 @@ class NarrationPipelineProvider:
 
                 candidate = await self._as_text(
                     self._collect_raw(
+                        self._provider,
                         validator.repair_messages(messages, candidate, result),
                         config,
                         api_key,
