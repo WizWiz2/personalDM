@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -96,14 +97,17 @@ class NarrationPipelineProvider:
         api_key,
         **kwargs,
     ) -> str:
+        stream = self._raw_stream(messages, config, api_key, **kwargs)
+        if inspect.isawaitable(stream):
+            stream = await stream
+
         chunks: list[str] = []
-        async for token in self._raw_stream(
-            messages,
-            config,
-            api_key,
-            **kwargs,
-        ):
-            chunks.append(token)
+        async for token in stream:
+            if hasattr(token, "__aiter__"):
+                async for nested in token:
+                    chunks.append(str(nested))
+            else:
+                chunks.append(str(token))
         return "".join(chunks)
 
     async def _current_turn_and_scene(
