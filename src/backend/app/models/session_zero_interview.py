@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class SessionZeroWorldDraft(BaseModel):
@@ -52,12 +52,6 @@ class SessionZeroInterviewDecision(BaseModel):
     )
     missing_topics: list[str] = Field(default_factory=list)
     summary: str | None = None
-
-    @model_validator(mode="after")
-    def normalize_ready_state(self):
-        if self.missing_topics:
-            self.ready_to_finalize = False
-        return self
 
 
 class SessionZeroInterviewState(BaseModel):
