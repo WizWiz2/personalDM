@@ -208,11 +208,11 @@ def _repair_required() -> NarrationValidationResult:
     )
 
 
-async def _intro_narrator(_provider, messages, *args, **kwargs):
+async def _intro_narrator(messages, *args, **kwargs):
     yield INTRO_TEXT
 
 
-async def _sequence_narrator(_provider, messages, *args, **kwargs):
+async def _sequence_narrator(messages, *args, **kwargs):
     if "[REPAIR REJECTED NARRATION]" in messages[-1].content:
         yield REPAIRED_SEQUENCE_TEXT
     else:
@@ -431,7 +431,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
         new_callable=AsyncMock,
         return_value=_conversation_plan(),
     ), patch(
-        "app.services.narration_pipeline.NarrationPipelineProvider._collect_raw",
+        "app.services.narration_pipeline.NarrationPipelineProvider._raw_stream",
         side_effect=_intro_narrator,
     ), patch.object(
         NarrationValidator,
@@ -531,7 +531,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
         new_callable=AsyncMock,
         return_value=_compound_plan(),
     ), patch(
-        "app.services.narration_pipeline.NarrationPipelineProvider._collect_raw",
+        "app.services.narration_pipeline.NarrationPipelineProvider._raw_stream",
         side_effect=_sequence_narrator,
     ), patch.object(
         NarrationValidator,
