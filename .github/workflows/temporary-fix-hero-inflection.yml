@@ -1,0 +1,55 @@
+name: Temporary fix hero inflection
+
+on:
+  push:
+    branches:
+      - fix/session-zero-conversation-stalls
+    paths:
+      - .github/workflows/temporary-fix-hero-inflection.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/session-zero-conversation-stalls
+      - name: Personalize all hero word forms
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/backend/app/services/session_zero_interview.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        if hero_name and "герой" in question.casefold():
+              return re.sub(r"\\bгерой\\b", hero_name, question, flags=re.IGNORECASE)
+          return question
+          '''
+          new = '''        if hero_name and re.search(
+              r"\\bгеро(?:й|я|ю|ем|е)\\b",
+              question,
+              flags=re.IGNORECASE,
+          ):
+              return re.sub(
+                  r"\\bгеро(?:й|я|ю|ем|е)\\b",
+                  hero_name,
+                  question,
+                  flags=re.IGNORECASE,
+              )
+          return question
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one personalization block, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          rm .github/workflows/temporary-fix-hero-inflection.yml
+      - name: Commit fix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'Персонализировать вопросы во всех падежах'
+          git push origin HEAD:fix/session-zero-conversation-stalls
