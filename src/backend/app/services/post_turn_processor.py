@@ -42,8 +42,19 @@ class PostTurnProcessor:
     async def process_turn(self, assistant_turn_id: UUID) -> None:
         jobs = await self._jobs.list_for_turn(assistant_turn_id)
         for job in jobs:
-            if job.status in {"pending", "failed"}:
+            if job.status not in {"pending", "failed"}:
+                continue
+            try:
                 await self.process_job(job.id)
+            except Exception as exc:
+                # process_job has already stored a durable failed status and error.
+                # A post-turn control-model outage must never turn a saved narrative
+                # response into an interactive Python traceback.
+                logger.info(
+                    "Post-turn job %s deferred after failure: %s",
+                    job.id,
+                    exc,
+                )
 
     async def process_job(
         self,
@@ -113,9 +124,6 @@ class PostTurnProcessor:
                         source_turn_id=assistant.id,
                         assistant_content=assistant.content,
                     )
-                    # Identity and physical presence are a separate durable
-                    # checkpoint. A later Scribe failure must not roll back an NPC
-                    # that the authoritative registrar already resolved.
                     await self._session.commit()
 
                     proposals = await MemoryScribe(self._session).extract_proposals(
