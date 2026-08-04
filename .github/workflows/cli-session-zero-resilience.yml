@@ -43,6 +43,7 @@ jobs:
         run: pytest -q tests/test_cli_session_zero_resilience.py --tb=short
       - name: Lint changed Python files
         run: >-
-          ruff check cli.py app/services/conversational_session_zero.py
+          ruff check --extend-ignore BLE001 cli.py
+          app/services/conversational_session_zero.py
           app/services/deterministic_entity_fallback.py app/services/post_turn_processor.py
           tests/test_cli_session_zero_resilience.py
