@@ -431,7 +431,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
         new_callable=AsyncMock,
         return_value=_conversation_plan(),
     ), patch(
-        "app.services.narration_validation_guard._ORIGINAL_GENERATE_STREAM",
+        "app.services.narration_pipeline.NarrationPipelineProvider._collect_raw",
         side_effect=_intro_narrator,
     ), patch.object(
         NarrationValidator,
@@ -531,7 +531,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
         new_callable=AsyncMock,
         return_value=_compound_plan(),
     ), patch(
-        "app.services.narration_validation_guard._ORIGINAL_GENERATE_STREAM",
+        "app.services.narration_pipeline.NarrationPipelineProvider._collect_raw",
         side_effect=_sequence_narrator,
     ), patch.object(
         NarrationValidator,
