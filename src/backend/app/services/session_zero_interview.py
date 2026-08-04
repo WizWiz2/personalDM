@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import ClassVar
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,7 +117,7 @@ assistant_message должен звучать как живой персонал
         "ты повторяешь",
         "опять тот же вопрос",
     )
-    NO_PREFERENCE_ANSWERS = {
+    NO_PREFERENCE_ANSWERS: ClassVar[set[str]] = {
         "не очень",
         "нет",
         "неважно",
@@ -128,14 +129,14 @@ assistant_message должен звучать как живой персонал
         "нет особых предпочтений",
         "особых предпочтений нет",
     }
-    DELEGATABLE_FIELDS = {
+    DELEGATABLE_FIELDS: ClassVar[set[str]] = {
         "world.premise",
         "world.tone",
         "world.play_style",
         "world.starting_location_name",
         "world.starting_situation",
     }
-    START_FIELDS = {
+    START_FIELDS: ClassVar[set[str]] = {
         "world.starting_location_name",
         "world.starting_situation",
     }
@@ -212,7 +213,7 @@ assistant_message должен звучать как живой персонал
         ),
     )
 
-    TOPIC_KEYWORDS = {
+    TOPIC_KEYWORDS: ClassVar[dict[str, tuple[str, ...]]] = {
         "world.setting_name": ("мир", "сеттинг", "вселен", "канон"),
         "world.genre": ("жанр",),
         "world.world_summary": ("мир", "сеттинг", "вселен"),
