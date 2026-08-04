@@ -14,6 +14,9 @@ on:
       - "src/backend/app/services/context_compiler.py"
       - "src/backend/app/services/base_context_compiler.py"
       - "src/backend/app/services/context_pipeline.py"
+      - "src/backend/app/services/turn_runner.py"
+      - "src/backend/app/services/base_turn_runner.py"
+      - "src/backend/app/services/narration_pipeline.py"
       - "src/backend/tests/test_runtime_parity.py"
       - "src/backend/tests/test_context_pipeline.py"
       - ".github/workflows/runtime-parity.yml"
@@ -27,6 +30,9 @@ on:
       - "src/backend/app/services/context_compiler.py"
       - "src/backend/app/services/base_context_compiler.py"
       - "src/backend/app/services/context_pipeline.py"
+      - "src/backend/app/services/turn_runner.py"
+      - "src/backend/app/services/base_turn_runner.py"
+      - "src/backend/app/services/narration_pipeline.py"
       - "src/backend/tests/test_runtime_parity.py"
       - "src/backend/tests/test_context_pipeline.py"
       - ".github/workflows/runtime-parity.yml"
@@ -47,13 +53,16 @@ jobs:
 
       - run: python -m pip install -e "src/backend[dev]"
 
-      - name: Compile shared runtime and context pipeline
+      - name: Compile shared runtime pipelines
         run: >-
           python -m compileall -q src/backend/cli.py src/backend/app/runtime.py
           src/backend/app/application src/backend/app/api/turns.py
           src/backend/app/services/context_compiler.py
           src/backend/app/services/base_context_compiler.py
           src/backend/app/services/context_pipeline.py
+          src/backend/app/services/turn_runner.py
+          src/backend/app/services/base_turn_runner.py
+          src/backend/app/services/narration_pipeline.py
           src/backend/tests/test_runtime_parity.py
           src/backend/tests/test_context_pipeline.py
 
@@ -78,4 +87,6 @@ jobs:
           ruff check app/runtime.py app/application app/main.py tests/test_runtime_parity.py
           ruff check app/services/context_compiler.py app/services/base_context_compiler.py
           ruff check app/services/context_pipeline.py tests/test_context_pipeline.py
+          ruff check app/services/turn_runner.py app/services/base_turn_runner.py
+          ruff check app/services/narration_pipeline.py
           ruff check --extend-ignore B008 app/api/turns.py
