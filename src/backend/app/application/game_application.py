@@ -206,13 +206,12 @@ class GameApplication:
             raise GameNotReadyError(exc.missing_fields) from exc
 
         effective_scene_id = campaign.current_scene_id or data.scene_id
-        if not effective_scene_id:
-            raise CurrentSceneError("Campaign has no active scene")
-        scene = await self._scenes.get_by_id(effective_scene_id)
-        if not scene or scene.campaign_id != campaign_id:
-            raise CurrentSceneError(
-                "Campaign current scene is missing or belongs to another campaign"
-            )
+        if effective_scene_id:
+            scene = await self._scenes.get_by_id(effective_scene_id)
+            if not scene or scene.campaign_id != campaign_id:
+                raise CurrentSceneError(
+                    "Campaign current scene is missing or belongs to another campaign"
+                )
         return data.model_copy(update={"scene_id": effective_scene_id})
 
     async def undo_last_turn(self, campaign_id: UUID) -> bool:
@@ -245,7 +244,7 @@ class GameApplication:
             try:
                 await processor.process_job(job.id)
                 succeeded += 1
-            except Exception:
+            except Exception:  # noqa: BLE001 - application retry boundary
                 # process_job has already persisted a durable failed state.
                 remaining += 1
         return RetryPostTurnResult(succeeded=succeeded, remaining=remaining)
@@ -255,7 +254,9 @@ class GameApplication:
         failed = [job for job in jobs if job.status == "failed"]
         return GamePostTurnStatus(
             failed_count=len(failed),
-            rate_limited=any(self._rate_limited(job.error) for job in failed),
+            rate_limited=any(
+                self.is_rate_limited_error(job.error) for job in failed
+            ),
         )
 
     async def latest_assistant_turn_id(self, campaign_id: UUID) -> UUID | None:
@@ -390,7 +391,9 @@ class GameApplication:
         if view is None:
             raise CurrentSceneError("Campaign has no active scene")
         if entity_id == view.player_character_id:
-            raise ValueError("The player character cannot be removed from the active scene")
+            raise ValueError(
+                "The player character cannot be removed from the active scene"
+            )
         try:
             removed = await self._scenes.remove_participant(view.scene.id, entity_id)
             await self._session.commit()
@@ -400,6 +403,6 @@ class GameApplication:
             raise
 
     @staticmethod
-    def _rate_limited(error: str | None) -> bool:
+    def is_rate_limited_error(error: str | None) -> bool:
         text = (error or "").casefold()
         return "429" in text or "rate limit" in text or "rate_limit" in text
