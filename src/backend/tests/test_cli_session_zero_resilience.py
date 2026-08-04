@@ -19,13 +19,10 @@ from app.models.turn import TurnCreate
 from app.providers.llm_provider import LLMProviderError
 from app.services.campaign_service import CampaignService
 from app.services.character_card_service import CharacterCardService
-from app.services.conversational_session_zero import (
-    ConversationalSessionZeroService,
-)
+from app.services.conversational_session_zero import ConversationalSessionZeroService
 from app.services.entity_registrar import EntityRegistrationResult
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.session_zero_service import SessionZeroService
-
 
 ANSWERS = {
     "world": "Приземлённое фэнтези пограничных городов, редкая магия.",
