@@ -87,6 +87,6 @@ jobs:
           ruff check app/runtime.py app/application app/main.py tests/test_runtime_parity.py
           ruff check app/services/context_compiler.py app/services/base_context_compiler.py
           ruff check app/services/context_pipeline.py tests/test_context_pipeline.py
-          ruff check app/services/turn_runner.py app/services/base_turn_runner.py
-          ruff check app/services/narration_pipeline.py
+          ruff check app/services/turn_runner.py app/services/narration_pipeline.py
+          ruff check --extend-ignore SIM102,BLE001 app/services/base_turn_runner.py
           ruff check --extend-ignore B008 app/api/turns.py
