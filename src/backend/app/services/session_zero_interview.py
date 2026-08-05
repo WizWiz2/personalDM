@@ -19,6 +19,8 @@ from app.models.session_zero import SessionZeroUpdate
 from app.models.session_zero_interview import (
     SessionZeroInterviewDecision,
     SessionZeroInterviewDraft,
+    SessionZeroInterviewModelDecision,
+    SessionZeroInterviewPatch,
     SessionZeroInterviewState,
 )
 from app.models.turn import ChatMessage
@@ -38,16 +40,14 @@ class SessionZeroInterviewIncompleteError(ValueError):
 class SessionZeroInterviewService:
     """LLM-led conversation that feeds the authoritative session-zero service.
 
-    The model extracts campaign intent, while deterministic guards preserve accepted
-    details, keep meta-commands out of the campaign draft, and prevent stalled or
-    repeated questions. Materialization still happens once through
-    SessionZeroService.complete().
+    The LLM returns a compact patch for the latest player answer. The service owns the
+    complete accumulated draft and materializes it once through SessionZeroService.
     """
 
     STATE_KEY = "session_zero_interview"
     MAX_HISTORY_MESSAGES = 6
-    MAX_RESPONSE_TOKENS = 1200
-    MAX_RATE_LIMIT_WAIT_SECONDS = 8.0
+    MODEL_RESPONSE_TOKENS = 1200
+    RATE_LIMIT_RETRY_CAP_SECONDS = 12.0
     OPENING_MESSAGE = (
         "Во что тебе хочется сыграть именно сейчас? Можно начать с мира, жанра, "
         "героя или просто с ощущения, которое хочется получить от кампании."
@@ -57,38 +57,29 @@ class SessionZeroInterviewService:
 
 Всегда отвечай только по-русски. Английские названия сеттингов, систем и имена можно
 сохранять как собственные названия, но весь разговор с игроком должен быть на русском.
-Просьбы вроде «пиши по-русски», замечания «я уже ответил» и недовольство повтором — это
-мета-команды общения, а не факты о мире или персонаже.
+Мета-команды общения не являются фактами о мире или персонаже.
 
-Это не анкета. Внимательно обработай последний ответ, обнови полный структурированный
-черновик и задай один наиболее полезный следующий вопрос. Два тесно связанных вопроса
-допустимы, только если разделять их неестественно.
+Обработай последний ответ, верни только изменения к CURRENT DRAFT в поле patch и задай
+один наиболее полезный следующий вопрос. Не копируй CURRENT DRAFT в ответ целиком.
 
 Обязательные правила:
-- Сохраняй все подтверждённые детали из CURRENT DRAFT, если игрок явно их не исправил.
-- Не стирай заполненное поле только потому, что последний ответ был коротким или мета-командой.
-- Не задавай снова вопрос, на который игрок уже ответил или который уже отражён в CURRENT DRAFT.
-- Если поле перечислено в ПОЛЯ, ПЕРЕДАННЫЕ МАСТЕРУ, выбери конкретное подходящее значение
-  самостоятельно уже в текущем snapshot. Не сохраняй заглушки вроде «на усмотрение мастера»
-  или «стартовая точка в сеттинге».
-- Если игрок передал мастеру выбор старта, придумай конкретные место и ситуацию, связанные с
-  сеттингом, героем и его целью. Первые слова, решения и чувства героя всё равно оставь игроку.
-- Не трактуй короткое «нет» или «не очень» как автоматическую передачу выбора мастеру:
-  учитывай смысл вопроса и при необходимости уточняй.
+- В patch включай только поля, которые подтверждены последним ответом игрока, явно им
+  исправлены либо перечислены в ПОЛЯ, ПЕРЕДАННЫЕ МАСТЕРУ.
+- Не повторяй заполненные поля в patch без изменения.
+- Не задавай снова вопрос, ответ на который уже есть в CURRENT DRAFT.
+- Для полей, переданных мастеру, сразу придумай конкретное значение. Не используй заглушки
+  вроде «на усмотрение мастера» или «стартовая точка в сеттинге».
+- Переданный мастеру старт должен содержать конкретные место и ситуацию, но первые слова,
+  решения и чувства героя остаются за игроком.
+- Короткие «нет» и «не очень» трактуй в контексте вопроса, а не как передачу выбора мастеру.
 - Не выдумывай предпочтения, границы, страхи, ценности, биографию, систему правил или эмоции
   героя только ради заполнения поля.
-- Различай ценности и страхи, характер и биографию, голос и манеру речи, способности и
-  ограничения.
-- Не навязывай рейтинг 18+ или свободную систему правил. Сохраняй реальный выбор игрока.
-- Узнавай желаемую инициативу игрока и NPC, тон, темп, границы agency и сложность только
-  настолько, насколько это уместно для выбранной кампании.
-- Если назван готовый сеттинг или система, уточняй верность канону лишь при необходимости.
 - boundaries_confirmed может стать true только после явного указания границ или фразы, что
   дополнительных границ нет.
-- ready_to_finalize может быть true только когда все REQUIRED FIELD поддержаны диалогом.
-- Возвращай полный snapshot, а не patch. Возвращай только JSON.
-- question_topics должен содержать точные имена полей REQUIRED FIELD, о которых задаётся
-  следующий вопрос. Если вопроса нет, верни пустой список.
+- ready_to_finalize может быть true только когда все REQUIRED FIELD уже заполнены в CURRENT
+  DRAFT с учётом текущего patch.
+- question_topics содержит точные имена REQUIRED FIELD следующего вопроса.
+- Возвращай только короткий валидный JSON по схеме.
 
 REQUIRED WORLD FIELDS:
 world.setting_name, world.genre, world.premise, world.tone, world.world_summary,
@@ -185,9 +176,7 @@ assistant_message должен звучать как живой персонал
     QUESTION_TEXT: ClassVar[dict[str, str]] = {
         "world.setting_name": "Какой мир или сеттинг берём за основу?",
         "world.genre": "Какой жанр должен быть у этой кампании?",
-        "world.world_summary": (
-            "Какие черты выбранного мира особенно важны для этой кампании?"
-        ),
+        "world.world_summary": "Какие черты выбранного мира особенно важны для этой кампании?",
         "world.premise": "Вокруг чего должна строиться кампания?",
         "world.tone": "Какой тон и темп игры тебе сейчас хочется?",
         "world.play_style": (
@@ -275,11 +264,7 @@ assistant_message должен звучать как живой персонал
         self._clear_legacy_delegation_placeholders(state)
         return state
 
-    async def answer(
-        self,
-        campaign_id: UUID,
-        user_message: str,
-    ) -> SessionZeroInterviewDecision:
+    async def answer(self, campaign_id: UUID, user_message: str) -> SessionZeroInterviewDecision:
         clean = " ".join(user_message.split())
         if not clean:
             raise ValueError("Session-zero answer cannot be empty")
@@ -298,10 +283,7 @@ assistant_message должен звучать как живой персонал
         await self._save_state(campaign_id, state, commit=True)
         return await self._continue_pending(campaign_id, state)
 
-    async def retry_pending(
-        self,
-        campaign_id: UUID,
-    ) -> SessionZeroInterviewDecision | None:
+    async def retry_pending(self, campaign_id: UUID) -> SessionZeroInterviewDecision | None:
         state = await self.get_state(campaign_id)
         if not state.pending_user_message:
             return None
@@ -338,9 +320,7 @@ assistant_message должен звучать как живой персонал
         if normalized in self.NO_PREFERENCE_ANSWERS and delegatable:
             if delegatable & self.START_FIELDS:
                 delegatable.update(self.START_FIELDS)
-            state.delegated_fields = sorted(
-                set(state.delegated_fields) | delegatable
-            )
+            state.delegated_fields = sorted(set(state.delegated_fields) | delegatable)
         return None
 
     async def _direct_decision(
@@ -355,9 +335,7 @@ assistant_message должен звучать как живой персонал
     ) -> SessionZeroInterviewDecision:
         state.messages.append({"role": "user", "content": user_message})
         missing = self.missing_fields(state.draft)
-        current_topics = [
-            topic for topic in (preferred_topics or []) if topic in set(missing)
-        ]
+        current_topics = [topic for topic in (preferred_topics or []) if topic in set(missing)]
         if current_topics:
             question, topics = self._question_for_topics(current_topics, state.draft)
         else:
@@ -376,55 +354,12 @@ assistant_message должен звучать как живой персонал
             question_topics=topics,
             summary=self.summary(state.draft),
         )
-        state.messages.append(
-            {"role": "assistant", "content": decision.assistant_message}
-        )
+        state.messages.append({"role": "assistant", "content": decision.assistant_message})
         state.pending_user_message = None
         state.last_question_topics = topics
         state.last_summary = decision.summary
         await self._save_state(campaign_id, state, commit=True)
         return decision
-
-    @classmethod
-    def _rate_limit_retry_after(cls, error: Exception) -> float | None:
-        text = str(error)
-        folded = text.casefold()
-        if "429" not in text and "rate_limit" not in folded:
-            return None
-        match = re.search(
-            r"(?:try again in|retry after)\s*(\d+(?:\.\d+)?)\s*s",
-            text,
-            flags=re.IGNORECASE,
-        )
-        return float(match.group(1)) if match else 1.0
-
-    @classmethod
-    def is_rate_limited_error(cls, error: Exception) -> bool:
-        return cls._rate_limit_retry_after(error) is not None
-
-    async def _generate_interview_json(self, selection, messages) -> dict:
-        async def generate() -> dict:
-            return await self._router.generate_json(
-                self._provider,
-                selection,
-                messages,
-                max_tokens=self.MAX_RESPONSE_TOKENS,
-                temperature=0.25,
-                response_model=SessionZeroInterviewDecision,
-            )
-
-        try:
-            return await generate()
-        except LLMProviderError as exc:
-            retry_after = self._rate_limit_retry_after(exc)
-            if retry_after is None:
-                raise
-            delay = min(
-                max(retry_after, 0.2) + 0.25,
-                self.MAX_RATE_LIMIT_WAIT_SECONDS,
-            )
-            await asyncio.sleep(delay)
-            return await generate()
 
     async def _continue_pending(
         self,
@@ -433,9 +368,8 @@ assistant_message должен звучать как живой персонал
     ) -> SessionZeroInterviewDecision:
         selection = await self._router.resolve(campaign_id, ModelRole.SESSION_ZERO)
         if selection is None:
-            raise LLMProviderError(
-                "No LLM provider is configured for this campaign"
-            )
+            raise LLMProviderError("No LLM provider is configured for this campaign")
+
         current = json.dumps(
             state.draft.model_dump(mode="json"),
             ensure_ascii=False,
@@ -454,48 +388,87 @@ assistant_message должен звучать как живой персонал
                     f"{json.dumps(state.delegated_fields, ensure_ascii=False)}\n\n"
                     f"[ЕЩЁ НЕ ХВАТАЕТ]\n"
                     f"{json.dumps(missing_before, ensure_ascii=False)}\n\n"
-                    f"[CURRENT DRAFT]\n{current}"
+                    f"[CURRENT DRAFT — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{current}"
                 ),
             ),
             *[
                 ChatMessage(role=item["role"], content=item["content"])
                 for item in state.messages[-self.MAX_HISTORY_MESSAGES :]
-                if item.get("role") in {"user", "assistant"}
-                and item.get("content")
+                if item.get("role") in {"user", "assistant"} and item.get("content")
             ],
         ]
-        data = await self._generate_interview_json(selection, messages)
-        decision = SessionZeroInterviewDecision.model_validate(data)
+        data = await self._generate_model_decision(selection, messages)
+        model_decision = SessionZeroInterviewModelDecision.model_validate(data)
         latest_user_message = state.pending_user_message or ""
-        merged = self._merge_drafts(
+        merged = self._apply_patch(
             state.draft,
-            decision.draft,
+            model_decision.patch,
             allowed_topics=state.last_question_topics,
             explicit_correction=self._is_explicit_correction(latest_user_message),
         )
         missing = self.missing_fields(merged)
-        decision.draft = merged
-        decision.missing_topics = missing
-        decision.ready_to_finalize = decision.ready_to_finalize and not missing
-        decision.assistant_message, decision.question_topics = (
-            self._guard_assistant_message(
-                decision.assistant_message,
-                decision.question_topics,
-                state,
-                merged,
-                missing,
-                decision.ready_to_finalize,
-            )
+        ready = model_decision.ready_to_finalize and not missing
+        assistant_message, question_topics = self._guard_assistant_message(
+            model_decision.assistant_message,
+            model_decision.question_topics,
+            state,
+            merged,
+            missing,
+            ready,
+        )
+        decision = SessionZeroInterviewDecision(
+            assistant_message=assistant_message,
+            ready_to_finalize=ready,
+            draft=merged,
+            missing_topics=missing,
+            question_topics=question_topics,
+            summary=self.summary(merged),
         )
         state.draft = merged
-        state.messages.append(
-            {"role": "assistant", "content": decision.assistant_message}
-        )
+        state.messages.append({"role": "assistant", "content": decision.assistant_message})
         state.pending_user_message = None
         state.last_question_topics = decision.question_topics
-        state.last_summary = decision.summary or self.summary(decision.draft)
+        state.last_summary = decision.summary
         await self._save_state(campaign_id, state, commit=True)
         return decision
+
+    async def _generate_model_decision(self, selection, messages: list[ChatMessage]) -> dict:
+        try:
+            return await self._router.generate_json(
+                self._provider,
+                selection,
+                messages,
+                max_tokens=self.MODEL_RESPONSE_TOKENS,
+                temperature=0.25,
+                response_model=SessionZeroInterviewModelDecision,
+            )
+        except LLMProviderError as exc:
+            delay = self._rate_limit_retry_seconds(str(exc))
+            if delay is None:
+                raise
+            await asyncio.sleep(delay)
+            return await self._router.generate_json(
+                self._provider,
+                selection,
+                messages,
+                max_tokens=self.MODEL_RESPONSE_TOKENS,
+                temperature=0.0,
+                response_model=SessionZeroInterviewModelDecision,
+            )
+
+    @classmethod
+    def _rate_limit_retry_seconds(cls, error: str) -> float | None:
+        if "HTTP 429" not in error and "rate_limit" not in error.casefold():
+            return None
+        match = re.search(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", error, re.IGNORECASE)
+        if not match:
+            return 1.0
+        return min(cls.RATE_LIMIT_RETRY_CAP_SECONDS, max(0.25, float(match.group(1))))
+
+    @classmethod
+    def is_rate_limited_error(cls, error: Exception) -> bool:
+        """Return whether an error represents a provider rate limit."""
+        return cls._rate_limit_retry_seconds(str(error)) is not None
 
     def _guard_assistant_message(
         self,
@@ -538,34 +511,33 @@ assistant_message должен звучать как живой персонал
         return clean_message, valid_topics
 
     @classmethod
-    def _merge_drafts(
+    def _apply_patch(
         cls,
         previous: SessionZeroInterviewDraft,
-        proposed: SessionZeroInterviewDraft,
+        patch: SessionZeroInterviewPatch,
         *,
         allowed_topics: list[str] | None = None,
         explicit_correction: bool = False,
     ) -> SessionZeroInterviewDraft:
-        merged = proposed.model_copy(deep=True)
+        merged = previous.model_copy(deep=True)
         allowed = set(allowed_topics or [])
         for section_name in ("world", "character"):
-            old_section = getattr(previous, section_name)
-            new_section = getattr(merged, section_name)
-            for field_name in old_section.__class__.model_fields:
-                topic = f"{section_name}.{field_name}"
-                old_value = getattr(old_section, field_name)
-                new_value = getattr(new_section, field_name)
-                if cls._has_value(old_value) and not cls._has_value(new_value):
-                    setattr(new_section, field_name, old_value)
+            patch_section = getattr(patch, section_name)
+            target_section = getattr(merged, section_name)
+            for field_name in patch_section.model_fields_set:
+                new_value = getattr(patch_section, field_name)
+                if new_value is None:
                     continue
+                topic = f"{section_name}.{field_name}"
+                old_value = getattr(target_section, field_name)
                 if (
                     cls._has_value(old_value)
-                    and cls._has_value(new_value)
                     and old_value != new_value
                     and topic not in allowed
                     and not explicit_correction
                 ):
-                    setattr(new_section, field_name, old_value)
+                    continue
+                setattr(target_section, field_name, new_value)
         return merged
 
     @classmethod
@@ -602,10 +574,7 @@ assistant_message должен звучать как живой персонал
             return (
                 "С какой конкретной ситуации начать кампанию? Можно назвать место и момент "
                 "самому или прямо отдать выбор старта мастеру.",
-                [
-                    "world.starting_location_name",
-                    "world.starting_situation",
-                ],
+                ["world.starting_location_name", "world.starting_situation"],
             )
         topic = ordered[0]
         question = cls.QUESTION_TEXT.get(
@@ -615,10 +584,7 @@ assistant_message должен звучать как живой персонал
         return cls._personalize_question(question, draft), [topic]
 
     @staticmethod
-    def _personalize_question(
-        question: str,
-        draft: SessionZeroInterviewDraft,
-    ) -> str:
+    def _personalize_question(question: str, draft: SessionZeroInterviewDraft) -> str:
         hero_name = " ".join((draft.character.name or "").split())
         if hero_name and "герой" in question.casefold():
             return re.sub(r"\bгерой\b", hero_name, question, flags=re.IGNORECASE)
@@ -660,10 +626,7 @@ assistant_message должен звучать как живой персонал
         return bool(cls._text(value))
 
     @classmethod
-    def _clear_legacy_delegation_placeholders(
-        cls,
-        state: SessionZeroInterviewState,
-    ) -> None:
+    def _clear_legacy_delegation_placeholders(cls, state: SessionZeroInterviewState) -> None:
         delegated = set(state.delegated_fields)
         world = state.draft.world
         for topic, values in cls.LEGACY_DELEGATION_VALUES.items():
@@ -787,9 +750,7 @@ assistant_message должен звучать как живой персонал
             "world.tone": cls._text(world.tone),
             "world.world_summary": cls._text(world.world_summary),
             "world.play_style": cls._text(world.play_style),
-            "world.starting_location_name": cls._text(
-                world.starting_location_name
-            ),
+            "world.starting_location_name": cls._text(world.starting_location_name),
             "world.starting_situation": cls._text(world.starting_situation),
             "world.boundaries_confirmed": world.boundaries_confirmed,
             "character.name": cls._text(character.name),
