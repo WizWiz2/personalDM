@@ -1,5 +1,6 @@
 name: Apply session-zero rate-limit fix
 
+# Final temporary run after timezone-aware test cleanup.
 on:
   push:
     branches:
