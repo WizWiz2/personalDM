@@ -465,6 +465,11 @@ assistant_message должен звучать как живой персонал
             return 1.0
         return min(cls.RATE_LIMIT_RETRY_CAP_SECONDS, max(0.25, float(match.group(1))))
 
+    @classmethod
+    def is_rate_limited_error(cls, error: Exception) -> bool:
+        """Return whether an error represents a provider rate limit."""
+        return cls._rate_limit_retry_seconds(str(error)) is not None
+
     def _guard_assistant_message(
         self,
         message: str,
