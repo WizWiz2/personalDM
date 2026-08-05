@@ -70,7 +70,7 @@ async def test_session_zero_waits_for_groq_window_and_retries_once(
     assert decision.assistant_message == "Какой характер у Кабуто?"
     assert len(calls) == 2
     assert calls[0][1]["max_tokens"] == 1200
-    sleep.assert_awaited_once_with(3.235)
+    sleep.assert_awaited_once_with(2.985)
     assert (await interview.get_state(campaign.id)).pending_user_message is None
 
 
@@ -116,7 +116,7 @@ async def test_session_zero_prompt_uses_compact_draft_and_six_message_history(
     ]
     assert captured["kwargs"]["max_tokens"] == 1200
     assert '\n  "world"' not in messages[0].content
-    assert '[CURRENT DRAFT]\n{"world":' in messages[0].content
+    assert '[CURRENT DRAFT — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{"world":' in messages[0].content
 
 
 @pytest.mark.asyncio
