@@ -317,7 +317,7 @@ async def test_model_request_uses_compact_patch_budget_and_short_history(
         await interview.answer(campaign.id, "Хочу Shadowrun")
 
     kwargs = model.await_args.kwargs
-    assert kwargs["max_tokens"] == 1000
+    assert kwargs["max_tokens"] == 1200
     assert kwargs["response_model"].__name__ == "SessionZeroInterviewModelDecision"
     messages = model.await_args.args[2]
     assert len(messages) <= SessionZeroInterviewService.MAX_HISTORY_MESSAGES + 1
