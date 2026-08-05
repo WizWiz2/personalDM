@@ -149,7 +149,7 @@ async def test_player_uncertainty_lets_agent_choose_and_move_on(
         decision = await interview.answer(campaign.id, "Не могу сказать")
 
     assert decision.assistant_message == second_reply
-    assert "кто такой Кабуто" in decision.assistant_message.casefold()
+    assert "кто такой кабуто" in decision.assistant_message.casefold()
     assert decision.draft.world.world_summary.startswith("Шестой мир")
 
 
