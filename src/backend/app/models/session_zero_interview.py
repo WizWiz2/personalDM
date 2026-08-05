@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -87,28 +87,56 @@ class SessionZeroInterviewPatch(BaseModel):
     )
 
 
+class SessionZeroAgentToolCall(BaseModel):
+    """Provider-neutral tool call emitted by the Session Zero agent."""
+
+    name: Literal["update_session_zero", "finalize_session_zero"]
+    patch: SessionZeroInterviewPatch | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_tool_shape(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        converted = dict(value)
+        name = str(converted.get("name") or converted.get("tool") or "")
+        aliases = {
+            "update": "update_session_zero",
+            "update_session": "update_session_zero",
+            "save_session_zero": "update_session_zero",
+            "finalize": "finalize_session_zero",
+            "complete_session_zero": "finalize_session_zero",
+        }
+        converted["name"] = aliases.get(name, name)
+        arguments = converted.get("arguments")
+        if converted.get("patch") is None and isinstance(arguments, dict):
+            nested = arguments.get("patch")
+            converted["patch"] = nested if isinstance(nested, dict) else arguments
+        return converted
+
+    @model_validator(mode="after")
+    def ensure_update_patch(self) -> SessionZeroAgentToolCall:
+        if self.name == "update_session_zero" and self.patch is None:
+            self.patch = SessionZeroInterviewPatch()
+        return self
+
+
 class SessionZeroInterviewModelDecision(BaseModel):
-    """Compact transport returned by the LLM for one interview turn."""
+    """One natural agent reply plus hidden state-management tool calls."""
 
     assistant_message: str = Field(min_length=1)
-    ready_to_finalize: bool = False
-    patch: SessionZeroInterviewPatch = Field(
-        default_factory=SessionZeroInterviewPatch
-    )
+    tool_calls: list[SessionZeroAgentToolCall] = Field(default_factory=list)
     question_topics: list[str] = Field(default_factory=list)
     summary: str | None = None
 
     @model_validator(mode="before")
     @classmethod
     def normalize_provider_shape(cls, value: Any) -> Any:
-        """Accept useful provider variants without advertising them in the schema."""
+        """Accept older patch snapshots and common provider aliases."""
         if not isinstance(value, dict):
             return value
 
         converted = dict(value)
-        if not converted.get("patch") and isinstance(converted.get("draft"), dict):
-            converted["patch"] = converted.pop("draft")
-
         assistant_message = converted.get("assistant_message")
         if not isinstance(assistant_message, str) or not assistant_message.strip():
             for alias in (
@@ -124,17 +152,45 @@ class SessionZeroInterviewModelDecision(BaseModel):
                     converted["assistant_message"] = candidate.strip()
                     break
 
+        calls = list(converted.get("tool_calls") or converted.get("actions") or [])
+        legacy_patch = converted.get("patch")
+        if not isinstance(legacy_patch, dict) and isinstance(converted.get("draft"), dict):
+            legacy_patch = converted.get("draft")
+        if isinstance(legacy_patch, dict):
+            calls.append({"name": "update_session_zero", "patch": legacy_patch})
+        if converted.get("ready_to_finalize"):
+            calls.append({"name": "finalize_session_zero"})
+        converted["tool_calls"] = calls
+
         if not converted.get("assistant_message"):
             converted["assistant_message"] = (
                 "Основа кампании собрана. Проверь итоговую сводку перед стартом."
-                if converted.get("ready_to_finalize")
+                if any(
+                    isinstance(item, dict)
+                    and (item.get("name") or item.get("tool"))
+                    in {"finalize_session_zero", "finalize"}
+                    for item in calls
+                )
                 else "Продолжим нулевую сессию."
             )
         return converted
 
+    @property
+    def patch(self) -> SessionZeroInterviewPatch:
+        """Compatibility view for older callers and fixtures."""
+        for call in self.tool_calls:
+            if call.name == "update_session_zero" and call.patch is not None:
+                return call.patch
+        return SessionZeroInterviewPatch()
+
+    @property
+    def ready_to_finalize(self) -> bool:
+        """Compatibility view for older callers and fixtures."""
+        return any(call.name == "finalize_session_zero" for call in self.tool_calls)
+
 
 class SessionZeroInterviewDecision(BaseModel):
-    """Public decision returned by the service with the complete accumulated draft."""
+    """Public decision returned by the service with the accumulated full card."""
 
     assistant_message: str = Field(min_length=1)
     ready_to_finalize: bool = False
@@ -147,7 +203,7 @@ class SessionZeroInterviewDecision(BaseModel):
 
 
 class SessionZeroInterviewState(BaseModel):
-    version: int = 5
+    version: int = 6
     response_language: str = "ru"
     messages: list[dict[str, str]] = Field(default_factory=list)
     draft: SessionZeroInterviewDraft = Field(
