@@ -4,6 +4,8 @@ The conversational implementation lives in ``session_zero_agent``. This module k
 historic import path used by CLI, API code and existing integrations.
 """
 
+import asyncio
+
 from app.services.role_model_router import RoleModelRouter
 from app.services.session_zero_agent import (
     SessionZeroAgent,
@@ -16,4 +18,5 @@ __all__ = [
     "SessionZeroAgent",
     "SessionZeroInterviewIncompleteError",
     "SessionZeroInterviewService",
+    "asyncio",
 ]
