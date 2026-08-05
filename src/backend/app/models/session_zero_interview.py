@@ -100,14 +100,36 @@ class SessionZeroInterviewModelDecision(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def accept_legacy_full_draft(cls, value: Any) -> Any:
-        """Keep old saved fixtures/providers readable without advertising snapshots."""
+    def normalize_provider_shape(cls, value: Any) -> Any:
+        """Accept useful provider variants without advertising them in the schema."""
         if not isinstance(value, dict):
             return value
-        if value.get("patch") or not isinstance(value.get("draft"), dict):
-            return value
+
         converted = dict(value)
-        converted["patch"] = converted.pop("draft")
+        if not converted.get("patch") and isinstance(converted.get("draft"), dict):
+            converted["patch"] = converted.pop("draft")
+
+        assistant_message = converted.get("assistant_message")
+        if not isinstance(assistant_message, str) or not assistant_message.strip():
+            for alias in (
+                "question",
+                "next_question",
+                "message",
+                "reply",
+                "assistant_response",
+                "response",
+            ):
+                candidate = converted.get(alias)
+                if isinstance(candidate, str) and candidate.strip():
+                    converted["assistant_message"] = candidate.strip()
+                    break
+
+        if not converted.get("assistant_message"):
+            converted["assistant_message"] = (
+                "Основа кампании собрана. Проверь итоговую сводку перед стартом."
+                if converted.get("ready_to_finalize")
+                else "Продолжим нулевую сессию."
+            )
         return converted
 
 
