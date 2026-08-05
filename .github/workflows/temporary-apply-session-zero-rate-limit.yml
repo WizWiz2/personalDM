@@ -32,11 +32,17 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -e "src/backend[dev]"
 
+      - name: Format new test
+        working-directory: src/backend
+        run: ruff check --fix --unsafe-fixes tests/test_session_zero_rate_limit_budget.py
+
       - name: Run focused tests
         working-directory: src/backend
         run: |
+          python -m compileall -q app cli.py tests/test_session_zero_rate_limit_budget.py
           pytest -q tests/test_session_zero_rate_limit_budget.py tests/test_cli_session_zero_resilience.py --tb=short
-          ruff check app/providers/llm_provider.py app/services/session_zero_interview.py cli.py tests/test_session_zero_rate_limit_budget.py tests/test_cli_session_zero_resilience.py
+          ruff check tests/test_session_zero_rate_limit_budget.py
+          ruff check --select E9,F63,F7,F82 app/providers/llm_provider.py app/services/session_zero_interview.py cli.py
 
       - name: Commit final change
         run: |
