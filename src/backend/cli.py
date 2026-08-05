@@ -57,11 +57,16 @@ async def run_session_zero_interview(
         try:
             decision = await interview.retry_pending(campaign_id)
         except LLMProviderError as exc:
-            print(
-                "[Система] Не удалось продолжить беседу через текущую модель. "
-                "Ответ сохранён; настрой провайдера и вернись позже."
-            )
-            print(f"[Техническая причина] {exc}")
+            if interview.is_rate_limited_error(exc):
+                print(
+                    "[Система] Лимит модели пока не освободился. Последний ответ "
+                    "сохранён; открой кампанию снова через несколько секунд."
+                )
+            else:
+                print(
+                    "[Система] Модель сейчас недоступна. Последний ответ сохранён; "
+                    "проверь настройку провайдера и продолжи позже."
+                )
             return False
         if decision:
             print(f"DM: {decision.assistant_message}\n")
@@ -96,12 +101,16 @@ async def run_session_zero_interview(
         try:
             decision = await interview.answer(campaign_id, user_input)
         except LLMProviderError as exc:
-            print(
-                "[Система] Модель сейчас недоступна или достигла лимита. "
-                "Твой ответ уже сохранён; после настройки провайдера беседа продолжится "
-                "с этого места."
-            )
-            print(f"[Техническая причина] {exc}")
+            if interview.is_rate_limited_error(exc):
+                print(
+                    "[Система] Лимит модели пока не освободился. Твой ответ сохранён; "
+                    "открой кампанию снова через несколько секунд."
+                )
+            else:
+                print(
+                    "[Система] Модель сейчас недоступна. Твой ответ сохранён; "
+                    "проверь настройку провайдера и продолжи позже."
+                )
             return False
         except ValueError as exc:
             print(f"[Система] {exc}")
