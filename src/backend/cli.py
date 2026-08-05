@@ -31,6 +31,23 @@ def _yes(value: str) -> bool:
     return value.strip().casefold() in {"y", "yes", "д", "да"}
 
 
+def _print_session_zero_provider_error(
+    interview: SessionZeroInterviewService,
+    error: LLMProviderError,
+) -> None:
+    if interview.is_rate_limited_error(error):
+        print(
+            "[Система] Провайдер временно отклонил запрос из-за лимита. "
+            "Твой ответ сохранён. Подожди немного и введи /retry; "
+            "выходить из нулевой сессии не нужно."
+        )
+    else:
+        print(
+            "[Система] Модель не смогла обработать запрос. Твой ответ сохранён. "
+            "Введи /retry для повтора или /error, чтобы увидеть техническую причину."
+        )
+
+
 async def run_session_zero_interview(
     campaign_id: UUID,
     session: AsyncSession,
@@ -41,6 +58,7 @@ async def run_session_zero_interview(
 
     interview = SessionZeroInterviewService(session)
     state = await interview.get_state(campaign_id)
+    last_provider_error: LLMProviderError | None = None
 
     clear_screen()
     print("=" * 80)
@@ -50,27 +68,24 @@ async def run_session_zero_interview(
         "Это обычный разговор с мастером, а не анкета. Можно отвечать свободно, "
         "исправлять сказанное и начинать с любой стороны будущей игры."
     )
-    print("Команды: /summary — текущая сводка, /later — продолжить позже.\n")
+    print(
+        "Команды: /summary — сводка, /retry — повторить сохранённый ответ, "
+        "/error — причина ошибки, /later — продолжить позже.\n"
+    )
 
     if state.pending_user_message:
-        print("[Система] Последний ответ сохранён, но модель ещё не успела ответить.")
+        print(
+            "[Система] Последний ответ уже сохранён. Пробую получить ответ мастера..."
+        )
         try:
             decision = await interview.retry_pending(campaign_id)
         except LLMProviderError as exc:
-            if interview.is_rate_limited_error(exc):
-                print(
-                    "[Система] Лимит модели пока не освободился. Последний ответ "
-                    "сохранён; открой кампанию снова через несколько секунд."
-                )
-            else:
-                print(
-                    "[Система] Модель сейчас недоступна. Последний ответ сохранён; "
-                    "проверь настройку провайдера и продолжи позже."
-                )
-            return False
-        if decision:
-            print(f"DM: {decision.assistant_message}\n")
-            state = await interview.get_state(campaign_id)
+            last_provider_error = exc
+            _print_session_zero_provider_error(interview, exc)
+        else:
+            if decision:
+                print(f"\nМастер: {decision.assistant_message}\n")
+                state = await interview.get_state(campaign_id)
     elif state.messages:
         last_assistant = next(
             (
@@ -81,42 +96,70 @@ async def run_session_zero_interview(
             None,
         )
         if last_assistant:
-            print(f"DM: {last_assistant}\n")
+            print(f"Мастер: {last_assistant}\n")
     else:
-        print(f"DM: {interview.OPENING_MESSAGE}\n")
+        print(f"Мастер: {interview.OPENING_MESSAGE}\n")
 
     while True:
-        user_input = input("Ты: ").strip()
+        state = await interview.get_state(campaign_id)
+        has_pending = bool(state.pending_user_message)
+        prompt = "Команда: " if has_pending else "Ты: "
+        try:
+            user_input = input(prompt).strip()
+        except (EOFError, StopIteration):
+            return False
         if not user_input:
             continue
         command = user_input.casefold()
+
         if command == "/later":
             print("[Система] Беседа сохранена. Её можно продолжить из меню кампании.")
             return False
         if command == "/summary":
-            state = await interview.get_state(campaign_id)
             print("\n" + interview.summary(state.draft) + "\n")
             continue
-
-        try:
-            decision = await interview.answer(campaign_id, user_input)
-        except LLMProviderError as exc:
-            if interview.is_rate_limited_error(exc):
-                print(
-                    "[Система] Лимит модели пока не освободился. Твой ответ сохранён; "
-                    "открой кампанию снова через несколько секунд."
-                )
+        if command == "/error":
+            if last_provider_error is None:
+                print("[Система] Технической ошибки в этой сессии пока нет.")
             else:
-                print(
-                    "[Система] Модель сейчас недоступна. Твой ответ сохранён; "
-                    "проверь настройку провайдера и продолжи позже."
-                )
-            return False
-        except ValueError as exc:
-            print(f"[Система] {exc}")
+                detail = " ".join(str(last_provider_error).split())[:2000]
+                print(f"[Ошибка провайдера] {detail}")
             continue
 
-        print(f"\nDM: {decision.assistant_message}\n")
+        if has_pending:
+            if command != "/retry":
+                print(
+                    "[Система] Сначала нужно обработать уже сохранённый ответ. "
+                    "Введи /retry, /error, /summary или /later."
+                )
+                continue
+            print("[Система] Повторяю сохранённый запрос...")
+            try:
+                decision = await interview.retry_pending(campaign_id)
+            except LLMProviderError as exc:
+                last_provider_error = exc
+                _print_session_zero_provider_error(interview, exc)
+                continue
+            if decision is None:
+                print("[Система] Сохранённого ответа для повтора уже нет.")
+                continue
+            last_provider_error = None
+        else:
+            if command == "/retry":
+                print("[Система] Нет сохранённого ответа, ожидающего обработки.")
+                continue
+            try:
+                decision = await interview.answer(campaign_id, user_input)
+            except LLMProviderError as exc:
+                last_provider_error = exc
+                _print_session_zero_provider_error(interview, exc)
+                continue
+            except ValueError as exc:
+                print(f"[Система] {exc}")
+                continue
+            last_provider_error = None
+
+        print(f"\nМастер: {decision.assistant_message}\n")
         if not decision.ready_to_finalize:
             continue
 
@@ -128,7 +171,7 @@ async def run_session_zero_interview(
         print("\nНачать кампанию с этими договорённостями? [Да/Нет]")
         if not _yes(input("Выбор: ")):
             print(
-                "DM: Хорошо. Скажи свободно, что нужно изменить или уточнить, "
+                "Мастер: Хорошо. Скажи свободно, что нужно изменить или уточнить, "
                 "и мы продолжим разговор.\n"
             )
             continue
@@ -153,7 +196,7 @@ async def select_campaign_menu(
 ) -> UUID | None:
     while True:
         clear_screen()
-        print("=== Campaign Manager ===")
+        print("=== УПРАВЛЕНИЕ КАМПАНИЯМИ ===")
         campaigns = await campaign_service.list_campaigns()
         if not campaigns:
             print("Кампаний пока нет.")
@@ -206,15 +249,17 @@ async def configure_llm_menu(
     session: AsyncSession,
 ) -> None:
     clear_screen()
-    print("=== Настройка LLM ===")
+    print("=== НАСТРОЙКА LLM ===")
     config = await campaign_service.get_provider_config(campaign_id)
     if config:
         print(f"Сейчас: {config.model_name} @ {config.base_url}")
-        print(f"Контекст: {config.context_window}")
-    base_url = input(f"Base URL [{settings.LLM_BASE_URL}]: ").strip()
-    model_name = input(f"Model [{settings.LLM_MODEL}]: ").strip()
-    api_key = input("API key [Enter — оставить default]: ").strip()
-    context_raw = input(f"Context window [{settings.LLM_CONTEXT_WINDOW}]: ").strip()
+        print(f"Размер контекста: {config.context_window}")
+    base_url = input(f"Адрес API [{settings.LLM_BASE_URL}]: ").strip()
+    model_name = input(f"Модель [{settings.LLM_MODEL}]: ").strip()
+    api_key = input("Ключ API [Enter — оставить значение по умолчанию]: ").strip()
+    context_raw = input(
+        f"Размер контекста [{settings.LLM_CONTEXT_WINDOW}]: "
+    ).strip()
     await campaign_service.configure_provider(
         campaign_id,
         ProviderConfigCreate(
@@ -238,7 +283,7 @@ async def create_character_menu(
     application: GameApplication,
 ) -> None:
     clear_screen()
-    print("=== Создать NPC вручную ===")
+    print("=== СОЗДАТЬ NPC ВРУЧНУЮ ===")
     name = input("Имя: ").strip()
     if not name:
         print("Имя обязательно.")
@@ -261,7 +306,7 @@ async def create_scene_menu(
     application: GameApplication,
 ) -> None:
     clear_screen()
-    print("=== Создать локацию и сцену ===")
+    print("=== СОЗДАТЬ ЛОКАЦИЮ И СЦЕНУ ===")
     location_name = input("Название места: ").strip()
     if not location_name:
         print("Название обязательно.")
@@ -289,8 +334,8 @@ async def manage_participants_menu(
             return
 
         clear_screen()
-        print(f"=== Участники: {view.scene.title} ===")
-        print("Сейчас:")
+        print(f"=== УЧАСТНИКИ СЦЕНЫ: {view.scene.title} ===")
+        print("Сейчас присутствуют:")
         for item in view.participants:
             suffix = " (герой игрока)" if item.id == view.player_character_id else ""
             print(f" - {item.name}{suffix}")
@@ -366,7 +411,7 @@ async def play_game_loop(
 
     application = GameApplication(session)
     active_listener_id: UUID | None = None
-    active_listener_name = "Narrator / DM"
+    active_listener_name = "Рассказчик / Мастер"
 
     clear_screen()
     view = await application.current_scene_view(campaign_id)
@@ -374,16 +419,16 @@ async def play_game_loop(
         print("[Система] Активная сцена отсутствует.")
         return
     print("=" * 80)
-    print(f"   STARTING ADVENTURE: {view.campaign_name}")
+    print(f"   НАЧАЛО ПРИКЛЮЧЕНИЯ: {view.campaign_name}")
     print("=" * 80)
-    print("Commands:")
-    print("  /DM <вопрос>      - спросить мастера вне сцены")
-    print("  /talk <Name>      - обратиться к присутствующему NPC")
-    print("  /talk narrator    - вернуться к общему Narrator")
-    print("  /facts            - показать активные факты")
-    print("  /retry-memory     - повторить фоновые задачи")
-    print("  /undo             - отменить последний игровой ход и его последствия")
-    print("  /exit             - вернуться в меню")
+    print("Команды:")
+    print("  /DM <вопрос>      — спросить мастера вне сцены")
+    print("  /talk <имя>       — обратиться к присутствующему NPC")
+    print("  /talk narrator    — вернуться к рассказчику")
+    print("  /facts            — показать активные факты")
+    print("  /retry-memory     — повторить фоновые задачи памяти")
+    print("  /undo             — отменить последний игровой ход")
+    print("  /exit             — вернуться в меню")
     print("=" * 80)
 
     while True:
@@ -392,17 +437,21 @@ async def play_game_loop(
             print("[Система] Активная сцена отсутствует.")
             return
         npcs = list(view.npcs)
-        if active_listener_id and all(
-            item.id != active_listener_id for item in npcs
-        ):
+        if active_listener_id and all(item.id != active_listener_id for item in npcs):
             active_listener_id = None
-            active_listener_name = "Narrator / DM"
+            active_listener_name = "Рассказчик / Мастер"
 
-        print(f"\n[Scene: {view.scene.title}] | [Mood: {view.scene.mood or '—'}]")
-        names = ", ".join(item.name for item in npcs) or "None"
-        print(f"[Present NPCs: {names}] | [Talking to: {active_listener_name}]")
+        print(
+            f"\n[Сцена: {view.scene.title}] | "
+            f"[Настроение: {view.scene.mood or '—'}]"
+        )
+        names = ", ".join(item.name for item in npcs) or "нет"
+        print(
+            f"[Присутствуют NPC: {names}] | "
+            f"[Разговор с: {active_listener_name}]"
+        )
         print("-" * 80)
-        user_input = input("\nYou: ").strip()
+        user_input = input("\nТы: ").strip()
         if not user_input:
             continue
         command = user_input.casefold()
@@ -429,9 +478,9 @@ async def play_game_loop(
             continue
         if command.startswith("/talk "):
             target = user_input[6:].strip().casefold()
-            if target in {"narrator", "none", "dm"}:
+            if target in {"narrator", "none", "dm", "рассказчик", "мастер"}:
                 active_listener_id = None
-                active_listener_name = "Narrator / DM"
+                active_listener_name = "Рассказчик / Мастер"
             else:
                 matched = next(
                     (item for item in npcs if item.name.casefold() == target),
@@ -457,7 +506,7 @@ async def play_game_loop(
             print(f"[Система] {exc}")
             continue
 
-        label = "DM (OOC)" if route.channel == "meta" else "DM"
+        label = "Мастер (вне игры)" if route.channel == "meta" else "Мастер"
         print(f"\n{label}: ", end="", flush=True)
         async for token in route.stream:
             print(token, end="", flush=True)
@@ -479,11 +528,11 @@ async def main() -> None:
         while True:
             clear_screen()
             print("=" * 40)
-            print("   Welcome to Personal DM Truth Engine")
+            print("   PERSONAL DM — TRUTH ENGINE")
             print("=" * 40)
-            print(" [1] Campaign Manager (Load/Create)")
-            print(" [Q] Quit")
-            choice = input("\nSelect option: ").strip()
+            print(" [1] Управление кампаниями")
+            print(" [Q] Выход")
+            choice = input("\nВыбор: ").strip()
             if choice.casefold() == "q":
                 return
             if choice != "1":
@@ -498,20 +547,22 @@ async def main() -> None:
                     break
                 setup = await SessionZeroService(session).get(campaign_id)
                 clear_screen()
-                print(f"=== Campaign: {campaign.name} ===")
+                print(f"=== КАМПАНИЯ: {campaign.name} ===")
                 if setup.status == "completed":
-                    print(f" Session Zero: completed — {setup.player_character_name}")
-                    print(" [1] Start / Resume Game Session")
+                    print(
+                        f" Нулевая сессия: завершена — {setup.player_character_name}"
+                    )
+                    print(" [1] Начать / продолжить игру")
                 else:
-                    print(" Session Zero: incomplete")
-                    print(" [1] Continue Session Zero")
-                print(" [2] Create Character / NPC manually")
-                print(" [3] Create Scene / Location manually")
-                print(" [4] Manage Scene Participants")
-                print(" [5] Configure LLM Settings")
-                print(" [6] Delete Campaign")
-                print(" [Q] Back to Main Menu")
-                selected = input("\nSelect option: ").strip()
+                    print(" Нулевая сессия: не завершена")
+                    print(" [1] Продолжить нулевую сессию")
+                print(" [2] Создать персонажа / NPC вручную")
+                print(" [3] Создать сцену / локацию вручную")
+                print(" [4] Управление участниками сцены")
+                print(" [5] Настройка LLM")
+                print(" [6] Удалить кампанию")
+                print(" [Q] Назад к списку кампаний")
+                selected = input("\nВыбор: ").strip()
                 if selected.casefold() == "q":
                     break
                 if selected == "1":
