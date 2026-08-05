@@ -3,6 +3,8 @@ from pathlib import Path
 path = Path("src/backend/tests/test_session_zero_rate_limit_budget.py")
 text = path.read_text(encoding="utf-8")
 replacements = {
+    "from datetime import datetime": "from datetime import UTC, datetime",
+    "datetime.utcnow()": "datetime.now(UTC)",
     "assert '\n  \"world\"' not in messages[0].content": (
         "assert '\\n  \"world\"' not in messages[0].content"
     ),
