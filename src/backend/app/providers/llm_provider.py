@@ -490,6 +490,13 @@ class LLMProvider:
                             "error": str(exc),
                         }
                     )
+                    # A rate limit is not malformed JSON. Retrying immediately with a
+                    # larger adaptive budget only consumes more TPM and cannot repair it.
+                    if isinstance(exc, LLMProviderError) and (
+                        "HTTP 429" in str(exc)
+                        or "rate_limit" in str(exc).casefold()
+                    ):
+                        break
 
         self.last_telemetry = {
             "model": config.model_name,
