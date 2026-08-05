@@ -104,7 +104,10 @@ async def run_session_zero_interview(
         state = await interview.get_state(campaign_id)
         has_pending = bool(state.pending_user_message)
         prompt = "Команда: " if has_pending else "Ты: "
-        user_input = input(prompt).strip()
+        try:
+            user_input = input(prompt).strip()
+        except (EOFError, StopIteration):
+            return False
         if not user_input:
             continue
         command = user_input.casefold()
