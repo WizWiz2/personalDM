@@ -45,8 +45,8 @@ class SessionZeroInterviewService:
     """
 
     STATE_KEY = "session_zero_interview"
-    MAX_HISTORY_MESSAGES = 10
-    MODEL_RESPONSE_TOKENS = 1000
+    MAX_HISTORY_MESSAGES = 6
+    MODEL_RESPONSE_TOKENS = 1200
     RATE_LIMIT_RETRY_CAP_SECONDS = 12.0
     OPENING_MESSAGE = (
         "Во что тебе хочется сыграть именно сейчас? Можно начать с мира, жанра, "
