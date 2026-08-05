@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Any
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class SessionZeroWorldDraft(BaseModel):
@@ -95,6 +97,18 @@ class SessionZeroInterviewModelDecision(BaseModel):
     )
     question_topics: list[str] = Field(default_factory=list)
     summary: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_full_draft(cls, value: Any) -> Any:
+        """Keep old saved fixtures/providers readable without advertising snapshots."""
+        if not isinstance(value, dict):
+            return value
+        if value.get("patch") or not isinstance(value.get("draft"), dict):
+            return value
+        converted = dict(value)
+        converted["patch"] = converted.pop("draft")
+        return converted
 
 
 class SessionZeroInterviewDecision(BaseModel):
