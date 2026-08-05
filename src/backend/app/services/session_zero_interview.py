@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import ClassVar
@@ -44,7 +45,9 @@ class SessionZeroInterviewService:
     """
 
     STATE_KEY = "session_zero_interview"
-    MAX_HISTORY_MESSAGES = 40
+    MAX_HISTORY_MESSAGES = 6
+    MAX_RESPONSE_TOKENS = 1200
+    MAX_RATE_LIMIT_WAIT_SECONDS = 8.0
     OPENING_MESSAGE = (
         "Во что тебе хочется сыграть именно сейчас? Можно начать с мира, жанра, "
         "героя или просто с ощущения, которое хочется получить от кампании."
@@ -382,6 +385,47 @@ assistant_message должен звучать как живой персонал
         await self._save_state(campaign_id, state, commit=True)
         return decision
 
+    @classmethod
+    def _rate_limit_retry_after(cls, error: Exception) -> float | None:
+        text = str(error)
+        folded = text.casefold()
+        if "429" not in text and "rate_limit" not in folded:
+            return None
+        match = re.search(
+            r"(?:try again in|retry after)\s*(\d+(?:\.\d+)?)\s*s",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return float(match.group(1)) if match else 1.0
+
+    @classmethod
+    def is_rate_limited_error(cls, error: Exception) -> bool:
+        return cls._rate_limit_retry_after(error) is not None
+
+    async def _generate_interview_json(self, selection, messages) -> dict:
+        async def generate() -> dict:
+            return await self._router.generate_json(
+                self._provider,
+                selection,
+                messages,
+                max_tokens=self.MAX_RESPONSE_TOKENS,
+                temperature=0.25,
+                response_model=SessionZeroInterviewDecision,
+            )
+
+        try:
+            return await generate()
+        except LLMProviderError as exc:
+            retry_after = self._rate_limit_retry_after(exc)
+            if retry_after is None:
+                raise
+            delay = min(
+                max(retry_after, 0.2) + 0.25,
+                self.MAX_RATE_LIMIT_WAIT_SECONDS,
+            )
+            await asyncio.sleep(delay)
+            return await generate()
+
     async def _continue_pending(
         self,
         campaign_id: UUID,
@@ -395,7 +439,7 @@ assistant_message должен звучать как живой персонал
         current = json.dumps(
             state.draft.model_dump(mode="json"),
             ensure_ascii=False,
-            indent=2,
+            separators=(",", ":"),
         )
         missing_before = self.missing_fields(state.draft)
         messages = [
@@ -420,14 +464,7 @@ assistant_message должен звучать как живой персонал
                 and item.get("content")
             ],
         ]
-        data = await self._router.generate_json(
-            self._provider,
-            selection,
-            messages,
-            max_tokens=2800,
-            temperature=0.25,
-            response_model=SessionZeroInterviewDecision,
-        )
+        data = await self._generate_interview_json(selection, messages)
         decision = SessionZeroInterviewDecision.model_validate(data)
         latest_user_message = state.pending_user_message or ""
         merged = self._merge_drafts(
