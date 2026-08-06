@@ -12,9 +12,11 @@ on:
       - "src/backend/app/models/session_zero_interview.py"
       - "src/backend/app/services/session_zero_agent.py"
       - "src/backend/app/services/session_zero_interview.py"
+      - "src/backend/app/services/session_zero_service.py"
       - "src/backend/app/services/role_model_router.py"
       - "src/backend/app/services/post_turn_processor.py"
       - "src/backend/tests/test_cli_session_zero_resilience.py"
+      - "src/backend/tests/test_session_zero.py"
       - "src/backend/tests/test_session_zero_conversation_guards.py"
       - "src/backend/tests/test_session_zero_agent_regressions.py"
       - "src/backend/tests/test_session_zero_autonomous_start.py"
@@ -42,9 +44,9 @@ jobs:
         run: >-
           python -m compileall -q cli.py app/models/session_zero_interview.py
           app/services/session_zero_agent.py app/services/session_zero_interview.py
-          app/services/role_model_router.py app/services/post_turn_processor.py
-          tests/test_cli_session_zero_resilience.py
-          tests/test_session_zero_conversation_guards.py
+          app/services/session_zero_service.py app/services/role_model_router.py
+          app/services/post_turn_processor.py tests/test_cli_session_zero_resilience.py
+          tests/test_session_zero.py tests/test_session_zero_conversation_guards.py
           tests/test_session_zero_agent_regressions.py
           tests/test_session_zero_autonomous_start.py
           tests/test_session_zero_model_decision_compat.py
@@ -56,6 +58,7 @@ jobs:
       - name: Run session-zero conversation acceptance
         run: >-
           pytest -q tests/test_cli_session_zero_resilience.py
+          tests/test_session_zero.py
           tests/test_session_zero_conversation_guards.py
           tests/test_session_zero_agent_regressions.py
           tests/test_session_zero_autonomous_start.py
@@ -65,8 +68,9 @@ jobs:
         run: >-
           ruff check --extend-ignore BLE001,ISC004,SIM102,I001 cli.py
           app/models/session_zero_interview.py app/services/session_zero_agent.py
-          app/services/session_zero_interview.py app/services/role_model_router.py
-          app/services/post_turn_processor.py tests/test_cli_session_zero_resilience.py
+          app/services/session_zero_interview.py app/services/session_zero_service.py
+          app/services/role_model_router.py app/services/post_turn_processor.py
+          tests/test_cli_session_zero_resilience.py tests/test_session_zero.py
           tests/test_session_zero_conversation_guards.py
           tests/test_session_zero_agent_regressions.py
           tests/test_session_zero_autonomous_start.py
