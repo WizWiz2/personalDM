@@ -68,10 +68,9 @@ jobs:
         run: >-
           ruff check --extend-ignore BLE001,ISC004,SIM102,I001 cli.py
           app/models/session_zero_interview.py app/services/session_zero_agent.py
-          app/services/session_zero_interview.py app/services/session_zero_service.py
-          app/services/role_model_router.py app/services/post_turn_processor.py
-          tests/test_cli_session_zero_resilience.py tests/test_session_zero.py
-          tests/test_session_zero_conversation_guards.py
+          app/services/session_zero_interview.py app/services/role_model_router.py
+          app/services/post_turn_processor.py tests/test_cli_session_zero_resilience.py
+          tests/test_session_zero.py tests/test_session_zero_conversation_guards.py
           tests/test_session_zero_agent_regressions.py
           tests/test_session_zero_autonomous_start.py
           tests/test_session_zero_model_decision_compat.py
