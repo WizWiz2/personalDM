@@ -147,6 +147,26 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         "на усмотрение мастера",
         "нет таких",
     )
+    START_REQUEST_MARKERS = (
+        "начинаем игру",
+        "начать игру",
+        "давай играть",
+        "можно начинать",
+        "хочу начать",
+        "погнали",
+        "стартуем",
+        "и что происходит",
+    )
+    START_CLAIM_MARKERS = (
+        "давай начнем игру",
+        "давай начнём игру",
+        "начинаем игру",
+        "игра начинается",
+        "приключение начинается",
+        "начинаем с первой сцены",
+        "первая сцена начинается",
+        "мы находимся",
+    )
     TOPIC_PATTERNS = (
         (
             "world.boundaries_confirmed",
@@ -331,6 +351,22 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         if base_feedback is not None:
             return base_feedback
 
+        if not decision.ready_to_finalize and (
+            self._start_requested(latest_user_message)
+            or self._assistant_claims_start(message)
+        ):
+            return {
+                "quality": "start_announced_without_finalize",
+                "player_message": latest_user_message,
+                "technical_missing_fields": self.missing_fields(draft),
+                "instruction": (
+                    "Игрок попросил начать или ты уже объявил начало игры, но не "
+                    "вызвал finalize_session_zero. Не разыгрывай сцену внутри интервью. "
+                    "Сам дострой безопасные технические детали через "
+                    "update_session_zero и вызови finalize_session_zero в этом же ходе."
+                ),
+            }
+
         previous_topics = list(dict.fromkeys(state.last_question_topics))
         unrecorded = [
             topic
@@ -509,6 +545,16 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
     def _is_delegation(cls, value: str) -> bool:
         folded = cls._normalize_text(value)
         return any(marker in folded for marker in cls.DELEGATION_MARKERS)
+
+    @classmethod
+    def _start_requested(cls, value: str) -> bool:
+        folded = cls._normalize_text(value)
+        return any(marker in folded for marker in cls.START_REQUEST_MARKERS)
+
+    @classmethod
+    def _assistant_claims_start(cls, value: str) -> bool:
+        folded = cls._normalize_text(value)
+        return any(marker in folded for marker in cls.START_CLAIM_MARKERS)
 
     @classmethod
     def _is_substantive_answer(cls, value: str) -> bool:
