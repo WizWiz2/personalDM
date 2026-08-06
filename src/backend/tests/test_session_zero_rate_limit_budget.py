@@ -75,7 +75,7 @@ async def test_session_zero_waits_for_groq_window_and_retries_once(
 
 
 @pytest.mark.asyncio
-async def test_session_zero_prompt_uses_compact_draft_and_six_message_history(
+async def test_session_zero_prompt_uses_compact_draft_and_twelve_message_history(
     db_session: AsyncSession,
 ):
     campaign = await CampaignService(db_session).create_campaign(
@@ -105,8 +105,14 @@ async def test_session_zero_prompt_uses_compact_draft_and_six_message_history(
         await interview.retry_pending(campaign.id)
 
     messages = captured["messages"]
-    assert len(messages) == 7
+    assert len(messages) == 13
     assert [item.content for item in messages[1:]] == [
+        "m9",
+        "m10",
+        "m11",
+        "m12",
+        "m13",
+        "m14",
         "m15",
         "m16",
         "m17",
@@ -116,7 +122,11 @@ async def test_session_zero_prompt_uses_compact_draft_and_six_message_history(
     ]
     assert captured["kwargs"]["max_tokens"] == 1200
     assert '\n  "world"' not in messages[0].content
-    assert '[CURRENT DRAFT — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{"world":' in messages[0].content
+    assert (
+        '[ТЕКУЩАЯ КАРТОЧКА — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{"world":'
+        in messages[0].content
+    )
+    assert "Это разговор, а не анкета" in messages[0].content
 
 
 @pytest.mark.asyncio

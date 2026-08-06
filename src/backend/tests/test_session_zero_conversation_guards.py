@@ -17,8 +17,36 @@ SHADOWRUN_WORLD = {
     "genre": "киберпанк с магией",
     "rules_system": "Shadowrun",
     "world_summary": (
-        "Корпорации, уличные раннеры, Матрица, магия и метачеловечество."
+        "Шестой мир: мегакорпорации, раннеры, Матрица, магия и метачеловечество."
     ),
+}
+
+
+FULL_PATCH = {
+    "world": {
+        **SHADOWRUN_WORLD,
+        "premise": "Кабуто берётся за опасные теневые контракты.",
+        "tone": "Мрачное приключение с редкими передышками.",
+        "play_style": "Задания, расследования и последствия решений.",
+        "starting_location_name": "Подпольная клиника Редмонда",
+        "starting_situation": "Кабуто приходит в себя после провального дела.",
+        "boundaries_confirmed": True,
+    },
+    "character": {
+        "name": "Кабуто",
+        "description": "Уличный эльф-раннер и хакер.",
+        "appearance": "Обожжённое лицо скрыто шлемом-маской.",
+        "personality": "Практичный и осторожный выживальщик.",
+        "values": ["Не предавать тех, кто ему доверился"],
+        "fears": ["Снова оказаться беспомощным"],
+        "desires": ["Выбраться из нищеты"],
+        "voice": "Низкий и спокойный голос.",
+        "speech_patterns": "Говорит коротко и по делу.",
+        "biography": "Вырос на улицах Редмонда.",
+        "capabilities": ["Взлом", "Скрытность"],
+        "limitations": ["Тяжёлые ожоги", "Недоверчивость"],
+        "first_goal": "Расплатиться за лечение.",
+    },
 }
 
 
@@ -30,38 +58,47 @@ async def _campaign(db_session: AsyncSession, name: str):
     return campaign
 
 
-def _model_decision(
+def _agent_decision(
     assistant_message: str,
     *,
-    question_topics: list[str],
-    world: dict | None = None,
-    character: dict | None = None,
-    ready_to_finalize: bool = False,
+    patch_data: dict | None = None,
+    finalize: bool = False,
+    question_topics: list[str] | None = None,
 ):
+    tool_calls = []
+    if patch_data is not None:
+        tool_calls.append(
+            {"name": "update_session_zero", "patch": patch_data}
+        )
+    if finalize:
+        tool_calls.append({"name": "finalize_session_zero"})
     return {
         "assistant_message": assistant_message,
-        "ready_to_finalize": ready_to_finalize,
-        "question_topics": question_topics,
-        "patch": {
-            "world": world or {},
-            "character": character or {},
-        },
+        "tool_calls": tool_calls,
+        "question_topics": question_topics or [],
     }
 
 
 @pytest.mark.asyncio
-async def test_english_reply_is_replaced_without_losing_declared_topic(
+async def test_known_setting_is_understood_without_player_retelling_lore(
     db_session: AsyncSession,
 ):
-    campaign = await _campaign(db_session, "Shadowrun language guard")
+    campaign = await _campaign(db_session, "Native Shadowrun")
     interview = SessionZeroInterviewService(db_session)
-    model_decision = _model_decision(
-        "Great choice! Where do you envision your character at the beginning?",
-        question_topics=[
-            "world.starting_location_name",
-            "world.starting_situation",
-        ],
-        world=SHADOWRUN_WORLD,
+    reply = (
+        "Да, знаю Shadowrun: магия, киберпанк, мегакорпорации и работа в тенях. "
+        "Берём узнаваемый канон или тебе важен какой-то особый акцент?"
+    )
+    model_decision = _agent_decision(
+        reply,
+        patch_data={
+            "world": {
+                **SHADOWRUN_WORLD,
+                "premise": "История раннера, который берётся за теневые контракты.",
+                "tone": "Напряжённое городское приключение.",
+                "play_style": "Контракты, переговоры, расследования и последствия.",
+            }
+        },
     )
 
     with patch(
@@ -69,244 +106,229 @@ async def test_english_reply_is_replaced_without_losing_declared_topic(
         new_callable=AsyncMock,
         return_value=model_decision,
     ):
-        decision = await interview.answer(
-            campaign.id,
-            "Я хочу сыграть в SHADOWRUN",
-        )
+        decision = await interview.answer(campaign.id, "В Shadowrun")
 
-    assert "Great choice" not in decision.assistant_message
-    assert decision.question_topics == [
-        "world.starting_location_name",
-        "world.starting_situation",
-    ]
-    assert "начать кампанию" in decision.assistant_message
+    assert decision.assistant_message == reply
     assert decision.draft.world.setting_name == "Shadowrun"
-    state = await interview.get_state(campaign.id)
-    assert state.response_language == "ru"
-    assert state.draft.world.rules_system == "Shadowrun"
+    assert "мегакорпорации" in decision.draft.world.world_summary
+    assert "Какие черты выбранного мира" not in decision.assistant_message
 
 
 @pytest.mark.asyncio
-async def test_write_in_russian_command_keeps_current_topic(
+async def test_player_uncertainty_lets_agent_choose_and_move_on(
     db_session: AsyncSession,
 ):
-    campaign = await _campaign(db_session, "Russian command")
+    campaign = await _campaign(db_session, "Agent chooses defaults")
     interview = SessionZeroInterviewService(db_session)
-    start_topics = [
-        "world.starting_location_name",
-        "world.starting_situation",
-    ]
-    first_decision = _model_decision(
-        "С какой конкретной ситуации начать кампанию?",
-        question_topics=start_topics,
-        world=SHADOWRUN_WORLD,
+    first = _agent_decision(
+        "Берём канонический Shadowrun. Есть ли особый акцент или сразу перейдём к герою?",
+        patch_data={"world": {"setting_name": "Shadowrun"}},
     )
-
-    with patch(
-        "app.services.session_zero_interview.RoleModelRouter.generate_json",
-        new_callable=AsyncMock,
-        return_value=first_decision,
-    ):
-        first = await interview.answer(campaign.id, "Хочу Shadowrun")
-
-    blocked_model = AsyncMock(side_effect=AssertionError("LLM must not be called"))
-    with patch(
-        "app.services.session_zero_interview.RoleModelRouter.generate_json",
-        new=blocked_model,
-    ):
-        second = await interview.answer(campaign.id, "Пиши по русски всегда")
-
-    blocked_model.assert_not_awaited()
-    assert second.assistant_message.startswith(
-        "Да. Дальше говорю только по-русски."
+    second_reply = (
+        "Хорошо, оставляю узнаваемый канон без специальных отклонений. "
+        "Расскажи теперь о герое — кто такой Кабуто?"
     )
-    assert second.question_topics == first.question_topics == start_topics
-    assert second.draft.world.setting_name == "Shadowrun"
-
-
-@pytest.mark.asyncio
-async def test_duplicate_personality_question_moves_to_narrow_missing_field(
-    db_session: AsyncSession,
-):
-    campaign = await _campaign(db_session, "Duplicate question guard")
-    interview = SessionZeroInterviewService(db_session)
-    repeated_question = (
-        "Как вы представляете личность и характер Кабуто? Есть ли особенности "
-        "его поведения или манеры говорить?"
-    )
-    first_decision = _model_decision(
-        repeated_question,
-        question_topics=["character.personality"],
-        world=SHADOWRUN_WORLD,
-        character={
-            "name": "Кабуто",
-            "description": "Уличный эльф, который пытается выжить.",
-            "appearance": "Обезображенное лицо скрыто шлемом-маской.",
-        },
-    )
-    second_decision = _model_decision(
-        repeated_question,
-        question_topics=["character.personality"],
-        character={
-            "personality": (
-                "Упорный выживальщик, который старается не потерять человечность."
-            )
+    second = _agent_decision(
+        second_reply,
+        patch_data={
+            "world": {
+                **SHADOWRUN_WORLD,
+                "premise": "Камерная история начинающего теневого оперативника.",
+                "tone": "Мрачное приключение без постоянной безнадёжности.",
+                "play_style": "Контракты, отношения и последствия решений.",
+            }
         },
     )
 
     with patch(
         "app.services.session_zero_interview.RoleModelRouter.generate_json",
         new_callable=AsyncMock,
-        side_effect=[first_decision, second_decision],
+        side_effect=[first, second],
     ):
-        await interview.answer(
-            campaign.id,
-            "Кабуто — эльф с обезображенным лицом в шлеме-маске.",
-        )
-        second = await interview.answer(
-            campaign.id,
-            "Он просто старается выжить на улицах и не потерять себя.",
-        )
+        await interview.answer(campaign.id, "В Shadowrun")
+        decision = await interview.answer(campaign.id, "Не могу сказать")
 
-    assert second.question_topics == ["character.values"]
-    assert "принципы" in second.assistant_message
-    state = await interview.get_state(campaign.id)
-    assert "не потерять человечность" in state.draft.character.personality
-    assert state.draft.world.setting_name == "Shadowrun"
+    assert decision.assistant_message == second_reply
+    assert "кто такой кабуто" in decision.assistant_message.casefold()
+    assert decision.draft.world.world_summary.startswith("Шестой мир")
 
 
 @pytest.mark.asyncio
-async def test_explicit_start_delegation_is_materialized_by_model(
+async def test_exact_repeat_is_returned_to_agent_for_natural_repair(
     db_session: AsyncSession,
 ):
-    campaign = await _campaign(db_session, "Delegated Shadowrun start")
+    campaign = await _campaign(db_session, "No scripted repeat")
     interview = SessionZeroInterviewService(db_session)
-    start_topics = [
-        "world.starting_location_name",
-        "world.starting_situation",
-    ]
-    first_decision = _model_decision(
-        "Где вы видите Кабуто в начале игры? Есть ли конкретное место или ситуация?",
-        question_topics=start_topics,
-        world=SHADOWRUN_WORLD,
-        character={
-            "name": "Кабуто",
-            "description": "Уличный эльф-раннер.",
-            "appearance": "Всегда носит закрытый шлем-маску.",
-        },
+    repeated = "Какие черты выбранного мира особенно важны для этой кампании?"
+    first = _agent_decision(
+        repeated,
+        patch_data={"world": {"setting_name": "Shadowrun"}},
     )
-    delegated_decision = _model_decision(
-        "Начнём с первого дела Кабуто. Какие у него принципы?",
-        question_topics=["character.values"],
-        world={
-            "starting_location_name": "Ночной рынок Редмонда",
-            "starting_situation": (
-                "Кабуто получает дешёвый контракт на взлом терминала местной банды."
-            ),
-        },
+    repeated_again = _agent_decision(repeated)
+    repaired_reply = (
+        "Понял, не будем отдельно разбирать устройство мира. "
+        "Оставляю канонический Shadowrun и перейдём к Кабуто: чем он занимается?"
     )
+    repaired = _agent_decision(
+        repaired_reply,
+        patch_data={"world": SHADOWRUN_WORLD},
+    )
+    model = AsyncMock(side_effect=[first, repeated_again, repaired])
 
-    with patch(
-        "app.services.session_zero_interview.RoleModelRouter.generate_json",
-        new_callable=AsyncMock,
-        return_value=first_decision,
-    ):
-        await interview.answer(campaign.id, "Мой герой — Кабуто")
-
-    model = AsyncMock(return_value=delegated_decision)
     with patch(
         "app.services.session_zero_interview.RoleModelRouter.generate_json",
         new=model,
     ):
-        decision = await interview.answer(campaign.id, "Нет особых предпочтений")
+        await interview.answer(campaign.id, "В Shadowrun")
+        decision = await interview.answer(campaign.id, "Не могу сказать")
 
-    model.assert_awaited_once()
-    state = await interview.get_state(campaign.id)
-    assert set(state.delegated_fields) >= set(start_topics)
+    assert model.await_count == 3
+    assert decision.assistant_message == repaired_reply
+    repair_messages = model.await_args_list[-1].args[2]
+    assert "repeated_reply" in repair_messages[-1].content
+    assert "Какие черты выбранного мира" not in decision.assistant_message
+
+
+@pytest.mark.asyncio
+async def test_wrong_language_is_repaired_by_agent_not_replaced_by_script(
+    db_session: AsyncSession,
+):
+    campaign = await _campaign(db_session, "Russian agent repair")
+    interview = SessionZeroInterviewService(db_session)
+    english = _agent_decision(
+        "Great, I know Shadowrun. Who is your character?",
+        patch_data={"world": SHADOWRUN_WORLD},
+    )
+    russian_reply = (
+        "Да, Shadowrun знаю. Берём канон; теперь расскажи, кто твой герой?"
+    )
+    russian = _agent_decision(russian_reply)
+    model = AsyncMock(side_effect=[english, russian])
+
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
+        new=model,
+    ):
+        decision = await interview.answer(campaign.id, "Хочу Shadowrun")
+
+    assert decision.assistant_message == russian_reply
+    assert model.await_count == 2
+    assert "wrong_language" in model.await_args_list[-1].args[2][-1].content
     assert decision.draft.world.setting_name == "Shadowrun"
-    assert state.draft.world.starting_location_name == "Ночной рынок Редмонда"
-    assert "контракт" in state.draft.world.starting_situation
 
 
 @pytest.mark.asyncio
-async def test_bare_no_is_not_automatic_delegation(
+async def test_incomplete_finalize_returns_tool_feedback_to_agent(
     db_session: AsyncSession,
 ):
-    campaign = await _campaign(db_session, "Bare no")
+    campaign = await _campaign(db_session, "Finalize feedback")
     interview = SessionZeroInterviewService(db_session)
-    first_decision = _model_decision(
-        "Хочется мрачного и безнадёжного тона?",
-        question_topics=["world.tone"],
-        world=SHADOWRUN_WORLD,
+    premature = _agent_decision(
+        "Кажется, можно начинать.",
+        patch_data={"world": {"setting_name": "Shadowrun"}},
+        finalize=True,
     )
-    second_decision = _model_decision(
-        "Понял. Что должно быть в центре игры?",
-        question_topics=["world.play_style"],
-        world={"tone": "Приключенческий тон без постоянной безнадёжности."},
+    natural_followup = _agent_decision(
+        "С миром определились. Теперь расскажи о герое так, как удобно: кто он и чего хочет?"
+    )
+    model = AsyncMock(side_effect=[premature, natural_followup])
+
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
+        new=model,
+    ):
+        decision = await interview.answer(campaign.id, "В Shadowrun")
+
+    assert decision.ready_to_finalize is False
+    assert decision.assistant_message == natural_followup["assistant_message"]
+    feedback = model.await_args_list[-1].args[2][-1].content
+    assert "finalize_session_zero" in feedback
+    assert "missing_fields" in feedback
+    assert "Сам реши, как естественно продолжить" in feedback
+
+
+@pytest.mark.asyncio
+async def test_agent_can_update_full_card_and_request_finalize(
+    db_session: AsyncSession,
+):
+    campaign = await _campaign(db_session, "Complete native session")
+    interview = SessionZeroInterviewService(db_session)
+    response = _agent_decision(
+        "Отлично, основа сложилась. Проверь итоговую сводку перед стартом.",
+        patch_data=FULL_PATCH,
+        finalize=True,
     )
 
     with patch(
         "app.services.session_zero_interview.RoleModelRouter.generate_json",
         new_callable=AsyncMock,
-        side_effect=[first_decision, second_decision],
+        return_value=response,
     ):
-        await interview.answer(campaign.id, "Хочу Shadowrun")
-        await interview.answer(campaign.id, "Нет")
-
-    state = await interview.get_state(campaign.id)
-    assert state.delegated_fields == []
-    assert state.draft.world.tone.startswith("Приключенческий")
-
-
-@pytest.mark.asyncio
-async def test_patch_cannot_rewrite_unrelated_confirmed_field(
-    db_session: AsyncSession,
-):
-    campaign = await _campaign(db_session, "Stable patch merge")
-    interview = SessionZeroInterviewService(db_session)
-    first_decision = _model_decision(
-        "Какой у Кабуто характер?",
-        question_topics=["character.personality"],
-        world=SHADOWRUN_WORLD,
-        character={
-            "name": "Кабуто",
-            "description": "Уличный эльф-раннер.",
-            "appearance": "Обезображенное лицо скрыто шлемом-маской.",
-        },
-    )
-    second_decision = _model_decision(
-        "Какие у Кабуто принципы?",
-        question_topics=["character.values"],
-        world={"setting_name": "Cyberpunk 2077"},
-        character={"personality": "Старается выжить и не потерять себя."},
-    )
-
-    with patch(
-        "app.services.session_zero_interview.RoleModelRouter.generate_json",
-        new_callable=AsyncMock,
-        side_effect=[first_decision, second_decision],
-    ):
-        await interview.answer(campaign.id, "Хочу Shadowrun, герой Кабуто")
-        second = await interview.answer(
+        decision = await interview.answer(
             campaign.id,
-            "Он старается выжить на улицах и не потерять себя.",
+            "Да, дополнительных границ нет. Старт и остальные детали выбери сам.",
         )
 
-    assert second.draft.world.setting_name == "Shadowrun"
-    assert second.draft.character.name == "Кабуто"
-    assert second.draft.character.personality.startswith("Старается выжить")
+    assert decision.ready_to_finalize is True
+    assert decision.missing_topics == []
+    assert decision.draft.character.name == "Кабуто"
+    assert decision.draft.world.starting_location_name == "Подпольная клиника Редмонда"
 
 
 @pytest.mark.asyncio
-async def test_model_request_uses_compact_patch_budget_and_short_history(
+async def test_confirmed_scalar_fact_is_not_silently_rewritten(
     db_session: AsyncSession,
 ):
-    campaign = await _campaign(db_session, "Compact patch request")
+    campaign = await _campaign(db_session, "Stable agent tools")
     interview = SessionZeroInterviewService(db_session)
-    response = _model_decision(
-        "Как зовут героя?",
-        question_topics=["character.name"],
-        world=SHADOWRUN_WORLD,
+    first = _agent_decision(
+        "Shadowrun принят. Кто такой Кабуто?",
+        patch_data={
+            "world": SHADOWRUN_WORLD,
+            "character": {"name": "Кабуто"},
+        },
+    )
+    second = _agent_decision(
+        "Расскажи о его первой цели.",
+        patch_data={
+            "world": {"setting_name": "Cyberpunk 2077"},
+            "character": {
+                "name": "Другой герой",
+                "description": "Уличный эльф-раннер.",
+            },
+        },
+    )
+
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
+        new_callable=AsyncMock,
+        side_effect=[first, second],
+    ):
+        await interview.answer(campaign.id, "В Shadowrun, героя зовут Кабуто")
+        decision = await interview.answer(campaign.id, "Он уличный эльф-раннер")
+
+    assert decision.draft.world.setting_name == "Shadowrun"
+    assert decision.draft.character.name == "Кабуто"
+    assert decision.draft.character.description == "Уличный эльф-раннер."
+
+
+@pytest.mark.asyncio
+async def test_agent_request_uses_compact_draft_and_conversation_history(
+    db_session: AsyncSession,
+):
+    campaign = await _campaign(db_session, "Native agent request")
+    interview = SessionZeroInterviewService(db_session)
+    state = await interview.get_state(campaign.id)
+    state.messages = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"m{index}"}
+        for index in range(20)
+    ]
+    state.messages.append({"role": "user", "content": "Последний ответ"})
+    state.pending_user_message = "Последний ответ"
+    await interview._save_state(campaign.id, state, commit=True)
+    response = _agent_decision(
+        "Понял. Расскажи немного о герое.",
+        patch_data={"world": SHADOWRUN_WORLD},
     )
     model = AsyncMock(return_value=response)
 
@@ -314,74 +336,64 @@ async def test_model_request_uses_compact_patch_budget_and_short_history(
         "app.services.session_zero_interview.RoleModelRouter.generate_json",
         new=model,
     ):
-        await interview.answer(campaign.id, "Хочу Shadowrun")
+        await interview.retry_pending(campaign.id)
 
     kwargs = model.await_args.kwargs
+    messages = model.await_args.args[2]
     assert kwargs["max_tokens"] == 1200
     assert kwargs["response_model"].__name__ == "SessionZeroInterviewModelDecision"
-    messages = model.await_args.args[2]
-    assert len(messages) <= SessionZeroInterviewService.MAX_HISTORY_MESSAGES + 1
-    assert "CURRENT DRAFT — ТОЛЬКО ДЛЯ ЧТЕНИЯ" in messages[0].content
-    assert "Не копируй CURRENT DRAFT" in messages[0].content
+    assert len(messages) == SessionZeroInterviewService.MAX_HISTORY_MESSAGES + 1
+    assert [item.content for item in messages[1:]] == [
+        "m9",
+        "m10",
+        "m11",
+        "m12",
+        "m13",
+        "m14",
+        "m15",
+        "m16",
+        "m17",
+        "m18",
+        "m19",
+        "Последний ответ",
+    ]
+    prompt = messages[0].content
+    assert "Это разговор, а не анкета" in prompt
+    assert "Не проси игрока пересказывать базовый канон" in prompt
+    assert "update_session_zero" in prompt
+    assert "finalize_session_zero" in prompt
+    assert "ЭТО НЕ СПИСОК ВОПРОСОВ" in prompt
+    assert '\n  "world"' not in prompt
 
 
-def test_patch_accumulates_complete_card_without_losing_earlier_fields():
+def test_tool_patch_accumulates_complete_card_without_losing_earlier_fields():
     draft = SessionZeroInterviewDraft()
-    world_patch = SessionZeroInterviewPatch.model_validate(
-        {"world": SHADOWRUN_WORLD}
+    draft = SessionZeroInterviewService._apply_patch(
+        draft,
+        SessionZeroInterviewPatch.model_validate({"world": SHADOWRUN_WORLD}),
     )
-    draft = SessionZeroInterviewService._apply_patch(draft, world_patch)
-    hero_patch = SessionZeroInterviewPatch.model_validate(
-        {
-            "character": {
-                "name": "Кабуто",
-                "description": "Уличный эльф-раннер и хакер.",
-                "appearance": (
-                    "Обожжённое лицо скрыто шлемом-маской; одежда не сковывает движения."
-                ),
+    draft = SessionZeroInterviewService._apply_patch(
+        draft,
+        SessionZeroInterviewPatch.model_validate(
+            {
+                "character": {
+                    "name": "Кабуто",
+                    "description": "Уличный эльф-раннер и хакер.",
+                    "appearance": "Обожжённое лицо скрыто шлемом-маской.",
+                }
             }
-        }
+        ),
     )
-    draft = SessionZeroInterviewService._apply_patch(draft, hero_patch)
 
     assert draft.world.setting_name == "Shadowrun"
-    assert draft.world.world_summary.startswith("Корпорации")
     assert draft.character.name == "Кабуто"
     assert "Обожжённое лицо" in draft.character.appearance
 
 
-def test_full_patch_remains_finalize_ready():
-    patch = SessionZeroInterviewPatch.model_validate(
-        {
-            "world": {
-                **SHADOWRUN_WORLD,
-                "premise": "Кабуто берётся за опасные теневые контракты.",
-                "tone": "Мрачное приключение с редкими передышками.",
-                "play_style": "Задания, расследования и последствия решений.",
-                "starting_location_name": "Подпольная клиника Редмонда",
-                "starting_situation": "Кабуто приходит в себя после провального дела.",
-                "boundaries_confirmed": True,
-            },
-            "character": {
-                "name": "Кабуто",
-                "description": "Уличный эльф-раннер и хакер.",
-                "appearance": "Обожжённое лицо скрыто шлемом-маской.",
-                "personality": "Практичный и осторожный выживальщик.",
-                "values": ["Не предавать тех, кто ему доверился"],
-                "fears": ["Снова оказаться беспомощным"],
-                "desires": ["Выбраться из нищеты"],
-                "voice": "Низкий и спокойный голос.",
-                "speech_patterns": "Говорит коротко и по делу.",
-                "biography": "Вырос на улицах Редмонда.",
-                "capabilities": ["Взлом", "Скрытность"],
-                "limitations": ["Тяжёлые ожоги", "Недоверчивость"],
-                "first_goal": "Расплатиться за лечение.",
-            },
-        }
-    )
+def test_full_tool_patch_remains_finalize_ready():
     draft = SessionZeroInterviewService._apply_patch(
         SessionZeroInterviewDraft(),
-        patch,
+        SessionZeroInterviewPatch.model_validate(FULL_PATCH),
     )
 
     assert SessionZeroInterviewService.missing_fields(draft) == []

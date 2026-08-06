@@ -10,11 +10,14 @@ on:
     paths:
       - "src/backend/cli.py"
       - "src/backend/app/models/session_zero_interview.py"
+      - "src/backend/app/services/session_zero_agent.py"
       - "src/backend/app/services/session_zero_interview.py"
       - "src/backend/app/services/role_model_router.py"
       - "src/backend/app/services/post_turn_processor.py"
       - "src/backend/tests/test_cli_session_zero_resilience.py"
       - "src/backend/tests/test_session_zero_conversation_guards.py"
+      - "src/backend/tests/test_session_zero_model_decision_compat.py"
+      - "src/backend/tests/test_session_zero_rate_limit_budget.py"
       - ".github/workflows/cli-session-zero-resilience.yml"
 
 jobs:
@@ -36,9 +39,12 @@ jobs:
       - name: Compile CLI and session-zero services
         run: >-
           python -m compileall -q cli.py app/models/session_zero_interview.py
-          app/services/session_zero_interview.py app/services/role_model_router.py
-          app/services/post_turn_processor.py tests/test_cli_session_zero_resilience.py
+          app/services/session_zero_agent.py app/services/session_zero_interview.py
+          app/services/role_model_router.py app/services/post_turn_processor.py
+          tests/test_cli_session_zero_resilience.py
           tests/test_session_zero_conversation_guards.py
+          tests/test_session_zero_model_decision_compat.py
+          tests/test_session_zero_rate_limit_budget.py
       - name: Validate migrations
         run: |
           rm -rf data
@@ -46,11 +52,15 @@ jobs:
       - name: Run session-zero conversation acceptance
         run: >-
           pytest -q tests/test_cli_session_zero_resilience.py
-          tests/test_session_zero_conversation_guards.py --tb=short
-      - name: Lint session-zero guard files
+          tests/test_session_zero_conversation_guards.py
+          tests/test_session_zero_model_decision_compat.py
+          tests/test_session_zero_rate_limit_budget.py --tb=short
+      - name: Lint session-zero agent files
         run: >-
           ruff check --extend-ignore BLE001,ISC004,SIM102,I001 cli.py
-          app/models/session_zero_interview.py app/services/session_zero_interview.py
-          app/services/role_model_router.py app/services/post_turn_processor.py
-          tests/test_cli_session_zero_resilience.py
+          app/models/session_zero_interview.py app/services/session_zero_agent.py
+          app/services/session_zero_interview.py app/services/role_model_router.py
+          app/services/post_turn_processor.py tests/test_cli_session_zero_resilience.py
           tests/test_session_zero_conversation_guards.py
+          tests/test_session_zero_model_decision_compat.py
+          tests/test_session_zero_rate_limit_budget.py
