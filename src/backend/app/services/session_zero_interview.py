@@ -146,7 +146,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                 model_decision.tool_calls,
                 explicit_correction=explicit_correction,
             )
-            finalize_requested = finalize_requested or requested_now
+            finalize_requested = requested_now
 
             feedback = self._quality_feedback(
                 model_decision,
@@ -155,7 +155,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                 latest_user_message=latest_user_message,
                 explicit_correction=explicit_correction,
             )
-            if finalize_requested:
+            if requested_now:
                 missing = self.missing_fields(merged)
                 if missing:
                     finalize_feedback = {
