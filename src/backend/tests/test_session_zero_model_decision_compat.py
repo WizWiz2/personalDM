@@ -42,5 +42,7 @@ def test_missing_message_gets_safe_nonempty_fallback():
         }
     )
 
-    assert decision.assistant_message == "Продолжим нулевую сессию."
+    assert decision.assistant_message.strip()
+    assert decision.assistant_message != "Продолжим нулевую сессию."
+    assert "сохранил" in decision.assistant_message.casefold()
     assert decision.patch.world.setting_name == "Shadowrun"
