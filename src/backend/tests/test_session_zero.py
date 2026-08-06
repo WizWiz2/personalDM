@@ -60,7 +60,7 @@ def test_new_campaign_blocks_narration_until_session_zero(client: TestClient):
     ).json()
     assert setup["status"] == "draft"
     assert setup["ready_to_complete"] is False
-    assert "setup.genre" in setup["missing_fields"]
+    assert "setup.world_anchor" in setup["missing_fields"]
     assert "setup.player_character_id" in setup["missing_fields"]
 
     response = client.post(
@@ -73,10 +73,12 @@ def test_new_campaign_blocks_narration_until_session_zero(client: TestClient):
     assert "setup.starting_location_id" in detail["missing_fields"]
 
 
-def test_incomplete_character_card_prevents_completion(client: TestClient):
+def test_incomplete_character_card_is_diagnostic_not_completion_gate(
+    client: TestClient,
+):
     campaign = client.post(
         "/api/campaigns",
-        json={"name": "Неполная карточка"},
+        json={"name": "Растущая карточка"},
     ).json()
     location = client.post(
         f"/api/campaigns/{campaign['id']}/locations",
@@ -103,14 +105,20 @@ def test_incomplete_character_card_prevents_completion(client: TestClient):
         },
     )
     assert update.status_code == 200, update.text
-    assert "character.description" in update.json()["missing_fields"]
+    payload = update.json()
+    assert payload["ready_to_complete"] is True
+    assert payload["missing_fields"] == []
+    assert "character.description" in payload["character_card_missing_fields"]
 
     completed = client.post(
         f"/api/campaigns/{campaign['id']}/session-zero/complete",
         json={},
     )
-    assert completed.status_code == 409
-    assert "character.goals" in completed.json()["detail"]["missing_fields"]
+    assert completed.status_code == 200, completed.text
+    result = completed.json()
+    assert result["setup"]["status"] == "completed"
+    assert result["character_card"]["ready_for_play"] is False
+    assert "goals" in result["character_card"]["missing_fields"]
 
 
 def test_session_zero_atomically_creates_playable_start(client: TestClient):
