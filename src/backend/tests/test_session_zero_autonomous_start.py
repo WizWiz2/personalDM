@@ -177,6 +177,7 @@ async def test_agent_prompt_exposes_only_materialization_gaps(
         await interview.answer(campaign.id, "Хочу Shadowrun")
 
     system_prompt = model.await_args.args[2][0].content
+    assert "сам решаешь" in system_prompt.casefold()
     assert "ТЕХНИЧЕСКИЙ МИНИМУМ" in system_prompt
     assert "character.fears" not in system_prompt
     assert "character.values" not in system_prompt
