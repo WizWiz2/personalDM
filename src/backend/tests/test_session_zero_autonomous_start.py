@@ -130,6 +130,35 @@ async def test_failed_finalize_is_repaired_by_agent_instead_of_more_questions(
 
 
 @pytest.mark.asyncio
+async def test_announced_game_start_without_finalize_is_repaired(
+    db_session: AsyncSession,
+):
+    campaign = await _campaign(db_session, "No fake gameplay")
+    interview = SessionZeroInterviewService(db_session)
+    fake_start = _decision(
+        "Отлично! Давай начнём игру. Мы находимся на ночном рынке.",
+        patch_data=MINIMAL_START_PATCH,
+    )
+    repaired = _decision(
+        "Основа готова. Переходим к первой сцене.",
+        finalize=True,
+    )
+    model = AsyncMock(side_effect=[fake_start, repaired])
+
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
+        new=model,
+    ):
+        decision = await interview.answer(campaign.id, "Норм. Начинаем игру?")
+
+    assert model.await_count == 2
+    assert decision.ready_to_finalize is True
+    assert decision.draft.world.starting_location_name == "Ночной рынок Редмонда"
+    feedback = model.await_args_list[-1].args[2][-1].content
+    assert "start_announced_without_finalize" in feedback
+
+
+@pytest.mark.asyncio
 async def test_cli_materializes_immediately_without_second_confirmation(
     db_session: AsyncSession,
 ):
