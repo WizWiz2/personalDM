@@ -151,6 +151,8 @@ class SessionZeroInterviewModelDecision(BaseModel):
                 if isinstance(candidate, str) and candidate.strip():
                     converted["assistant_message"] = candidate.strip()
                     break
+        elif assistant_message.strip() != assistant_message:
+            converted["assistant_message"] = assistant_message.strip()
 
         calls = list(converted.get("tool_calls") or converted.get("actions") or [])
         legacy_patch = converted.get("patch")
@@ -162,7 +164,8 @@ class SessionZeroInterviewModelDecision(BaseModel):
             calls.append({"name": "finalize_session_zero"})
         converted["tool_calls"] = calls
 
-        if not converted.get("assistant_message"):
+        normalized_message = converted.get("assistant_message")
+        if not isinstance(normalized_message, str) or not normalized_message.strip():
             converted["assistant_message"] = (
                 "Основа кампании собрана. Проверь итоговую сводку перед стартом."
                 if any(
@@ -171,7 +174,10 @@ class SessionZeroInterviewModelDecision(BaseModel):
                     in {"finalize_session_zero", "finalize"}
                     for item in calls
                 )
-                else "Продолжим нулевую сессию."
+                else (
+                    "Я сохранил твой ответ. Продолжи с той деталью героя или мира, "
+                    "которая сейчас кажется наиболее важной."
+                )
             )
         return converted
 
@@ -203,7 +209,7 @@ class SessionZeroInterviewDecision(BaseModel):
 
 
 class SessionZeroInterviewState(BaseModel):
-    version: int = 6
+    version: int = 7
     response_language: str = "ru"
     messages: list[dict[str, str]] = Field(default_factory=list)
     draft: SessionZeroInterviewDraft = Field(

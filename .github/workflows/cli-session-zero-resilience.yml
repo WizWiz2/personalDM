@@ -16,6 +16,7 @@ on:
       - "src/backend/app/services/post_turn_processor.py"
       - "src/backend/tests/test_cli_session_zero_resilience.py"
       - "src/backend/tests/test_session_zero_conversation_guards.py"
+      - "src/backend/tests/test_session_zero_agent_regressions.py"
       - "src/backend/tests/test_session_zero_model_decision_compat.py"
       - "src/backend/tests/test_session_zero_rate_limit_budget.py"
       - ".github/workflows/cli-session-zero-resilience.yml"
@@ -43,6 +44,7 @@ jobs:
           app/services/role_model_router.py app/services/post_turn_processor.py
           tests/test_cli_session_zero_resilience.py
           tests/test_session_zero_conversation_guards.py
+          tests/test_session_zero_agent_regressions.py
           tests/test_session_zero_model_decision_compat.py
           tests/test_session_zero_rate_limit_budget.py
       - name: Validate migrations
@@ -53,6 +55,7 @@ jobs:
         run: >-
           pytest -q tests/test_cli_session_zero_resilience.py
           tests/test_session_zero_conversation_guards.py
+          tests/test_session_zero_agent_regressions.py
           tests/test_session_zero_model_decision_compat.py
           tests/test_session_zero_rate_limit_budget.py --tb=short
       - name: Lint session-zero agent files
@@ -62,5 +65,6 @@ jobs:
           app/services/session_zero_interview.py app/services/role_model_router.py
           app/services/post_turn_processor.py tests/test_cli_session_zero_resilience.py
           tests/test_session_zero_conversation_guards.py
+          tests/test_session_zero_agent_regressions.py
           tests/test_session_zero_model_decision_compat.py
           tests/test_session_zero_rate_limit_budget.py
