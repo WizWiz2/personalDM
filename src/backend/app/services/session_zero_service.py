@@ -37,15 +37,11 @@ class SessionZeroLockedError(ValueError):
 
 
 class SessionZeroService:
+    """Materialize a playable campaign without treating card depth as a gate."""
+
     REQUIRED_SETUP_FIELDS = (
-        "setting_name",
-        "genre",
-        "premise",
-        "tone",
-        "world_summary",
         "starting_situation",
         "starting_location_id",
-        "boundaries_confirmed",
         "player_character_id",
     )
     BEGIN_MARKER = "[BEGIN SESSION ZERO CONTRACT]"
@@ -255,7 +251,12 @@ class SessionZeroService:
                 ),
             )
 
-        campaign.description = campaign.description or row.world_summary
+        campaign.description = (
+            campaign.description
+            or row.world_summary
+            or row.setting_name
+            or row.genre
+        )
         campaign.narrative_style = (
             campaign.narrative_style or row.play_style or row.tone
         )
@@ -310,22 +311,25 @@ class SessionZeroService:
                 card_missing = ["character.not_found"]
 
         checks = {
-            "setting_name": bool(self._text(row.setting_name)),
-            "genre": bool(self._text(row.genre)),
-            "premise": bool(self._text(row.premise)),
-            "tone": bool(self._text(row.tone)),
-            "world_summary": bool(self._text(row.world_summary)),
             "starting_situation": bool(self._text(row.starting_situation)),
             "starting_location_id": bool(row.starting_location_id),
-            "boundaries_confirmed": bool(row.boundaries_confirmed),
             "player_character_id": bool(campaign.player_character_id),
         }
-        setup_missing = [
+        setup_missing: list[str] = []
+        if not any(
+            self._text(value)
+            for value in (row.setting_name, row.genre, row.world_summary)
+        ):
+            setup_missing.append("setup.world_anchor")
+        setup_missing.extend(
             f"setup.{field}"
             for field in self.REQUIRED_SETUP_FIELDS
             if not checks[field]
-        ]
-        missing = setup_missing + card_missing
+        )
+
+        # Card depth is useful diagnostics, not a permission gate. A partial hero can
+        # grow through play; only the materialization fields above block completion.
+        missing = setup_missing
         custom = self._setups.decode_dict(row.custom_fields)
         return SessionZeroRead(
             campaign_id=campaign_id,
@@ -369,17 +373,30 @@ class SessionZeroService:
         player_name: str,
     ) -> str:
         themes = "; ".join(self._setups.decode_list(row.themes)) or "не заданы"
-        boundaries = (
-            "; ".join(self._setups.decode_list(row.boundaries))
-            or "дополнительных ограничений нет"
+        if row.boundaries_confirmed:
+            boundaries = (
+                "; ".join(self._setups.decode_list(row.boundaries))
+                or "дополнительных ограничений нет"
+            )
+        else:
+            boundaries = "действуют базовые безопасные ограничения; дополнительные не согласованы"
+        setting = row.setting_name or row.world_summary or row.genre or "авторский мир"
+        genre = row.genre or "свободный жанр"
+        premise = row.premise or row.starting_situation
+        world_summary = (
+            row.world_summary
+            or row.setting_name
+            or row.genre
+            or "детали мира раскрываются в игре"
         )
+        tone = row.tone or "определяется по ходу игры"
         lines = [
             self.BEGIN_MARKER,
-            f"Сеттинг: {row.setting_name}.",
-            f"Жанр: {row.genre}.",
-            f"Завязка кампании: {row.premise}",
-            f"Сводка мира: {row.world_summary}",
-            f"Тон: {row.tone}.",
+            f"Сеттинг: {setting}.",
+            f"Жанр: {genre}.",
+            f"Завязка кампании: {premise}",
+            f"Сводка мира: {world_summary}",
+            f"Тон: {tone}.",
             f"Темы: {themes}.",
             f"Система правил: {row.rules_system or 'свободная повествовательная'}.",
             f"Стиль игры: {row.play_style or 'следовать решениям игрока'}.",
