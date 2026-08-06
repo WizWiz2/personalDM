@@ -48,6 +48,34 @@ def _print_session_zero_provider_error(
         )
 
 
+async def _finalize_session_zero_if_ready(
+    campaign_id: UUID,
+    interview: SessionZeroInterviewService,
+    decision,
+) -> bool:
+    if not decision.ready_to_finalize:
+        return False
+    try:
+        completed = await interview.finalize(campaign_id)
+    except SessionZeroInterviewIncompleteError as exc:
+        print(
+            "[Система] Агент решил начать, но не подготовил технический минимум: "
+            + ", ".join(exc.missing_fields)
+        )
+        return False
+
+    state = await interview.get_state(campaign_id)
+    print("=" * 80)
+    print("   ИТОГОВЫЕ ДОГОВОРЁННОСТИ")
+    print("=" * 80)
+    print(state.last_summary or interview.summary(state.draft))
+    print(
+        f"\n[Система] Нулевая сессия завершена. Первая сцена: "
+        f"{completed.scene.title}."
+    )
+    return True
+
+
 async def run_session_zero_interview(
     campaign_id: UUID,
     session: AsyncSession,
@@ -69,6 +97,10 @@ async def run_session_zero_interview(
         "исправлять сказанное и начинать с любой стороны будущей игры."
     )
     print(
+        "Мастер сам решит, когда информации достаточно, и достроит безопасные "
+        "недостающие детали без лишнего допроса."
+    )
+    print(
         "Команды: /summary — сводка, /retry — повторить сохранённый ответ, "
         "/error — причина ошибки, /later — продолжить позже.\n"
     )
@@ -85,6 +117,12 @@ async def run_session_zero_interview(
         else:
             if decision:
                 print(f"\nМастер: {decision.assistant_message}\n")
+                if await _finalize_session_zero_if_ready(
+                    campaign_id,
+                    interview,
+                    decision,
+                ):
+                    return True
                 state = await interview.get_state(campaign_id)
     elif state.messages:
         last_assistant = next(
@@ -160,34 +198,12 @@ async def run_session_zero_interview(
             last_provider_error = None
 
         print(f"\nМастер: {decision.assistant_message}\n")
-        if not decision.ready_to_finalize:
-            continue
-
-        state = await interview.get_state(campaign_id)
-        print("=" * 80)
-        print("   ИТОГОВЫЕ ДОГОВОРЁННОСТИ")
-        print("=" * 80)
-        print(state.last_summary or interview.summary(state.draft))
-        print("\nНачать кампанию с этими договорённостями? [Да/Нет]")
-        if not _yes(input("Выбор: ")):
-            print(
-                "Мастер: Хорошо. Скажи свободно, что нужно изменить или уточнить, "
-                "и мы продолжим разговор.\n"
-            )
-            continue
-        try:
-            completed = await interview.finalize(campaign_id)
-        except SessionZeroInterviewIncompleteError as exc:
-            print(
-                "[Система] Мастер преждевременно посчитал беседу завершённой. "
-                "Не хватает: " + ", ".join(exc.missing_fields)
-            )
-            continue
-        print(
-            f"[Система] Нулевая сессия завершена. Первая сцена: "
-            f"{completed.scene.title}."
-        )
-        return True
+        if await _finalize_session_zero_if_ready(
+            campaign_id,
+            interview,
+            decision,
+        ):
+            return True
 
 
 async def select_campaign_menu(
@@ -233,7 +249,9 @@ async def select_campaign_menu(
             )
             await session.commit()
             print(f"Кампания «{name}» создана.")
-            await run_session_zero_interview(campaign.id, session)
+            started = await run_session_zero_interview(campaign.id, session)
+            if started:
+                await play_game_loop(campaign.id, session)
             return campaign.id
         if choice.isdigit():
             index = int(choice) - 1
@@ -569,7 +587,12 @@ async def main() -> None:
                     if setup.status == "completed":
                         await play_game_loop(campaign_id, session)
                     else:
-                        await run_session_zero_interview(campaign_id, session)
+                        started = await run_session_zero_interview(
+                            campaign_id,
+                            session,
+                        )
+                        if started:
+                            await play_game_loop(campaign_id, session)
                 elif selected == "2":
                     await create_character_menu(campaign_id, application)
                 elif selected == "3":
