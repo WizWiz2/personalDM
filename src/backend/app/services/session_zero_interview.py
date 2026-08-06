@@ -59,17 +59,19 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         "Я сохранил твой ответ. Давай не будем идти по пунктам карточки: "
         "добавь любую важную деталь о герое, мире или сцене, с которой хочется начать."
     )
-    NARROW_CHARACTER_TOPICS = {
-        "character.personality",
-        "character.values",
-        "character.fears",
-        "character.desires",
-        "character.voice",
-        "character.speech_patterns",
-        "character.capabilities",
-        "character.limitations",
-        "character.first_goal",
-    }
+    NARROW_CHARACTER_TOPICS = frozenset(
+        {
+            "character.personality",
+            "character.values",
+            "character.fears",
+            "character.desires",
+            "character.voice",
+            "character.speech_patterns",
+            "character.capabilities",
+            "character.limitations",
+            "character.first_goal",
+        }
+    )
     DELEGATION_MARKERS = (
         "не знаю",
         "не могу сказать",
