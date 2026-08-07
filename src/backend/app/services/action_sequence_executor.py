@@ -47,15 +47,7 @@ class ActionSequenceExecutor:
         ).scalar_one_or_none()
         if row is None:
             return None
-        if row.final_scene_id:
-            final_scene_id = UUID(row.final_scene_id)
-            campaign = await self._session.get(Campaign, row.campaign_id)
-            if campaign and campaign.current_scene_id != row.final_scene_id:
-                await self._restore_scene_participant_locations(final_scene_id)
-                await SceneLifecycleService(self._session).activate(
-                    campaign_id,
-                    final_scene_id,
-                )
+        await self._ensure_final_scene_consistency(row)
         return await self.get(UUID(row.id))
 
     async def execute(
@@ -202,6 +194,7 @@ class ActionSequenceExecutor:
         if not sequence:
             return False
         if sequence.status == "applied":
+            await self._ensure_final_scene_consistency(sequence)
             return True
         if sequence.status != "prepared":
             return False
@@ -216,6 +209,11 @@ class ActionSequenceExecutor:
                 continue
             if not await self._transitions.mark_applied(UUID(step.transition_id)):
                 return False
+
+        # Applying the sequence is the atomic boundary visible to the rest of the
+        # game. Reassert the final scene and physical participant locations instead
+        # of assuming no intermediate lifecycle operation drifted them.
+        await self._ensure_final_scene_consistency(sequence)
         sequence.status = "applied"
         sequence.applied_at = datetime.utcnow()
         await self._session.flush()
@@ -250,6 +248,28 @@ class ActionSequenceExecutor:
             )
         ).scalar_one_or_none()
         return await self.get(UUID(row.id)) if row else None
+
+    async def _ensure_final_scene_consistency(
+        self,
+        sequence: ActionSequence,
+    ) -> None:
+        if not sequence.final_scene_id:
+            return
+        final_scene_id = UUID(sequence.final_scene_id)
+        campaign_id = UUID(sequence.campaign_id)
+        scene = await self._session.get(Scene, sequence.final_scene_id)
+        if not scene or scene.campaign_id != sequence.campaign_id:
+            raise ValueError("Action sequence final scene is missing from campaign")
+
+        # Restore known physical participants first so SceneLifecycle can validate
+        # NPC presence rather than rejecting a stale intermediate location. The
+        # lifecycle call then guarantees that the player is present even if the
+        # target scene did not yet contain an explicit participant row.
+        await self._restore_scene_participant_locations(final_scene_id)
+        await SceneLifecycleService(self._session).activate(
+            campaign_id,
+            final_scene_id,
+        )
 
     async def _compensate(
         self,
