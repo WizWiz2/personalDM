@@ -60,12 +60,12 @@ def test_new_campaign_blocks_narration_until_session_zero(client: TestClient):
     ).json()
     assert setup["status"] == "draft"
     assert setup["ready_to_complete"] is False
-    # Since autonomous Session Zero, descriptive world/card fields are diagnostics,
-    # not hard gates. Only material objects needed to start play remain blockers.
+    # PR #60 made descriptive world/card fields diagnostic. Only the material
+    # objects needed to start play remain hard blockers.
+    assert "setup.world_anchor" not in setup["missing_fields"]
     assert "setup.starting_situation" in setup["missing_fields"]
     assert "setup.starting_location_id" in setup["missing_fields"]
     assert "setup.player_character_id" in setup["missing_fields"]
-    assert "setup.world_anchor" not in setup["missing_fields"]
 
     response = client.post(
         f"/api/campaigns/{campaign['id']}/turns",
@@ -113,18 +113,17 @@ def test_incomplete_character_card_is_diagnostic_not_completion_gate(
     payload = update.json()
     assert payload["ready_to_complete"] is True
     assert payload["missing_fields"] == []
+    assert "character.description" in payload["character_card_missing_fields"]
 
-    complete = client.post(
-        f"/api/campaigns/{campaign['id']}/session-zero/complete"
+    completed = client.post(
+        f"/api/campaigns/{campaign['id']}/session-zero/complete",
+        json={},
     )
-    assert complete.status_code == 200, complete.text
-    card = complete.json()["character"]
-    assert card["canonical_name"] == "Безымянный герой"
-    assert card["description"] is None
-    assert card["appearance"] is None
-    assert card["personality"] is None
-    assert card["capabilities"] == []
-    assert card["limitations"] == []
+    assert completed.status_code == 200, completed.text
+    result = completed.json()
+    assert result["setup"]["status"] == "completed"
+    assert result["character_card"]["ready_for_play"] is False
+    assert "goals" in result["character_card"]["missing_fields"]
 
 
 def test_session_zero_atomically_creates_playable_start(client: TestClient):
@@ -134,51 +133,92 @@ def test_session_zero_atomically_creates_playable_start(client: TestClient):
     ).json()
     location = client.post(
         f"/api/campaigns/{campaign['id']}/locations",
-        json={"canonical_name": "Площадь Серого Брода"},
+        json={
+            "canonical_name": "Площадь Серого Брода",
+            "description": "Каменная площадь у старого моста.",
+        },
     ).json()
-    hero = client.post(
-        f"/api/campaigns/{campaign['id']}/characters",
-        json=full_character_draft("Роуэн"),
-    ).json()
+    built = client.post(
+        f"/api/campaigns/{campaign['id']}/characters/from-draft",
+        json=full_character_draft("Рен"),
+    )
+    assert built.status_code == 201, built.text
+    hero = built.json()["character"]
 
-    update = client.put(
+    card = client.get(f"/api/characters/{hero['id']}/card")
+    assert card.status_code == 200, card.text
+    assert card.json()["ready_for_play"] is True
+    assert card.json()["completion_ratio"] == 1.0
+    assert len(card.json()["equipment"]) == 2
+
+    setup = client.put(
         f"/api/campaigns/{campaign['id']}/session-zero",
         json={
             "setting_name": "Серый Брод",
-            "genre": "низкое фэнтези",
-            "premise": "Следопыт ищет пропавшую экспедицию на старом тракте.",
-            "tone": "мрачное приключение без безысходности",
-            "world_summary": "Пограничный край, старый тракт и исчезнувшая экспедиция.",
-            "starting_situation": "Роуэн прибывает на площадь в поисках проводника.",
-            "starting_location_id": location["id"],
-            "boundaries": ["без сексуального насилия"],
+            "genre": "приключенческое низкое фэнтези",
+            "premise": "Пропавшая экспедиция оставила след у северного тракта.",
+            "tone": "приземлённый, тревожный, но не беспросветный",
+            "themes": ["долг", "тайны прошлого"],
+            "boundaries": ["без сексуального насилия", "не управлять героем игрока"],
             "boundaries_confirmed": True,
+            "rules_system": "свободная повествовательная система",
+            "world_summary": "Пограничные земли восстанавливаются после долгой войны.",
+            "starting_situation": "На площади Рен замечает объявление о поиске проводника.",
+            "starting_location_id": location["id"],
+            "starting_scene_title": "Утро на площади",
+            "play_style": "исследование, диалоги и конкретные последствия решений",
+            "content_rating": "18+",
             "player_character_id": hero["id"],
+            "narrative_style": "компактная атмосферная проза без решений за героя",
         },
     )
-    assert update.status_code == 200, update.text
-    assert update.json()["ready_to_complete"] is True
+    assert setup.status_code == 200, setup.text
+    assert setup.json()["ready_to_complete"] is True
+    assert setup.json()["missing_fields"] == []
+
+    completed = client.post(
+        f"/api/campaigns/{campaign['id']}/session-zero/complete",
+        json={},
+    )
+    assert completed.status_code == 200, completed.text
+    payload = completed.json()
+    assert payload["setup"]["status"] == "completed"
+    assert payload["scene"]["title"] == "Утро на площади"
+    assert payload["scene"]["location_id"] == location["id"]
+    assert hero["id"] in payload["scene"]["participants"]
+    assert payload["character_card"]["character"]["current_location_id"] == location["id"]
+
+    campaign_after = client.get(
+        f"/api/campaigns/{campaign['id']}"
+    ).json()
+    assert campaign_after["player_character_id"] == hero["id"]
+    assert campaign_after["current_scene_id"] == payload["scene"]["id"]
+    assert "[BEGIN SESSION ZERO CONTRACT]" in campaign_after["system_instructions"]
+    assert "Пропавшая экспедиция" in campaign_after["system_instructions"]
 
     with patch(
         "app.providers.llm_provider.LLMProvider.generate_stream",
         side_effect=narrator_stream,
     ), patch(
-        "app.services.entity_registrar.EntityRegistrar.extract_and_register",
+        "app.services.entity_registrar.EntityRegistrar.register_from_turn",
         side_effect=no_entities,
     ), patch(
         "app.services.memory_scribe.MemoryScribe.extract_proposals",
         side_effect=no_proposals,
+    ), patch(
+        "app.services.thesis_curator.ThesisCurator.curate_after_turn",
+        return_value=None,
     ):
-        complete = client.post(
-            f"/api/campaigns/{campaign['id']}/session-zero/complete"
-        )
-        assert complete.status_code == 200, complete.text
-        setup = complete.json()
-        assert setup["status"] == "completed"
-
         turn = client.post(
             f"/api/campaigns/{campaign['id']}/turns",
-            json={"role": "user", "content": "Осматриваю площадь."},
+            json={"role": "user", "content": "Осматриваю объявления."},
         )
-        assert turn.status_code == 200, turn.text
-        assert "площади Серого Брода" in turn.text
+    assert turn.status_code == 200, turn.text
+    assert "Утро начинается" in turn.text
+
+    debugger = client.get(
+        f"/api/campaigns/{campaign['id']}/debugger"
+    ).json()
+    assert debugger["session_zero"]["status"] == "completed"
+    assert debugger["health"]["session_zero_incomplete"] == 0
+    assert debugger["health"]["character_card_missing_fields"] == 0
