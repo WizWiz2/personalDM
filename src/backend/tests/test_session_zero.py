@@ -60,7 +60,11 @@ def test_new_campaign_blocks_narration_until_session_zero(client: TestClient):
     ).json()
     assert setup["status"] == "draft"
     assert setup["ready_to_complete"] is False
-    assert "setup.world_anchor" in setup["missing_fields"]
+    # PR #60 made descriptive world/card fields diagnostic. Only the material
+    # objects needed to start play remain hard blockers.
+    assert "setup.world_anchor" not in setup["missing_fields"]
+    assert "setup.starting_situation" in setup["missing_fields"]
+    assert "setup.starting_location_id" in setup["missing_fields"]
     assert "setup.player_character_id" in setup["missing_fields"]
 
     response = client.post(
@@ -71,6 +75,7 @@ def test_new_campaign_blocks_narration_until_session_zero(client: TestClient):
     detail = response.json()["detail"]
     assert detail["code"] == "session_zero_required"
     assert "setup.starting_location_id" in detail["missing_fields"]
+    assert "setup.player_character_id" in detail["missing_fields"]
 
 
 def test_incomplete_character_card_is_diagnostic_not_completion_gate(

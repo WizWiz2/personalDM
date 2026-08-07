@@ -362,7 +362,8 @@ async def test_agent_request_uses_compact_draft_and_conversation_history(
     assert "Не проси игрока пересказывать базовый канон" in prompt
     assert "update_session_zero" in prompt
     assert "finalize_session_zero" in prompt
-    assert "ЭТО НЕ СПИСОК ВОПРОСОВ" in prompt
+    assert "ТЕХНИЧЕСКИЙ МИНИМУМ" in prompt
+    assert "Это не список вопросов игроку" in prompt
     assert '\n  "world"' not in prompt
 
 
