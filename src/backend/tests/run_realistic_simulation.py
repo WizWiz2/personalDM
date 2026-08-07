@@ -192,6 +192,16 @@ def _scalar(connection: sqlite3.Connection, query: str, params=()) -> int:
     return int(row[0] or 0) if row else 0
 
 
+def _control_role_status(control_stats: dict, label: str) -> str:
+    success = int(control_stats.get(f"{label}_success") or 0)
+    calls = int(control_stats.get(f"{label}_calls") or 0)
+    if success:
+        return "success"
+    if calls:
+        return "invoked_failed"
+    return "not_invoked"
+
+
 def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
     state_path = data_dir / "realistic_simulation_state.json"
     trace_path = data_dir / "realistic_simulation_trace.jsonl"
@@ -361,32 +371,74 @@ def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
 
     connection.close()
 
+    mode = quality.benchmark_mode()
     control_stats = health.get("control_stats") or {}
     control_failures = list(health.get("control_failures") or [])
+    control_events = list(health.get("control_events") or [])
     total_generation_failures = max(trace_failures, failed_users, alternative_assistants)
     invalid_reasons: list[str] = []
+    degraded_reasons: list[str] = []
+
     if control_failures:
-        invalid_reasons.append("control-plane failures")
-    if quality.benchmark_mode() == "quality" and fallbacks:
-        invalid_reasons.append("player fallback used in quality mode")
-    if quality.benchmark_mode() == "quality" and builder_sources["fallback"]:
-        invalid_reasons.append("Character Builder fallback used in quality mode")
+        target = invalid_reasons if mode == "quality" else degraded_reasons
+        target.append("control-plane failures")
+    if fallbacks:
+        target = invalid_reasons if mode == "quality" else degraded_reasons
+        target.append("player fallback used")
+    if builder_sources["fallback"]:
+        target = invalid_reasons if mode == "quality" else degraded_reasons
+        target.append("Character Builder fallback used")
+    if int(control_stats.get("scenario_auto_repairs") or 0):
+        degraded_reasons.append("scenario auto-repair used")
+    if int(control_stats.get("player_target_repairs") or 0):
+        degraded_reasons.append("player target normalization used")
     if total_generation_failures:
         invalid_reasons.append("generation failures or partial alternatives exist")
     if actor_contexts_missing_current:
         invalid_reasons.append("actor context omitted current player message")
     if completed_scene_active:
         invalid_reasons.append("completed scenes retain active theses")
-    if quality.benchmark_mode() == "quality" and not control_stats.get("evaluator_success"):
-        invalid_reasons.append("Evaluator never completed successfully")
-    if quality.benchmark_mode() == "quality" and not control_stats.get("scribe_success"):
-        invalid_reasons.append("Memory Scribe never completed successfully")
+
+    evaluator_status = _control_role_status(control_stats, "evaluator")
+    scribe_status = _control_role_status(control_stats, "scribe")
+    curator_status = _control_role_status(control_stats, "curator")
+    player_status = _control_role_status(control_stats, "player")
+    if mode == "quality" and evaluator_status == "invoked_failed":
+        invalid_reasons.append("Evaluator was invoked but never completed successfully")
+    if mode == "quality" and scribe_status == "invoked_failed":
+        invalid_reasons.append("Memory Scribe was invoked but never completed successfully")
+
     benchmark_valid = not invalid_reasons
+    benchmark_status = (
+        "INVALID"
+        if invalid_reasons
+        else "DEGRADED"
+        if degraded_reasons
+        else "VALID"
+    )
+    if state.get("completed"):
+        terminal_stage = "completed"
+    elif records:
+        terminal_stage = f"turn_{state.get('logical_turn', len(records) + 1)}"
+    elif control_events:
+        terminal_stage = str(control_events[-1].get("stage") or "setup")
+    else:
+        terminal_stage = "setup"
+
+    recent_events = control_events[-8:]
+    event_summary = " | ".join(
+        f"{item.get('stage', '?')}:{item.get('status', '?')}"
+        + (f" ({item.get('detail')})" if item.get("detail") else "")
+        for item in recent_events
+    ) or "none"
 
     return [
-        f"- Benchmark mode: `{quality.benchmark_mode()}`",
+        f"- Benchmark mode: `{mode}`",
+        f"- Benchmark status: **{benchmark_status}**",
         f"- Benchmark valid: **{benchmark_valid}**",
         f"- Invalid reasons: {'; '.join(invalid_reasons) if invalid_reasons else 'none'}",
+        f"- Degraded reasons: {'; '.join(dict.fromkeys(degraded_reasons)) if degraded_reasons else 'none'}",
+        f"- Terminal stage: `{terminal_stage}`",
         f"- Run ID: `{state.get('run_id', 'unknown')}`",
         f"- Уникальных логических ходов: {len(records)}",
         f"- Следующий логический ход: {state.get('logical_turn', 1)}",
@@ -396,6 +448,10 @@ def _campaign_report(database_path: Path, data_dir: Path) -> list[str]:
         f"- Interrupted assistant texts: {interrupted_assistants}",
         f"- Уникальных player intents: {len(unique_intents)}",
         f"- Player fallbacks: {fallbacks}",
+        "- Control role status: "
+        f"player={player_status}, evaluator={evaluator_status}, "
+        f"scribe={scribe_status}, curator={curator_status}",
+        f"- Recent control events: {event_summary}",
         "- Режимы игрока: " + ", ".join(f"{name}={modes[name]}" for name in sorted(modes)),
         f"- Строк turns: {turns} (active={active_turns})",
         f"- Actor contexts/current-message omissions: {actor_contexts}/{actor_contexts_missing_current}",
