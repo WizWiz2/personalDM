@@ -1,13 +1,14 @@
 """Compatibility boundary and resilience layer for the Session Zero agent.
 
 The core conversational implementation lives in ``session_zero_agent``. This module
-keeps the historic import path used by CLI and API code while adding transport and
-conversation-quality guards that must remain independent from a particular provider.
+keeps the historic import path used by CLI and API code while adding transport,
+conversation-quality and autonomous-start guards that remain provider-neutral.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from uuid import UUID
 
 from app.models.session_zero_interview import (
@@ -16,6 +17,7 @@ from app.models.session_zero_interview import (
     SessionZeroInterviewModelDecision,
     SessionZeroInterviewState,
 )
+from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.session_zero_agent import (
@@ -30,9 +32,26 @@ from app.services.session_zero_agent import (
 
 
 class SessionZeroAgent(_BaseSessionZeroAgent):
-    """Session Zero agent with explicit anti-questionnaire discipline."""
+    """Session Zero agent that owns both the conversation and the start decision."""
 
     SYSTEM_PROMPT = _BaseSessionZeroAgent.SYSTEM_PROMPT + """
+
+АВТОНОМНОЕ РЕШЕНИЕ О СТАРТЕ
+- Ты сам решаешь, когда набрана достаточная критическая масса информации. Не жди, пока
+  будут заполнены все поля карточки: это не анкета и не чек-лист.
+- Обычно достаточно понять общий тип мира, базовый концепт героя и зацепку, из которой
+  можно сделать первую сцену. Необязательные черты раскрывай уже во время игры.
+- Если игрок прямо предлагает начать, говорит «погнали», «норм», «не знаю», «выбери
+  сам» или несколько раз не может добавить деталей, не мучай его вопросами. Придумай
+  безопасные недостающие детали, сохрани их через update_session_zero и вызови
+  finalize_session_zero в том же ответе.
+- Если игрок почти ничего не знает, сам собери один яркий, но не слишком специфичный
+  вариант мира, героя, первой цели и стартовой ситуации. Можно коротко предложить его;
+  при отсутствии возражений сразу начинай.
+- Не начинай разыгрывать действия и результаты внутри нулевой сессии. Когда готова
+  первая игровая сцена, вызови finalize_session_zero: после этого управление перейдёт
+  обычному Рассказчику.
+- В финальной реплике не задавай новый вопрос. Коротко объяви переход к первой сцене.
 
 АНТИ-АНКЕТА И ЦЕЛОСТНОСТЬ ОТВЕТОВ
 - Перед тем как перейти дальше, обязательно сохрани через update_session_zero смысл
@@ -42,7 +61,7 @@ class SessionZeroAgent(_BaseSessionZeroAgent):
   реплике. Не указывай уже заполненные темы.
 - Не проводи отдельную цепочку «ценности → страхи → желания → речь → слабости».
   После одного-двух узких уточнений синтезируй безопасные детали из уже описанного
-  концепта, предложи интерпретацию или задай один широкий вопрос о герое/сцене.
+  концепта, предложи интерпретацию или переходи к старту.
 - Не спрашивай отдельно и повторно то, что уже прямо следует из ответа игрока. Например,
   «хочет найти кибердеку получше» уже является первой целью, а «немногословно» уже
   описывает манеру речи.
@@ -50,14 +69,59 @@ class SessionZeroAgent(_BaseSessionZeroAgent):
   пробелы или техническую заглушку.
 """
 
+    async def respond(
+        self,
+        selection,
+        state: SessionZeroInterviewState,
+        *,
+        feedback: dict | None = None,
+    ) -> SessionZeroInterviewModelDecision:
+        current = json.dumps(
+            state.draft.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        critical_gaps = SessionZeroInterviewService.missing_fields(state.draft)
+        system_content = (
+            f"{self.SYSTEM_PROMPT}\n\n"
+            f"[ТЕКУЩАЯ КАРТОЧКА — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{current}\n\n"
+            "[ТЕХНИЧЕСКИЙ МИНИМУМ ДЛЯ СОЗДАНИЯ ГЕРОЯ И СЦЕНЫ]\n"
+            f"{json.dumps(critical_gaps, ensure_ascii=False)}\n"
+            "Это не список вопросов игроку. Если эти детали отсутствуют, сначала "
+            "попробуй разумно придумать их сам и сохранить инструментом."
+        )
+        messages = [
+            ChatMessage(role="system", content=system_content),
+            *[
+                ChatMessage(role=item["role"], content=item["content"])
+                for item in state.messages[-self.MAX_HISTORY_MESSAGES :]
+                if item.get("role") in {"user", "assistant"}
+                and item.get("content")
+            ],
+        ]
+        if feedback:
+            messages.append(
+                ChatMessage(
+                    role="system",
+                    content=(
+                        "[РЕЗУЛЬТАТ ИНСТРУМЕНТА / FEEDBACK]\n"
+                        + json.dumps(feedback, ensure_ascii=False)
+                        + "\nСам реши, как естественно продолжить. Если данных уже "
+                        "достаточно, заполни технические пробелы сам и заверши нулевую "
+                        "сессию вместо нового вопроса."
+                    ),
+                )
+            )
+        data = await self._generate(selection, messages)
+        return SessionZeroInterviewModelDecision.model_validate(data)
+
 
 class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
     """Resilient tool executor for the conversational Session Zero agent."""
 
     MAX_QUALITY_REPAIRS = 2
     SAFE_FALLBACK_MESSAGE = (
-        "Я сохранил твой ответ. Давай не будем идти по пунктам карточки: "
-        "добавь любую важную деталь о герое, мире или сцене, с которой хочется начать."
+        "Понял. Недостающие детали я возьму на себя и подготовлю стартовую сцену."
     )
     NARROW_CHARACTER_TOPICS = frozenset(
         {
@@ -81,6 +145,27 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         "на твой выбор",
         "как хочешь",
         "на усмотрение мастера",
+        "нет таких",
+    )
+    START_REQUEST_MARKERS = (
+        "начинаем игру",
+        "начать игру",
+        "давай играть",
+        "можно начинать",
+        "хочу начать",
+        "погнали",
+        "стартуем",
+        "и что происходит",
+    )
+    START_CLAIM_MARKERS = (
+        "давай начнем игру",
+        "давай начнём игру",
+        "начинаем игру",
+        "игра начинается",
+        "приключение начинается",
+        "начинаем с первой сцены",
+        "первая сцена начинается",
+        "мы находимся",
     )
     TOPIC_PATTERNS = (
         (
@@ -120,6 +205,31 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
     def __init__(self, session) -> None:
         super().__init__(session)
         self._agent = SessionZeroAgent(self._provider, self._router)
+
+    @classmethod
+    def missing_fields(cls, draft: SessionZeroInterviewDraft) -> list[str]:
+        """Return only fields that are technically required to materialize play.
+
+        The agent, not this method, decides whether the conversation is creatively
+        sufficient. Optional card details may remain empty and emerge during play.
+        """
+        world = draft.world
+        character = draft.character
+        missing: list[str] = []
+        if not any(
+            cls._text(value)
+            for value in (world.setting_name, world.genre, world.world_summary)
+        ):
+            missing.append("world.setting_or_genre")
+        checks = {
+            "world.starting_location_name": cls._text(world.starting_location_name),
+            "world.starting_situation": cls._text(world.starting_situation),
+            "character.name": cls._text(character.name),
+            "character.description": cls._text(character.description),
+            "character.first_goal": cls._text(character.first_goal),
+        }
+        missing.extend(name for name, ready in checks.items() if not ready)
+        return missing
 
     async def _continue_pending(
         self,
@@ -163,11 +273,13 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                     finalize_feedback = {
                         "tool": "finalize_session_zero",
                         "ok": False,
-                        "missing_fields": missing,
+                        "technical_missing_fields": missing,
                         "instruction": (
-                            "Карточка ещё не готова. Заполни безопасные выводимые "
-                            "детали сам через update_session_zero, а если без игрока "
-                            "нельзя — задай один широкий содержательный вопрос."
+                            "Это только технические поля для создания объектов, а не "
+                            "повод продолжать анкету. Придумай безопасные значения сам, "
+                            "сохрани их через update_session_zero и повтори "
+                            "finalize_session_zero в этом же ходе. Спрашивай игрока "
+                            "только при явном конфликте с его словами."
                         ),
                     }
                     feedback = self._combine_feedback(feedback, finalize_feedback)
@@ -195,7 +307,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
             quality_failed=unresolved_feedback is not None,
         )
         question_topics = self._effective_question_topics(model_decision)
-        if unresolved_feedback is not None:
+        if unresolved_feedback is not None or ready:
             question_topics = []
 
         decision = SessionZeroInterviewDecision(
@@ -239,6 +351,22 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         if base_feedback is not None:
             return base_feedback
 
+        if not decision.ready_to_finalize and (
+            self._start_requested(latest_user_message)
+            or self._assistant_claims_start(message)
+        ):
+            return {
+                "quality": "start_announced_without_finalize",
+                "player_message": latest_user_message,
+                "technical_missing_fields": self.missing_fields(draft),
+                "instruction": (
+                    "Игрок попросил начать или ты уже объявил начало игры, но не "
+                    "вызвал finalize_session_zero. Не разыгрывай сцену внутри интервью. "
+                    "Сам дострой безопасные технические детали через "
+                    "update_session_zero и вызови finalize_session_zero в этом же ходе."
+                ),
+            }
+
         previous_topics = list(dict.fromkeys(state.last_question_topics))
         unrecorded = [
             topic
@@ -253,8 +381,9 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                 "player_answer": latest_user_message,
                 "instruction": (
                     "Ты перешёл дальше, не сохранив ответ игрока на предыдущий "
-                    "вопрос. Сначала вызови update_session_zero и запиши смысл ответа "
-                    "в указанные темы; затем продолжи разговор без повторного вопроса."
+                    "вопрос. Сначала вызови update_session_zero и запиши смысл ответа; "
+                    "затем либо естественно продвинь разговор, либо заверши нулевую "
+                    "сессию, если критической массы уже достаточно."
                 ),
             }
 
@@ -270,7 +399,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                     "instruction": (
                         "Ты снова спрашиваешь уже заполненную характеристику. Учти "
                         "сохранённое значение, не переспрашивай его другими словами и "
-                        "продвинь разговор вперёд."
+                        "либо двигайся к стартовой сцене, либо заверши нулевую сессию."
                     ),
                 }
 
@@ -283,7 +412,8 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                     "topics": delegated_repeat,
                     "instruction": (
                         "Игрок уже передал этот выбор мастеру. Выбери безопасный вариант "
-                        "сам, сохрани его через update_session_zero и не спрашивай снова."
+                        "сам, сохрани его и не спрашивай снова. Если старт уже возможен, "
+                        "вызови finalize_session_zero."
                     ),
                 }
 
@@ -294,7 +424,8 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                     "topics": repeated_topics,
                     "instruction": (
                         "Формулировка изменилась, но тема вопроса та же. Не повторяй "
-                        "её; используй последний ответ или сделай разумный вывод."
+                        "её; используй последний ответ, сделай разумный вывод и подумай, "
+                        "не пора ли уже начинать игру."
                     ),
                 }
 
@@ -308,9 +439,9 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                 "topic": current_topics[0],
                 "instruction": (
                     "Получилась серия узких анкетных вопросов. Не задавай ещё один "
-                    "пункт карточки. Синтезируй безопасные детали из концепта через "
-                    "update_session_zero или задай один широкий вопрос о герое, мире "
-                    "или стартовой сцене."
+                    "пункт карточки. Синтезируй безопасные детали из концепта и "
+                    "переходи к стартовой сцене; если технический минимум можно "
+                    "заполнить, вызови finalize_session_zero."
                 ),
             }
         return None
@@ -321,9 +452,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         decision: SessionZeroInterviewModelDecision,
     ) -> list[str]:
         topics = [
-            topic
-            for topic in decision.question_topics
-            if cls._valid_topic(topic)
+            topic for topic in decision.question_topics if cls._valid_topic(topic)
         ]
         for topic in cls._infer_question_topics(decision.assistant_message):
             if topic not in topics:
@@ -418,6 +547,16 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         return any(marker in folded for marker in cls.DELEGATION_MARKERS)
 
     @classmethod
+    def _start_requested(cls, value: str) -> bool:
+        folded = cls._normalize_text(value)
+        return any(marker in folded for marker in cls.START_REQUEST_MARKERS)
+
+    @classmethod
+    def _assistant_claims_start(cls, value: str) -> bool:
+        folded = cls._normalize_text(value)
+        return any(marker in folded for marker in cls.START_CLAIM_MARKERS)
+
+    @classmethod
     def _is_substantive_answer(cls, value: str) -> bool:
         clean = cls._text(value)
         return len(clean) >= 3 and not cls._is_delegation(clean)
@@ -434,7 +573,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         if clean and not quality_failed:
             return clean
         if ready:
-            return "Основа кампании собрана. Проверь итоговую сводку перед стартом."
+            return "Основа готова. Начинаем с первой сцены."
         return cls.SAFE_FALLBACK_MESSAGE
 
     @staticmethod
@@ -447,8 +586,9 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         return {
             "issues": [quality_feedback, finalize_feedback],
             "instruction": (
-                "Исправь обе проблемы за один ход: сохрани полезные данные через "
-                "инструмент и верни одну естественную русскую реплику без анкеты."
+                "Исправь обе проблемы за один ход: сохрани полезные данные, сам "
+                "дострой технические пробелы и, если старт возможен, заверши нулевую "
+                "сессию вместо нового вопроса."
             ),
         }
 
