@@ -215,8 +215,15 @@ class NarrationPublicationGuard:
             key = segment.casefold().strip()
             if not key:
                 continue
+
+            # «Рэт, решай сам», — говорит Грета. is NPC dialogue addressed to the player,
+            # not narration controlled by the player. Do not classify a quoted direct address as
+            # a protagonist action merely because the player's name is the first quoted token.
+            quoted_direct_address = bool(
+                re.match(rf"^[\s]*[\"'«]{re.escape(name_key)}\b", key)
+            )
             begins_with_player = bool(
-                re.match(rf"^[\s\"'«»—–-]*{re.escape(name_key)}\b", key)
+                re.match(rf"^[\s—–-]*{re.escape(name_key)}\b", key)
             )
             speech_by_player = any(
                 re.search(
@@ -226,7 +233,7 @@ class NarrationPublicationGuard:
                 for tag in cls.PLAYER_SPEECH_TAGS
             )
             player_then_action = False
-            if name_key in key:
+            if name_key in key and not quoted_direct_address:
                 tail = key.split(name_key, 1)[1][:100]
                 player_then_action = any(stem in tail for stem in cls.PLAYER_ACTION_STEMS)
             if begins_with_player or speech_by_player or player_then_action:
