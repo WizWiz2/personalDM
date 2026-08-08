@@ -163,6 +163,10 @@ Return exactly:
             if item.severity == "error"
         )
         return (
+            # Keep the legacy marker during migration because deterministic fixtures and
+            # debugger tooling use it to distinguish repair generations. Authority below,
+            # not the marker, defines the new repair semantics.
+            "[REPAIR REJECTED NARRATION]\n"
             "[REPAIR AGAINST TURN AUTHORITY]\n"
             "Rewrite the candidate as one complete final Russian in-world response. Preserve only "
             "the outcomes authorized below. Remove every violation. Do not add a replacement NPC, "
