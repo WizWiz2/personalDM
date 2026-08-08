@@ -10,8 +10,10 @@ class NarrationPublicationGuard:
     """Publish safe prose without allowing renderer mistakes to cancel game state.
 
     The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    When model repair still violates the prose contract, this guard removes only violations it can
-    prove it removed; otherwise it falls back to a terse rendering of structured authority.
+    After a second semantic rejection, ordinary narrator turns are rendered strictly from typed
+    authority. Actor turns are the one exception: their useful content is the NPC's actual reply,
+    so concrete player-owned fragments may be removed deterministically and the safe NPC remainder
+    can still be published.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -79,8 +81,22 @@ class NarrationPublicationGuard:
             for item in (validation.violations if validation else [])
             if item.severity == "error"
         ]
-        sanitized, matched_errors = cls._drop_flagged_segments(candidate, validation)
 
+        # A rejected ordinary narration may have omitted or distorted approved consequences even
+        # after the flagged fragment is removed. Do not attempt semantic salvage here: project the
+        # authoritative result directly. This is deliberately boring rather than wrong.
+        if errors and authority.scene_disposition != "actor_turn":
+            fallback = cls.render_authority(authority)
+            return fallback, {
+                "mode": "authority_projection",
+                "candidate_characters": len(candidate),
+                "published_characters": len(fallback),
+                "error_count": len(errors),
+                "matched_error_count": 0,
+                "actor_agency_scrubbed": False,
+            }
+
+        sanitized, matched_errors = cls._drop_flagged_segments(candidate, validation)
         actor_scrub_changed = False
         if authority.scene_disposition == "actor_turn":
             actor_safe = cls._drop_player_owned_segments(
