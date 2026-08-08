@@ -27,7 +27,9 @@ include = ["app*"]
 [tool.pytest.ini_options]
 markers = [
     "session_zero_enforced: run through the real mandatory session-zero gate",
-    "narration_validator_enforced: run through the real narration validator instead of the deterministic endpoint-test seam",
+    "narration_validator_enforced: exercise the legacy narration validator instead of the deterministic endpoint-test seam",
+    "interagent_contract_enforced: exercise the real authority planner/validator hand-off with deterministic model transport",
+    "post_turn_background_enforced: keep post-turn memory asynchronous like production gameplay",
 ]
 
 [tool.ruff]

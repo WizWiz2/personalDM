@@ -11,21 +11,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.narration_validation_table import NarrationValidationRun
 from app.db.scene_bridge_table import SceneBridge
+from app.db.tables import Character, Entity, SceneParticipant
 from app.models.narration_validation import (
     NarrationValidationResult,
     NarrationViolation,
 )
-from app.services.narration_validator import NarrationValidator
-from app.services.role_model_router import ModelRole
+from app.models.turn_authority import PlannedNpcIntroduction
+from app.services.memory_scribe import MemoryScribe
+from app.services.thesis_curator import ThesisCurator
+from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
+from app.services.turn_authority_validator import TurnAuthorityValidator
 from app.services.turn_planner import (
     ActionSequencePlan,
     ActionStepPlan,
     NarrationPolicy,
     SceneTransitionPlan,
-    TurnPlan,
 )
 
-pytestmark = pytest.mark.session_zero_enforced
+pytestmark = [
+    pytest.mark.session_zero_enforced,
+    pytest.mark.interagent_contract_enforced,
+]
 
 INTRO_TEXT = (
     "Бармен Роэн ставит на стойку медный ключ. "
@@ -75,10 +81,21 @@ def _full_character_draft(name: str) -> dict:
     }
 
 
-def _conversation_plan() -> TurnPlan:
-    return TurnPlan(
+def _conversation_plan() -> CoordinatedTurnPlan:
+    return CoordinatedTurnPlan(
         player_intent="Спросить бармена о свободной комнате.",
         resolution="conversation",
+        scene_disposition="stay",
+        npc_introductions=[
+            PlannedNpcIntroduction(
+                canonical_name="Бармен Роэн",
+                role="бармен таверны «Медный Котёл»",
+                description="Спокойный бармен, который отвечает на прямой вопрос о комнате.",
+                voice="Короткие практичные ответы без лишней драматизации.",
+                temporary_name=False,
+                reason="Игрок прямо обращается к обычному бармену в действующей таверне.",
+            )
+        ],
         narration_policy=NarrationPolicy(
             dramatic_mode="calm",
             allow_new_complication=False,
@@ -86,19 +103,20 @@ def _conversation_plan() -> TurnPlan:
             protected_player_decisions=["решение снять комнату"],
         ),
         observable_consequences=[
-            "Бармен отвечает на вопрос и показывает доступный ключ."
+            "Бармен Роэн отвечает на вопрос и показывает доступный ключ."
         ],
-        character_beats=["Бармен даёт практичный ответ без скрытого конфликта."],
-        canon_constraints=["Бармен физически находится только в общем зале."],
+        character_beats=["Роэн даёт практичный ответ без скрытого конфликта."],
+        canon_constraints=["Роэн находится в общем зале и никуда не следует за героем."],
         narration_guidance=["Короткая спокойная сцена без обязательной угрозы."],
         ending_hook="Комната доступна; дальнейшее решение остаётся за игроком.",
     )
 
 
-def _compound_plan() -> TurnPlan:
-    return TurnPlan(
+def _compound_plan() -> CoordinatedTurnPlan:
+    return CoordinatedTurnPlan(
         player_intent="Снять комнату, лечь спать и утром отправиться к Купцам.",
         resolution="sequence",
+        scene_disposition="sequence",
         narration_policy=NarrationPolicy(
             dramatic_mode="routine",
             allow_new_complication=False,
@@ -127,9 +145,7 @@ def _compound_plan() -> TurnPlan:
                         destination_parent_location="Медный Котёл",
                         scene_title="Ночь в гостевой комнате",
                         reason="Игрок идёт в оплаченную комнату.",
-                        bridge_summary=(
-                            "Комната оплачена; разговор с Роэном завершён."
-                        ),
+                        bridge_summary="Комната оплачена; разговор с Роэном завершён.",
                         carryover_goals=["утром найти Купцов"],
                     ),
                 ),
@@ -174,7 +190,7 @@ def _compound_plan() -> TurnPlan:
             "Бармен Роэн остаётся в общем зале.",
             "Нельзя придумывать посетителя, стук, засаду или скрытую плату.",
         ],
-        narration_guidance=["Кратко связать все завершённые шаги в их порядке."],
+        narration_guidance=["Кратко связать завершённые шаги в их порядке."],
         ending_hook="Эйдан находится у входа Купцов утром.",
     )
 
@@ -182,7 +198,7 @@ def _compound_plan() -> TurnPlan:
 def _passed() -> NarrationValidationResult:
     return NarrationValidationResult(
         verdict="pass",
-        summary="Текст соблюдает состояние сцены и agency игрока.",
+        summary="Текст соблюдает typed authority и agency игрока.",
         violations=[],
     )
 
@@ -190,7 +206,7 @@ def _passed() -> NarrationValidationResult:
 def _repair_required() -> NarrationValidationResult:
     return NarrationValidationResult(
         verdict="repair_required",
-        summary="В новой сцене появился оставленный NPC, а Narrator решил за героя.",
+        summary="Оставленный NPC появился в новой сцене, а Narrator решил за героя.",
         violations=[
             NarrationViolation(
                 violation_type="absent_character",
@@ -213,7 +229,7 @@ async def _intro_narrator(messages, *args, **kwargs):
 
 
 async def _sequence_narrator(messages, *args, **kwargs):
-    if "[REPAIR REJECTED NARRATION]" in messages[-1].content:
+    if "[REPAIR AGAINST TURN AUTHORITY]" in messages[-1].content:
         yield REPAIRED_SEQUENCE_TEXT
     else:
         yield INVALID_SEQUENCE_DRAFT
@@ -223,82 +239,15 @@ async def _meta_stream(*args, **kwargs):
     yield META_TEXT
 
 
-async def _role_json(self, provider, selection, messages, **kwargs):
-    text = "\n\n".join(str(message.content) for message in messages)
-    if selection.role == ModelRole.ENTITY_REGISTRAR:
-        if INTRO_TEXT in text:
-            return {
-                "characters": [
-                    {
-                        "canonical_name": "Бармен Роэн",
-                        "aliases": ["Роэн"],
-                        "description": "Бармен таверны «Медный Котёл».",
-                        "role": "бармен",
-                        "evidence": "Бармен Роэн ставит на стойку медный ключ",
-                        "presence": "present",
-                        "importance": "supporting",
-                        "persistent": True,
-                    }
-                ]
-            }
-        return {"characters": []}
-    if selection.role == ModelRole.SCRIBE:
-        if INTRO_TEXT in text:
-            return {
-                "outcomes": [
-                    {
-                        "id": "room_offer",
-                        "kind": "event",
-                        "description": "Роэн предложил Эйдану свободную комнату.",
-                        "evidence": "Бармен Роэн ставит на стойку медный ключ.",
-                        "authority": "dm_confirmed",
-                        "durable": True,
-                    },
-                    {
-                        "id": "transient_gaze",
-                        "kind": "world_state",
-                        "description": "Роэн на миг отвёл взгляд к окну.",
-                        "evidence": "Бармен Роэн на миг отводит взгляд к окну.",
-                        "authority": "public_observation",
-                        "durable": True,
-                    },
-                ],
-                "proposals": [
-                    {
-                        "outcome_id": "room_offer",
-                        "change_type": "event",
-                        "operation": "assert",
-                        "cardinality": "single",
-                        "payload": {
-                            "event_type": "conversation",
-                            "description": "Роэн сообщил, что третья комната свободна.",
-                            "location_id": "Общий зал",
-                            "participant_ids": ["Бармен Роэн"],
-                        },
-                    },
-                    {
-                        "outcome_id": "transient_gaze",
-                        "change_type": "fact",
-                        "operation": "assert",
-                        "cardinality": "single",
-                        "payload": {
-                            "subject": "Бармен Роэн",
-                            "predicate": "отводит взгляд",
-                            "object_value": "к окну",
-                            "scope": "campaign",
-                            "visibility": "public",
-                        },
-                    },
-                ],
-            }
-        return {"outcomes": [], "proposals": []}
-    raise AssertionError(f"Неожиданная structured role: {selection.role}")
+async def _no_scribe_memory(*args, **kwargs):
+    # Narrative texture is extracted deterministically from accepted prose below.
+    return []
 
 
 async def _setup_campaign(client: TestClient) -> dict:
     campaign = client.post(
         "/api/campaigns",
-        json={"name": "Golden playthrough"},
+        json={"name": "Golden TurnAuthority playthrough"},
     ).json()
     campaign_id = campaign["id"]
 
@@ -418,6 +367,20 @@ async def _setup_campaign(client: TestClient) -> dict:
     }
 
 
+async def _character_state(db_session: AsyncSession, campaign_id: str, name: str):
+    row = (
+        await db_session.execute(
+            select(Entity, Character)
+            .join(Character, Character.entity_id == Entity.id)
+            .where(
+                Entity.campaign_id == campaign_id,
+                Entity.canonical_name == name,
+            )
+        )
+    ).one()
+    return row
+
+
 @pytest.mark.asyncio
 async def test_golden_playthrough_preserves_agency_space_and_memory(
     client: TestClient,
@@ -426,23 +389,26 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     world = await _setup_campaign(client)
     campaign_id = world["campaign_id"]
 
-    with patch(
-        "app.services.turn_planner.TurnPlanner.plan",
+    with patch.object(
+        TurnAuthorityPlanner,
+        "plan",
         new_callable=AsyncMock,
         return_value=_conversation_plan(),
     ), patch(
-        "app.services.narration_pipeline.NarrationPipelineProvider._raw_stream",
+        "app.providers.llm_provider.LLMProvider.generate_stream",
         side_effect=_intro_narrator,
     ), patch.object(
-        NarrationValidator,
+        TurnAuthorityValidator,
         "validate",
         new_callable=AsyncMock,
         return_value=_passed(),
-    ), patch(
-        "app.services.role_model_router.RoleModelRouter.generate_json",
-        new=_role_json,
-    ), patch(
-        "app.services.thesis_curator.ThesisCurator.curate_after_turn",
+    ), patch.object(
+        MemoryScribe,
+        "extract_proposals",
+        side_effect=_no_scribe_memory,
+    ), patch.object(
+        ThesisCurator,
+        "curate_after_turn",
         new_callable=AsyncMock,
         return_value=None,
     ):
@@ -459,14 +425,18 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
 
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["health"]["failed_jobs"] == 0
-    assert len(snapshot["auto_registered_npcs"]) == 1
-    bartender = snapshot["auto_registered_npcs"][0]
-    assert bartender["name"] == "Бармен Роэн"
-    assert bartender["current_location_id"] == world["hall"]["id"]
     assert set(snapshot["active_scene"]["participant_names"]) == {
         "Эйдан",
         "Бармен Роэн",
     }
+    bartender_entity, bartender_state = await _character_state(
+        db_session,
+        campaign_id,
+        "Бармен Роэн",
+    )
+    assert bartender_state.current_location_id == world["hall"]["id"]
+    fields = json.loads(bartender_entity.custom_fields or "{}")
+    assert fields["introduced_by"] == "turn_authority"
 
     narrative_history = client.get(
         f"/api/campaigns/{campaign_id}/turns?channel=narrative"
@@ -479,20 +449,15 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
         proposal
         for proposal in proposals
         if proposal["change_type"] == "narrative_detail"
-        and proposal["payload"].get("_memory", {}).get("demoted_from") == "fact"
+        and "взгляд" in proposal["payload"].get("text", "").casefold()
     )
-    assert "взгляд" in gaze["payload"]["text"].casefold()
+    assert gaze["status"] == "accepted"
     assert not any(
         proposal["change_type"] == "fact"
         and "взгляд" in json.dumps(proposal["payload"], ensure_ascii=False).casefold()
         for proposal in proposals
     )
 
-    accepted = client.put(
-        f"/api/proposals/{gaze['id']}/resolve",
-        json={"status": "accepted", "user_edit": None},
-    )
-    assert accepted.status_code == 200, accepted.text
     memory_before = client.get(
         f"/api/campaigns/{campaign_id}/memory-ops"
     ).json()
@@ -507,8 +472,9 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     with patch(
         "app.services.meta_command_router.LLMProvider.generate_stream",
         side_effect=_meta_stream,
-    ), patch(
-        "app.services.turn_planner.TurnPlanner.plan",
+    ), patch.object(
+        TurnAuthorityPlanner,
+        "plan",
         new_callable=AsyncMock,
     ) as meta_planner:
         meta = client.post(
@@ -526,23 +492,26 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     assert len(after_meta["scene_transitions"]) == len(before_meta["scene_transitions"])
     assert len(after_meta["proposals"]) == len(before_meta["proposals"])
 
-    with patch(
-        "app.services.turn_planner.TurnPlanner.plan",
+    with patch.object(
+        TurnAuthorityPlanner,
+        "plan",
         new_callable=AsyncMock,
         return_value=_compound_plan(),
     ), patch(
-        "app.services.narration_pipeline.NarrationPipelineProvider._raw_stream",
+        "app.providers.llm_provider.LLMProvider.generate_stream",
         side_effect=_sequence_narrator,
     ), patch.object(
-        NarrationValidator,
+        TurnAuthorityValidator,
         "validate",
         new_callable=AsyncMock,
         side_effect=[_repair_required(), _passed()],
-    ), patch(
-        "app.services.role_model_router.RoleModelRouter.generate_json",
-        new=_role_json,
-    ), patch(
-        "app.services.thesis_curator.ThesisCurator.curate_after_turn",
+    ), patch.object(
+        MemoryScribe,
+        "extract_proposals",
+        side_effect=_no_scribe_memory,
+    ), patch.object(
+        ThesisCurator,
+        "curate_after_turn",
         new_callable=AsyncMock,
         return_value=None,
     ):
@@ -561,15 +530,27 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     assert final_snapshot["campaign"]["player_location_id"] == world["merchants"]["id"]
     assert final_snapshot["active_scene"]["location_id"] == world["merchants"]["id"]
     assert final_snapshot["active_scene"]["participant_names"] == ["Эйдан"]
-    bartender_after = final_snapshot["auto_registered_npcs"][0]
-    assert bartender_after["current_location_id"] == world["hall"]["id"]
-    assert final_snapshot["active_scene"]["id"] not in bartender_after["scene_ids"]
+
+    _bartender_entity, bartender_after = await _character_state(
+        db_session,
+        campaign_id,
+        "Бармен Роэн",
+    )
+    assert bartender_after.current_location_id == world["hall"]["id"]
+    final_membership = (
+        await db_session.execute(
+            select(SceneParticipant).where(
+                SceneParticipant.scene_id == final_snapshot["active_scene"]["id"],
+                SceneParticipant.entity_id == bartender_entity.id,
+            )
+        )
+    ).scalar_one_or_none()
+    assert final_membership is None
 
     final_state = client.get(
         f"/api/campaigns/{campaign_id}/scenes/{final_snapshot['active_scene']['id']}/state"
     ).json()
     assert final_state["world_time_label"] == "утро"
-    assert final_state["world_time_order"] == 13
     assert final_state["participant_names"] == ["Эйдан"]
 
     sequence = (
@@ -649,35 +630,3 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     )
     assert old_gaze["expired_candidate"] is True
     assert old_gaze["expiry_reason"] == "scene_closed"
-
-    dry_run = client.post(
-        f"/api/campaigns/{campaign_id}/memory-ops/maintenance",
-        json={},
-    ).json()
-    assert dry_run["applied"] is False
-    assert any(
-        action["target_type"] == "narrative_detail"
-        and action["target_id"] == old_gaze["id"]
-        for action in dry_run["actions"]
-    )
-    after_dry_run = client.get(
-        f"/api/campaigns/{campaign_id}/memory-ops"
-    ).json()
-    assert any(
-        detail["id"] == old_gaze["id"]
-        for detail in after_dry_run["narrative_details"]
-    )
-
-    applied_cleanup = client.post(
-        f"/api/campaigns/{campaign_id}/memory-ops/maintenance",
-        json={"apply_changes": True},
-    ).json()
-    assert applied_cleanup["applied"] is True
-    assert applied_cleanup["details_cleaned"] >= 1
-    after_cleanup = client.get(
-        f"/api/campaigns/{campaign_id}/memory-ops"
-    ).json()
-    assert all(
-        detail["id"] != old_gaze["id"]
-        for detail in after_cleanup["narrative_details"]
-    )

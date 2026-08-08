@@ -3,6 +3,7 @@ import json
 import logging
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -11,10 +12,11 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.turn_repo import TurnRepository
+from app.db.tables import Turn
 from app.models.proposed_change import ChangeType, ProposalAction
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
-from app.services.entity_registrar import EntityRegistrar
+from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
 from app.services.memory_scribe import MemoryScribe
 from app.services.memory_taxonomy import MemoryTaxonomyService
 from app.services.proposal_presence import ProposalPresenceResolver
@@ -70,6 +72,47 @@ class PostTurnProcessor:
                     exc,
                 )
 
+    @staticmethod
+    def _snapshot_dict(turn) -> dict:
+        raw = getattr(turn, "context_snapshot", None)
+        if isinstance(raw, dict):
+            return raw
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @classmethod
+    def _authority_managed(cls, assistant) -> bool:
+        snapshot = cls._snapshot_dict(assistant)
+        protocol = snapshot.get("interagent_protocol") or {}
+        return bool(
+            snapshot.get("turn_authority")
+            and isinstance(protocol, dict)
+            and int(protocol.get("version") or 0) >= 1
+        )
+
+    async def _source_pair_is_active(self, assistant_turn_id: UUID) -> bool:
+        """Read turn status from a fresh transaction boundary before durable writes."""
+        row = (
+            await self._session.execute(
+                select(Turn.status, Turn.parent_turn_id).where(
+                    Turn.id == str(assistant_turn_id)
+                )
+            )
+        ).one_or_none()
+        if not row or row.status != "active" or not row.parent_turn_id:
+            return False
+        parent_status = (
+            await self._session.execute(
+                select(Turn.status).where(Turn.id == row.parent_turn_id)
+            )
+        ).scalar_one_or_none()
+        return parent_status == "active"
+
     async def _uses_external_proposal_resolution(self, user_turn_id: UUID) -> bool:
         """Detect harnesses that intentionally own proposal acceptance themselves.
 
@@ -77,8 +120,6 @@ class PostTurnProcessor:
         turns and later resolves proposals explicitly to drive phase evidence. Normal
         gameplay has no such marker and should auto-commit safe memory immediately.
         """
-        from app.db.tables import Turn
-
         row = await self._session.get(Turn, str(user_turn_id))
         if not row or not row.context_snapshot:
             return False
@@ -94,12 +135,7 @@ class PostTurnProcessor:
         source_turn_id: UUID,
         proposals,
     ) -> tuple[int, int]:
-        """Apply deterministic-safe Scribe output to the Truth Engine atomically.
-
-        `invalid` proposals and canon gaps remain staged for diagnostics. Safe proposals
-        are applied and marked accepted in the same transaction as their creation, so a
-        failure rolls back both the canon write and proposal resolution.
-        """
+        """Apply deterministic-safe Scribe output to the Truth Engine atomically."""
         repo = ProposedChangeRepository(self._session)
         applier = CanonApplier(self._session)
         applied = 0
@@ -129,6 +165,18 @@ class PostTurnProcessor:
             )
             applied += 1
         return applied, staged
+
+    async def _finish_without_side_effects(self, job_id: UUID, reason: str) -> None:
+        """Make a stale job terminal without letting an undone turn mutate the world."""
+        from app.db.tables import PostTurnJob
+
+        row = await self._session.get(PostTurnJob, str(job_id))
+        if not row:
+            return
+        row.status = "completed"
+        row.error = reason[:4000]
+        row.locked_at = None
+        await self._session.commit()
 
     async def process_job(
         self,
@@ -161,11 +209,23 @@ class PostTurnProcessor:
             assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
             if not assistant or assistant.role != "assistant":
                 raise ValueError("Assistant turn linked to job is missing")
+            if assistant.status != "active":
+                await self._finish_without_side_effects(
+                    job_id,
+                    f"skipped: assistant turn status is {assistant.status}",
+                )
+                return
             if not assistant.parent_turn_id:
                 raise ValueError("Assistant turn has no parent user turn")
             user_turn = await self._turns.get_by_id(assistant.parent_turn_id)
             if not user_turn:
                 raise ValueError("Parent user turn is missing")
+            if user_turn.status != "active":
+                await self._finish_without_side_effects(
+                    job_id,
+                    f"skipped: parent user turn status is {user_turn.status}",
+                )
+                return
 
             campaign_id = UUID(row.campaign_id)
             if row.job_type == "thesis_curator":
@@ -189,15 +249,31 @@ class PostTurnProcessor:
                 existing = await proposal_repo.get_for_turn(assistant.id)
                 if not existing:
                     campaign = await self._campaigns.get_by_id(campaign_id)
-                    registration = await EntityRegistrar(
-                        self._session
-                    ).register_from_turn(
-                        campaign_id=campaign_id,
-                        scene_id=assistant.scene_id,
-                        source_turn_id=assistant.id,
-                        assistant_content=assistant.content,
-                    )
-                    await self._session.commit()
+
+                    # TurnAuthority already owns first-time NPC introductions and the
+                    # materializer has committed them before this job exists. Running the
+                    # legacy EntityRegistrar again would re-infer the same presence from
+                    # prose, add another LLM call, and create an undo race. Keep Registrar
+                    # only for legacy/non-authority turns.
+                    if self._authority_managed(assistant):
+                        registration = EntityRegistrationResult()
+                    else:
+                        registration = await EntityRegistrar(
+                            self._session
+                        ).register_from_turn(
+                            campaign_id=campaign_id,
+                            scene_id=assistant.scene_id,
+                            source_turn_id=assistant.id,
+                            assistant_content=assistant.content,
+                        )
+                        await self._session.commit()
+                        assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
+                        if not assistant or assistant.status != "active":
+                            await self._finish_without_side_effects(
+                                job_id,
+                                "skipped: turn was undone during entity registration",
+                            )
+                            return
 
                     proposals = await MemoryScribe(self._session).extract_proposals(
                         campaign_id=campaign_id,
@@ -255,6 +331,20 @@ class PostTurnProcessor:
                             proposal.payload["_validation_error"] = (
                                 warning or "Proposal failed deterministic validation"
                             )
+
+                    # Scribe/taxonomy are read-only up to this point. End their read
+                    # transaction, then re-read turn status so an /undo that completed
+                    # while the models were working wins before any durable proposal/canon
+                    # write begins. Once create_batch obtains SQLite's write transaction,
+                    # a later undo will run after it and ActiveCanonReplay will compensate.
+                    await self._session.rollback()
+                    if not await self._source_pair_is_active(assistant.id):
+                        await self._finish_without_side_effects(
+                            job_id,
+                            "skipped: turn was undone while memory agents were running",
+                        )
+                        return
+
                     if proposals:
                         created = await proposal_repo.create_batch(
                             assistant.id,

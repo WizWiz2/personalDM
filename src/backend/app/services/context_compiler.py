@@ -20,36 +20,19 @@ from app.services.context_pipeline import (
 
 
 class ContextCompiler(BaseContextCompiler):
-    """Compile the base prompt and enrich it through explicit ordered providers."""
+    """Compile base context, then apply explicit ordered context providers."""
 
     DEFAULT_PROVIDER_NAMES = (
         SceneStateContextProvider.name,
         NarrativeDetailsContextProvider.name,
     )
 
-    NEW_NPC_CONTRACT = """[ENGINE NPC INTRODUCTION CAPABILITY]
-The structured participant list remains exhaustive for every character already known to this
-campaign: a known absent character cannot silently arrive, speak, act, or be substituted for a
-new person. There is one narrow exception for genuinely new NPCs that do not yet exist in campaign
-truth. When the player's latest action directly seeks contact with an unspecified person or an
-ordinary role naturally available at the current place (for example knocking on an inhabited door,
-asking a clerk, guard, bartender, witness, passer-by, or similar incidental person), the planner and
-narrator may introduce that previously unknown NPC in the current scene. The introduction must be a
-plausible immediate consequence of the player's action, not an unseeded dramatic interruption.
-Accepted narrator prose is registered by EntityRegistrar after the turn. Therefore a genuinely new
-NPC must not be rejected solely because they were not a participant before this turn. This exception
-never permits teleporting or reintroducing a character whose identity/name/alias is already present
-in campaign context and currently absent.
-"""
-
     PLAYER_CONTROL_CONTRACT = """[PLAYER-CONTROLLED PROTAGONIST: {player_name}]
 {player_name} is controlled exclusively by the human player. The latest user message is the complete
 speech/action the human supplied for this turn. You may perceive it, answer it, react to it, or ask a
 question back, but never add new dialogue, voluntary movement, gestures, choices, plans, beliefs,
 emotions, promises, attacks, consent, or other intentional actions for {player_name}. Stop before
-choosing the protagonist's next response. If {player_name} also appears in a generic participant or
-"Other Present NPCs" summary, that listing means physical presence only and never grants control of
-the protagonist.
+choosing the protagonist's next response.
 """
 
     def __init__(
@@ -72,50 +55,81 @@ the protagonist.
     def context_provider_names(self) -> tuple[str, ...]:
         return self._context_pipeline.provider_names
 
-    async def _inject_engine_contracts(
+    @staticmethod
+    def _remove_player_from_other_npcs(content: str, player_name: str) -> str:
+        """A human-controlled protagonist must never be represented to an NPC as another NPC."""
+        lines = content.splitlines()
+        result: list[str] = []
+        in_other_npcs = False
+        skipping_player = False
+        player_prefix = f"- {player_name} (Status:"
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "[Other Present NPCs]":
+                in_other_npcs = True
+                skipping_player = False
+                result.append(line)
+                continue
+
+            if in_other_npcs and line.startswith(player_prefix):
+                skipping_player = True
+                continue
+
+            if skipping_player:
+                if line.startswith("  "):
+                    continue
+                skipping_player = False
+
+            if in_other_npcs and stripped.startswith("[") and stripped.endswith("]"):
+                in_other_npcs = False
+
+            result.append(line)
+
+        return "\n".join(result)
+
+    async def _apply_actor_ownership_contract(
         self,
         campaign_id: UUID,
         acting_character_id: UUID | None,
         messages: list[ChatMessage],
         metadata: dict,
     ) -> tuple[list[ChatMessage], dict]:
-        if not messages:
+        if not acting_character_id or not messages:
             return messages, metadata
 
-        blocks: list[str] = []
-        audited = dict(metadata)
-        if acting_character_id is None:
-            blocks.append(self.NEW_NPC_CONTRACT)
-            audited["new_npc_introduction_contract"] = True
-        else:
-            campaign = await self._campaign_repo.get_by_id(campaign_id)
-            player_id = campaign.player_character_id if campaign else None
-            if player_id and player_id != acting_character_id:
-                player = await self._entity_repo.get_character(player_id)
-                if player:
-                    blocks.append(
-                        self.PLAYER_CONTROL_CONTRACT.format(
-                            player_name=player.canonical_name,
-                        )
-                    )
-                    audited["player_controlled_protagonist_id"] = str(player.id)
-                    audited["player_controlled_protagonist_name"] = (
-                        player.canonical_name
-                    )
-
-        if not blocks:
-            return messages, audited
+        campaign = await self._campaign_repo.get_by_id(campaign_id)
+        player_id = campaign.player_character_id if campaign else None
+        if not player_id or player_id == acting_character_id:
+            return messages, metadata
+        player = await self._entity_repo.get_character(player_id)
+        if not player:
+            return messages, metadata
 
         first, *rest = messages
-        enriched = ChatMessage(
-            role=first.role,
-            content=f"{first.content}\n\n" + "\n".join(blocks),
+        cleaned = self._remove_player_from_other_npcs(
+            first.content,
+            player.canonical_name,
         )
+        cleaned = (
+            f"{cleaned}\n\n"
+            + self.PLAYER_CONTROL_CONTRACT.format(
+                player_name=player.canonical_name,
+            )
+        )
+        audited = dict(metadata)
+        audited["player_controlled_protagonist_id"] = str(player.id)
+        audited["player_controlled_protagonist_name"] = player.canonical_name
+        audited["included_character_ids"] = [
+            value
+            for value in list(audited.get("included_character_ids") or [])
+            if value != str(player.id)
+        ]
         layers = list(audited.get("included_layers") or [])
-        if "layer_0b_engine_contracts" not in layers:
-            layers.append("layer_0b_engine_contracts")
+        if "layer_0b_player_ownership" not in layers:
+            layers.append("layer_0b_player_ownership")
         audited["included_layers"] = layers
-        return [enriched, *rest], audited
+        return [ChatMessage(role=first.role, content=cleaned), *rest], audited
 
     async def compile_context(
         self,
@@ -132,7 +146,7 @@ the protagonist.
             current_user_content=current_user_content,
             max_budget_override=max_budget_override,
         )
-        messages, metadata = await self._inject_engine_contracts(
+        messages, metadata = await self._apply_actor_ownership_contract(
             campaign_id,
             acting_character_id,
             messages,

@@ -309,7 +309,48 @@ def _scribe(prompt: str) -> str:
     return json.dumps({"outcomes": [outcome], "proposals": [proposal]}, ensure_ascii=False)
 
 
+def _turn_authority_plan(prompt: str) -> str:
+    """Exercise the real TurnAuthorityPlanner schema instead of silently falling back."""
+    CALLS["planner"] += 1
+    latest = prompt.rsplit("\n", 1)[-1].strip()
+    return json.dumps(
+        {
+            "player_intent": (latest or "Проверить текущую сцену")[:500],
+            "resolution": "observation",
+            "scene_disposition": "stay",
+            "npc_introductions": [],
+            "observable_consequences": [
+                "Попытка даёт одно конкретное наблюдаемое следствие в текущей сцене."
+            ],
+            "character_beats": [],
+            "canon_constraints": [
+                "Не перемещать героя и не вводить новых персонажей без отдельного authority."
+            ],
+            "new_fact_candidates": [],
+            "narration_guidance": ["Кратко показать результат заявленной попытки."],
+            "ending_hook": "Игрок видит результат и может выбрать следующий шаг.",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _authority_verdict() -> str:
+    CALLS["authority_validator"] += 1
+    return json.dumps(
+        {
+            "verdict": "pass",
+            "summary": "Candidate follows typed turn authority.",
+            "violations": [],
+        },
+        ensure_ascii=False,
+    )
+
+
 def _dispatch_json(prompt: str) -> str:
+    if "[INTER-AGENT AUTHORITY CONTRACT]" in prompt and "[TURN PLANNER]" in prompt:
+        return _turn_authority_plan(prompt)
+    if "[TURN AUTHORITY VALIDATOR]" in prompt:
+        return _authority_verdict()
     if "Ты проектируешь новый акт автономной кампании" in prompt:
         return _scenario_arc(prompt)
     if "Создай различимую карточку NPC" in prompt:

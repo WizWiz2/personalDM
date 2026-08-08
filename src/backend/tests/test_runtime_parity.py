@@ -17,12 +17,13 @@ from app.models.campaign import CampaignCreate
 from app.models.turn import TurnCreate
 from app.providers.llm_provider import LLMProvider
 from app.runtime import install_runtime
+from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.base_context_compiler import ContextCompiler as BaseContextCompiler
 from app.services.base_turn_runner import TurnRunner as BaseTurnRunner
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
-from app.services.narration_pipeline import NarrationPipelineProvider
 from app.services.turn_runner import TurnRunner
+from app.services.turn_saga import TurnSaga
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,16 +67,32 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "authoritative_scene_state",
         "recent_narrative_details",
     ]
+    assert cli_manifest["turn_pipeline"] == [
+        "compile_context",
+        "plan_authority",
+        "execute_structured_boundary",
+        "build_turn_authority",
+        "render_narration",
+        "validate_authority",
+        "materialize_structured_outcome",
+        "commit",
+        "enqueue_post_turn",
+    ]
     assert cli_manifest["narration_pipeline"] == [
         "generate_draft",
-        "validate",
-        "repair",
+        "validate_authority",
+        "repair_once",
         "publish_accepted",
     ]
     assert cli_manifest["turn_stream"].endswith("TurnRunner.run_turn_stream")
+    assert cli_manifest["turn_saga"].endswith("TurnSaga.run_turn_stream")
     assert cli_manifest["provider_stream"].endswith("LLMProvider.generate_stream")
-    assert cli_manifest["narration_provider_stream"].endswith(
-        "NarrationPipelineProvider.generate_stream"
+    assert cli_manifest["narration_pipeline_impl"].endswith(
+        "AuthorityNarrationPipeline.generate"
+    )
+    assert cli_manifest["authority_planner"].endswith("TurnAuthorityPlanner.plan")
+    assert cli_manifest["authority_validator"].endswith(
+        "TurnAuthorityValidator.validate"
     )
     assert cli_manifest["context_compiler"].endswith(
         "ContextCompiler.compile_context"
@@ -84,6 +101,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["thesis_reconcile"].endswith(
         "_reconcile_with_lifecycle"
     )
+    assert cli_manifest["post_turn_mode"] == "background"
 
 
 def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
@@ -101,23 +119,18 @@ def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
     )
 
 
-def test_narration_pipeline_is_explicit_and_not_runtime_patched() -> None:
+def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     raw_provider_method = LLMProvider.generate_stream
-    base_turn_method = BaseTurnRunner.run_turn_stream
+    legacy_turn_method = BaseTurnRunner.run_turn_stream
     install_runtime()
 
     assert LLMProvider.generate_stream is raw_provider_method
-    assert BaseTurnRunner.run_turn_stream is base_turn_method
-    assert TurnRunner.__mro__[1] is BaseTurnRunner
-    assert NarrationPipelineProvider.STAGES == (
-        "generate_draft",
-        "validate",
-        "repair",
-        "publish_accepted",
-    )
+    assert BaseTurnRunner.run_turn_stream is legacy_turn_method
+    assert TurnRunner.__mro__[1] is TurnSaga
+    assert TurnSaga.__mro__[1] is BaseTurnRunner
     assert TurnRunner.run_turn_stream.__module__ == "app.services.turn_runner"
-    assert NarrationPipelineProvider.generate_stream.__module__ == (
-        "app.services.narration_pipeline"
+    assert AuthorityNarrationPipeline.generate.__module__ == (
+        "app.services.authority_narration_pipeline"
     )
 
 
