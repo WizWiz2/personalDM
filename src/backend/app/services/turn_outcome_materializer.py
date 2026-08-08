@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.db.tables import Entity
 from app.models.character import CharacterCreate
 from app.models.turn_authority import TurnAuthority
 
@@ -17,7 +19,13 @@ class MaterializedTurnOutcome:
 
 
 class TurnOutcomeMaterializer:
-    """Apply structured turn outcomes that must not be re-inferred from narrator prose."""
+    """Apply structured outcomes before prose and bind their provenance after publication.
+
+    Planned NPCs are part of the game outcome, not narrator inventions. They are therefore created
+    before narrator generation so the narrator context and validator see actual structured scene
+    participants. Until an assistant turn is successfully saved, their provenance remains bound to
+    the triggering user turn and can be compensated if generation truly fails.
+    """
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -62,6 +70,7 @@ class TurnOutcomeMaterializer:
                     custom_fields={
                         "introduced_by": "turn_authority",
                         "introduction_turn_id": str(source_turn_id),
+                        "introduction_trigger_turn_id": str(authority.trigger_turn_id),
                         "introduction_reason": introduction.reason,
                         "temporary_name": introduction.temporary_name,
                     },
@@ -77,6 +86,32 @@ class TurnOutcomeMaterializer:
 
         await self._session.flush()
         return MaterializedTurnOutcome(tuple(created_ids))
+
+    async def bind_to_assistant(
+        self,
+        outcome: MaterializedTurnOutcome,
+        assistant_turn_id: UUID,
+    ) -> None:
+        """Replace prepared user-turn provenance with the durable assistant source turn."""
+        for entity_id in outcome.introduced_character_ids:
+            row = await self._session.get(Entity, str(entity_id))
+            if not row:
+                continue
+            try:
+                fields = json.loads(row.custom_fields or "{}")
+            except (json.JSONDecodeError, TypeError):
+                fields = {}
+            if not isinstance(fields, dict):
+                fields = {}
+            fields["introduction_turn_id"] = str(assistant_turn_id)
+            row.custom_fields = json.dumps(fields, ensure_ascii=False)
+        await self._session.flush()
+
+    async def rollback(self, outcome: MaterializedTurnOutcome) -> None:
+        """Compensate prepared introductions when a real generation/state failure aborts the turn."""
+        for entity_id in outcome.introduced_character_ids:
+            await self._entities.delete(entity_id)
+        await self._session.flush()
 
     @staticmethod
     def _key(value: object) -> str:
