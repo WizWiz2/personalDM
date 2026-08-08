@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from uuid import UUID
 
@@ -10,7 +11,8 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.models.proposed_change import ChangeType
+from app.models.proposed_change import ChangeType, ProposalAction
+from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar
 from app.services.memory_scribe import MemoryScribe
@@ -19,6 +21,18 @@ from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.thesis_curator import ThesisCurator
 
 logger = logging.getLogger(__name__)
+
+AUTO_COMMIT_CHANGE_TYPES = frozenset(
+    {
+        ChangeType.FACT,
+        ChangeType.EVENT,
+        ChangeType.RELATIONSHIP,
+        ChangeType.MOVEMENT,
+        ChangeType.KNOWLEDGE,
+        ChangeType.ITEM_TRANSFER,
+        ChangeType.NARRATIVE_DETAIL,
+    }
+)
 
 
 def should_run_periodic_job(turn_number: int, interval: int) -> bool:
@@ -55,6 +69,66 @@ class PostTurnProcessor:
                     job.id,
                     exc,
                 )
+
+    async def _uses_external_proposal_resolution(self, user_turn_id: UUID) -> bool:
+        """Detect harnesses that intentionally own proposal acceptance themselves.
+
+        The long-running simulation records a `simulation` marker on its source user
+        turns and later resolves proposals explicitly to drive phase evidence. Normal
+        gameplay has no such marker and should auto-commit safe memory immediately.
+        """
+        from app.db.tables import Turn
+
+        row = await self._session.get(Turn, str(user_turn_id))
+        if not row or not row.context_snapshot:
+            return False
+        try:
+            snapshot = json.loads(row.context_snapshot)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(snapshot, dict) and isinstance(snapshot.get("simulation"), dict)
+
+    async def _auto_commit_proposals(
+        self,
+        campaign_id: UUID,
+        source_turn_id: UUID,
+        proposals,
+    ) -> tuple[int, int]:
+        """Apply deterministic-safe Scribe output to the Truth Engine atomically.
+
+        `invalid` proposals and canon gaps remain staged for diagnostics. Safe proposals
+        are applied and marked accepted in the same transaction as their creation, so a
+        failure rolls back both the canon write and proposal resolution.
+        """
+        repo = ProposedChangeRepository(self._session)
+        applier = CanonApplier(self._session)
+        applied = 0
+        staged = 0
+        for proposal in proposals:
+            if proposal.status != "proposed":
+                staged += 1
+                continue
+            try:
+                change_type = ChangeType(proposal.change_type)
+            except ValueError:
+                staged += 1
+                continue
+            if change_type not in AUTO_COMMIT_CHANGE_TYPES:
+                staged += 1
+                continue
+
+            await applier.apply(
+                campaign_id,
+                change_type,
+                proposal.payload,
+                source_turn_id,
+            )
+            await repo.resolve(
+                proposal.id,
+                ProposalAction(status="accepted"),
+            )
+            applied += 1
+        return applied, staged
 
     async def process_job(
         self,
@@ -111,9 +185,8 @@ class PostTurnProcessor:
                             assistant_content=assistant.content,
                         )
             elif row.job_type == "memory_scribe":
-                existing = await ProposedChangeRepository(self._session).get_for_turn(
-                    assistant.id
-                )
+                proposal_repo = ProposedChangeRepository(self._session)
+                existing = await proposal_repo.get_for_turn(assistant.id)
                 if not existing:
                     campaign = await self._campaigns.get_by_id(campaign_id)
                     registration = await EntityRegistrar(
@@ -183,8 +256,30 @@ class PostTurnProcessor:
                                 warning or "Proposal failed deterministic validation"
                             )
                     if proposals:
-                        await ProposedChangeRepository(self._session).create_batch(
-                            assistant.id, proposals
+                        created = await proposal_repo.create_batch(
+                            assistant.id,
+                            proposals,
+                        )
+                        if await self._uses_external_proposal_resolution(user_turn.id):
+                            applied_count = 0
+                            staged_count = len(created)
+                        else:
+                            applied_count, staged_count = await self._auto_commit_proposals(
+                                campaign_id,
+                                assistant.id,
+                                created,
+                            )
+                        logger.debug(
+                            "Memory Scribe turn %s: extracted=%d auto_committed=%d staged=%d",
+                            assistant.id,
+                            len(created),
+                            applied_count,
+                            staged_count,
+                        )
+                    else:
+                        logger.debug(
+                            "Memory Scribe turn %s: extracted=0 auto_committed=0 staged=0",
+                            assistant.id,
                         )
             else:
                 raise ValueError(f"Unknown post-turn job type: {row.job_type}")
