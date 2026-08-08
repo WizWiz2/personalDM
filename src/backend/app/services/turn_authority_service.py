@@ -100,14 +100,15 @@ class TurnAuthorityService:
             transition_type = "action_sequence"
 
         executed_sequence = None
-        if plan and plan.execution_report:
-            # SceneTransitionExecutor writes the actual completed/blocked/skipped report
-            # back onto the plan. Narrator and Validator must consume this result rather
-            # than re-reading the requested sequence and guessing what really happened.
-            executed_sequence = dict(plan.execution_report)
+        if plan and plan.scene_transition.execution_report:
+            # SceneTransitionExecutor receives `plan.scene_transition`, and writes the
+            # actual completed/blocked/skipped ActionSequenceExecution back onto that
+            # boundary object. This exact executed result, not the requested sequence,
+            # is what Narrator and Validator must share through TurnAuthority.
+            executed_sequence = dict(plan.scene_transition.execution_report)
         elif plan and plan.action_sequence.steps:
-            # This fallback is diagnostic only (for pre-execution/unit contexts). Public
-            # TurnSaga normally has an execution_report before building authority.
+            # Diagnostic fallback for pre-execution/unit contexts. Public TurnSaga should
+            # normally have an execution_report before it builds authority.
             executed_sequence = {
                 "status": "planned_not_executed",
                 "planned": plan.action_sequence.model_dump(mode="json"),
