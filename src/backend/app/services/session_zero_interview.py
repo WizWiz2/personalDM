@@ -15,6 +15,7 @@ from app.models.session_zero_interview import (
     SessionZeroInterviewDecision,
     SessionZeroInterviewDraft,
     SessionZeroInterviewModelDecision,
+    SessionZeroInterviewPatch,
     SessionZeroInterviewState,
 )
 from app.models.turn import ChatMessage
@@ -120,9 +121,28 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
     """Resilient tool executor for the conversational Session Zero agent."""
 
     MAX_QUALITY_REPAIRS = 2
+    MAX_START_MATERIALIZER_ATTEMPTS = 2
+    START_MATERIALIZER_TOKENS = 700
     SAFE_FALLBACK_MESSAGE = (
         "Понял. Недостающие детали я возьму на себя и подготовлю стартовую сцену."
     )
+    START_MATERIALIZER_PROMPT = """[SESSION ZERO START MATERIALIZER]
+Ты не ведёшь разговор и не пишешь художественную сцену. Твоя единственная задача —
+достроить технический минимум уже согласованной нулевой сессии, чтобы приложение могло
+создать героя, локацию и первую сцену.
+
+Правила:
+- Верни только SessionZeroInterviewPatch по заданной JSON-схеме.
+- Заполняй только перечисленные технические пробелы; существующие значения не меняй.
+- Используй конкретные русские значения, которые логично следуют из карточки и диалога.
+- Не придумывай новые личные границы игрока и не меняй подтверждённые решения.
+- Не задавай вопросов и не вызывай инструменты.
+- starting_location_name — короткое название реального места старта.
+- starting_situation — конкретная ситуация, которая немедленно даёт игроку действие.
+- character.description — цельный концепт героя, а не список полей.
+- character.first_goal — практическая ближайшая цель героя.
+- Если известен сеттинг/жанр, сохраняй его смысл и не подменяй другим миром.
+"""
     NARROW_CHARACTER_TOPICS = frozenset(
         {
             "character.personality",
@@ -158,13 +178,18 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         "и что происходит",
     )
     START_CLAIM_MARKERS = (
-        "давай начнем игру",
-        "давай начнём игру",
+        "давай начнем",
+        "давай начнём",
+        "начнем ",
+        "начнём ",
         "начинаем игру",
         "игра начинается",
         "приключение начинается",
         "начинаем с первой сцены",
         "первая сцена начинается",
+        "переходим к первой сцене",
+        "переходим к игре",
+        "приступим к игре",
         "мы находимся",
     )
     TOPIC_PATTERNS = (
@@ -230,6 +255,120 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         }
         missing.extend(name for name, ready in checks.items() if not ready)
         return missing
+
+    async def _materialize_start(
+        self,
+        selection,
+        state: SessionZeroInterviewState,
+        draft: SessionZeroInterviewDraft,
+        latest_user_message: str,
+    ) -> SessionZeroInterviewDraft:
+        """Fill technical start gaps with a schema-constrained call, then safe defaults."""
+        merged = draft
+        for _ in range(self.MAX_START_MATERIALIZER_ATTEMPTS):
+            missing = self.missing_fields(merged)
+            if not missing:
+                return merged
+            current = json.dumps(
+                merged.model_dump(mode="json"),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            transcript = "\n".join(
+                f"{item.get('role')}: {item.get('content')}"
+                for item in state.messages[-8:]
+                if item.get("role") in {"user", "assistant"}
+                and item.get("content")
+            )
+            messages = [
+                ChatMessage(
+                    role="system",
+                    content=(
+                        f"{self.START_MATERIALIZER_PROMPT}\n\n"
+                        f"[ТЕКУЩАЯ КАРТОЧКА]\n{current}\n\n"
+                        "[ТЕХНИЧЕСКИЕ ПРОБЕЛЫ]\n"
+                        f"{json.dumps(missing, ensure_ascii=False)}\n\n"
+                        "[ПОСЛЕДНИЙ ДИАЛОГ]\n"
+                        f"{transcript or '[пусто]'}"
+                    ),
+                ),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "Игрок и/или мастер уже решили переходить к игре. "
+                        f"Последний ответ игрока: {latest_user_message or '[нет]'}. "
+                        "Дострой только технические пробелы и верни patch."
+                    ),
+                ),
+            ]
+            try:
+                data = await self._router.generate_json(
+                    self._provider,
+                    selection,
+                    messages,
+                    max_tokens=self.START_MATERIALIZER_TOKENS,
+                    temperature=0.1,
+                    response_model=SessionZeroInterviewPatch,
+                )
+            except LLMProviderError:
+                break
+            patch = SessionZeroInterviewPatch.model_validate(data)
+            merged = self._apply_patch(
+                merged,
+                patch,
+                explicit_correction=False,
+            )
+        return self._technical_start_defaults(merged)
+
+    @classmethod
+    def _technical_start_defaults(
+        cls,
+        draft: SessionZeroInterviewDraft,
+    ) -> SessionZeroInterviewDraft:
+        """Last-resort materialization without inventing personal player preferences."""
+        merged = draft.model_copy(deep=True)
+        world = merged.world
+        character = merged.character
+
+        if not any(
+            cls._text(value)
+            for value in (world.setting_name, world.genre, world.world_summary)
+        ):
+            world.world_summary = (
+                cls._text(world.premise)
+                or "Мир приключения, согласованный в нулевой сессии."
+            )
+
+        if not cls._text(character.name):
+            character.name = "Герой"
+
+        if not cls._text(character.description):
+            description_parts = [
+                cls._text(character.personality),
+                cls._text(character.biography),
+                ", ".join(character.capabilities).strip(),
+            ]
+            character.description = next(
+                (part for part in description_parts if part),
+                "Главный герой кампании.",
+            )
+
+        if not cls._text(character.first_goal):
+            character.first_goal = (
+                cls._text(world.starting_situation)
+                or "Разобраться с первой зацепкой и определить следующий шаг."
+            )
+
+        if not cls._text(world.starting_location_name):
+            world.starting_location_name = "Стартовая локация"
+
+        if not cls._text(world.starting_situation):
+            world.starting_situation = (
+                f"{character.name} сталкивается с первой зацепкой, связанной с целью: "
+                f"{character.first_goal}."
+            )
+
+        return merged
 
     async def _continue_pending(
         self,
@@ -298,6 +437,25 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                 state,
                 feedback=feedback,
             )
+
+        start_signal = (
+            finalize_requested
+            or self._start_requested(latest_user_message)
+            or self._assistant_claims_start(model_decision.assistant_message)
+        )
+        if start_signal:
+            if self.missing_fields(merged):
+                merged = await self._materialize_start(
+                    selection,
+                    state,
+                    merged,
+                    latest_user_message,
+                )
+            if not self.missing_fields(merged):
+                # Meaning is neural; completion of the technical transition is not.
+                # Existing CLI/API callers will now invoke `finalize()` reliably.
+                finalize_requested = True
+                unresolved_feedback = None
 
         missing = self.missing_fields(merged)
         ready = finalize_requested and not missing
