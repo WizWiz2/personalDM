@@ -170,6 +170,21 @@ class LLMProvider:
         netloc = parsed.netloc or parsed.path.split("/", 1)[0]
         return f"{scheme}://{netloc}/api/chat"
 
+    @staticmethod
+    def _ollama_options(
+        config: ProviderConfigRead,
+        num_predict: int,
+        temperature: float | None = None,
+    ) -> dict[str, Any]:
+        """Keep Ollama's real context window aligned with the application budget."""
+        options: dict[str, Any] = {
+            "num_ctx": int(config.context_window),
+            "num_predict": num_predict,
+        }
+        if temperature is not None:
+            options["temperature"] = temperature
+        return options
+
     @classmethod
     def _looks_complete(cls, text: str) -> bool:
         clean = text.rstrip()
@@ -367,12 +382,12 @@ class LLMProvider:
                         "stream": False,
                         "format": response_schema or "json",
                         "think": False,
-                        "options": {"num_predict": budget},
+                        "options": self._ollama_options(
+                            config,
+                            budget,
+                            temperature if attempt == 1 else 0.0,
+                        ),
                     }
-                    if temperature is not None:
-                        payload["options"]["temperature"] = (
-                            temperature if attempt == 1 else 0.0
-                        )
                 else:
                     payload = self._openai_no_reasoning_payload(
                         {
@@ -449,6 +464,7 @@ class LLMProvider:
                     telemetry = {
                         "attempt": attempt,
                         "requested_max_tokens": budget,
+                        "requested_num_ctx": config.context_window if is_ollama else None,
                         "finish_reason": finish_reason,
                         "usage": usage,
                         "reasoning_characters": reasoning_chars,
@@ -486,12 +502,11 @@ class LLMProvider:
                         {
                             "attempt": attempt,
                             "requested_max_tokens": budget,
+                            "requested_num_ctx": config.context_window if is_ollama else None,
                             "status": "error",
                             "error": str(exc),
                         }
                     )
-                    # A rate limit is not malformed JSON. Retrying immediately with a
-                    # larger adaptive budget only consumes more TPM and cannot repair it.
                     if isinstance(exc, LLMProviderError) and (
                         "HTTP 429" in str(exc)
                         or "rate_limit" in str(exc).casefold()
@@ -504,6 +519,7 @@ class LLMProvider:
             "status": "structured_error",
             "error": str(last_error or "unknown structured response error"),
             "attempts": attempt_telemetry,
+            "requested_num_ctx": config.context_window if is_ollama else None,
             "duration_ms": round((time.monotonic() - started) * 1000),
         }
         raise LLMProviderError(f"Failed to obtain valid JSON: {last_error}")
@@ -579,10 +595,12 @@ class LLMProvider:
                 "messages": self._messages_payload(messages),
                 "stream": True,
                 "think": False if disable_thinking else True,
-                "options": {"num_predict": completion_budget},
+                "options": self._ollama_options(
+                    config,
+                    completion_budget,
+                    temperature,
+                ),
             }
-            if temperature is not None:
-                payload["options"]["temperature"] = temperature
             payload_variants = [payload]
         else:
             payload = {
@@ -659,6 +677,7 @@ class LLMProvider:
                 "error": str(exc),
                 "duration_ms": round((time.monotonic() - started) * 1000),
                 "requested_max_tokens": completion_budget,
+                "requested_num_ctx": config.context_window if is_ollama else None,
             }
             raise LLMProviderError(f"Failed to reach LLM provider: {exc}") from exc
         except LLMProviderError as exc:
@@ -675,6 +694,7 @@ class LLMProvider:
                 "frame_keys": dict(frame_keys),
                 "duration_ms": round((time.monotonic() - started) * 1000),
                 "requested_max_tokens": completion_budget,
+                "requested_num_ctx": config.context_window if is_ollama else None,
                 "native_ollama": is_ollama,
             }
             raise
@@ -710,6 +730,7 @@ class LLMProvider:
             "frame_keys": dict(frame_keys),
             "thinking_disabled": thinking_disabled,
             "requested_max_tokens": completion_budget,
+            "requested_num_ctx": config.context_window if is_ollama else None,
             "native_ollama": is_ollama,
             "duration_ms": round((time.monotonic() - started) * 1000),
         }
