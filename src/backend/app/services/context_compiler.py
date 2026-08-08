@@ -31,8 +31,12 @@ class ContextCompiler(BaseContextCompiler):
 {player_name} is controlled exclusively by the human player. The latest user message is the complete
 speech/action the human supplied for this turn. You may perceive it, answer it, react to it, or ask a
 question back, but never add new dialogue, voluntary movement, gestures, choices, plans, beliefs,
-emotions, promises, attacks, consent, or other intentional actions for {player_name}. Stop before
-choosing the protagonist's next response.
+emotions, promises, attacks, consent, or other intentional actions for {player_name}.
+
+[ACTOR OUTPUT CONTRACT: {actor_name}]
+Write only {actor_name}'s own speech, actions, perceptions and immediate reactions. Never narrate
+{player_name} as the subject of a new action and never write a new quoted line for {player_name}.
+End immediately after {actor_name}'s response; the human supplies what {player_name} does next.
 """
 
     def __init__(
@@ -103,7 +107,8 @@ choosing the protagonist's next response.
         if not player_id or player_id == acting_character_id:
             return messages, metadata
         player = await self._entity_repo.get_character(player_id)
-        if not player:
+        actor = await self._entity_repo.get_character(acting_character_id)
+        if not player or not actor:
             return messages, metadata
 
         first, *rest = messages
@@ -115,11 +120,14 @@ choosing the protagonist's next response.
             f"{cleaned}\n\n"
             + self.PLAYER_CONTROL_CONTRACT.format(
                 player_name=player.canonical_name,
+                actor_name=actor.canonical_name,
             )
         )
         audited = dict(metadata)
         audited["player_controlled_protagonist_id"] = str(player.id)
         audited["player_controlled_protagonist_name"] = player.canonical_name
+        audited["actor_output_character_id"] = str(actor.id)
+        audited["actor_output_character_name"] = actor.canonical_name
         audited["included_character_ids"] = [
             value
             for value in list(audited.get("included_character_ids") or [])
@@ -128,6 +136,8 @@ choosing the protagonist's next response.
         layers = list(audited.get("included_layers") or [])
         if "layer_0b_player_ownership" not in layers:
             layers.append("layer_0b_player_ownership")
+        if "layer_0c_actor_output_contract" not in layers:
+            layers.append("layer_0c_actor_output_contract")
         audited["included_layers"] = layers
         return [ChatMessage(role=first.role, content=cleaned), *rest], audited
 
