@@ -93,3 +93,23 @@ async def test_auto_commit_includes_transient_narrative_details(monkeypatch):
 
     assert (applied, staged) == (1, 0)
     assert applier.apply.await_args.args[1] == ChangeType.NARRATIVE_DETAIL
+
+
+@pytest.mark.asyncio
+async def test_simulation_marker_preserves_external_proposal_resolution():
+    session = AsyncMock()
+    session.get.return_value = SimpleNamespace(
+        context_snapshot='{"simulation":{"run_id":"test-run","logical_turn":4}}'
+    )
+    processor = PostTurnProcessor(session)
+
+    assert await processor._uses_external_proposal_resolution(uuid4()) is True
+
+
+@pytest.mark.asyncio
+async def test_normal_turn_uses_memory_auto_commit():
+    session = AsyncMock()
+    session.get.return_value = SimpleNamespace(context_snapshot='{"channel":"narrative"}')
+    processor = PostTurnProcessor(session)
+
+    assert await processor._uses_external_proposal_resolution(uuid4()) is False
