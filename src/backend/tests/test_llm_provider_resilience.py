@@ -2,6 +2,7 @@ import pytest
 from pydantic import BaseModel
 from typing import Literal
 
+from app.config import settings
 from app.models.turn import ChatMessage
 from app.providers import llm_provider as llm_provider_module
 from app.providers.llm_provider import LLMProvider
@@ -158,7 +159,11 @@ def test_balanced_json_parser_accepts_fenced_json():
 def test_control_retry_increases_budget_without_consuming_whole_context():
     assert LLMProvider._adaptive_budget(900, 1) == 900
     assert LLMProvider._adaptive_budget(900, 2) == 1800
-    assert LLMProvider._adaptive_budget(1600, 2) == 2048
+    expected = min(
+        max(1600, int(settings.LLM_CONTEXT_WINDOW * 0.5)),
+        3200,
+    )
+    assert LLMProvider._adaptive_budget(1600, 2) == expected
 
 
 def test_usage_can_reveal_silent_budget_exhaustion():
