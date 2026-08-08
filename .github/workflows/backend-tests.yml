@@ -73,6 +73,10 @@ jobs:
         working-directory: src/backend
         run: pytest -q tests/test_turns.py tests/test_turn_planner.py tests/test_scene_transition_undo.py --tb=short
 
+      - name: Test inter-agent authority contracts
+        working-directory: src/backend
+        run: pytest -q tests/test_interagent_turn_authority.py tests/test_playtest_round2_regressions.py --tb=short
+
       - name: Test legacy provider and Scribe contracts
         working-directory: src/backend
         run: pytest -q tests/test_provider_and_scribe.py --tb=short
@@ -120,6 +124,7 @@ jobs:
               if line.strip()
           ]
           report = (root / "realistic_simulation_report.md").read_text(encoding="utf-8")
+          output = (root / "ci-output.log").read_text(encoding="utf-8")
 
           arcs = scenario.get("arcs") or []
           assert arcs, scenario
@@ -148,8 +153,13 @@ jobs:
               introduced |= introduced_now
               assert active_now <= introduced, (phase, active_now - introduced)
 
+          # Dynamic campaigns intentionally generate the next act before the turn budget
+          # necessarily has time to finish every newly-added phase. `completed` means the
+          # requested benchmark turn budget was exhausted, not that an endless scenario
+          # catalog reached a terminal story state.
           assert state["completed"] is True, state
-          assert state["phase_index"] == len(phases), (state, len(phases))
+          assert state["logical_turn"] == 61, state
+          assert 0 < state["phase_index"] <= len(phases), (state, len(phases))
           assert health["mode"] == "quality", health
           assert health["valid"] is True, health
           assert health["control_stats"].get("player_success", 0) > 0, health
@@ -162,8 +172,10 @@ jobs:
           assert all(not record.get("generation_failed") for record in records)
           assert all(not (record.get("player") or {}).get("fallback") for record in records)
           assert len({record["player"]["intent"] for record in records}) >= len(records) * 0.8
+          assert '"planner":' in output, output[-2000:]
+          assert '"authority_validator":' in output, output[-2000:]
           assert "Benchmark valid: **True**" in report
-          assert f"Фаз завершено: {len(phases)}" in report
+          assert f"Фаз завершено: {state['phase_index']}" in report
           assert "Active theses in completed scenes: 0" in report
           assert "Actor contexts/current-message omissions:" in report
 
@@ -219,19 +231,30 @@ jobs:
           ).fetchone()[0]
           actor_missing = 0
           actor_total = 0
-          for snapshot_raw, in db.execute(
-              """SELECT context_snapshot FROM turns
-                 WHERE campaign_id=? AND role='assistant' AND acting_character_id IS NOT NULL""",
+          narrator_total = 0
+          narrator_planner_completed = 0
+          authority_validated = 0
+          for acting_character_id, snapshot_raw in db.execute(
+              """SELECT acting_character_id, context_snapshot FROM turns
+                 WHERE campaign_id=? AND role='assistant' AND status='active'""",
               (campaign_id,),
           ):
-              actor_total += 1
               snapshot = json.loads(snapshot_raw or "{}")
-              if not snapshot.get("current_user_reserved"):
-                  actor_missing += 1
+              protocol = snapshot.get("interagent_protocol") or {}
+              if acting_character_id is not None:
+                  actor_total += 1
+                  if not snapshot.get("current_user_reserved"):
+                      actor_missing += 1
+              else:
+                  narrator_total += 1
+                  if protocol.get("planner_status") == "completed":
+                      narrator_planner_completed += 1
+              if protocol.get("validator_status") in {"passed", "repaired"}:
+                  authority_validated += 1
           db.close()
 
           assert characters == len(npc_names) + 1, (characters, len(npc_names))
-          assert outcomes == len(phases), (outcomes, len(phases))
+          assert outcomes == state["phase_index"], (outcomes, state["phase_index"])
           assert proposals > 0, proposals
           assert canon_gaps == 0, canon_gaps
           assert sourced_beliefs > 0, sourced_beliefs
@@ -239,14 +262,21 @@ jobs:
           assert duplicate_scopes == 0, duplicate_scopes
           assert actor_total > 0, actor_total
           assert actor_missing == 0, actor_missing
+          assert narrator_total > 0, narrator_total
+          assert narrator_planner_completed == narrator_total, (
+              narrator_planner_completed,
+              narrator_total,
+          )
+          assert authority_validated == len(records), (authority_validated, len(records))
           print(
               "Validated",
               len(records),
               "logical turns across",
               len(arcs),
-              "generated arcs and",
+              "generated arcs; completed phases",
+              state["phase_index"],
+              "of",
               len(phases),
-              "generated phases",
           )
           PY
 
