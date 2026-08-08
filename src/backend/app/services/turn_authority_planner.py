@@ -54,7 +54,10 @@ class CoordinatedTurnPlan(TurnPlan):
                     "auto-success movement steps require an explicit location_transition"
                 )
 
-        names = [" ".join(item.canonical_name.casefold().split()) for item in self.npc_introductions]
+        names = [
+            " ".join(item.canonical_name.casefold().split())
+            for item in self.npc_introductions
+        ]
         if len(names) != len(set(names)):
             raise ValueError("npc_introductions must use unique canonical names")
         return self
@@ -85,32 +88,33 @@ class CoordinatedTurnPlan(TurnPlan):
 class TurnAuthorityPlanner:
     """One control-agent decision with deterministic validation of the hand-off contract."""
 
+    GENERIC_CONTACT_ROLE_RU = (
+        r"(?:информатор\w*|свидетел\w*|продавц\w*|бармен\w*|трактирщ\w*|"
+        r"хозя\w*|охран\w*|дежур\w*|жил\w*|служащ\w*|клерк\w*|прохож\w*)"
+    )
+    GENERIC_CONTACT_ROLE_EN = (
+        r"(?:informant|witness|clerk|bartender|innkeeper|guard|resident|seller|passer-by)"
+    )
     CONTACT_INTENT_PATTERNS = (
         r"\b(?:по)?стуч\w*\b",
-        r"\bрасспрос\w*\b",
-        r"\bспрашива\w*\b",
-        r"\bспросить\b",
-        r"\bищу\s+(?:информатор\w*|свидетел\w*|продавц\w*|бармен\w*|хозя\w*|охран\w*|дежур\w*)",
+        rf"\b(?:расспрос\w*|спрашива\w*|спросить)\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
+        rf"\bищу\s+(?:[^.!?]{{0,16}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
         r"\bknock(?:ing|ed)?\b",
-        r"\bask(?:ing|ed)?\b",
-        r"\bquestion(?:ing|ed)?\b",
-        r"\blook(?:ing)?\s+for\s+(?:an?\s+|the\s+)?(?:informant|witness|clerk|bartender|guard|resident)\b",
+        rf"\b(?:ask(?:ing|ed)?|question(?:ing|ed)?)\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
+        rf"\blook(?:ing)?\s+for\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
     )
-    CONTACT_RESOLUTION_PATTERNS = (
-        r"\bотвеч\w*\b",
-        r"\bговор\w*\b",
-        r"\bсообщ\w*\b",
-        r"\bрасскаж\w*\b",
+    NEGATIVE_CONTACT_OUTCOME_PATTERNS = (
         r"\bникто\b",
         r"\bне\s+ответ\w*\b",
         r"\bне\s+наш\w*\b",
-        r"\bнет\s+(?:никого|подходящ\w*)\b",
+        r"\bне\s+оказыва\w*\b",
+        r"\bнет\s+(?:никого|подходящ\w*|ответа)\b",
         r"\bпуст\w*\b",
-        r"\banswer\w*\b",
-        r"\brepl(?:y|ies|ied)\b",
         r"\bnobody\b",
         r"\bno\s+one\b",
+        r"\bno\s+answer\b",
         r"\bnot\s+found\b",
+        r"\bnone\s+available\b",
     )
     EXPLICIT_MOVEMENT_PATTERNS = (
         r"\b(?:иду|пойду|отправляюсь|направляюсь|возвращаюсь|вхожу|захожу|выхожу)\s+(?:обратно\s+)?(?:в|во|на|к|до)\b",
@@ -154,11 +158,12 @@ Rules for npc_introductions:
 - DIRECT CONTACT REQUIRES A BINARY STRUCTURED DECISION. If an unknown ordinary person answers or is
   encountered this turn, npc_introductions MUST contain that person. If nobody answers / no suitable
   person is found, npc_introductions stays empty AND observable_consequences MUST explicitly say so.
-  Never leave this decision for Narrator prose.
+  A positive consequence such as "someone answers" with empty npc_introductions is INVALID. Never
+  leave responder identity for Narrator prose.
 - Example: player says "Подхожу к двери и стучу". Valid plan A: introduce "Жилец дома" or another
   plausible responder and include opening the door in observable_consequences. Valid plan B: no
   introduction and observable_consequences says nobody answers. Invalid: empty introductions while
-  narration_guidance implies that somebody may answer.
+  narration_guidance or consequences imply that somebody answers.
 - Example: player says "Иду в таверну расспросить информатора". If no known suitable contact is in
   current context and the plan resolves contact, introduce a plausible bartender/patron/informant.
   Otherwise explicitly resolve that no suitable contact is available yet.
@@ -222,14 +227,16 @@ choice for the protagonist.
         issues: list[str] = []
 
         if cls._matches_any(cls.CONTACT_INTENT_PATTERNS, text):
+            # For generic/unknown contact, an affirmative response must have typed identity.
+            # Empty introductions are valid only when the plan explicitly resolves NO contact.
             contact_resolved = bool(plan.npc_introductions) or cls._matches_any(
-                cls.CONTACT_RESOLUTION_PATTERNS,
+                cls.NEGATIVE_CONTACT_OUTCOME_PATTERNS,
                 consequences,
             )
             if not contact_resolved:
                 issues.append(
-                    "direct contact is unresolved: introduce the responder or explicitly state "
-                    "that nobody answers / no suitable contact is found"
+                    "direct contact is unresolved: a positive responder requires npc_introductions; "
+                    "otherwise explicitly state that nobody answers / no suitable contact is found"
                 )
 
         if (
