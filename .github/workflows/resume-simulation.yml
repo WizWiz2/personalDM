@@ -26,7 +26,7 @@ jobs:
       - name: Install backend
         run: python -m pip install -e "src/backend[dev]"
 
-      - name: Stop on a planned provider failure
+      - name: Stop on one planned provider failure
         working-directory: src/backend
         env:
           PYTHONPATH: "."
@@ -34,7 +34,10 @@ jobs:
           PDM_SIM_DATA_DIR: "./data/ci-resume"
           PDM_SIM_RESET: "1"
           PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
-          PDM_MOCK_FAIL_DM_ATTEMPTS: "3"
+          # TurnSaga deliberately fails fast on transport errors instead of spending
+          # a minute repeating the same request. One injected failure is enough to
+          # prove that the logical turn is resumable and idempotent.
+          PDM_MOCK_FAIL_DM_ATTEMPTS: "1"
         run: python tests/run_ci_mock_simulation_v3.py
 
       - name: Validate checkpoint before resume
@@ -86,7 +89,7 @@ jobs:
           PDM_SIM_DATA_DIR: "./data/ci-resume"
           PDM_SIM_RESET: "0"
           PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
-          PDM_MOCK_FAIL_DM_ATTEMPTS: "3"
+          PDM_MOCK_FAIL_DM_ATTEMPTS: "1"
         run: python tests/run_ci_mock_simulation_v3.py
 
       - name: Validate idempotent resume
