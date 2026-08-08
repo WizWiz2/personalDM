@@ -149,13 +149,20 @@ class TurnPlan(BaseModel):
     ending_hook: str = Field(default="", max_length=500)
 
     @model_validator(mode="after")
-    def prefer_sequence_boundaries(self):
+    def enforce_structured_boundaries(self):
         if self.action_sequence.steps:
+            self.resolution = "sequence"
             self.scene_transition = SceneTransitionPlan(
                 required=True,
                 transition_type="focus_transition",
                 reason="Execute the ordered player action sequence.",
                 sequence_payload=self.action_sequence.model_dump(),
+            )
+        elif self.resolution == "sequence":
+            raise ValueError("sequence resolution requires action_sequence.steps")
+        elif self.resolution == "transition" and not self.scene_transition.required:
+            raise ValueError(
+                "transition resolution requires a structured scene_transition"
             )
         return self
 
@@ -228,9 +235,14 @@ Authoritative scene-state rules:
 - Only characters in Physically present characters may speak, react, touch objects, observe the
   scene, or be addressed as present. An absent character cannot silently arrive.
 - Only listed Objects physically here may be used as already present.
-- A successful physical departure may use only an Available exit. A destination not listed there
-  must first be discovered, opened, created by a structured world update, or rejected as currently
-  unreachable. Do not invent a door, corridor, route, portal, vehicle, or shortcut to grant success.
+- Never encode a completed change of building, district, room, journey endpoint or other scene
+  boundary only in observable_consequences or prose guidance. It must be a structured transition.
+- If the player's latest input explicitly says they leave the current place, enter another named
+  place, or travel to a named destination, use resolution=transition and a required
+  location_transition for a single action. The executor may create/discover that named destination
+  and its route when the player's explicit movement is plausible and no established fact blocks it.
+- Do not invent an off-screen destination or route merely for drama. A new destination is allowed
+  here only when it comes from the player's explicit stated movement or an established world fact.
 - World time does not advance merely for atmosphere. Advance it only through an explicit approved
   time transition.
 - If the scene-state block contains invariant errors, do not normalize them in prose. Preserve the
@@ -241,7 +253,9 @@ Scene boundary and bridge rules:
   substantially later meeting is a new scene.
 - Do not keep previous participants by default. carry_participants contains only characters
   explicitly moving with the player or explicitly present after the boundary.
-- For a location transition, destination_location must match an available exit when one is listed.
+- For a location transition, destination_location must name the actual structured destination.
+  Existing discovered exits are preferred; an explicit player-selected new destination may be
+  materialized by the executor unless canon explicitly makes it unreachable.
 - For a time transition, describe elapsed_time and time_after when known.
 - bridge_summary must summarize only the durable result of the scene being left, never its full
   transcript or incidental atmosphere.
