@@ -113,6 +113,10 @@ class TurnAuthority(BaseModel):
                 "ending_hook": self.ending_hook,
             }
         )
+        if self.action_sequence:
+            # Keep a human/debugger-visible marker while the data itself remains part of
+            # this single authority object, not a second injected contract.
+            payload["execution_section"] = "[EXECUTED ACTION SEQUENCE]"
         return payload
 
 
