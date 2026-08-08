@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 
 from app.config import settings
-from app.models.narration_validation import NarrationValidationResult
+from app.models.narration_validation import (
+    NarrationValidationResult,
+    NarrationViolation,
+)
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 
@@ -107,7 +111,12 @@ Return exactly:
                 response_model=NarrationValidationResult,
             )
             result = NarrationValidationResult.model_validate(data)
-            return self.apply_deterministic_authority(result, authority)
+            result = self.apply_deterministic_authority(result, authority)
+            return self.apply_deterministic_actor_agency(
+                result,
+                authority,
+                candidate_text,
+            )
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise NarrationValidationError(str(exc)) from exc
 
@@ -151,6 +160,56 @@ Return exactly:
                 else "Типизированный TurnAuthority подтверждает этого собеседника или новое появление."
             ),
             violations=filtered,
+        )
+
+    @staticmethod
+    def apply_deterministic_actor_agency(
+        result: NarrationValidationResult,
+        authority: TurnAuthority,
+        candidate_text: str,
+    ) -> NarrationValidationResult:
+        """Actor output may never rely on the LLM validator to protect the human protagonist.
+
+        Small local models sometimes append a protagonist reaction after an otherwise valid NPC
+        answer and then incorrectly judge their own prose as valid. The publication scrubber is a
+        deterministic second opinion for actor turns: if it would remove player-owned prose, force
+        the normal repair/fallback path even when the control model returned ``pass``.
+        """
+        if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
+            return result
+        if any(
+            item.violation_type == "player_agency" and item.severity == "error"
+            for item in result.violations
+        ):
+            return result
+
+        sanitized, diagnostics = NarrationPublicationGuard.publish(
+            authority,
+            candidate_text,
+            None,
+        )
+        if (
+            diagnostics.get("mode") == "sanitized_candidate"
+            and " ".join(sanitized.split()) == " ".join(candidate_text.split())
+        ):
+            return result
+
+        violation = NarrationViolation(
+            violation_type="player_agency",
+            severity="error",
+            evidence=(
+                f"Ответ за {authority.acting_character_name or 'NPC'} содержит новую реплику "
+                f"или самостоятельное действие героя {authority.player_character_name}."
+            ),
+            correction=(
+                f"Оставить только ответ и действия {authority.acting_character_name or 'NPC'}; "
+                f"следующую реплику или действие {authority.player_character_name} вводит человек."
+            ),
+        )
+        return NarrationValidationResult(
+            verdict="repair_required",
+            summary="Детерминированная проверка обнаружила управление героем в ответе NPC.",
+            violations=[*result.violations, violation],
         )
 
     @staticmethod
