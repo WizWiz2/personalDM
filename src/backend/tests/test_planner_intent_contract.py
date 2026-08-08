@@ -65,7 +65,7 @@ def test_explicit_destination_movement_cannot_silently_stay():
 
     transition = CoordinatedTurnPlan(
         player_intent="Идти в таверну.",
-        resolution="movement",
+        resolution="transition",
         scene_disposition="location_transition",
         narration_policy=NarrationPolicy(),
         scene_transition=SceneTransitionPlan(
