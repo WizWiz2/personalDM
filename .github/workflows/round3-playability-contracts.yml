@@ -16,6 +16,7 @@ on:
       - "src/backend/app/services/context_compiler.py"
       - "src/backend/app/providers/llm_provider.py"
       - "src/backend/tests/test_round3_playability_recovery.py"
+      - "src/backend/tests/test_actor_agency_failclosed.py"
       - "src/backend/tests/test_planner_intent_contract.py"
       - "src/backend/tests/test_planner_intent_repair.py"
       - "src/backend/tests/test_narration_validation.py"
@@ -56,6 +57,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_round3_playability_recovery.py \
+            tests/test_actor_agency_failclosed.py \
             tests/test_planner_intent_contract.py \
             tests/test_planner_intent_repair.py \
             tests/test_narration_validation.py \
