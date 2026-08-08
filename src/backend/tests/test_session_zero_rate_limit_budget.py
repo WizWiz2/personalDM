@@ -200,6 +200,7 @@ async def test_structured_provider_does_not_retry_429_with_larger_budget():
         {
             "attempt": 1,
             "requested_max_tokens": 1200,
+            "requested_num_ctx": None,
             "status": "error",
             "error": "LLM returned HTTP 429: " + _RateLimitedResponse.text,
         }
