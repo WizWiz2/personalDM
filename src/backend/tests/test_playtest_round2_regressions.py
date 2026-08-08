@@ -12,13 +12,14 @@ from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.scene import SceneCreate
+from app.models.turn import ChatMessage
 from app.services.context_compiler import ContextCompiler
 from app.services.proposal_presence import ProposalPresenceResolver
-from app.services.turn_planner import TurnPlan, TurnPlanner
+from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 
 
 @pytest.mark.asyncio
-async def test_narrator_context_exposes_narrow_new_npc_capability(
+async def test_narrator_context_no_longer_grants_generic_npc_invention(
     db_session: AsyncSession,
 ):
     campaign_id = uuid4()
@@ -36,49 +37,63 @@ async def test_narrator_context_exposes_narrow_new_npc_capability(
     )
 
     system = messages[0].content
-    assert "[ENGINE NPC INTRODUCTION CAPABILITY]" in system
-    assert "genuinely new NPCs" in system
-    assert "known absent character cannot silently arrive" in system
-    assert metadata["new_npc_introduction_contract"] is True
+    # PR #68 used a prose-only exception here. That was contradictory with the
+    # downstream validator. New introductions now exist only in typed Planner output.
+    assert "[ENGINE NPC INTRODUCTION CAPABILITY]" not in system
+    assert "new_npc_introduction_contract" not in metadata
+    planner_system = TurnAuthorityPlanner.planning_messages(messages)[0].content
+    assert "[INTER-AGENT AUTHORITY CONTRACT]" in planner_system
+    assert "npc_introductions" in planner_system
+    assert "already known but absent character" in planner_system
 
-    # The deterministic engine capability must survive both planner and narrator
-    # prompt composition; otherwise the strict participant contract would erase it.
-    planner_system = TurnPlanner.planning_messages(messages)[0].content
-    assert "[ENGINE NPC INTRODUCTION CAPABILITY]" in planner_system
-
-    plan = TurnPlan(
+    plan = CoordinatedTurnPlan(
         player_intent="Поговорить с неизвестным жильцом.",
         resolution="conversation",
+        scene_disposition="stay",
         observable_consequences=["На стук отвечает ранее неизвестный жилец."],
-        character_beats=["Новый жилец отвечает из-за двери."],
-        canon_constraints=["Не подменять жильца уже известным отсутствующим NPC."],
         ending_hook="Жилец ждёт следующего вопроса.",
     )
-    narrator_system = TurnPlanner.inject_plan(messages, plan)[0].content
-    assert "[ENGINE NPC INTRODUCTION CAPABILITY]" in narrator_system
-    assert "previously unknown NPC" in narrator_system
+    assert plan.npc_introductions == []
 
 
 @pytest.mark.asyncio
-async def test_actor_context_explicitly_marks_human_controlled_protagonist(
+async def test_actor_context_explicitly_separates_human_protagonist_from_npcs(
     db_session: AsyncSession,
 ):
     campaign_id = uuid4()
     campaigns = CampaignRepository(db_session)
     entities = EntityRepository(db_session)
+    locations = LocationRepository(db_session)
+    scenes = SceneRepository(db_session)
     await campaigns.create(campaign_id, CampaignCreate(name="Talk agency"))
+    location = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Кухня Греты"),
+    )
     player = await entities.create_character(
         campaign_id,
-        CharacterCreate(canonical_name="Рэт Уайтмоур"),
+        CharacterCreate(
+            canonical_name="Рэт Уайтмоур",
+            current_location_id=location.id,
+        ),
     )
     greta = await entities.create_character(
         campaign_id,
-        CharacterCreate(canonical_name="Старуха Грета"),
+        CharacterCreate(
+            canonical_name="Старуха Грета",
+            current_location_id=location.id,
+        ),
     )
     await campaigns.update(
         campaign_id,
         CampaignUpdate(player_character_id=player.id),
     )
+    scene = await scenes.create(
+        campaign_id,
+        SceneCreate(title="За чаем", location_id=location.id),
+    )
+    await scenes.add_participant(scene.id, player.id, allow_movement=True)
+    await scenes.add_participant(scene.id, greta.id, allow_movement=True)
 
     messages, metadata = await ContextCompiler(
         db_session,
@@ -86,6 +101,7 @@ async def test_actor_context_explicitly_marks_human_controlled_protagonist(
     ).compile_context(
         campaign_id,
         acting_character_id=greta.id,
+        scene_id=scene.id,
         current_user_content="Что вы видели ночью?",
     )
 
@@ -93,7 +109,8 @@ async def test_actor_context_explicitly_marks_human_controlled_protagonist(
     assert "[PLAYER-CONTROLLED PROTAGONIST: Рэт Уайтмоур]" in system
     assert "controlled exclusively by the human player" in system
     assert "never add new dialogue" in system
-    assert "Other Present NPCs" in system or "physical presence only" in system
+    other_npcs = system.split("[Other Present NPCs]", 1)[1]
+    assert "- Рэт Уайтмоур (Status:" not in other_npcs
     assert metadata["player_controlled_protagonist_id"] == str(player.id)
     assert metadata["player_controlled_protagonist_name"] == "Рэт Уайтмоур"
 
