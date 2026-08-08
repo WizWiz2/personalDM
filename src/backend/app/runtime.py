@@ -12,8 +12,8 @@ _GUARDS = (
 def install_runtime() -> None:
     """Install the remaining global runtime guards exactly once.
 
-    Context and narration composition are explicit dependencies. Runtime bootstrap now
-    installs only the two legacy guards that still mutate public extension points.
+    Turn orchestration, context and narration composition are explicit dependencies. Runtime
+    bootstrap now installs only the two legacy guards that still mutate public extension points.
     """
     global _INSTALLED
     if _INSTALLED:
@@ -32,11 +32,14 @@ def runtime_manifest() -> dict[str, Any]:
     install_runtime()
 
     from app.providers.llm_provider import LLMProvider
+    from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
     from app.services.context_compiler import ContextCompiler
     from app.services.memory_scribe import MemoryScribe
-    from app.services.narration_pipeline import NarrationPipelineProvider
     from app.services.thesis_curator import ThesisCurator
+    from app.services.turn_authority_planner import TurnAuthorityPlanner
+    from app.services.turn_authority_validator import TurnAuthorityValidator
     from app.services.turn_runner import TurnRunner
+    from app.services.turn_saga import TurnSaga
 
     def identity(value: object) -> str:
         module = getattr(value, "__module__", type(value).__module__)
@@ -51,13 +54,31 @@ def runtime_manifest() -> dict[str, Any]:
         "installed": _INSTALLED,
         "guards": list(_GUARDS),
         "context_pipeline": list(ContextCompiler.DEFAULT_PROVIDER_NAMES),
-        "narration_pipeline": list(NarrationPipelineProvider.STAGES),
+        "turn_pipeline": [
+            "compile_context",
+            "plan_authority",
+            "execute_structured_boundary",
+            "build_turn_authority",
+            "render_narration",
+            "validate_authority",
+            "materialize_structured_outcome",
+            "commit",
+            "enqueue_post_turn",
+        ],
+        "narration_pipeline": [
+            "generate_draft",
+            "validate_authority",
+            "repair_once",
+            "publish_accepted",
+        ],
         "turn_stream": identity(TurnRunner.run_turn_stream),
+        "turn_saga": identity(TurnSaga.run_turn_stream),
         "provider_stream": identity(LLMProvider.generate_stream),
-        "narration_provider_stream": identity(
-            NarrationPipelineProvider.generate_stream
-        ),
+        "narration_pipeline_impl": identity(AuthorityNarrationPipeline.generate),
+        "authority_planner": identity(TurnAuthorityPlanner.plan),
+        "authority_validator": identity(TurnAuthorityValidator.validate),
         "context_compiler": identity(ContextCompiler.compile_context),
         "memory_parser": identity(MemoryScribe._parse_data),
         "thesis_reconcile": identity(ThesisCurator.reconcile),
+        "post_turn_mode": "background",
     }
