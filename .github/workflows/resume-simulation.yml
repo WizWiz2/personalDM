@@ -81,7 +81,7 @@ jobs:
           assert assistants == 0, assistants
           PY
 
-      - name: Resume the same logical turn and finish generated campaign
+      - name: Resume the same logical turn and exhaust benchmark budget
         working-directory: src/backend
         env:
           PYTHONPATH: "."
@@ -89,7 +89,9 @@ jobs:
           PDM_SIM_DATA_DIR: "./data/ci-resume"
           PDM_SIM_RESET: "0"
           PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
-          PDM_MOCK_FAIL_DM_ATTEMPTS: "1"
+          # The persisted failure budget was consumed by the first process. Be explicit
+          # that resume itself must not inject a second unrelated provider failure.
+          PDM_MOCK_FAIL_DM_ATTEMPTS: "0"
         run: python tests/run_ci_mock_simulation_v3.py
 
       - name: Validate idempotent resume
@@ -114,8 +116,10 @@ jobs:
           phases = [phase for arc in arcs for phase in (arc.get("phases") or [])]
           assert arcs and phases, scenario
           assert state["completed"] is True, state
-          assert state["phase_index"] == len(phases), (state, len(phases))
+          assert state["logical_turn"] == 61, state
+          assert 0 < state["phase_index"] <= len(phases), (state, len(phases))
           assert len(records) == len({record["turn"] for record in records})
+          assert len(records) == 60, len(records)
           assert records[0]["turn"] == 1
           assert records[0]["generation_failed"] is False
           assert records[0]["player"]["intent"] == original_intent
@@ -140,13 +144,31 @@ jobs:
                  )""",
               (campaign_id,),
           ).fetchone()[0]
+          authority_protocol_rows = db.execute(
+              """SELECT COUNT(*) FROM turns
+                 WHERE campaign_id=? AND role='assistant' AND status='active'
+                 AND json_extract(context_snapshot, '$.interagent_protocol.validator_status')
+                     IN ('passed', 'repaired')""",
+              (campaign_id,),
+          ).fetchone()[0]
           db.close()
 
           assert len(user_rows) == len(records), (len(user_rows), len(records))
           assert assistant_count == len(records), (assistant_count, len(records))
           assert duplicate_markers == 0, duplicate_markers
+          assert authority_protocol_rows == len(records), (
+              authority_protocol_rows,
+              len(records),
+          )
           assert original_intent in user_rows[0][0]
-          print("Resumed one logical turn and completed", len(phases), "generated phases")
+          print(
+              "Resumed logical turn 1 without duplication and completed",
+              len(records),
+              "turns; dynamic phases completed",
+              state["phase_index"],
+              "of",
+              len(phases),
+          )
           PY
 
       - name: Upload resume evidence
