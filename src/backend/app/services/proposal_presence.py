@@ -5,6 +5,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
@@ -17,10 +18,16 @@ class ProposalPresenceResolver:
     a registered NPC. This resolver only adds characters that are already present in
     the structured scene and explicitly named in the event description or evidence.
     It never invents witnesses and never moves an entity.
+
+    The assistant turn's structured scene is also authoritative for the player's final
+    physical position. A post-turn Scribe proposal may describe that position, but it
+    may not move the protagonist back to an intermediate location after a structured
+    transition or compound action sequence has already completed.
     """
 
     def __init__(self, session: AsyncSession):
         self._session = session
+        self._campaigns = CampaignRepository(session)
         self._entities = EntityRepository(session)
         self._scenes = SceneRepository(session)
 
@@ -35,6 +42,7 @@ class ProposalPresenceResolver:
         scene = await self._scenes.get_by_id(scene_id)
         if not scene:
             return proposals
+        campaign = await self._campaigns.get_by_id(campaign_id)
 
         aliases: dict[str, str] = {}
         for participant_id in scene.participants:
@@ -47,9 +55,25 @@ class ProposalPresenceResolver:
                     aliases[normalized] = str(entity.id)
 
         for proposal in proposals:
+            payload = proposal.payload
+            if (
+                proposal.change_type == ChangeType.MOVEMENT
+                and campaign
+                and campaign.player_character_id
+                and str(payload.get("character_id") or "")
+                == str(campaign.player_character_id)
+                and scene.location_id
+                and payload.get("location_id")
+                and str(payload.get("location_id")) != str(scene.location_id)
+            ):
+                payload["_validation_error"] = (
+                    "Player movement conflicts with the authoritative assistant scene "
+                    f"location {scene.location_id}; post-turn memory cannot override "
+                    "a structured scene transition."
+                )
+
             if proposal.change_type != ChangeType.EVENT:
                 continue
-            payload = proposal.payload
             canon = payload.get("_canon")
             evidence = canon.get("evidence") if isinstance(canon, dict) else ""
             text = self._normalize(

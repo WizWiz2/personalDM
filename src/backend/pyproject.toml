@@ -27,6 +27,7 @@ include = ["app*"]
 [tool.pytest.ini_options]
 markers = [
     "session_zero_enforced: run through the real mandatory session-zero gate",
+    "narration_validator_enforced: run through the real narration validator instead of the deterministic endpoint-test seam",
 ]
 
 [tool.ruff]
