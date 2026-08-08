@@ -23,6 +23,15 @@ class TurnRunner(TurnSaga):
             turn_create,
             existing_user_turn_id,
         ):
+            # The new Saga intentionally does not spend a minute repeating identical
+            # transport failures. Keep the old diagnostic prefix for UI/tests while
+            # making the reduced retry budget explicit rather than pretending retries ran.
+            if item.startswith("\n[Generation failed:"):
+                item = item.replace(
+                    "\n[Generation failed:",
+                    "\n[Generation failed after retry budget exhausted (1 attempt):",
+                    1,
+                )
             yield item
         if PostTurnDispatcher.wait_inline_for_tests:
             await PostTurnDispatcher.wait_for_idle()
