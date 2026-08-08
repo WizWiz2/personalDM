@@ -81,6 +81,7 @@ def test_proposed_changes_workflow(client: TestClient, mock_llm_and_scribe):
         },
     )
     assert response.status_code == 200
+    assert "Generation failed" not in response.text, response.text
 
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
     assert len(history) == 2
