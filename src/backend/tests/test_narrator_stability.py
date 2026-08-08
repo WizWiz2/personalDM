@@ -161,6 +161,7 @@ async def test_recent_progress_suppresses_watchdog_and_receipt_stays_dm_only(
     assert "[Progress Watchdog]" not in actor_context
     assert actor_metadata["scene_receipt_items"] == 0
 
+
 @pytest.mark.asyncio
 async def test_receipt_manifest_only_reports_content_that_was_sent(
     db_session: AsyncSession,
@@ -183,7 +184,14 @@ async def test_receipt_manifest_only_reports_content_that_was_sent(
         progress="Этот прогресс не помещается в prompt",
     )
     await db_session.commit()
-    monkeypatch.setattr(settings, "RESPONSE_RESERVE_TOKENS", 4000)
+
+    # Make the content budget tiny relative to whichever global context window the test
+    # environment actually uses (4096 in older CI, 6144 in the current local runtime).
+    monkeypatch.setattr(
+        settings,
+        "RESPONSE_RESERVE_TOKENS",
+        max(1, int(settings.LLM_CONTEXT_WINDOW) - 128),
+    )
 
     messages, metadata = await ContextCompiler(db_session).compile_context(
         campaign_id=campaign_id,
@@ -195,4 +203,3 @@ async def test_receipt_manifest_only_reports_content_that_was_sent(
     assert metadata["scene_receipt_items"] == 0
     assert metadata["recent_scene_turns_checked"] == 0
     assert metadata["stagnation_detected"] is False
-

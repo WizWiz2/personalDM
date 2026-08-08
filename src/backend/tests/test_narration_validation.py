@@ -175,7 +175,11 @@ async def test_validator_failure_is_explicitly_failed_open(
     assert "control model unavailable" in (validation.failure_reason or "")
 
 
-def test_exhausted_repairs_never_publish_rejected_text(client: TestClient):
+@pytest.mark.asyncio
+async def test_exhausted_repairs_publish_safe_authority_projection(
+    client: TestClient,
+    db_session: AsyncSession,
+):
     campaign_id = client.post(
         "/api/campaigns",
         json={"name": "Rejected narration"},
@@ -198,5 +202,15 @@ def test_exhausted_repairs_never_publish_rejected_text(client: TestClient):
     assert response.status_code == 200, response.text
     assert INVALID_DRAFT not in response.text
     assert REPAIRED_TEXT not in response.text
-    assert "Generation failed after retry" in response.text
-    assert client.get(f"/api/campaigns/{campaign_id}/turns").json() == []
+    assert "Generation failed" not in response.text
+    assert "visible consequence" in response.text
+
+    history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
+    assert [turn["role"] for turn in history] == ["user", "assistant"]
+    assert history[-1]["content"] == response.text
+
+    validation = await latest_validation(db_session)
+    assert validation.status == "repaired"
+    assert validation.final_text == response.text
+    assert validation.repair_attempts == 1
+    assert "Absent NPC" in (validation.failure_reason or "")

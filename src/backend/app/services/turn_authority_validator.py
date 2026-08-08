@@ -34,17 +34,19 @@ Return repair_required only for concrete violations of that authority:
 
 Do not reconstruct hidden campaign rules. Do not complain that an approved new NPC was not in the
 old participant list. Do not invent corrections that change the approved turn outcome.
+All human-readable fields (summary, evidence, correction) MUST be written in Russian even if the
+candidate or your internal reasoning uses another language.
 
 Return exactly:
 {
   "verdict": "pass|repair_required",
-  "summary": "short reason",
+  "summary": "short reason in Russian",
   "violations": [
     {
       "violation_type": "absent_character|absent_object|invalid_movement|invalid_time_advance|player_agency|ungrounded_complication|sequence_violation|canon_conflict|other",
       "severity": "warning|error",
-      "evidence": "candidate fragment or precise description",
-      "correction": "specific prose-only correction"
+      "evidence": "candidate fragment or precise description in Russian",
+      "correction": "specific prose-only correction in Russian"
     }
   ]
 }
@@ -68,13 +70,13 @@ Return exactly:
             return NarrationValidationResult.model_validate(
                 {
                     "verdict": "repair_required",
-                    "summary": "Narrator produced empty prose.",
+                    "summary": "Нарратор вернул пустой текст.",
                     "violations": [
                         {
                             "violation_type": "other",
                             "severity": "error",
-                            "evidence": "empty candidate",
-                            "correction": "Produce the approved turn as narrative prose.",
+                            "evidence": "пустой ответ",
+                            "correction": "Описать утверждённый исход хода художественным текстом.",
                         }
                     ],
                 }
@@ -146,7 +148,7 @@ Return exactly:
             summary=(
                 result.summary
                 if errors
-                else "Typed turn authority confirms the referenced speaker/introduction."
+                else "Типизированный TurnAuthority подтверждает этого собеседника или новое появление."
             ),
             violations=filtered,
         )
@@ -163,14 +165,11 @@ Return exactly:
             if item.severity == "error"
         )
         return (
-            # Keep the legacy marker during migration because deterministic fixtures and
-            # debugger tooling use it to distinguish repair generations. Authority below,
-            # not the marker, defines the new repair semantics.
             "[REPAIR REJECTED NARRATION]\n"
             "[REPAIR AGAINST TURN AUTHORITY]\n"
-            "Rewrite the candidate as one complete final Russian in-world response. Preserve only "
-            "the outcomes authorized below. Remove every violation. Do not add a replacement NPC, "
-            "twist, movement or protagonist action. Return prose only.\n\n"
+            "Перепиши кандидат в один законченный внутриигровой ответ на русском языке. Сохрани "
+            "только разрешённые ниже исходы. Удали каждое нарушение. Не добавляй заменяющего NPC, "
+            "поворот, перемещение или действие протагониста. Верни только художественную прозу.\n\n"
             "AUTHORITY:\n"
             + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
             + "\n\nVIOLATIONS:\n"
