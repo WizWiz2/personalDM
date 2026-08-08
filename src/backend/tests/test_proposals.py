@@ -91,15 +91,11 @@ def test_proposed_changes_workflow(client: TestClient, mock_llm_and_scribe):
     proposals = proposals_res.json()
     assert len(proposals) == 1
     assert proposals[0]["change_type"] == "fact"
-    assert proposals[0]["status"] == "proposed"
+    assert proposals[0]["status"] == "accepted"
+    assert proposals[0]["resolved_at"] is not None
 
-    resolve_res = client.put(
-        f"/api/proposals/{proposals[0]['id']}/resolve",
-        json={"status": "accepted", "user_edit": None},
-    )
-    assert resolve_res.status_code == 200
-    assert resolve_res.json()["status"] == "accepted"
-
+    # A validated safe Scribe proposal is now committed automatically; the proposal
+    # remains as an audit record rather than waiting for a manual resolve call.
     facts = client.get(f"/api/campaigns/{campaign_id}/facts").json()
     assert len(facts) == 1
     assert facts[0]["subject"] == "Courtyard"
