@@ -61,6 +61,17 @@ class ProposedChangeRepository(BaseRepository):
             detail = payload.get("_validation_error", "deterministic validation failed")
             raise ValueError(f"Invalid proposal cannot be accepted: {detail}")
 
+        # Safe proposals may now be accepted automatically by the post-turn pipeline.
+        # A client that still repeats the old manual accept call should see an
+        # idempotent success rather than a misleading 400. Mutating an already
+        # resolved proposal (edit/reject) remains forbidden below.
+        if (
+            db_change.status == "accepted"
+            and action.status == "accepted"
+            and action.user_edit is None
+        ):
+            return self._to_change_read(db_change)
+
         if db_change.status not in {"proposed", "invalid"}:
             raise ValueError(
                 f"Proposal is already resolved with status '{db_change.status}'"
