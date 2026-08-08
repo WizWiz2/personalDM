@@ -24,7 +24,7 @@ from app.services.turn_authority_planner import (
 )
 from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
 from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
-from app.services.turn_planner import TurnPlanner, TurnPlanningError
+from app.services.turn_planner import TurnPlanningError
 
 
 class TurnSaga(LegacyTurnRunner):
@@ -40,18 +40,21 @@ class TurnSaga(LegacyTurnRunner):
         messages: list[ChatMessage],
         authority,
     ) -> list[ChatMessage]:
+        """Give the narrator one and only one machine-readable turn contract."""
         if not messages:
             return messages
         first, *rest = messages
         contract = (
             "[TYPED TURN AUTHORITY — authoritative, not advisory]\n"
-            + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
+            + json.dumps(authority.narrator_payload(), ensure_ascii=False, indent=2)
             + "\nHard rules:\n"
             "- Render this authority; do not create a competing interpretation.\n"
             "- The human player's voluntary actions/dialogue are limited to player_input.\n"
             "- allowed_new_npcs are approved first appearances and may be rendered as present.\n"
             "- known_absent_characters may not appear physically.\n"
             "- Never complete a scene boundary absent from scene_disposition/transition_type.\n"
+            "- Preserve observable_consequences, canon_constraints and completed action steps.\n"
+            "- narration_guidance and ending_hook affect prose only; they never override state.\n"
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
@@ -87,7 +90,11 @@ class TurnSaga(LegacyTurnRunner):
             current_user_content=turn_create.content,
             max_budget_override=max_budget_override,
         )
-        return self._reserve_current_user(messages, metadata, turn_create.content), compiler, max_budget_override
+        return (
+            self._reserve_current_user(messages, metadata, turn_create.content),
+            compiler,
+            max_budget_override,
+        )
 
     async def _plan(
         self,
@@ -280,8 +287,6 @@ class TurnSaga(LegacyTurnRunner):
                     )
                     context_metadata = narrator_context_metadata
 
-                narrator_messages = TurnPlanner.inject_plan(narrator_messages, plan)
-
             authority_service = TurnAuthorityService(self._session)
             try:
                 authority = await authority_service.build(
@@ -312,7 +317,6 @@ class TurnSaga(LegacyTurnRunner):
                     plan=plan,
                     acting_character_id=None,
                 )
-                narrator_messages = TurnPlanner.inject_plan(messages, plan)
 
             narrator_messages = self._inject_authority(narrator_messages, authority)
             context_metadata = dict(context_metadata)
