@@ -118,7 +118,14 @@ class TurnAuthorityService:
             allowed_new_npcs=introductions,
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
+            dramatic_mode=(
+                plan.narration_policy.dramatic_mode if plan else "calm"
+            ),
             observable_consequences=(list(plan.observable_consequences) if plan else []),
+            character_beats=(list(plan.character_beats) if plan else []),
+            canon_constraints=(list(plan.canon_constraints) if plan else []),
+            narration_guidance=(list(plan.narration_guidance) if plan else []),
+            ending_hook=(plan.ending_hook if plan else ""),
             protected_player_decisions=(
                 list(plan.narration_policy.protected_player_decisions) if plan else []
             ),
