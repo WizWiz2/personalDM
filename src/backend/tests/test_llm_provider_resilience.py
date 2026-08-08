@@ -63,6 +63,7 @@ class _EvaluationPayload(BaseModel):
 class _MockConfig:
     base_url = "http://localhost:11434/v1"
     model_name = "gemma4:e4b"
+    context_window = 8192
 
 
 def test_ollama_endpoint_detection():
@@ -208,11 +209,14 @@ async def test_native_ollama_json_retries_reasoning_only_length(monkeypatch):
     assert first["url"] == "http://localhost:11434/api/chat"
     assert first["json"]["think"] is False
     assert first["json"]["format"] == "json"
+    assert first["json"]["options"]["num_ctx"] == 8192
     assert first["json"]["options"]["num_predict"] == 900
+    assert second["json"]["options"]["num_ctx"] == 8192
     assert second["json"]["options"]["num_predict"] == 1800
     assert len(second["json"]["messages"]) == 2
     assert provider.last_telemetry["attempt"] == 2
     assert provider.last_telemetry["transport"] == "ollama_native_json"
+    assert provider.last_telemetry["requested_num_ctx"] == 8192
 
 
 class _SchemaRepairClient:
@@ -272,6 +276,8 @@ async def test_native_ollama_uses_schema_and_repairs_validation_error(monkeypatc
         "progressing",
         "resolved",
     ]
+    assert first_payload["options"]["num_ctx"] == 8192
+    assert second_payload["options"]["num_ctx"] == 8192
     repair_text = second_payload["messages"][-1]["content"]
     assert "awaiting_schema" in repair_text
     assert "validation" in repair_text
