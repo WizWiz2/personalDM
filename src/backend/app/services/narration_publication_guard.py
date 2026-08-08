@@ -10,9 +10,8 @@ class NarrationPublicationGuard:
     """Publish safe prose without allowing renderer mistakes to cancel game state.
 
     The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    When model repair still violates the prose contract, this guard removes the concrete rejected
-    fragments and falls back to a terse rendering of structured authority rather than failing the
-    turn transaction.
+    When model repair still violates the prose contract, this guard removes only violations it can
+    prove it removed; otherwise it falls back to a terse rendering of structured authority.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -74,25 +73,46 @@ class NarrationPublicationGuard:
         candidate: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
-        """Return safe prose plus publication diagnostics.
+        """Return safe prose plus publication diagnostics."""
+        errors = [
+            item
+            for item in (validation.violations if validation else [])
+            if item.severity == "error"
+        ]
+        sanitized, matched_errors = cls._drop_flagged_segments(candidate, validation)
 
-        A validator verdict is advisory for prose repair, never for the already-authoritative game
-        outcome. Exact evidence is removed first. Actor turns receive an additional deterministic
-        protagonist-agency scrub because small models commonly append a player reaction after the
-        selected NPC's answer.
-        """
-        sanitized = cls._drop_flagged_segments(candidate, validation)
+        actor_scrub_changed = False
         if authority.scene_disposition == "actor_turn":
-            sanitized = cls._drop_player_owned_segments(
+            actor_safe = cls._drop_player_owned_segments(
                 sanitized,
                 authority.player_character_name,
             )
+            actor_scrub_changed = cls._clean(actor_safe) != cls._clean(sanitized)
+            sanitized = actor_safe
+
         sanitized = cls._clean(sanitized)
-        if sanitized:
+        all_evidence_removed = bool(errors) and matched_errors >= len(errors)
+        only_player_agency = bool(errors) and all(
+            item.violation_type == "player_agency" for item in errors
+        )
+        actor_agency_proven_removed = (
+            authority.scene_disposition == "actor_turn"
+            and only_player_agency
+            and actor_scrub_changed
+        )
+
+        if sanitized and (
+            not errors
+            or all_evidence_removed
+            or actor_agency_proven_removed
+        ):
             return sanitized, {
                 "mode": "sanitized_candidate",
                 "candidate_characters": len(candidate),
                 "published_characters": len(sanitized),
+                "error_count": len(errors),
+                "matched_error_count": matched_errors,
+                "actor_agency_scrubbed": actor_scrub_changed,
             }
 
         fallback = cls.render_authority(authority)
@@ -100,6 +120,9 @@ class NarrationPublicationGuard:
             "mode": "authority_projection",
             "candidate_characters": len(candidate),
             "published_characters": len(fallback),
+            "error_count": len(errors),
+            "matched_error_count": matched_errors,
+            "actor_agency_scrubbed": actor_scrub_changed,
         }
 
     @classmethod
@@ -138,29 +161,32 @@ class NarrationPublicationGuard:
         cls,
         candidate: str,
         validation: NarrationValidationResult | None,
-    ) -> str:
+    ) -> tuple[str, int]:
         if not validation or not validation.violations:
-            return candidate
+            return candidate, 0
         segments = cls._segments(candidate)
-        rejected_evidence = [
+        error_evidence = [
             cls._key(item.evidence)
             for item in validation.violations
-            if item.severity == "error" and len(cls._key(item.evidence)) >= 6
+            if item.severity == "error"
         ]
-        if not rejected_evidence:
-            return candidate
+        if not error_evidence:
+            return candidate, 0
 
+        matched: set[int] = set()
         kept: list[str] = []
         for segment in segments:
             normalized = cls._key(segment)
-            if any(
-                evidence in normalized or normalized in evidence
-                for evidence in rejected_evidence
-                if normalized
-            ):
-                continue
-            kept.append(segment)
-        return " ".join(kept)
+            reject = False
+            for index, evidence in enumerate(error_evidence):
+                if len(evidence) < 6 or not normalized:
+                    continue
+                if evidence in normalized or normalized in evidence:
+                    matched.add(index)
+                    reject = True
+            if not reject:
+                kept.append(segment)
+        return " ".join(kept), len(matched)
 
     @classmethod
     def _drop_player_owned_segments(cls, candidate: str, player_name: str | None) -> str:
