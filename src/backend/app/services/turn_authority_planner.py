@@ -59,11 +59,7 @@ class CoordinatedTurnPlan(TurnPlan):
 
     @classmethod
     def conservative_fallback(cls, player_input: str) -> "CoordinatedTurnPlan":
-        """Typed fail-safe used when the planner itself is unavailable.
-
-        It deliberately authorizes no movement, new NPC, player decision or new complication.
-        The narrator may still acknowledge the attempt and describe already-observable state.
-        """
+        """Typed fail-safe used when the planner itself is unavailable."""
         return cls(
             player_intent=(player_input.strip() or "Продолжить текущую сцену")[:500],
             resolution="uncertain",
@@ -105,12 +101,28 @@ Rules for scene_disposition:
 - sequence: action_sequence.steps is non-empty. Every auto-success movement step MUST contain its
   own required location_transition with a concrete destination_location.
 - Never hide a location change only in observable_consequences, narration_guidance or prose.
+- If the player explicitly says they go/return/enter/leave for another concrete place and nothing
+  blocks that movement, use location_transition (or a sequence containing it). Do NOT leave the
+  player in the old scene merely because narration could describe the trip.
+- If explicit movement cannot complete, stay is allowed ONLY when observable_consequences clearly
+  state the concrete obstacle that prevents the move.
 
 Rules for npc_introductions:
 - Use it only for a person who does not yet exist in campaign context.
 - It is appropriate when the player's action directly seeks contact with an unspecified ordinary
   person who can plausibly be here: knocking on an inhabited door, asking a clerk, guard, witness,
-  bartender, passer-by, resident, and similar direct contact.
+  bartender, passer-by, resident, informant, and similar direct contact.
+- DIRECT CONTACT REQUIRES A BINARY STRUCTURED DECISION. If an unknown ordinary person answers or is
+  encountered this turn, npc_introductions MUST contain that person. If nobody answers / no suitable
+  person is found, npc_introductions stays empty AND observable_consequences MUST explicitly say so.
+  Never leave this decision for Narrator prose.
+- Example: player says "Подхожу к двери и стучу". Valid plan A: introduce "Жилец дома" or another
+  plausible responder and include opening the door in observable_consequences. Valid plan B: no
+  introduction and observable_consequences says nobody answers. Invalid: empty introductions while
+  narration_guidance implies that somebody may answer.
+- Example: player says "Иду в таверну расспросить информатора". If no known suitable contact is in
+  current context and the plan resolves contact, introduce a plausible bartender/patron/informant.
+  Otherwise explicitly resolve that no suitable contact is available yet.
 - Do not put an already known but absent character here. Known absent characters need an explicit
   structured arrival already justified by campaign state; otherwise they remain absent.
 - Give the new NPC a stable canonical_name. A descriptive temporary name such as
@@ -119,7 +131,9 @@ Rules for npc_introductions:
   narrator must actually render it.
 
 The human player's exact latest input is the entire authorized voluntary action/dialogue for the
-protagonist. Do not silently extend it.
+protagonist. Do not silently extend it. Every observable consequence should describe WORLD/NPC
+response or the result of an action the player already explicitly supplied, never a new voluntary
+choice for the protagonist.
 """
 
     def __init__(self, router: RoleModelRouter):
