@@ -26,6 +26,12 @@ def test_knock_requires_structured_responder_or_explicit_no_answer():
         "Подхожу к двери и трижды стучу.",
     )
 
+    hidden_responder = _stay("Из-за двери отвечает сонный мужской голос.")
+    assert TurnAuthorityPlanner.contract_issues(
+        hidden_responder,
+        "Подхожу к двери и трижды стучу.",
+    ), "positive responder must not hide outside npc_introductions"
+
     responder = _stay(
         "Дверь открывает дежурный фабрики.",
         npcs=[
@@ -47,6 +53,26 @@ def test_knock_requires_structured_responder_or_explicit_no_answer():
         nobody,
         "Подхожу к двери и трижды стучу.",
     ) == []
+
+
+def test_generic_contact_requires_identity_or_negative_outcome():
+    hidden_informant = _stay("Информатор сообщает, что видел синее свечение.")
+    assert TurnAuthorityPlanner.contract_issues(
+        hidden_informant,
+        "Иду в таверну расспросить информатора.",
+    )
+
+    no_contact = _stay("Подходящего информатора в зале не нашлось.")
+    # Movement is intentionally absent here, so inspect only the contact half of the contract.
+    contact_issues = [
+        issue
+        for issue in TurnAuthorityPlanner.contract_issues(
+            no_contact,
+            "Хочу расспросить информатора.",
+        )
+        if "direct contact" in issue
+    ]
+    assert contact_issues == []
 
 
 def test_explicit_destination_movement_cannot_silently_stay():
