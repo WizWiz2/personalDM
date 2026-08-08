@@ -8,6 +8,8 @@ from app.models.turn import ChatMessage
 from app.services.role_model_router import ModelRole, RoleModelSelection
 from app.services.turn_authority_planner import TurnAuthorityPlanner
 
+pytestmark = pytest.mark.interagent_contract_enforced
+
 
 class _RepairingPlannerRouter:
     def __init__(self):
