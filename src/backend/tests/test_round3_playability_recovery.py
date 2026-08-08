@@ -197,6 +197,7 @@ class _BadNarratorProvider:
             yield "Дежурный отступает от двери. Рэт снова кивает."
 
 
+@pytest.mark.interagent_contract_enforced
 @pytest.mark.asyncio
 async def test_second_semantic_reject_publishes_authority_instead_of_failing_turn(
     db_session: AsyncSession,
