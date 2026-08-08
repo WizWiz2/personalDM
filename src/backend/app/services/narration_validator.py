@@ -176,11 +176,44 @@ Rejected candidate:
             failure_reason=failure_reason,
         )
 
+    @staticmethod
+    def protect_confirmed_speaker(
+        result: NarrationValidationResult,
+        confirmed_speaker_name: str | None,
+    ) -> NarrationValidationResult:
+        """Do not let a control-model hallucination overrule deterministic presence."""
+        name = (confirmed_speaker_name or "").strip()
+        if not name:
+            return result
+        needle = name.casefold()
+        filtered = []
+        removed = False
+        for violation in result.violations:
+            text = f"{violation.evidence} {violation.correction}".casefold()
+            if violation.violation_type == "absent_character" and needle in text:
+                removed = True
+                continue
+            filtered.append(violation)
+        if not removed:
+            return result
+        has_errors = any(item.severity == "error" for item in filtered)
+        return NarrationValidationResult(
+            verdict="repair_required" if has_errors else "pass",
+            summary=(
+                result.summary
+                if has_errors
+                else f"Deterministic scene state confirms {name} as the active speaker."
+            ),
+            violations=filtered,
+        )
+
     async def validate(
         self,
         selection: RoleModelSelection,
         context_messages: list[ChatMessage],
         candidate_text: str,
+        *,
+        confirmed_speaker_name: str | None = None,
     ) -> NarrationValidationResult:
         if not candidate_text.strip():
             return NarrationValidationResult(
@@ -199,11 +232,20 @@ Rejected candidate:
             raise NarrationValidationError("validator received empty context")
 
         first, *rest = context_messages
+        speaker_contract = ""
+        if confirmed_speaker_name:
+            speaker_contract = (
+                "\n\n[DETERMINISTIC ACTIVE SPEAKER]\n"
+                f"{confirmed_speaker_name} is confirmed by the engine to be physically "
+                "present in the current scene and is the explicitly selected speaker. "
+                "Do not report this character as absent. This deterministic fact "
+                "overrides model inference."
+            )
         messages = [
             ChatMessage(
                 role="system",
                 content=(
-                    f"{self.SYSTEM_PROMPT}\n\n"
+                    f"{self.SYSTEM_PROMPT}{speaker_contract}\n\n"
                     f"[AUTHORITATIVE TURN CONTEXT]\n{first.content}"
                 ),
             ),
@@ -222,7 +264,8 @@ Rejected candidate:
                 temperature=settings.NARRATION_VALIDATOR_TEMPERATURE,
                 response_model=NarrationValidationResult,
             )
-            return NarrationValidationResult.model_validate(data)
+            result = NarrationValidationResult.model_validate(data)
+            return self.protect_confirmed_speaker(result, confirmed_speaker_name)
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise NarrationValidationError(str(exc)) from exc
 
