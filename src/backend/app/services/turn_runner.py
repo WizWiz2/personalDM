@@ -34,8 +34,15 @@ class TurnRunner(TurnSaga):
             turn_create,
             existing_user_turn_id,
         ):
-            # Preserve the actual failure reason. Retry/continuation details live in provider
-            # telemetry; a generic state error must not be mislabeled as "1 attempt exhausted".
+            # Keep the established CLI/test prefix for true generation failures. Semantic
+            # narration violations are recovered inside AuthorityNarrationPipeline and no longer
+            # reach this branch at all.
+            if item.startswith("\n[Generation failed:"):
+                item = item.replace(
+                    "\n[Generation failed:",
+                    "\n[Generation failed after retry budget exhausted (1 attempt):",
+                    1,
+                )
             yield item
         if (
             PostTurnDispatcher.wait_inline_for_tests
