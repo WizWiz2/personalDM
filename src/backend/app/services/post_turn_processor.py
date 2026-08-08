@@ -130,6 +130,18 @@ class PostTurnProcessor:
             applied += 1
         return applied, staged
 
+    async def _finish_without_side_effects(self, job_id: UUID, reason: str) -> None:
+        """Make a stale job terminal without letting an undone turn mutate the world."""
+        from app.db.tables import PostTurnJob
+
+        row = await self._session.get(PostTurnJob, str(job_id))
+        if not row:
+            return
+        row.status = "completed"
+        row.error = reason[:4000]
+        row.locked_at = None
+        await self._session.commit()
+
     async def process_job(
         self,
         job_id: UUID,
@@ -161,11 +173,26 @@ class PostTurnProcessor:
             assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
             if not assistant or assistant.role != "assistant":
                 raise ValueError("Assistant turn linked to job is missing")
+            # Undo is authoritative over asynchronous memory. A background job may have
+            # been scheduled before the user pressed /undo; once the turn is no longer
+            # active it must become a no-op instead of resurrecting canon from stale prose.
+            if assistant.status != "active":
+                await self._finish_without_side_effects(
+                    job_id,
+                    f"skipped: assistant turn status is {assistant.status}",
+                )
+                return
             if not assistant.parent_turn_id:
                 raise ValueError("Assistant turn has no parent user turn")
             user_turn = await self._turns.get_by_id(assistant.parent_turn_id)
             if not user_turn:
                 raise ValueError("Parent user turn is missing")
+            if user_turn.status != "active":
+                await self._finish_without_side_effects(
+                    job_id,
+                    f"skipped: parent user turn status is {user_turn.status}",
+                )
+                return
 
             campaign_id = UUID(row.campaign_id)
             if row.job_type == "thesis_curator":
@@ -198,6 +225,17 @@ class PostTurnProcessor:
                         assistant_content=assistant.content,
                     )
                     await self._session.commit()
+
+                    # Entity registration is itself a side effect. Re-read turn status
+                    # before any subsequent LLM work in case undo won the race while the
+                    # registrar was executing.
+                    assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
+                    if not assistant or assistant.status != "active":
+                        await self._finish_without_side_effects(
+                            job_id,
+                            "skipped: turn was undone during entity registration",
+                        )
+                        return
 
                     proposals = await MemoryScribe(self._session).extract_proposals(
                         campaign_id=campaign_id,
