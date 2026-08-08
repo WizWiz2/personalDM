@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
-from app.db.tables import Campaign, Turn
+from app.db.tables import Campaign, Entity, SceneParticipant, Turn
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.narration_validator import (
     NarrationValidationError,
@@ -105,10 +105,10 @@ class NarrationPipelineProvider:
             self._raw_stream(messages, config, api_key, **kwargs)
         )
 
-    async def _current_turn_and_scene(
+    async def _current_turn_scene_and_speaker(
         self,
         context: NarrationRequestContext,
-    ) -> tuple[UUID, UUID | None]:
+    ) -> tuple[UUID, UUID | None, str | None]:
         trigger_turn_id = context.existing_user_turn_id
         if trigger_turn_id is None:
             row = (
@@ -133,7 +133,26 @@ class NarrationPipelineProvider:
             if campaign and campaign.current_scene_id
             else None
         )
-        return trigger_turn_id, scene_id
+
+        confirmed_speaker_name = None
+        trigger = await self._session.get(Turn, str(trigger_turn_id))
+        if trigger and trigger.acting_character_id and scene_id:
+            confirmed_speaker_name = (
+                await self._session.execute(
+                    select(Entity.canonical_name)
+                    .join(
+                        SceneParticipant,
+                        SceneParticipant.entity_id == Entity.id,
+                    )
+                    .where(
+                        Entity.id == trigger.acting_character_id,
+                        SceneParticipant.scene_id == str(scene_id),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        return trigger_turn_id, scene_id, confirmed_speaker_name
 
     @staticmethod
     def _continuation_prefix(messages) -> str:
@@ -186,7 +205,9 @@ class NarrationPipelineProvider:
 
         draft = await self._collect_raw(messages, config, api_key, **kwargs)
         narrator_telemetry = dict(self.last_telemetry or {})
-        trigger_turn_id, scene_id = await self._current_turn_and_scene(context)
+        trigger_turn_id, scene_id, confirmed_speaker_name = (
+            await self._current_turn_scene_and_speaker(context)
+        )
         router = RoleModelRouter(ProviderConfigRepository(self._session))
         selection = await router.resolve(
             context.campaign_id,
@@ -219,6 +240,7 @@ class NarrationPipelineProvider:
                 raise LLMProviderError(reason)
             self.last_telemetry = {
                 **narrator_telemetry,
+                "confirmed_active_speaker": confirmed_speaker_name,
                 "narration_validation": self._gate_metadata(gate),
             }
             yield draft
@@ -234,13 +256,16 @@ class NarrationPipelineProvider:
                     selection,
                     messages,
                     validation_candidate,
+                    confirmed_speaker_name=confirmed_speaker_name,
                 )
+                validation_telemetry = dict(validator.telemetry)
+                validation_telemetry["confirmed_active_speaker"] = confirmed_speaker_name
                 await validator.record_attempt(
                     run,
                     attempt_index=len(self._attempts(run)),
                     candidate_text=validation_candidate,
                     result=result,
-                    telemetry=validator.telemetry,
+                    telemetry=validation_telemetry,
                 )
                 if result.verdict == "pass":
                     status = "repaired" if repair_attempts else "passed"
@@ -252,6 +277,7 @@ class NarrationPipelineProvider:
                     )
                     self.last_telemetry = {
                         **dict(self.last_telemetry or narrator_telemetry),
+                        "confirmed_active_speaker": confirmed_speaker_name,
                         "narration_validation": self._gate_metadata(gate),
                     }
                     # BaseTurnRunner merges a continuation with its prefix itself.
@@ -271,6 +297,7 @@ class NarrationPipelineProvider:
                     )
                     self.last_telemetry = {
                         **narrator_telemetry,
+                        "confirmed_active_speaker": confirmed_speaker_name,
                         "narration_validation": self._gate_metadata(gate),
                     }
                     raise LLMProviderError(
@@ -287,6 +314,7 @@ class NarrationPipelineProvider:
                     )
                     self.last_telemetry = {
                         **narrator_telemetry,
+                        "confirmed_active_speaker": confirmed_speaker_name,
                         "narration_validation": self._gate_metadata(gate),
                     }
                     raise LLMProviderError(
@@ -318,6 +346,7 @@ class NarrationPipelineProvider:
             )
             self.last_telemetry = {
                 **narrator_telemetry,
+                "confirmed_active_speaker": confirmed_speaker_name,
                 "narration_validation": self._gate_metadata(gate),
             }
             if not settings.NARRATION_VALIDATOR_FAIL_OPEN:
