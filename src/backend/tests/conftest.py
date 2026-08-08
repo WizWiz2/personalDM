@@ -34,6 +34,8 @@ def event_loop():
 
 def _coordinated_from_legacy(plan: TurnPlan) -> CoordinatedTurnPlan:
     """Preserve old deterministic test intent while public runtime consumes typed authority."""
+    if isinstance(plan, CoordinatedTurnPlan):
+        return plan
     if plan.action_sequence.steps:
         disposition = "sequence"
     elif plan.scene_transition.required:
