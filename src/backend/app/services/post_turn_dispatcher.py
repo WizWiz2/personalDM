@@ -15,6 +15,9 @@ class PostTurnDispatcher:
     """Run durable post-turn jobs outside the player's response latency path."""
 
     _tasks: set[asyncio.Task] = set()
+    # Deterministic tests may opt into awaiting the exact same background task. Production
+    # never changes this value and therefore never waits for Registrar/Scribe/Curator.
+    wait_inline_for_tests: bool = False
 
     @classmethod
     def schedule(cls, bind, assistant_turn_id: UUID) -> asyncio.Task | None:
