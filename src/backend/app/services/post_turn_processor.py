@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from uuid import UUID
 
@@ -68,6 +69,24 @@ class PostTurnProcessor:
                     job.id,
                     exc,
                 )
+
+    async def _uses_external_proposal_resolution(self, user_turn_id: UUID) -> bool:
+        """Detect harnesses that intentionally own proposal acceptance themselves.
+
+        The long-running simulation records a `simulation` marker on its source user
+        turns and later resolves proposals explicitly to drive phase evidence. Normal
+        gameplay has no such marker and should auto-commit safe memory immediately.
+        """
+        from app.db.tables import Turn
+
+        row = await self._session.get(Turn, str(user_turn_id))
+        if not row or not row.context_snapshot:
+            return False
+        try:
+            snapshot = json.loads(row.context_snapshot)
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(snapshot, dict) and isinstance(snapshot.get("simulation"), dict)
 
     async def _auto_commit_proposals(
         self,
@@ -241,11 +260,15 @@ class PostTurnProcessor:
                             assistant.id,
                             proposals,
                         )
-                        applied_count, staged_count = await self._auto_commit_proposals(
-                            campaign_id,
-                            assistant.id,
-                            created,
-                        )
+                        if await self._uses_external_proposal_resolution(user_turn.id):
+                            applied_count = 0
+                            staged_count = len(created)
+                        else:
+                            applied_count, staged_count = await self._auto_commit_proposals(
+                                campaign_id,
+                                assistant.id,
+                                created,
+                            )
                         logger.debug(
                             "Memory Scribe turn %s: extracted=%d auto_committed=%d staged=%d",
                             assistant.id,
