@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.db.engine import Base, get_session
 from app.main import app
+from app.models.narration_validation import NarrationValidationResult
+from app.services.narration_validator import NarrationValidator
 from app.services.turn_planner import TurnPlan
 
 # Use in-memory SQLite database for testing
@@ -40,6 +42,32 @@ def mock_turn_planner():
         "app.services.turn_planner.TurnPlanner.plan",
         new_callable=AsyncMock,
         return_value=plan,
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def deterministic_narration_validator(request):
+    """Do not make deterministic endpoint tests depend on a live local control model.
+
+    Tests explicitly marked ``narration_validator_enforced`` keep the real validator.
+    Individual tests may also install a more specific patch inside this fixture; that
+    nested patch temporarily overrides this default and is restored afterwards.
+    """
+    if request.node.get_closest_marker("narration_validator_enforced"):
+        yield
+        return
+
+    result = NarrationValidationResult(
+        verdict="pass",
+        summary="Deterministic test harness accepted the mocked narration.",
+        violations=[],
+    )
+    with patch.object(
+        NarrationValidator,
+        "validate",
+        new_callable=AsyncMock,
+        return_value=result,
     ):
         yield
 
