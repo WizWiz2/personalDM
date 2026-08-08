@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PlannedNpcIntroduction(BaseModel):
@@ -18,22 +18,6 @@ class PlannedNpcIntroduction(BaseModel):
     voice: str | None = Field(default=None, max_length=400)
     temporary_name: bool = False
     reason: str = Field(min_length=2, max_length=500)
-
-
-class TurnAuthorityPlanExtension(BaseModel):
-    """Fields every narrator turn must decide explicitly in addition to TurnPlan."""
-
-    scene_disposition: Literal[
-        "stay",
-        "location_transition",
-        "time_transition",
-        "focus_transition",
-        "sequence",
-    ]
-    npc_introductions: list[PlannedNpcIntroduction] = Field(
-        default_factory=list,
-        max_length=4,
-    )
 
 
 class TurnAuthority(BaseModel):
@@ -70,7 +54,12 @@ class TurnAuthority(BaseModel):
     object_names: list[str] = Field(default_factory=list)
 
     resolution: str = "conversation"
+    dramatic_mode: str = "calm"
     observable_consequences: list[str] = Field(default_factory=list)
+    character_beats: list[str] = Field(default_factory=list)
+    canon_constraints: list[str] = Field(default_factory=list)
+    narration_guidance: list[str] = Field(default_factory=list)
+    ending_hook: str = ""
     protected_player_decisions: list[str] = Field(default_factory=list)
     pending_player_choice: str | None = None
     allow_new_complication: bool = False
@@ -82,7 +71,7 @@ class TurnAuthority(BaseModel):
         return [item.canonical_name for item in self.allowed_new_npcs]
 
     def validator_payload(self) -> dict:
-        """Compact payload deliberately omitting IDs that do not help the model judge prose."""
+        """Compact authority for continuity judging, without competing prompt prose."""
         return {
             "player_character": self.player_character_name,
             "acting_character": self.acting_character_name,
@@ -103,7 +92,9 @@ class TurnAuthority(BaseModel):
             ],
             "objects_here": self.object_names,
             "resolution": self.resolution,
+            "dramatic_mode": self.dramatic_mode,
             "observable_consequences": self.observable_consequences,
+            "canon_constraints": self.canon_constraints,
             "protected_player_decisions": self.protected_player_decisions,
             "pending_player_choice": self.pending_player_choice,
             "allow_new_complication": self.allow_new_complication,
@@ -111,27 +102,18 @@ class TurnAuthority(BaseModel):
             "action_sequence": self.action_sequence,
         }
 
+    def narrator_payload(self) -> dict:
+        """Complete prose rendering contract derived from the same authority object."""
+        payload = self.validator_payload()
+        payload.update(
+            {
+                "allowed_new_npcs": [item.model_dump(mode="json") for item in self.allowed_new_npcs],
+                "character_beats": self.character_beats,
+                "narration_guidance": self.narration_guidance,
+                "ending_hook": self.ending_hook,
+            }
+        )
+        return payload
 
-class CoordinatedTurnPlanMixin(BaseModel):
-    """Reusable validation for the additional inter-agent planning fields."""
 
-    model_config = ConfigDict(extra="ignore")
-
-    scene_disposition: Literal[
-        "stay",
-        "location_transition",
-        "time_transition",
-        "focus_transition",
-        "sequence",
-    ]
-    npc_introductions: list[PlannedNpcIntroduction] = Field(
-        default_factory=list,
-        max_length=4,
-    )
-
-    @model_validator(mode="after")
-    def unique_new_npc_names(self):
-        names = [" ".join(item.canonical_name.casefold().split()) for item in self.npc_introductions]
-        if len(names) != len(set(names)):
-            raise ValueError("npc_introductions must use unique canonical names")
-        return self
+__all__ = ["PlannedNpcIntroduction", "TurnAuthority"]
