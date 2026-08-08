@@ -1,14 +1,16 @@
+import json
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Scene
+from app.db.tables import Campaign, Character, Entity, Scene, SceneThesis
 from app.services.action_sequence_executor import ActionSequenceExecutor
+from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 
@@ -80,6 +82,7 @@ class TurnUndoService:
             if parent:
                 parent.status = "undone"
                 parent.undone_at = datetime.utcnow()
+            await self._reconcile_derived_state(campaign_id, assistant_turn.id)
             await self._session.flush()
             return True
 
@@ -109,9 +112,63 @@ class TurnUndoService:
             transition.status = "undone"
             transition.undone_at = datetime.utcnow()
             await self._bridges.mark_status(UUID(transition.id), "undone")
-            await self._session.flush()
 
+        await self._reconcile_derived_state(campaign_id, assistant_turn.id)
+        await self._session.flush()
         return True
+
+    async def _reconcile_derived_state(
+        self,
+        campaign_id: UUID,
+        assistant_turn_id: UUID,
+    ) -> None:
+        """Project the world from still-active turns after the pair becomes undone.
+
+        This deliberately happens after structural scene/action compensation: Turn status decides
+        which extracted canon may survive, while scene/action executors remain the authority for
+        the current physical boundary.
+        """
+        await ActiveCanonReplayService(self._session).replay(campaign_id)
+        await self._remove_turn_introductions(campaign_id, assistant_turn_id)
+        # Curator-created working-memory rows from the undone turn must not remain active.
+        # Existing theses changed by a curator are not reconstructed here; unlike durable canon,
+        # they are short-lived scene working memory and will be reconciled on the next active turn.
+        await self._session.execute(
+            delete(SceneThesis).where(
+                SceneThesis.source_turn_id == str(assistant_turn_id),
+            )
+        )
+
+    async def _remove_turn_introductions(
+        self,
+        campaign_id: UUID,
+        assistant_turn_id: UUID,
+    ) -> None:
+        """Remove characters whose very first existence was created by the undone turn."""
+        rows = (
+            await self._session.execute(
+                select(Entity).where(
+                    Entity.campaign_id == str(campaign_id),
+                    Entity.entity_type == "character",
+                )
+            )
+        ).scalars().all()
+        turn_key = str(assistant_turn_id)
+        for entity in rows:
+            try:
+                fields = json.loads(entity.custom_fields or "{}")
+            except (json.JSONDecodeError, TypeError):
+                fields = {}
+            if not isinstance(fields, dict):
+                continue
+            planned = fields.get("introduction_turn_id") == turn_key
+            extracted = (
+                entity.provenance == "narrator_extracted"
+                and fields.get("source_turn_id") == turn_key
+            )
+            if planned or extracted:
+                await self._session.delete(entity)
+        await self._session.flush()
 
     async def _restore_scene_participant_locations(self, scene_id: UUID) -> None:
         location_id = await self._scenes.get_location_id(scene_id)
