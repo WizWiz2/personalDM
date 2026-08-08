@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.db.engine import Base, get_session
 from app.main import app
 from app.models.narration_validation import NarrationValidationResult
+from app.models.turn import ChatMessage
 from app.services.narration_validator import NarrationValidator
 from app.services.post_turn_dispatcher import PostTurnDispatcher
 from app.services.turn_authority_planner import (
@@ -17,7 +18,7 @@ from app.services.turn_authority_planner import (
     TurnAuthorityPlanner,
 )
 from app.services.turn_authority_validator import TurnAuthorityValidator
-from app.services.turn_planner import TurnPlan
+from app.services.turn_planner import TurnPlan, TurnPlanner
 
 # Use in-memory SQLite database for testing
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -31,12 +32,31 @@ def event_loop():
     loop.close()
 
 
+def _coordinated_from_legacy(plan: TurnPlan) -> CoordinatedTurnPlan:
+    """Preserve old deterministic test intent while public runtime consumes typed authority."""
+    if plan.action_sequence.steps:
+        disposition = "sequence"
+    elif plan.scene_transition.required:
+        disposition = plan.scene_transition.transition_type
+    else:
+        disposition = "stay"
+    return CoordinatedTurnPlan(
+        **plan.model_dump(mode="python"),
+        scene_disposition=disposition,
+        npc_introductions=[],
+    )
+
+
 @pytest.fixture(autouse=True)
 def mock_turn_planner(request):
     """Keep unrelated endpoint tests offline without pretending this is acceptance coverage.
 
+    Existing invariant tests often patch legacy ``TurnPlanner.plan`` with a precise transition or
+    compound plan. The test-only bridge below converts that exact plan into the new typed shape, so
+    those tests continue to assert state semantics rather than an implementation class name.
+
     ``interagent_contract_enforced`` tests keep the real authority planner/hand-off and provide
-    their own deterministic model transport. The legacy planner is still patched for old unit tests.
+    their own deterministic model transport.
     """
     legacy_plan = TurnPlan(
         player_intent="Resolve the player's latest action.",
@@ -48,18 +68,12 @@ def mock_turn_planner(request):
         narration_guidance=["Keep the response grounded and concise."],
         ending_hook="Return a meaningful situation to the player.",
     )
-    authority_plan = CoordinatedTurnPlan(
-        player_intent="Resolve the player's latest action.",
-        resolution="observation",
-        scene_disposition="stay",
-        npc_introductions=[],
-        observable_consequences=["The action produces one visible consequence."],
-        character_beats=[],
-        canon_constraints=["Do not invent abilities, items, movement, or knowledge."],
-        new_fact_candidates=[],
-        narration_guidance=["Keep the response grounded and concise."],
-        ending_hook="Return a meaningful situation to the player.",
-    )
+
+    async def bridge_authority_plan(_self, selection, context_messages):
+        # Tests may temporarily replace TurnPlanner.plan inside their own `with patch(...)` block.
+        # Calling it here deliberately sees that more-specific patch.
+        legacy = await TurnPlanner(AsyncMock()).plan(selection, context_messages)
+        return _coordinated_from_legacy(legacy)
 
     authority_enabled = request.node.get_closest_marker("interagent_contract_enforced")
     with patch(
@@ -73,15 +87,18 @@ def mock_turn_planner(request):
             with patch.object(
                 TurnAuthorityPlanner,
                 "plan",
-                new_callable=AsyncMock,
-                return_value=authority_plan,
+                new=bridge_authority_plan,
             ):
                 yield
 
 
 @pytest.fixture(autouse=True)
 def deterministic_narration_validator(request):
-    """Unit/endpoint tests use a deterministic gate; contract tests exercise the new hand-off."""
+    """Unit tests stay offline; old validator fixtures bridge into the new public gate.
+
+    This lets existing tests keep expressing semantic verdicts while
+    ``interagent_contract_enforced`` exercises the real TurnAuthorityValidator transport.
+    """
     result = NarrationValidationResult(
         verdict="pass",
         summary="Deterministic test harness accepted the mocked narration.",
@@ -100,12 +117,26 @@ def deterministic_narration_validator(request):
         if not enforce_old
         else None
     )
+
+    async def bridge_authority_validation(_self, selection, authority, candidate_text):
+        legacy = NarrationValidator(None, None)
+        return await legacy.validate(
+            selection,
+            [
+                ChatMessage(
+                    role="system",
+                    content="Deterministic compatibility bridge for a typed authority verdict.",
+                )
+            ],
+            candidate_text,
+            confirmed_speaker_name=authority.acting_character_name,
+        )
+
     authority_patch = (
         patch.object(
             TurnAuthorityValidator,
             "validate",
-            new_callable=AsyncMock,
-            return_value=result,
+            new=bridge_authority_validation,
         )
         if not enforce_authority
         else None
