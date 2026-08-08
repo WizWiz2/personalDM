@@ -54,7 +54,11 @@ async def _base_turn(db_session: AsyncSession):
     await scenes.add_participant(scene.id, player.id, allow_movement=True)
     user = await turns.create(
         campaign_id,
-        TurnCreate(role="user", content="Стучу в дверь."),
+        TurnCreate(
+            role="user",
+            content="Стучу в дверь.",
+            scene_id=scene.id,
+        ),
     )
     assistant = await turns.create(
         campaign_id,
