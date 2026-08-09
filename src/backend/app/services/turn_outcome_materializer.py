@@ -16,15 +16,19 @@ from app.models.turn_authority import TurnAuthority
 @dataclass(frozen=True)
 class MaterializedTurnOutcome:
     introduced_character_ids: tuple[UUID, ...] = ()
+    arrived_existing_character_ids: tuple[UUID, ...] = ()
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.introduced_character_ids or self.arrived_existing_character_ids)
 
 
 class TurnOutcomeMaterializer:
     """Apply structured outcomes before prose and bind their provenance after publication.
 
-    Planned NPCs are part of the game outcome, not narrator inventions. They are therefore created
-    before narrator generation so the narrator context and validator see actual structured scene
-    participants. Until an assistant turn is successfully saved, their provenance remains bound to
-    the triggering user turn and can be compensated if generation truly fails.
+    New NPCs are created exactly once. Known NPC references normalized by TurnAuthority are attached
+    to the target scene without recreating the entity, and only when Authority has already verified
+    that the character is physically at the target location.
     """
 
     def __init__(self, session: AsyncSession):
@@ -38,10 +42,27 @@ class TurnOutcomeMaterializer:
         *,
         source_turn_id: UUID,
     ) -> MaterializedTurnOutcome:
-        if not authority.allowed_new_npcs:
+        if not authority.allowed_new_npcs and not authority.allowed_existing_npc_arrivals:
             return MaterializedTurnOutcome()
         if not authority.target_scene_id:
-            raise ValueError("Planned NPC introduction has no authoritative target scene")
+            raise ValueError("Planned NPC materialization has no authoritative target scene")
+
+        existing_participants = set(
+            await self._scenes.get_participants(authority.target_scene_id)
+        )
+        arrived_existing_ids: list[UUID] = []
+        for arrival in authority.allowed_existing_npc_arrivals:
+            if arrival.entity_id in existing_participants:
+                continue
+            # Authority already checked current_location_id == target location. Keep movement
+            # disabled here so materialization can never turn an identity repair into teleportation.
+            await self._scenes.add_participant(
+                authority.target_scene_id,
+                arrival.entity_id,
+                allow_movement=False,
+            )
+            arrived_existing_ids.append(arrival.entity_id)
+            existing_participants.add(arrival.entity_id)
 
         known = await self._entities.list_by_campaign(
             authority.campaign_id,
@@ -85,7 +106,10 @@ class TurnOutcomeMaterializer:
             known_names.add(key)
 
         await self._session.flush()
-        return MaterializedTurnOutcome(tuple(created_ids))
+        return MaterializedTurnOutcome(
+            introduced_character_ids=tuple(created_ids),
+            arrived_existing_character_ids=tuple(arrived_existing_ids),
+        )
 
     async def bind_to_assistant(
         self,
@@ -108,10 +132,31 @@ class TurnOutcomeMaterializer:
         await self._session.flush()
 
     async def rollback(self, outcome: MaterializedTurnOutcome) -> None:
-        """Compensate prepared introductions when a real generation/state failure aborts the turn."""
+        """Compensate prepared entity changes when a real generation/state failure aborts."""
+        for entity_id in outcome.arrived_existing_character_ids:
+            # Existing characters must never be deleted. Remove only the participant row this turn
+            # prepared; their durable entity/location identity stays untouched.
+            for scene_id in await self._scenes_for_materialized_arrival(entity_id):
+                await self._scenes.remove_participant(scene_id, entity_id)
         for entity_id in outcome.introduced_character_ids:
             await self._entities.delete(entity_id)
         await self._session.flush()
+
+    async def _scenes_for_materialized_arrival(self, entity_id: UUID) -> list[UUID]:
+        # Arrival rollback is only called for the current turn outcome. The target scene is the only
+        # scene where materialize() can have inserted a new participant row, but the dataclass keeps
+        # only IDs for backwards compatibility. Find active participant rows and let scene-transition
+        # rollback handle target-scene lifecycle when a boundary was prepared.
+        from sqlalchemy import select
+
+        from app.db.tables import SceneParticipant
+
+        result = await self._session.execute(
+            select(SceneParticipant.scene_id).where(
+                SceneParticipant.entity_id == str(entity_id)
+            )
+        )
+        return [UUID(value) for value in result.scalars().all()]
 
     @staticmethod
     def _key(value: object) -> str:
