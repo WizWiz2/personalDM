@@ -7,8 +7,10 @@ on:
       - "agent/**"
   pull_request:
     paths:
+      - "src/backend/app/models/turn_authority.py"
       - "src/backend/app/services/turn_saga.py"
       - "src/backend/app/services/turn_authority_planner.py"
+      - "src/backend/app/services/turn_authority_service.py"
       - "src/backend/app/services/turn_authority_validator.py"
       - "src/backend/app/services/authority_narration_pipeline.py"
       - "src/backend/app/services/narration_publication_guard.py"
@@ -16,6 +18,7 @@ on:
       - "src/backend/app/services/context_compiler.py"
       - "src/backend/app/providers/llm_provider.py"
       - "src/backend/tests/test_round3_playability_recovery.py"
+      - "src/backend/tests/test_round5_authority_preflight.py"
       - "src/backend/tests/test_actor_agency_failclosed.py"
       - "src/backend/tests/test_planner_intent_contract.py"
       - "src/backend/tests/test_planner_intent_repair.py"
@@ -45,8 +48,10 @@ jobs:
       - name: Compile recovery path
         run: |
           python -m compileall -q \
+            src/backend/app/models/turn_authority.py \
             src/backend/app/services/turn_saga.py \
             src/backend/app/services/turn_authority_planner.py \
+            src/backend/app/services/turn_authority_service.py \
             src/backend/app/services/turn_authority_validator.py \
             src/backend/app/services/authority_narration_pipeline.py \
             src/backend/app/services/narration_publication_guard.py \
@@ -58,6 +63,7 @@ jobs:
         run: |
           pytest -q \
             tests/test_round3_playability_recovery.py \
+            tests/test_round5_authority_preflight.py \
             tests/test_actor_agency_failclosed.py \
             tests/test_planner_intent_contract.py \
             tests/test_planner_intent_repair.py \
