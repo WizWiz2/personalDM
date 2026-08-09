@@ -20,6 +20,16 @@ class PlannedNpcIntroduction(BaseModel):
     reason: str = Field(min_length=2, max_length=500)
 
 
+class ExistingNpcArrival(BaseModel):
+    """A known character that may become present without being recreated as a new entity."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    entity_id: UUID
+    canonical_name: str = Field(min_length=2, max_length=120)
+    reason: str = Field(min_length=2, max_length=500)
+
+
 class TurnAuthority(BaseModel):
     """Single machine-readable source of truth shared by narrator and validator."""
 
@@ -51,6 +61,7 @@ class TurnAuthority(BaseModel):
     present_character_names: list[str] = Field(default_factory=list)
     known_absent_character_names: list[str] = Field(default_factory=list)
     allowed_new_npcs: list[PlannedNpcIntroduction] = Field(default_factory=list)
+    allowed_existing_npc_arrivals: list[ExistingNpcArrival] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
 
     resolution: str = "conversation"
@@ -69,6 +80,10 @@ class TurnAuthority(BaseModel):
     @property
     def allowed_new_npc_names(self) -> list[str]:
         return [item.canonical_name for item in self.allowed_new_npcs]
+
+    @property
+    def allowed_existing_npc_arrival_names(self) -> list[str]:
+        return [item.canonical_name for item in self.allowed_existing_npc_arrivals]
 
     def validator_payload(self) -> dict:
         """Compact authority for continuity judging, without competing prompt prose."""
@@ -90,6 +105,14 @@ class TurnAuthority(BaseModel):
                 }
                 for item in self.allowed_new_npcs
             ],
+            "allowed_existing_npc_arrivals": [
+                {
+                    "entity_id": str(item.entity_id),
+                    "canonical_name": item.canonical_name,
+                    "reason": item.reason,
+                }
+                for item in self.allowed_existing_npc_arrivals
+            ],
             "objects_here": self.object_names,
             "resolution": self.resolution,
             "dramatic_mode": self.dramatic_mode,
@@ -107,7 +130,9 @@ class TurnAuthority(BaseModel):
         payload = self.validator_payload()
         payload.update(
             {
-                "allowed_new_npcs": [item.model_dump(mode="json") for item in self.allowed_new_npcs],
+                "allowed_new_npcs": [
+                    item.model_dump(mode="json") for item in self.allowed_new_npcs
+                ],
                 "character_beats": self.character_beats,
                 "narration_guidance": self.narration_guidance,
                 "ending_hook": self.ending_hook,
@@ -120,4 +145,4 @@ class TurnAuthority(BaseModel):
         return payload
 
 
-__all__ = ["PlannedNpcIntroduction", "TurnAuthority"]
+__all__ = ["ExistingNpcArrival", "PlannedNpcIntroduction", "TurnAuthority"]
