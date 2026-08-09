@@ -7,6 +7,8 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.db.scene_transition_table import SceneTransition
+from app.db.tables import Scene
 from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
@@ -184,7 +186,7 @@ async def test_known_npc_at_other_location_is_not_teleported(
 
 @pytest.mark.interagent_contract_enforced
 @pytest.mark.asyncio
-async def test_invalid_authority_can_rollback_prepared_transition_without_world_mutation(
+async def test_invalid_authority_compensates_committed_prepared_transition(
     db_session: AsyncSession,
 ):
     (
@@ -197,24 +199,23 @@ async def test_invalid_authority_can_rollback_prepared_transition_without_world_
         _old_scene,
         source_scene,
     ) = await _campaign_with_tavern(db_session)
-    scenes = SceneRepository(db_session)
-    before_scene_ids = {scene.id for scene in await scenes.list_by_campaign(campaign_id)}
     trigger_turn_id = uuid4()
+    executor = SceneTransitionExecutor(db_session)
 
     transition_plan = SceneTransitionPlan(
         required=True,
         transition_type="focus_transition",
         scene_title="Новая сцена в той же таверне",
-        reason="Проверка транзакционного preflight.",
+        reason="Проверка компенсации authority rejection.",
     )
-    applied = await SceneTransitionExecutor(db_session).apply(
+    applied = await executor.apply(
         campaign_id,
         source_scene.id,
         trigger_turn_id,
         transition_plan,
     )
     assert applied is not None
-    assert applied.target_scene_id not in before_scene_ids
+    await db_session.commit()
 
     invalid_plan = _misclassified_known_npc(
         "Грета",
@@ -231,11 +232,18 @@ async def test_invalid_authority_can_rollback_prepared_transition_without_world_
             acting_character_id=None,
         )
 
-    # This is the invariant TurnSaga now enforces before fallback publication.
+    # TurnSaga uses this durable compensation path before building/publishing fallback authority.
     await db_session.rollback()
-    after_scene_ids = {scene.id for scene in await scenes.list_by_campaign(campaign_id)}
-    refreshed_player = await EntityRepository(db_session).get_character(player.id)
+    assert await executor.rollback_transition(applied.transition_id) is True
+    await db_session.commit()
 
-    assert after_scene_ids == before_scene_ids
+    refreshed_player = await EntityRepository(db_session).get_character(player.id)
+    source_row = await db_session.get(Scene, str(source_scene.id))
+    target_row = await db_session.get(Scene, str(applied.target_scene_id))
+    transition_row = await db_session.get(SceneTransition, str(applied.transition_id))
+
     assert refreshed_player is not None
     assert refreshed_player.current_location_id == tavern.id
+    assert source_row is not None and source_row.status == "active"
+    assert target_row is not None and target_row.status == "abandoned"
+    assert transition_row is not None and transition_row.status == "rolled_back"
