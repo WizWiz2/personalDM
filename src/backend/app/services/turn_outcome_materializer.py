@@ -11,6 +11,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Entity
 from app.models.character import CharacterCreate
 from app.models.turn_authority import TurnAuthority
+from app.services.entity_identity import identity_key
 
 
 @dataclass(frozen=True)
@@ -74,12 +75,12 @@ class TurnOutcomeMaterializer:
         )
         known_names: set[str] = set()
         for entity in known:
-            known_names.add(self._key(entity.canonical_name))
-            known_names.update(self._key(alias) for alias in entity.aliases)
+            known_names.add(identity_key(entity.canonical_name))
+            known_names.update(identity_key(alias) for alias in entity.aliases)
 
         created_ids: list[UUID] = []
         for introduction in authority.allowed_new_npcs:
-            key = self._key(introduction.canonical_name)
+            key = identity_key(introduction.canonical_name)
             if key in known_names:
                 raise ValueError(
                     "Cannot materialize planned new NPC because that identity already exists: "
@@ -97,6 +98,7 @@ class TurnOutcomeMaterializer:
                         "introduction_turn_id": str(source_turn_id),
                         "introduction_trigger_turn_id": str(authority.trigger_turn_id),
                         "introduction_reason": introduction.reason,
+                        "role": introduction.role,
                         "temporary_name": introduction.temporary_name,
                     },
                 ),
@@ -144,10 +146,6 @@ class TurnOutcomeMaterializer:
         for entity_id in outcome.introduced_character_ids:
             await self._entities.delete(entity_id)
         await self._session.flush()
-
-    @staticmethod
-    def _key(value: object) -> str:
-        return " ".join(str(value or "").casefold().split())
 
 
 __all__ = ["MaterializedTurnOutcome", "TurnOutcomeMaterializer"]
