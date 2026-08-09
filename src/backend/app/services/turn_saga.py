@@ -335,24 +335,44 @@ class TurnSaga(LegacyTurnRunner):
                 if turn_create.acting_character_id is not None:
                     raise
 
-                # If target state was prepared and committed, compensate it through the same durable
-                # rollback path used for narration failures. The fallback is then rebuilt strictly
-                # against the restored source scene, so invalid authority cannot leave a half-turn.
-                transition_was_rolled_back = await self._rollback_prepared_transition(
-                    transition_executor,
-                    applied_transition,
-                )
-                if applied_transition and applied_transition.status == "prepared" and not transition_was_rolled_back:
-                    raise RuntimeError(
-                        "Authority rejection could not roll back its prepared scene transition"
-                    ) from exc
-                applied_transition = None
-                effective_scene_id = source_scene_id
-                transition_metadata = {
-                    "status": "rolled_back_after_authority_rejection",
-                    "source_scene_id": str(source_scene_id) if source_scene_id else None,
-                    "error": str(exc)[:2000],
-                }
+                if applied_transition and applied_transition.status == "prepared":
+                    # This boundary belongs to the current unfinished turn. Compensate it before
+                    # fallback publication so the active scene/player location are restored.
+                    if not await self._rollback_prepared_transition(
+                        transition_executor,
+                        applied_transition,
+                    ):
+                        raise RuntimeError(
+                            "Authority rejection could not roll back its prepared scene transition"
+                        ) from exc
+                    applied_transition = None
+                    effective_scene_id = source_scene_id
+                    transition_metadata = {
+                        "status": "rolled_back_after_authority_rejection",
+                        "source_scene_id": (
+                            str(source_scene_id) if source_scene_id else None
+                        ),
+                        "error": str(exc)[:2000],
+                    }
+                elif applied_transition:
+                    # Regeneration/resume may reuse a transition that was already accepted by a
+                    # previous assistant turn. Do not rewrite established world state because a new
+                    # planner response has bad entity classification; fallback stays at the target.
+                    transition_metadata = {
+                        **transition_metadata,
+                        "status": "reused_after_authority_rejection",
+                        "error": str(exc)[:2000],
+                    }
+                else:
+                    effective_scene_id = source_scene_id
+                    transition_metadata = {
+                        "status": "authority_rejected_without_transition",
+                        "source_scene_id": (
+                            str(source_scene_id) if source_scene_id else None
+                        ),
+                        "error": str(exc)[:2000],
+                    }
+
                 plan = CoordinatedTurnPlan.conservative_fallback(turn_create.content)
                 planner_metadata = {
                     **planner_metadata,
@@ -365,7 +385,7 @@ class TurnSaga(LegacyTurnRunner):
                     trigger_turn_id=user_turn.id,
                     player_input=turn_create.content,
                     source_scene_id=source_scene_id,
-                    target_scene_id=source_scene_id,
+                    target_scene_id=effective_scene_id,
                     plan=plan,
                     acting_character_id=None,
                 )
@@ -373,7 +393,7 @@ class TurnSaga(LegacyTurnRunner):
                     compiler=compiler,
                     campaign_id=campaign_id,
                     turn_create=turn_create,
-                    scene_id=source_scene_id,
+                    scene_id=effective_scene_id,
                     max_budget_override=max_budget_override,
                 )
 
