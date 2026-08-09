@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 
 from app.config import settings
 from app.models.turn import ChatMessage
@@ -13,35 +13,37 @@ from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
 
 
 class CoordinatedTurnPlan(TurnPlan):
-    """TurnPlan with an explicit cross-agent scene/NPC hand-off."""
+    """TurnPlan with an explicit cross-agent scene/NPC hand-off.
 
-    scene_disposition: str = Field(
-        pattern="^(stay|location_transition|time_transition|focus_transition|sequence)$"
-    )
+    ``scene_disposition`` is deliberately derived by code instead of supplied by the
+    control model. The old schema asked the LLM to describe the same boundary twice
+    (action_sequence/scene_transition plus scene_disposition), which allowed internally
+    contradictory JSON such as ``action_sequence.steps + scene_disposition=stay``.
+    """
+
     npc_introductions: list[PlannedNpcIntroduction] = Field(
         default_factory=list,
         max_length=4,
     )
 
+    @computed_field(return_type=str)
+    @property
+    def scene_disposition(self) -> str:
+        """Canonical boundary derived from the structured fields the engine actually executes."""
+        if self.action_sequence.steps:
+            return "sequence"
+        if self.scene_transition.required:
+            transition_type = self.scene_transition.transition_type
+            if transition_type in {
+                "location_transition",
+                "time_transition",
+                "focus_transition",
+            }:
+                return transition_type
+        return "stay"
+
     @model_validator(mode="after")
     def validate_interagent_authority(self):
-        disposition = self.scene_disposition
-        if disposition == "sequence":
-            if not self.action_sequence.steps:
-                raise ValueError("scene_disposition=sequence requires action_sequence.steps")
-        elif self.action_sequence.steps:
-            raise ValueError("action_sequence.steps require scene_disposition=sequence")
-        elif disposition == "stay":
-            if self.scene_transition.required:
-                raise ValueError("scene_disposition=stay cannot carry a scene transition")
-        else:
-            if not self.scene_transition.required:
-                raise ValueError(f"scene_disposition={disposition} requires scene_transition")
-            if self.scene_transition.transition_type != disposition:
-                raise ValueError(
-                    "scene_disposition must match scene_transition.transition_type"
-                )
-
         for step in self.action_sequence.steps:
             if step.action_type != "movement" or step.resolution != "auto_success":
                 continue
@@ -68,20 +70,19 @@ class CoordinatedTurnPlan(TurnPlan):
         return cls(
             player_intent=(player_input.strip() or "Продолжить текущую сцену")[:500],
             resolution="uncertain",
-            scene_disposition="stay",
             npc_introductions=[],
             observable_consequences=[],
             character_beats=[],
             canon_constraints=[
-                "Planner authority is unavailable: do not invent completed movement, new NPCs, "
-                "new items, new facts, or voluntary protagonist actions."
+                "Планировщик недоступен: не придумывай завершённое перемещение, новых NPC, "
+                "новые предметы, новые факты или добровольные действия протагониста."
             ],
             new_fact_candidates=[],
             narration_guidance=[
-                "Acknowledge only what can be safely observed in the current scene and leave the "
-                "attempt unresolved rather than inventing an outcome."
+                "Опиши только то, что можно безопасно наблюдать в текущей сцене, и оставь "
+                "попытку без нового подтверждённого результата вместо выдумывания исхода."
             ],
-            ending_hook="The attempted action remains unresolved.",
+            ending_hook="Попытка пока не приводит к подтверждённому результату.",
         )
 
 
@@ -129,26 +130,30 @@ class TurnAuthorityPlanner:
     AUTHORITY_ADDENDUM = """
 
 [INTER-AGENT AUTHORITY CONTRACT]
-Your JSON is not advisory prose. It is the only machine-readable authority that the narrator,
-validator and deterministic engine will share for this turn.
+Your JSON is not advisory prose. It is the machine-readable decision the deterministic engine will
+canonicalize before narrator and validator see it.
 
 You MUST additionally return:
-- scene_disposition: exactly one of stay|location_transition|time_transition|focus_transition|sequence
 - npc_introductions: a list of genuinely NEW characters whose first physical appearance is an
   approved consequence of this turn. Each item contains canonical_name, role, description,
   appearance, voice, temporary_name and reason.
 
-Rules for scene_disposition:
-- stay: no physical/time/focus scene boundary occurs and scene_transition.required must be false.
-- location_transition/time_transition/focus_transition: the matching scene_transition is REQUIRED.
-- sequence: action_sequence.steps is non-empty. Every auto-success movement step MUST contain its
-  own required location_transition with a concrete destination_location.
+Do NOT return scene_disposition. The engine derives it deterministically:
+- non-empty action_sequence.steps => sequence;
+- otherwise required scene_transition => that transition_type;
+- otherwise => stay.
+This removes duplicated state from your responsibility. Express boundaries only through
+``action_sequence`` and ``scene_transition``.
+
+Rules for structured boundaries:
+- Every auto-success movement step in a sequence MUST contain its own required
+  location_transition with a concrete destination_location.
 - Never hide a location change only in observable_consequences, narration_guidance or prose.
 - If the player explicitly says they go/return/enter/leave for another concrete place and nothing
-  blocks that movement, use location_transition (or a sequence containing it). Do NOT leave the
-  player in the old scene merely because narration could describe the trip.
-- If explicit movement cannot complete, stay is allowed ONLY when observable_consequences clearly
-  state the concrete obstacle that prevents the move.
+  blocks that movement, emit a required location_transition (or a sequence containing it). Do NOT
+  leave the player in the old scene merely because narration could describe the trip.
+- If explicit movement cannot complete, leave scene_transition unrequired ONLY when
+  observable_consequences clearly state the concrete obstacle that prevents the move.
 
 Rules for npc_introductions:
 - Use it only for a person who does not yet exist in campaign context.
@@ -245,8 +250,8 @@ choice for the protagonist.
             and not cls._matches_any(cls.MOVEMENT_BLOCKER_PATTERNS, consequences)
         ):
             issues.append(
-                "explicit destination movement cannot use stay without a concrete blocking "
-                "consequence; emit location_transition/sequence or state the blocker"
+                "explicit destination movement cannot stay in the current scene without a concrete "
+                "blocking consequence; emit location_transition/sequence or state the blocker"
             )
         return issues
 
