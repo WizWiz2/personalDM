@@ -19,6 +19,7 @@ on:
       - "src/backend/tests/test_actor_agency_failclosed.py"
       - "src/backend/tests/test_planner_intent_contract.py"
       - "src/backend/tests/test_planner_intent_repair.py"
+      - "src/backend/tests/test_planner_control_plane_simplification.py"
       - "src/backend/tests/test_narration_validation.py"
       - ".github/workflows/round3-playability-contracts.yml"
 
@@ -52,7 +53,7 @@ jobs:
             src/backend/app/services/turn_outcome_materializer.py \
             src/backend/app/services/context_compiler.py
 
-      - name: Test Round 3 failure recovery
+      - name: Test playability and planner contracts
         working-directory: src/backend
         run: |
           pytest -q \
@@ -60,5 +61,6 @@ jobs:
             tests/test_actor_agency_failclosed.py \
             tests/test_planner_intent_contract.py \
             tests/test_planner_intent_repair.py \
+            tests/test_planner_control_plane_simplification.py \
             tests/test_narration_validation.py \
             --tb=short
