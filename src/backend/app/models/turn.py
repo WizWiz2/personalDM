@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 
 TurnRole = Literal[
@@ -42,6 +42,11 @@ class TurnRead(BaseModel):
     model_name: str | None
     token_count: int | None
     created_at: datetime
+
+    # Internal services (notably PostTurnProcessor) need the persisted authority snapshot to
+    # distinguish TurnAuthority-managed turns from legacy prose-only turns. Keep it off public
+    # serialization while still preserving it when TurnRepository materializes a DB row.
+    context_snapshot: str | dict | None = Field(default=None, exclude=True)
 
     @computed_field
     @property
