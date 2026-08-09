@@ -16,11 +16,15 @@ from app.models.turn_authority import TurnAuthority
 @dataclass(frozen=True)
 class MaterializedTurnOutcome:
     introduced_character_ids: tuple[UUID, ...] = ()
-    arrived_existing_character_ids: tuple[UUID, ...] = ()
+    arrived_existing_participants: tuple[tuple[UUID, UUID], ...] = ()
+
+    @property
+    def arrived_existing_character_ids(self) -> tuple[UUID, ...]:
+        return tuple(entity_id for _scene_id, entity_id in self.arrived_existing_participants)
 
     @property
     def has_changes(self) -> bool:
-        return bool(self.introduced_character_ids or self.arrived_existing_character_ids)
+        return bool(self.introduced_character_ids or self.arrived_existing_participants)
 
 
 class TurnOutcomeMaterializer:
@@ -50,7 +54,7 @@ class TurnOutcomeMaterializer:
         existing_participants = set(
             await self._scenes.get_participants(authority.target_scene_id)
         )
-        arrived_existing_ids: list[UUID] = []
+        arrived_existing: list[tuple[UUID, UUID]] = []
         for arrival in authority.allowed_existing_npc_arrivals:
             if arrival.entity_id in existing_participants:
                 continue
@@ -61,7 +65,7 @@ class TurnOutcomeMaterializer:
                 arrival.entity_id,
                 allow_movement=False,
             )
-            arrived_existing_ids.append(arrival.entity_id)
+            arrived_existing.append((authority.target_scene_id, arrival.entity_id))
             existing_participants.add(arrival.entity_id)
 
         known = await self._entities.list_by_campaign(
@@ -108,7 +112,7 @@ class TurnOutcomeMaterializer:
         await self._session.flush()
         return MaterializedTurnOutcome(
             introduced_character_ids=tuple(created_ids),
-            arrived_existing_character_ids=tuple(arrived_existing_ids),
+            arrived_existing_participants=tuple(arrived_existing),
         )
 
     async def bind_to_assistant(
@@ -133,30 +137,13 @@ class TurnOutcomeMaterializer:
 
     async def rollback(self, outcome: MaterializedTurnOutcome) -> None:
         """Compensate prepared entity changes when a real generation/state failure aborts."""
-        for entity_id in outcome.arrived_existing_character_ids:
-            # Existing characters must never be deleted. Remove only the participant row this turn
-            # prepared; their durable entity/location identity stays untouched.
-            for scene_id in await self._scenes_for_materialized_arrival(entity_id):
-                await self._scenes.remove_participant(scene_id, entity_id)
+        for scene_id, entity_id in outcome.arrived_existing_participants:
+            # Existing characters must never be deleted. Remove only the participant relation
+            # inserted by this turn; historical participation in older scenes stays intact.
+            await self._scenes.remove_participant(scene_id, entity_id)
         for entity_id in outcome.introduced_character_ids:
             await self._entities.delete(entity_id)
         await self._session.flush()
-
-    async def _scenes_for_materialized_arrival(self, entity_id: UUID) -> list[UUID]:
-        # Arrival rollback is only called for the current turn outcome. The target scene is the only
-        # scene where materialize() can have inserted a new participant row, but the dataclass keeps
-        # only IDs for backwards compatibility. Find active participant rows and let scene-transition
-        # rollback handle target-scene lifecycle when a boundary was prepared.
-        from sqlalchemy import select
-
-        from app.db.tables import SceneParticipant
-
-        result = await self._session.execute(
-            select(SceneParticipant.scene_id).where(
-                SceneParticipant.entity_id == str(entity_id)
-            )
-        )
-        return [UUID(value) for value in result.scalars().all()]
 
     @staticmethod
     def _key(value: object) -> str:
