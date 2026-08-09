@@ -24,7 +24,6 @@ def authority_plan() -> CoordinatedTurnPlan:
         npc_introductions=[
             PlannedNpcIntroduction(
                 canonical_name="Бармен Роэн",
-                aliases=[] if False else [],
                 role="бармен",
                 description="Бармен Медного Котла.",
                 reason="Игрок напрямую обращается к бармену в текущей таверне.",
