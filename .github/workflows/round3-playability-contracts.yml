@@ -1,0 +1,64 @@
+name: Round 3 playability contracts
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+  pull_request:
+    paths:
+      - "src/backend/app/services/turn_saga.py"
+      - "src/backend/app/services/turn_authority_planner.py"
+      - "src/backend/app/services/turn_authority_validator.py"
+      - "src/backend/app/services/authority_narration_pipeline.py"
+      - "src/backend/app/services/narration_publication_guard.py"
+      - "src/backend/app/services/turn_outcome_materializer.py"
+      - "src/backend/app/services/context_compiler.py"
+      - "src/backend/app/providers/llm_provider.py"
+      - "src/backend/tests/test_round3_playability_recovery.py"
+      - "src/backend/tests/test_actor_agency_failclosed.py"
+      - "src/backend/tests/test_planner_intent_contract.py"
+      - "src/backend/tests/test_planner_intent_repair.py"
+      - "src/backend/tests/test_narration_validation.py"
+      - ".github/workflows/round3-playability-contracts.yml"
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+
+      - name: Install backend and test dependencies
+        run: python -m pip install -e "src/backend[dev]"
+
+      - name: Compile recovery path
+        run: |
+          python -m compileall -q \
+            src/backend/app/services/turn_saga.py \
+            src/backend/app/services/turn_authority_planner.py \
+            src/backend/app/services/turn_authority_validator.py \
+            src/backend/app/services/authority_narration_pipeline.py \
+            src/backend/app/services/narration_publication_guard.py \
+            src/backend/app/services/turn_outcome_materializer.py \
+            src/backend/app/services/context_compiler.py
+
+      - name: Test Round 3 failure recovery
+        working-directory: src/backend
+        run: |
+          pytest -q \
+            tests/test_round3_playability_recovery.py \
+            tests/test_actor_agency_failclosed.py \
+            tests/test_planner_intent_contract.py \
+            tests/test_planner_intent_repair.py \
+            tests/test_narration_validation.py \
+            --tb=short

@@ -23,16 +23,19 @@ from app.services.turn_authority_planner import (
     TurnAuthorityPlanner,
 )
 from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
-from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
+from app.services.turn_outcome_materializer import (
+    MaterializedTurnOutcome,
+    TurnOutcomeMaterializer,
+)
 from app.services.turn_planner import TurnPlanningError
 
 
 class TurnSaga(LegacyTurnRunner):
-    """Single owner of the interactive narrator-turn transaction and agent hand-offs.
+    """Single owner of the interactive turn transaction and inter-agent hand-offs.
 
-    LegacyTurnRunner remains available for migration/tests, but public gameplay is routed here.
-    The saga never lets a missing Planner silently create an unconstrained narrator turn and never
-    waits for post-turn memory agents before returning control to the player.
+    Structured game outcomes are prepared before prose. Narrator/validator can affect only the
+    published rendering, never whether an already-valid game outcome happened. Post-turn memory is
+    still outside interactive latency.
     """
 
     def _inject_authority(
@@ -50,11 +53,13 @@ class TurnSaga(LegacyTurnRunner):
             + "\nHard rules:\n"
             "- Render this authority; do not create a competing interpretation.\n"
             "- The human player's voluntary actions/dialogue are limited to player_input.\n"
-            "- allowed_new_npcs are approved first appearances and may be rendered as present.\n"
+            "- allowed_new_npcs are already approved structured first appearances. If they are "
+            "listed in the current scene context, treat them as physically present.\n"
             "- known_absent_characters may not appear physically.\n"
             "- Never complete a scene boundary absent from scene_disposition/transition_type.\n"
             "- Preserve observable_consequences, canon_constraints and completed action steps.\n"
             "- narration_guidance and ending_hook affect prose only; they never override state.\n"
+            "- End before inventing the protagonist's next voluntary response.\n"
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
@@ -95,6 +100,24 @@ class TurnSaga(LegacyTurnRunner):
             compiler,
             max_budget_override,
         )
+
+    async def _recompile_narrator_context(
+        self,
+        *,
+        compiler,
+        campaign_id: UUID,
+        turn_create: TurnCreate,
+        scene_id: UUID | None,
+        max_budget_override: int | None,
+    ) -> tuple[list[ChatMessage], dict]:
+        messages, metadata = await compiler.compile_context(
+            campaign_id=campaign_id,
+            acting_character_id=turn_create.acting_character_id,
+            scene_id=scene_id,
+            current_user_content=turn_create.content,
+            max_budget_override=max_budget_override,
+        )
+        return self._reserve_current_user(messages, metadata, turn_create.content)
 
     async def _plan(
         self,
@@ -138,6 +161,19 @@ class TurnSaga(LegacyTurnRunner):
                 "telemetry": planner.telemetry,
             }
 
+    async def _rollback_materialization(
+        self,
+        materializer: TurnOutcomeMaterializer | None,
+        outcome: MaterializedTurnOutcome | None,
+    ) -> None:
+        if not materializer or not outcome or not outcome.introduced_character_ids:
+            return
+        # Audit helpers may have committed while prose was being checked. Treat prepared NPCs like
+        # prepared scene transitions: compensate them explicitly on a real aborted turn.
+        await self._session.rollback()
+        await materializer.rollback(outcome)
+        await self._session.commit()
+
     async def run_turn_stream(
         self,
         campaign_id: UUID,
@@ -160,6 +196,8 @@ class TurnSaga(LegacyTurnRunner):
         effective_scene_id = source_scene_id
         transition_executor: SceneTransitionExecutor | None = None
         applied_transition: AppliedSceneTransition | None = None
+        materializer: TurnOutcomeMaterializer | None = None
+        materialized_outcome: MaterializedTurnOutcome | None = None
         campaign_key = str(campaign_id)
         current_task = asyncio.current_task()
 
@@ -273,19 +311,13 @@ class TurnSaga(LegacyTurnRunner):
                             else None
                         ),
                     }
-                    narrator_messages, narrator_context_metadata = await compiler.compile_context(
+                    narrator_messages, context_metadata = await self._recompile_narrator_context(
+                        compiler=compiler,
                         campaign_id=campaign_id,
-                        acting_character_id=None,
+                        turn_create=turn_create,
                         scene_id=effective_scene_id,
-                        current_user_content=turn_create.content,
                         max_budget_override=max_budget_override,
                     )
-                    narrator_messages, narrator_context_metadata = self._reserve_current_user(
-                        narrator_messages,
-                        narrator_context_metadata,
-                        turn_create.content,
-                    )
-                    context_metadata = narrator_context_metadata
 
             authority_service = TurnAuthorityService(self._session)
             try:
@@ -318,6 +350,24 @@ class TurnSaga(LegacyTurnRunner):
                     acting_character_id=None,
                 )
 
+            # Structured first appearances become real scene participants BEFORE prose generation.
+            # This removes the old cycle where Narrator mentioned an NPC that did not structurally
+            # exist until after Validator had already judged the text.
+            materializer = TurnOutcomeMaterializer(self._session)
+            materialized_outcome = await materializer.materialize(
+                authority,
+                source_turn_id=user_turn.id,
+            )
+            if materialized_outcome.introduced_character_ids:
+                await self._session.commit()
+                narrator_messages, context_metadata = await self._recompile_narrator_context(
+                    compiler=compiler,
+                    campaign_id=campaign_id,
+                    turn_create=turn_create,
+                    scene_id=effective_scene_id,
+                    max_budget_override=max_budget_override,
+                )
+
             narrator_messages = self._inject_authority(narrator_messages, authority)
             context_metadata = dict(context_metadata)
             context_metadata.update(
@@ -331,6 +381,17 @@ class TurnSaga(LegacyTurnRunner):
                     "turn_planner": planner_metadata,
                     "scene_transition": transition_metadata,
                     "turn_authority": authority.model_dump(mode="json"),
+                    "turn_materialization": {
+                        "status": (
+                            "prepared_before_narration"
+                            if materialized_outcome.introduced_character_ids
+                            else "not_required"
+                        ),
+                        "introduced_character_ids": [
+                            str(value)
+                            for value in materialized_outcome.introduced_character_ids
+                        ],
+                    },
                 }
             )
 
@@ -346,10 +407,11 @@ class TurnSaga(LegacyTurnRunner):
 
             context_metadata["provider_telemetry"] = narration.telemetry
             context_metadata["interagent_protocol"] = {
-                "version": 1,
+                "version": 2,
                 "planner_status": planner_metadata.get("status"),
                 "validator_status": narration.validation_status,
                 "post_turn_mode": "background",
+                "structured_outcome_before_prose": True,
             }
             token_count = (
                 narration.telemetry.get("usage") or {}
@@ -374,15 +436,16 @@ class TurnSaga(LegacyTurnRunner):
                 ):
                     raise RuntimeError("Prepared scene transition could not be finalized")
 
-            materialized = await TurnOutcomeMaterializer(self._session).materialize(
-                authority,
-                source_turn_id=saved_assistant.id,
-            )
-            context_metadata["turn_materialization"] = {
-                "introduced_character_ids": [
-                    str(value) for value in materialized.introduced_character_ids
-                ]
-            }
+            if materializer and materialized_outcome.introduced_character_ids:
+                await materializer.bind_to_assistant(
+                    materialized_outcome,
+                    saved_assistant.id,
+                )
+                context_metadata["turn_materialization"]["status"] = "applied"
+                context_metadata["turn_materialization"]["source_turn_id"] = str(
+                    saved_assistant.id
+                )
+
             # Persist the final snapshot including deterministic materialization evidence.
             from app.db.tables import Turn
 
@@ -407,6 +470,7 @@ class TurnSaga(LegacyTurnRunner):
             yield narration.text
 
         except asyncio.CancelledError:
+            await self._rollback_materialization(materializer, materialized_outcome)
             await self._rollback_prepared_transition(
                 transition_executor,
                 applied_transition,
@@ -419,6 +483,7 @@ class TurnSaga(LegacyTurnRunner):
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
         except Exception as exc:
+            await self._rollback_materialization(materializer, materialized_outcome)
             await self._rollback_prepared_transition(
                 transition_executor,
                 applied_transition,

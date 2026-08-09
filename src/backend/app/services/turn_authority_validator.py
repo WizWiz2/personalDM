@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 
 from app.config import settings
-from app.models.narration_validation import NarrationValidationResult
+from app.models.narration_validation import (
+    NarrationValidationResult,
+    NarrationViolation,
+)
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 
@@ -34,17 +38,19 @@ Return repair_required only for concrete violations of that authority:
 
 Do not reconstruct hidden campaign rules. Do not complain that an approved new NPC was not in the
 old participant list. Do not invent corrections that change the approved turn outcome.
+All human-readable fields (summary, evidence, correction) MUST be written in Russian even if the
+candidate or your internal reasoning uses another language.
 
 Return exactly:
 {
   "verdict": "pass|repair_required",
-  "summary": "short reason",
+  "summary": "short reason in Russian",
   "violations": [
     {
       "violation_type": "absent_character|absent_object|invalid_movement|invalid_time_advance|player_agency|ungrounded_complication|sequence_violation|canon_conflict|other",
       "severity": "warning|error",
-      "evidence": "candidate fragment or precise description",
-      "correction": "specific prose-only correction"
+      "evidence": "candidate fragment or precise description in Russian",
+      "correction": "specific prose-only correction in Russian"
     }
   ]
 }
@@ -68,13 +74,13 @@ Return exactly:
             return NarrationValidationResult.model_validate(
                 {
                     "verdict": "repair_required",
-                    "summary": "Narrator produced empty prose.",
+                    "summary": "Нарратор вернул пустой текст.",
                     "violations": [
                         {
                             "violation_type": "other",
                             "severity": "error",
-                            "evidence": "empty candidate",
-                            "correction": "Produce the approved turn as narrative prose.",
+                            "evidence": "пустой ответ",
+                            "correction": "Описать утверждённый исход хода художественным текстом.",
                         }
                     ],
                 }
@@ -105,7 +111,12 @@ Return exactly:
                 response_model=NarrationValidationResult,
             )
             result = NarrationValidationResult.model_validate(data)
-            return self.apply_deterministic_authority(result, authority)
+            result = self.apply_deterministic_authority(result, authority)
+            return self.apply_deterministic_actor_agency(
+                result,
+                authority,
+                candidate_text,
+            )
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise NarrationValidationError(str(exc)) from exc
 
@@ -146,9 +157,59 @@ Return exactly:
             summary=(
                 result.summary
                 if errors
-                else "Typed turn authority confirms the referenced speaker/introduction."
+                else "Типизированный TurnAuthority подтверждает этого собеседника или новое появление."
             ),
             violations=filtered,
+        )
+
+    @staticmethod
+    def apply_deterministic_actor_agency(
+        result: NarrationValidationResult,
+        authority: TurnAuthority,
+        candidate_text: str,
+    ) -> NarrationValidationResult:
+        """Actor output may never rely on the LLM validator to protect the human protagonist.
+
+        Small local models sometimes append a protagonist reaction after an otherwise valid NPC
+        answer and then incorrectly judge their own prose as valid. The publication scrubber is a
+        deterministic second opinion for actor turns: if it would remove player-owned prose, force
+        the normal repair/fallback path even when the control model returned ``pass``.
+        """
+        if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
+            return result
+        if any(
+            item.violation_type == "player_agency" and item.severity == "error"
+            for item in result.violations
+        ):
+            return result
+
+        sanitized, diagnostics = NarrationPublicationGuard.publish(
+            authority,
+            candidate_text,
+            None,
+        )
+        if (
+            diagnostics.get("mode") == "sanitized_candidate"
+            and " ".join(sanitized.split()) == " ".join(candidate_text.split())
+        ):
+            return result
+
+        violation = NarrationViolation(
+            violation_type="player_agency",
+            severity="error",
+            evidence=(
+                f"Ответ за {authority.acting_character_name or 'NPC'} содержит новую реплику "
+                f"или самостоятельное действие героя {authority.player_character_name}."
+            ),
+            correction=(
+                f"Оставить только ответ и действия {authority.acting_character_name or 'NPC'}; "
+                f"следующую реплику или действие {authority.player_character_name} вводит человек."
+            ),
+        )
+        return NarrationValidationResult(
+            verdict="repair_required",
+            summary="Детерминированная проверка обнаружила управление героем в ответе NPC.",
+            violations=[*result.violations, violation],
         )
 
     @staticmethod
@@ -163,14 +224,11 @@ Return exactly:
             if item.severity == "error"
         )
         return (
-            # Keep the legacy marker during migration because deterministic fixtures and
-            # debugger tooling use it to distinguish repair generations. Authority below,
-            # not the marker, defines the new repair semantics.
             "[REPAIR REJECTED NARRATION]\n"
             "[REPAIR AGAINST TURN AUTHORITY]\n"
-            "Rewrite the candidate as one complete final Russian in-world response. Preserve only "
-            "the outcomes authorized below. Remove every violation. Do not add a replacement NPC, "
-            "twist, movement or protagonist action. Return prose only.\n\n"
+            "Перепиши кандидат в один законченный внутриигровой ответ на русском языке. Сохрани "
+            "только разрешённые ниже исходы. Удали каждое нарушение. Не добавляй заменяющего NPC, "
+            "поворот, перемещение или действие протагониста. Верни только художественную прозу.\n\n"
             "AUTHORITY:\n"
             + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
             + "\n\nVIOLATIONS:\n"

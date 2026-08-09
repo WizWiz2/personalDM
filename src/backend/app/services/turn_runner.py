@@ -34,9 +34,9 @@ class TurnRunner(TurnSaga):
             turn_create,
             existing_user_turn_id,
         ):
-            # The new Saga intentionally does not spend a minute repeating identical
-            # transport failures. Keep the old diagnostic prefix for UI/tests while
-            # making the reduced retry budget explicit rather than pretending retries ran.
+            # Keep the established CLI/test prefix for true generation failures. Semantic
+            # narration violations are recovered inside AuthorityNarrationPipeline and no longer
+            # reach this branch at all.
             if item.startswith("\n[Generation failed:"):
                 item = item.replace(
                     "\n[Generation failed:",
