@@ -260,9 +260,12 @@ class TurnSaga(LegacyTurnRunner):
                             user_turn.id,
                             plan.scene_transition,
                         )
+                        if applied_transition:
+                            # Keep the long-standing prepare/commit seam used by resume, debugger and
+                            # transition compensation. Authority rejection below explicitly rolls a
+                            # prepared boundary back instead of leaving a Round-5 half-turn.
+                            await self._session.commit()
                     except ValueError as exc:
-                        # Never continue with a transition-shaped plan after its structured
-                        # boundary failed. Nothing from the rejected boundary is committed.
                         await self._session.rollback()
                         failed_plan = plan.model_dump(mode="json")
                         plan = CoordinatedTurnPlan.conservative_fallback(turn_create.content)
@@ -284,12 +287,10 @@ class TurnSaga(LegacyTurnRunner):
                         }
 
                 if applied_transition:
-                    # Deliberately do NOT commit here. Authority must first accept the complete
-                    # structured outcome. Invalid authority therefore leaves zero durable mutation.
                     effective_scene_id = applied_transition.target_scene_id
                     transition_metadata = {
                         "status": (
-                            "prepared_uncommitted"
+                            "prepared"
                             if applied_transition.status == "prepared"
                             else "reused"
                         ),
@@ -311,6 +312,13 @@ class TurnSaga(LegacyTurnRunner):
                             else None
                         ),
                     }
+                    narrator_messages, context_metadata = await self._recompile_narrator_context(
+                        compiler=compiler,
+                        campaign_id=campaign_id,
+                        turn_create=turn_create,
+                        scene_id=effective_scene_id,
+                        max_budget_override=max_budget_override,
+                    )
 
             authority_service = TurnAuthorityService(self._session)
             try:
@@ -327,14 +335,21 @@ class TurnSaga(LegacyTurnRunner):
                 if turn_create.acting_character_id is not None:
                     raise
 
-                # A prepared transition/action sequence may have already mutated the current SQL
-                # transaction. Roll it back BEFORE publishing a fallback so invalid authority cannot
-                # produce the Round-5 half-turn (new location + discarded gameplay outcome).
-                await self._session.rollback()
+                # If target state was prepared and committed, compensate it through the same durable
+                # rollback path used for narration failures. The fallback is then rebuilt strictly
+                # against the restored source scene, so invalid authority cannot leave a half-turn.
+                transition_was_rolled_back = await self._rollback_prepared_transition(
+                    transition_executor,
+                    applied_transition,
+                )
+                if applied_transition and applied_transition.status == "prepared" and not transition_was_rolled_back:
+                    raise RuntimeError(
+                        "Authority rejection could not roll back its prepared scene transition"
+                    ) from exc
                 applied_transition = None
                 effective_scene_id = source_scene_id
                 transition_metadata = {
-                    "status": "authority_rejected_before_commit",
+                    "status": "rolled_back_after_authority_rejection",
                     "source_scene_id": str(source_scene_id) if source_scene_id else None,
                     "error": str(exc)[:2000],
                 }
@@ -354,23 +369,23 @@ class TurnSaga(LegacyTurnRunner):
                     plan=plan,
                     acting_character_id=None,
                 )
+                narrator_messages, context_metadata = await self._recompile_narrator_context(
+                    compiler=compiler,
+                    campaign_id=campaign_id,
+                    turn_create=turn_create,
+                    scene_id=source_scene_id,
+                    max_budget_override=max_budget_override,
+                )
 
-            # Authority is now coherent. Only after this point may structured entity changes become
-            # durable. New NPCs are created; known same-location identities are attached, never cloned.
+            # Authority is coherent. New NPCs are created; known same-location identities are
+            # attached to the scene without duplication or implicit movement.
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(
                 authority,
                 source_turn_id=user_turn.id,
             )
-
-            prepared_structured_state = bool(
-                (applied_transition and applied_transition.status == "prepared")
-                or materialized_outcome.has_changes
-            )
-            if prepared_structured_state:
+            if materialized_outcome.has_changes:
                 await self._session.commit()
-
-            if effective_scene_id != source_scene_id or materialized_outcome.has_changes:
                 narrator_messages, context_metadata = await self._recompile_narrator_context(
                     compiler=compiler,
                     campaign_id=campaign_id,
