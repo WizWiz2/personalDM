@@ -319,7 +319,7 @@ async def test_unresolved_destination_cannot_discover_missing_route(
     )
     assert authorization.applicable is False
 
-    with pytest.raises(ValueError, match="existing route is required"):
+    with pytest.raises(ValueError, match="not an available exit"):
         await SceneTransitionExecutor(db_session).apply(
             world["campaign_id"],
             world["source"].id,
