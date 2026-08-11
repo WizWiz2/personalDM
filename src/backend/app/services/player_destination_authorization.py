@@ -148,14 +148,7 @@ class PlayerDestinationAuthorizer:
                     matched_clause=clause.text,
                 )
             if generic_matches:
-                compatible = [
-                    location
-                    for location in locations
-                    if self._location_matches_generic(
-                        location.canonical_name,
-                        generic_matches,
-                    )
-                ]
+                compatible = self._compatible_locations(locations, generic_matches)
                 if len(compatible) == 1 and target and compatible[0].id == target.id:
                     return DestinationAuthorization(
                         applicable=True,
@@ -194,6 +187,32 @@ class PlayerDestinationAuthorizer:
                     destination=clean_destination,
                     matched_clause=clause.text,
                 )
+            if anaphoric_travel:
+                if specific_match:
+                    return DestinationAuthorization(
+                        applicable=True,
+                        authorized=True,
+                        reason="anaphoric travel resolves to a committed destination",
+                        destination=clean_destination,
+                        matched_clause=clause.text,
+                    )
+                compatible = self._compatible_locations(locations, generic_matches)
+                if len(compatible) == 1 and target and compatible[0].id == target.id:
+                    return DestinationAuthorization(
+                        applicable=True,
+                        authorized=True,
+                        reason="anaphoric travel resolves to one committed destination",
+                        destination=clean_destination,
+                        matched_clause=clause.text,
+                    )
+                if len(compatible) > 1:
+                    return DestinationAuthorization(
+                        applicable=True,
+                        authorized=False,
+                        reason="anaphoric destination reference is ambiguous",
+                        destination=clean_destination,
+                        matched_clause=clause.text,
+                    )
             return self._unresolved(
                 clean_destination,
                 "destination is implied by a committed non-travel action",
@@ -203,7 +222,7 @@ class PlayerDestinationAuthorizer:
         if anaphoric_travel:
             return self._unresolved(
                 clean_destination,
-                "travel clause uses an anaphoric destination",
+                "travel clause uses an unresolved anaphoric destination",
             )
         return self._unresolved(
             clean_destination,
@@ -278,6 +297,14 @@ class PlayerDestinationAuthorizer:
             for generic in generic_matches
             for token in tokens
         )
+
+    @classmethod
+    def _compatible_locations(cls, locations, generic_matches: set[str]):
+        return [
+            location
+            for location in locations
+            if cls._location_matches_generic(location.canonical_name, generic_matches)
+        ]
 
     @staticmethod
     def _tokens_match(left: str, right: str) -> bool:
