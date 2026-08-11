@@ -182,3 +182,56 @@ async def test_background_memory_job_becomes_noop_if_turn_was_undone_first(
     assert jobs
     assert all(job.status == "completed" for job in jobs)
     assert all("skipped" in (job.error or "") for job in jobs)
+
+
+@pytest.mark.asyncio
+async def test_undo_resolves_latest_pair_by_parent_when_rows_are_not_adjacent(
+    db_session: AsyncSession,
+):
+    campaign_id, _player, scene, first_user, _first_assistant = await _base_turn(
+        db_session
+    )
+    turns = TurnRepository(db_session)
+
+    latest_user = await turns.create(
+        campaign_id,
+        TurnCreate(
+            role="user",
+            content="Стучу в двери ратуши.",
+            scene_id=scene.id,
+        ),
+    )
+    delayed_old_assistant = await turns.create(
+        campaign_id,
+        TurnCreate(
+            role="assistant",
+            content="Запоздалое описание предыдущего действия.",
+            parent_turn_id=first_user.id,
+            scene_id=scene.id,
+        ),
+    )
+    latest_assistant = await turns.create(
+        campaign_id,
+        TurnCreate(
+            role="assistant",
+            content="Из-за дверей ратуши отвечают.",
+            parent_turn_id=latest_user.id,
+            scene_id=scene.id,
+        ),
+    )
+    await db_session.commit()
+
+    # The two newest rows are both assistants. The old adjacency-based implementation
+    # returned False here even though the newest assistant has an explicit active parent.
+    history = await turns.get_history(campaign_id, limit=2, channel="narrative")
+    assert [turn.role for turn in history] == ["assistant", "assistant"]
+
+    assert await TurnUndoService(db_session).undo_last_pair(campaign_id) is True
+    await db_session.commit()
+
+    all_history = await turns.get_history(campaign_id, active_only=False, channel="narrative")
+    statuses = {turn.id: turn.status for turn in all_history}
+    assert statuses[latest_user.id] == "undone"
+    assert statuses[latest_assistant.id] == "undone"
+    assert statuses[first_user.id] == "active"
+    assert statuses[delayed_old_assistant.id] == "active"
