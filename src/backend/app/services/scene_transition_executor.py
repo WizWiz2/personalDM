@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
@@ -10,7 +11,7 @@ from app.db.action_sequence_table import ActionSequence
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant
+from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant, Turn
 from app.models.action_sequence import ActionSequenceExecution
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate, SceneRead
@@ -34,6 +35,13 @@ class AppliedSceneTransition:
 
 class SceneTransitionExecutor:
     """Prepare, finalize and compensate structured scene boundaries."""
+
+    EXPLICIT_TRAVEL_PATTERNS = (
+        r"\b(?:иду|пойду|отправляюсь|направляюсь|возвращаюсь|вхожу|захожу|выхожу|"
+        r"еду|поеду|выезжаю|добираюсь|доберусь|следую)\s+(?:обратно\s+)?(?:в|во|на|к|до)\b",
+        r"\b(?:go|going|return|returning|enter|entering|leave|leaving|head|heading|"
+        r"travel|traveling|travelling|drive|driving|ride|riding)\s+(?:back\s+)?(?:to|into|for)\b",
+    )
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -81,15 +89,33 @@ class SceneTransitionExecutor:
             ).scene
         return self._to_applied(row, scene, action_sequence)
 
+    async def route_discovery_allowed(self, trigger_turn_id: UUID | None) -> bool:
+        """Only the persisted human turn may authorize discovery of a missing travel route."""
+        if not trigger_turn_id:
+            return False
+        turn = await self._session.get(Turn, str(trigger_turn_id))
+        if not turn or turn.role != "user":
+            return False
+        text = " ".join((turn.content or "").casefold().split())
+        return any(
+            re.search(pattern, text, flags=re.IGNORECASE)
+            for pattern in self.EXPLICIT_TRAVEL_PATTERNS
+        )
+
     async def apply(
         self,
         campaign_id: UUID,
         source_scene_id: UUID | None,
         trigger_turn_id: UUID | None,
         plan: SceneTransitionPlan,
+        *,
+        allow_route_discovery: bool | None = None,
     ) -> AppliedSceneTransition | None:
         if not plan.required or plan.transition_type == "none":
             return None
+
+        if allow_route_discovery is None:
+            allow_route_discovery = await self.route_discovery_allowed(trigger_turn_id)
 
         if trigger_turn_id:
             existing = await self.existing_for_turn(campaign_id, trigger_turn_id)
@@ -104,6 +130,7 @@ class SceneTransitionExecutor:
                 source_scene_id,
                 trigger_turn_id,
                 plan,
+                allow_route_discovery=allow_route_discovery,
             )
 
         campaign = await self._session.get(Campaign, str(campaign_id))
@@ -135,7 +162,7 @@ class SceneTransitionExecutor:
                 campaign_id,
                 source_location_id,
                 target_location_id,
-                allow_discovery=destination_created,
+                allow_discovery=destination_created or allow_route_discovery,
             )
 
         target_scene = await self._scenes.create(
@@ -213,6 +240,8 @@ class SceneTransitionExecutor:
         source_scene_id: UUID | None,
         trigger_turn_id: UUID,
         plan: SceneTransitionPlan,
+        *,
+        allow_route_discovery: bool,
     ) -> AppliedSceneTransition:
         from app.services.action_sequence_executor import ActionSequenceExecutor
 
@@ -222,6 +251,7 @@ class SceneTransitionExecutor:
             source_scene_id,
             trigger_turn_id,
             sequence_plan,
+            allow_route_discovery=allow_route_discovery,
         )
         if not execution.final_scene_id:
             raise ValueError("Compound action sequence has no final scene")
