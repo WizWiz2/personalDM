@@ -216,6 +216,32 @@ async def test_compound_explicit_travel_propagates_discovery_to_movement_step(
     assert character.current_location_id == department.id
 
 
+@pytest.mark.asyncio
+async def test_generic_travel_shorthand_cannot_choose_between_two_departments(
+    db_session: AsyncSession,
+):
+    campaign_id, _, _, _, department, source = await _navigation_world(db_session)
+    await LocationRepository(db_session).create(
+        campaign_id,
+        LocationCreate(canonical_name="Департамент Транспорта"),
+    )
+    user_turn = await TurnRepository(db_session).create(
+        campaign_id,
+        TurnCreate(role="user", content="Еду в Департамент."),
+    )
+
+    with pytest.raises(ValueError, match="not an available exit"):
+        await SceneTransitionExecutor(db_session).apply(
+            campaign_id,
+            source.id,
+            user_turn.id,
+            SceneTransitionPlan(
+                required=True,
+                transition_type="location_transition",
+                destination_location=department.canonical_name,
+            ),
+        )
+
 
 def test_blocked_execution_removes_planned_success_from_authority():
     authority = TurnAuthority(
