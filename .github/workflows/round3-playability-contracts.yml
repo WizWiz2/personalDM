@@ -23,6 +23,7 @@ on:
       - "src/backend/tests/test_round3_playability_recovery.py"
       - "src/backend/tests/test_round5_authority_preflight.py"
       - "src/backend/tests/test_round6_entity_identity.py"
+      - "src/backend/tests/test_round7_planner_intent_invariants.py"
       - "src/backend/tests/test_golden_playthrough.py"
       - "src/backend/tests/test_actor_agency_failclosed.py"
       - "src/backend/tests/test_planner_intent_contract.py"
@@ -73,6 +74,7 @@ jobs:
             tests/test_round3_playability_recovery.py \
             tests/test_round5_authority_preflight.py \
             tests/test_round6_entity_identity.py \
+            tests/test_round7_planner_intent_invariants.py \
             tests/test_golden_playthrough.py \
             tests/test_actor_agency_failclosed.py \
             tests/test_planner_intent_contract.py \

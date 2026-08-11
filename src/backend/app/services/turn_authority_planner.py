@@ -100,9 +100,15 @@ class TurnAuthorityPlanner:
         r"\b(?:по)?стуч\w*\b",
         rf"\b(?:расспрос\w*|спрашива\w*|спросить)\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
         rf"\bищу\s+(?:[^.!?]{{0,16}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
+        rf"\bпоговор\w*\s+(?:с\s+)?(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
+        rf"\bобращ\w*\s+(?:к\s+)?(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
+        rf"\b(?:по)?зов\w*\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
+        rf"\bоклик\w*\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
         r"\bknock(?:ing|ed)?\b",
         rf"\b(?:ask(?:ing|ed)?|question(?:ing|ed)?)\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
         rf"\blook(?:ing)?\s+for\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
+        rf"\b(?:talk|speak)(?:ing)?\s+(?:to|with)\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
+        rf"\b(?:call|calling|hail|hailing)\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
     )
     NEGATIVE_CONTACT_OUTCOME_PATTERNS = (
         r"\bникто\b",
@@ -152,6 +158,8 @@ Rules for structured boundaries:
 - If the player explicitly says they go/return/enter/leave for another concrete place and nothing
   blocks that movement, emit a required location_transition (or a sequence containing it). Do NOT
   leave the player in the old scene merely because narration could describe the trip.
+- A non-empty sequence or a focus_transition does NOT satisfy an explicit destination movement by
+  itself. At least one actually executed boundary must be a concrete location_transition.
 - If explicit movement cannot complete, leave scene_transition unrequired ONLY when
   observable_consequences clearly state the concrete obstacle that prevents the move.
 
@@ -220,6 +228,22 @@ choice for the protagonist.
     def _matches_any(cls, patterns: tuple[str, ...], text: str) -> bool:
         return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
+    @staticmethod
+    def _has_location_transition(plan: CoordinatedTurnPlan) -> bool:
+        top_level = plan.scene_transition
+        if (
+            top_level.required
+            and top_level.transition_type == "location_transition"
+            and bool(top_level.destination_location)
+        ):
+            return True
+        return any(
+            step.transition.required
+            and step.transition.transition_type == "location_transition"
+            and bool(step.transition.destination_location)
+            for step in plan.action_sequence.steps
+        )
+
     @classmethod
     def contract_issues(
         cls,
@@ -244,14 +268,13 @@ choice for the protagonist.
                     "otherwise explicitly state that nobody answers / no suitable contact is found"
                 )
 
-        if (
-            cls._matches_any(cls.EXPLICIT_MOVEMENT_PATTERNS, text)
-            and plan.scene_disposition == "stay"
-            and not cls._matches_any(cls.MOVEMENT_BLOCKER_PATTERNS, consequences)
-        ):
+        explicit_movement = cls._matches_any(cls.EXPLICIT_MOVEMENT_PATTERNS, text)
+        movement_blocked = cls._matches_any(cls.MOVEMENT_BLOCKER_PATTERNS, consequences)
+        if explicit_movement and not movement_blocked and not cls._has_location_transition(plan):
             issues.append(
-                "explicit destination movement cannot stay in the current scene without a concrete "
-                "blocking consequence; emit location_transition/sequence or state the blocker"
+                "explicit destination movement requires an actual required location_transition; "
+                "a sequence, focus_transition, observable consequence or narration guidance alone "
+                "cannot move the player"
             )
         return issues
 
