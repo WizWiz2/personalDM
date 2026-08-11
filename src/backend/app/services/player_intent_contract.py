@@ -122,7 +122,13 @@ def _content_tokens(text: str) -> list[str]:
 
 
 def intent_corresponds(player_input: str, planned_intent: str) -> bool:
-    """Catch a planner answering a different recent turn without requiring exact Russian inflection."""
+    """Catch clearly stale plans without requiring the planner to paraphrase lexically.
+
+    Russian inflection and aspect can substantially change a verb (``стучу`` -> ``постучать``).
+    This gate is intentionally conservative: it only rejects plans with no plausible lexical anchor
+    to the current input. Strong semantic judging remains the Planner's job, while this boundary
+    catches the Round-9 class where a door-opening plan answered an unrelated heraldry input.
+    """
     source = _content_tokens(player_input)
     target = _content_tokens(planned_intent)
     if len(source) < 2 or len(target) < 2:
@@ -131,7 +137,7 @@ def intent_corresponds(player_input: str, planned_intent: str) -> bool:
         for right in target:
             if left == right or left in right or right in left:
                 return True
-            if SequenceMatcher(None, left, right).ratio() >= 0.66:
+            if SequenceMatcher(None, left, right).ratio() >= 0.56:
                 return True
     return False
 
