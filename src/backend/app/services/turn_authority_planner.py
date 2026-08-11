@@ -8,6 +8,12 @@ from app.config import settings
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.player_intent_contract import (
+    contains_cjk,
+    expects_russian,
+    has_unresolved_choice,
+    intent_corresponds,
+)
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
 
@@ -163,6 +169,21 @@ Rules for structured boundaries:
 - If explicit movement cannot complete, leave scene_transition unrequired ONLY when
   observable_consequences clearly state the concrete obstacle that prevents the move.
 
+Rules for unresolved player choices:
+- If the latest player input explicitly leaves alternatives open (for example "войти или постучать",
+  "может жду, может иду", or "колеблюсь"), DO NOT choose one branch for the protagonist.
+- Preserve the unresolved choice in narration_policy.pending_player_choice and
+  protected_player_decisions. Do not create a location transition, auto-success movement/interaction,
+  protagonist dialogue, or new NPC merely because one possible branch would have caused it.
+- Resolve only consequences of voluntary actions the player actually committed to before the choice.
+
+Language and current-turn rules:
+- The latest human input is the current turn. player_intent must describe that input, not a previous
+  turn from history.
+- When the latest player input is Russian, write ALL model-authored human-readable JSON strings in
+  Russian. Preserve exact established canonical names from context, but never translate or rename
+  them into Chinese/another language.
+
 Rules for npc_introductions:
 - Use it only for a person who does not yet exist in campaign context.
 - It is appropriate when the player's action directly seeks contact with an unspecified ordinary
@@ -244,6 +265,44 @@ choice for the protagonist.
             for step in plan.action_sequence.steps
         )
 
+    @staticmethod
+    def _human_readable_plan_values(plan: CoordinatedTurnPlan) -> list[object]:
+        values: list[object] = [
+            plan.player_intent,
+            *plan.observable_consequences,
+            *plan.character_beats,
+            *plan.narration_guidance,
+            plan.ending_hook,
+            plan.scene_transition.destination_location,
+            plan.scene_transition.scene_title,
+            plan.scene_transition.reason,
+            plan.scene_transition.bridge_summary,
+        ]
+        for step in plan.action_sequence.steps:
+            values.extend(
+                [
+                    step.intent,
+                    step.observable_outcome,
+                    step.blocking_reason,
+                    step.transition.destination_location,
+                    step.transition.scene_title,
+                    step.transition.reason,
+                    step.transition.bridge_summary,
+                ]
+            )
+        for npc in plan.npc_introductions:
+            values.extend(
+                [
+                    npc.canonical_name,
+                    npc.role,
+                    npc.description,
+                    npc.appearance,
+                    npc.voice,
+                    npc.reason,
+                ]
+            )
+        return values
+
     @classmethod
     def contract_issues(
         cls,
@@ -254,8 +313,50 @@ choice for the protagonist.
         text = " ".join((player_input or "").split()).casefold()
         consequences = " ".join(plan.observable_consequences).casefold()
         issues: list[str] = []
+        unresolved_choice = has_unresolved_choice(text)
 
-        if cls._matches_any(cls.CONTACT_INTENT_PATTERNS, text):
+        if not intent_corresponds(player_input, plan.player_intent):
+            issues.append(
+                "player_intent does not correspond to the latest player input; do not answer or "
+                "continue a previous turn from history"
+            )
+
+        if expects_russian(player_input) and any(
+            contains_cjk(value) for value in cls._human_readable_plan_values(plan)
+        ):
+            issues.append(
+                "Russian player input requires Russian model-authored plan text; do not translate "
+                "canonical names, NPCs or scene titles into Chinese"
+            )
+
+        if unresolved_choice:
+            if not plan.narration_policy.pending_player_choice:
+                issues.append(
+                    "the player left an explicit choice unresolved; preserve it in "
+                    "narration_policy.pending_player_choice"
+                )
+            if cls._has_location_transition(plan):
+                issues.append(
+                    "an unresolved player choice cannot complete a location transition"
+                )
+            auto_choice_steps = [
+                step
+                for step in plan.action_sequence.steps
+                if step.resolution == "auto_success"
+                and step.action_type in {"movement", "interaction", "service", "inventory"}
+            ]
+            if auto_choice_steps:
+                issues.append(
+                    "an unresolved player choice cannot auto-execute movement/interaction/service/"
+                    "inventory branches the player did not choose"
+                )
+            if plan.npc_introductions:
+                issues.append(
+                    "an unresolved player choice cannot introduce a new NPC from an unchosen "
+                    "contact branch"
+                )
+
+        if not unresolved_choice and cls._matches_any(cls.CONTACT_INTENT_PATTERNS, text):
             # For generic/unknown contact, an affirmative response must have typed identity.
             # Empty introductions are valid only when the plan explicitly resolves NO contact.
             contact_resolved = bool(plan.npc_introductions) or cls._matches_any(
@@ -270,7 +371,7 @@ choice for the protagonist.
 
         explicit_movement = cls._matches_any(cls.EXPLICIT_MOVEMENT_PATTERNS, text)
         movement_blocked = cls._matches_any(cls.MOVEMENT_BLOCKER_PATTERNS, consequences)
-        if explicit_movement and not movement_blocked and not cls._has_location_transition(plan):
+        if explicit_movement and not unresolved_choice and not movement_blocked and not cls._has_location_transition(plan):
             issues.append(
                 "explicit destination movement requires an actual required location_transition; "
                 "a sequence, focus_transition, observable consequence or narration guidance alone "
