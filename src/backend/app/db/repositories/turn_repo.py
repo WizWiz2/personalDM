@@ -1,7 +1,7 @@
 import json
 from uuid import UUID
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, literal_column, select
 
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Campaign, Scene, Turn
@@ -185,31 +185,89 @@ class TurnRepository(BaseRepository):
             for turn in reversed(turns)
         ]
 
-    async def undo_last_pair(self, campaign_id: UUID) -> bool:
-        result = await self._session.execute(
-            select(Turn)
-            .where(
-                Turn.campaign_id == str(campaign_id),
-                Turn.status == "active",
-                Turn.role.in_(("user", "assistant")),
+    async def get_latest_undoable_pair(
+        self,
+        campaign_id: UUID,
+    ) -> tuple[TurnRead, TurnRead] | None:
+        """Resolve the latest narrative pair from durable parent provenance.
+
+        Undo must not depend on the user and assistant rows being adjacent in history. A
+        delayed assistant row from an older turn, meta traffic, or another historical row
+        may sit between them. The newest active narrative row must still be an assistant,
+        and its explicit parent must be an active user turn in the same campaign.
+        """
+        campaign_key = str(campaign_id)
+        newest = (
+            await self._session.execute(
+                select(Turn)
+                .where(
+                    Turn.campaign_id == campaign_key,
+                    Turn.status == "active",
+                    Turn.role.in_(("user", "assistant")),
+                )
+                .order_by(
+                    desc(Turn.created_at),
+                    literal_column("turns.rowid").desc(),
+                )
+                .limit(1)
             )
-            .order_by(desc(Turn.created_at))
-            .limit(2)
-        )
-        last_turns = result.scalars().all()
-        if len(last_turns) != 2:
+        ).scalar_one_or_none()
+        if newest is None or newest.role != "assistant" or not newest.parent_turn_id:
+            return None
+
+        parent = (
+            await self._session.execute(
+                select(Turn).where(
+                    Turn.id == newest.parent_turn_id,
+                    Turn.campaign_id == campaign_key,
+                    Turn.status == "active",
+                    Turn.role == "user",
+                )
+            )
+        ).scalar_one_or_none()
+        if parent is None:
+            return None
+        return TurnRead.model_validate(parent), TurnRead.model_validate(newest)
+
+    async def undo_pair(
+        self,
+        campaign_id: UUID,
+        user_turn_id: UUID,
+        assistant_turn_id: UUID,
+    ) -> bool:
+        """Mark one explicitly linked active narrative pair undone."""
+        rows = (
+            await self._session.execute(
+                select(Turn).where(
+                    Turn.campaign_id == str(campaign_id),
+                    Turn.status == "active",
+                    Turn.id.in_((str(user_turn_id), str(assistant_turn_id))),
+                )
+            )
+        ).scalars().all()
+        by_id = {row.id: row for row in rows}
+        user_turn = by_id.get(str(user_turn_id))
+        assistant_turn = by_id.get(str(assistant_turn_id))
+        if (
+            user_turn is None
+            or assistant_turn is None
+            or user_turn.role != "user"
+            or assistant_turn.role != "assistant"
+            or assistant_turn.parent_turn_id != user_turn.id
+        ):
             return False
 
-        newest, previous = last_turns
-        if newest.role != "assistant" or previous.role != "user":
-            return False
-        if newest.parent_turn_id != previous.id:
-            return False
-
-        newest.status = "undone"
-        previous.status = "undone"
+        assistant_turn.status = "undone"
+        user_turn.status = "undone"
         await self._session.flush()
         return True
+
+    async def undo_last_pair(self, campaign_id: UUID) -> bool:
+        pair = await self.get_latest_undoable_pair(campaign_id)
+        if pair is None:
+            return False
+        user_turn, assistant_turn = pair
+        return await self.undo_pair(campaign_id, user_turn.id, assistant_turn.id)
 
     async def mark_alternative(self, turn_id: UUID) -> bool:
         result = await self._session.execute(
