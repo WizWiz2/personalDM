@@ -85,7 +85,10 @@ _PLAYER_SPEECH_STEMS = (
     "shout",
 )
 
-_QUOTE_RE = re.compile(r"[«\"“‘']([^»\"”’']{2,})[»\"”’']")
+_QUOTED_TEXT_RE = re.compile(
+    r"«([^»]{2,})»|“([^”]{2,})”|\"([^\"]{2,})\"|‘([^’]{2,})’|'([^']{2,})'",
+    re.DOTALL,
+)
 
 
 def has_unresolved_choice(text: str) -> bool:
@@ -160,30 +163,42 @@ def unresolved_player_completion(
     return False
 
 
+def _quote_text(match: re.Match[str]) -> str:
+    return next((value for value in match.groups() if value is not None), "")
+
+
 def unauthorized_player_speech(
     candidate: str,
     *,
     player_input: str,
     player_name: str | None,
 ) -> bool:
-    """Detect newly invented quoted protagonist speech while allowing dialogue supplied by the user."""
+    """Detect newly invented quoted protagonist speech using explicit speech attribution.
+
+    Position matters: ``Рэт говорит: «...»`` attributes the quote to the player, while
+    ``«Рэт, решай сам», — говорит Грета`` merely addresses the player and must remain legal.
+    Quoted text may contain sentence punctuation, so it is parsed before sentence segmentation.
+    """
     if not player_name:
         return False
     player_key = " ".join(player_name.casefold().split())
     input_key = " ".join((player_input or "").casefold().split())
-    for segment in re.split(r"(?<=[.!?…])\s+|[\r\n]+", candidate or ""):
-        segment_key = " ".join(segment.casefold().split())
-        if player_key not in segment_key:
+    candidate_key = candidate.casefold()
+
+    for match in _QUOTED_TEXT_RE.finditer(candidate):
+        quote = _quote_text(match)
+        quote_key = " ".join(quote.casefold().split())
+        if len(quote_key) < 4 or quote_key in input_key:
             continue
-        if not any(stem in segment_key for stem in _PLAYER_SPEECH_STEMS):
+
+        prefix_start = max(0, match.start() - 180)
+        prefix = candidate_key[prefix_start : match.start()]
+        player_index = prefix.rfind(player_key)
+        if player_index < 0:
             continue
-        quotes = _QUOTE_RE.findall(segment)
-        if not quotes:
-            continue
-        for quote in quotes:
-            quote_key = " ".join(quote.casefold().split())
-            if len(quote_key) >= 4 and quote_key not in input_key:
-                return True
+        attribution = prefix[player_index:]
+        if any(stem in attribution for stem in _PLAYER_SPEECH_STEMS):
+            return True
     return False
 
 
