@@ -49,27 +49,29 @@ class SceneTransitionExecutor:
         ),
     )
     LOCATION_TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
-    GENERIC_LOCATION_TOKENS = {
-        "бар",
-        "дом",
-        "здание",
-        "квартира",
-        "комната",
-        "офис",
-        "улица",
-        "район",
-        "квартал",
-        "департамент",
-        "вход",
-        "door",
-        "room",
-        "street",
-        "district",
-        "office",
-        "apartment",
-        "department",
-        "entrance",
-    }
+    GENERIC_LOCATION_TOKENS = frozenset(
+        {
+            "бар",
+            "дом",
+            "здание",
+            "квартира",
+            "комната",
+            "офис",
+            "улица",
+            "район",
+            "квартал",
+            "департамент",
+            "вход",
+            "door",
+            "room",
+            "street",
+            "district",
+            "office",
+            "apartment",
+            "department",
+            "entrance",
+        }
+    )
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -117,33 +119,49 @@ class SceneTransitionExecutor:
             ).scene
         return self._to_applied(row, scene, action_sequence)
 
+    @staticmethod
+    def _tokens_match(left: str, right: str) -> bool:
+        if left == right:
+            return True
+        return len(left) >= 4 and len(right) >= 4 and left[:4] == right[:4]
+
     @classmethod
-    def _destination_mentioned(cls, player_input: str, destination: str) -> bool:
+    def _destination_reference(
+        cls,
+        player_input: str,
+        destination: str,
+    ) -> tuple[bool, set[str]]:
         input_tokens = cls.LOCATION_TOKEN_RE.findall((player_input or "").casefold())
         destination_tokens = cls.LOCATION_TOKEN_RE.findall((destination or "").casefold())
         if not input_tokens or not destination_tokens:
-            return False
+            return False, set()
 
         specific = [
             token
             for token in destination_tokens
             if len(token) >= 4 and token not in cls.GENERIC_LOCATION_TOKENS
         ]
-        candidates = specific or [token for token in destination_tokens if len(token) >= 3]
-        for target in candidates:
-            for source in input_tokens:
-                if target == source:
-                    return True
-                if len(target) >= 4 and len(source) >= 4 and target[:4] == source[:4]:
-                    return True
-        return False
+        if any(
+            cls._tokens_match(target, source)
+            for target in specific
+            for source in input_tokens
+        ):
+            return True, set()
+
+        generic_matches = {
+            target
+            for target in destination_tokens
+            if target in cls.GENERIC_LOCATION_TOKENS
+            and any(cls._tokens_match(target, source) for source in input_tokens)
+        }
+        return False, generic_matches
 
     async def route_discovery_allowed(
         self,
         trigger_turn_id: UUID | None,
         destination: str | None,
     ) -> bool:
-        """Let only an explicit human choice of this destination open a missing route."""
+        """Let only an explicit, unambiguous human destination open a missing route."""
         if not trigger_turn_id or not destination:
             return False
         turn = await self._session.get(Turn, str(trigger_turn_id))
@@ -154,7 +172,33 @@ class SceneTransitionExecutor:
             re.search(pattern, text, flags=re.IGNORECASE)
             for pattern in self.EXPLICIT_TRAVEL_PATTERNS
         )
-        return explicit_travel and self._destination_mentioned(text, destination)
+        if not explicit_travel:
+            return False
+
+        specific_match, generic_matches = self._destination_reference(text, destination)
+        if specific_match:
+            return True
+        if not generic_matches:
+            return False
+
+        campaign_id = UUID(turn.campaign_id)
+        locations = await self._locations.list_by_campaign(campaign_id)
+        target = self._match_location(locations, destination)
+        if not target:
+            return False
+
+        compatible = []
+        for location in locations:
+            location_tokens = self.LOCATION_TOKEN_RE.findall(
+                location.canonical_name.casefold()
+            )
+            if any(
+                self._tokens_match(generic, token)
+                for generic in generic_matches
+                for token in location_tokens
+            ):
+                compatible.append(location)
+        return len(compatible) == 1 and compatible[0].id == target.id
 
     async def apply(
         self,
