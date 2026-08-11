@@ -117,6 +117,7 @@ class SceneTransitionExecutor:
         plan: SceneTransitionPlan,
         *,
         allow_route_discovery: bool | None = None,
+        require_existing_route: bool = False,
     ) -> AppliedSceneTransition | None:
         if not plan.required or plan.transition_type == "none":
             return None
@@ -165,6 +166,18 @@ class SceneTransitionExecutor:
                         "Player destination is not authorized: "
                         f"{authorization.reason}"
                     )
+                if not authorization.applicable:
+                    locations = await self._locations.list_by_campaign(campaign_id)
+                    existing_target = self._match_location(
+                        locations,
+                        " ".join((plan.destination_location or "").split()),
+                    )
+                    if existing_target is None:
+                        raise ValueError(
+                            "Player destination is unresolved; "
+                            "a new location cannot be created"
+                        )
+                    require_existing_route = True
 
             target_location_id, destination_created = (
                 await self._resolve_or_create_location(
@@ -178,6 +191,12 @@ class SceneTransitionExecutor:
                     authorization
                     and authorization.applicable
                     and authorization.authorized
+                )
+            if require_existing_route:
+                await self._require_existing_route(
+                    campaign_id,
+                    source_location_id,
+                    target_location_id,
                 )
             await self._state.ensure_destination(
                 campaign_id,
@@ -399,6 +418,26 @@ class SceneTransitionExecutor:
                 )
             )
         ).scalar_one_or_none()
+
+    async def _require_existing_route(
+        self,
+        campaign_id: UUID,
+        source_location_id: UUID | None,
+        target_location_id: UUID | None,
+    ) -> None:
+        if not source_location_id or not target_location_id:
+            return
+        if source_location_id == target_location_id:
+            return
+        exits = await self._state.list_exits(
+            campaign_id,
+            source_location_id,
+            include_hidden=True,
+        )
+        if not any(item.to_location_id == target_location_id for item in exits):
+            raise ValueError(
+                "Player destination is unresolved; an existing route is required"
+            )
 
     async def _resolve_or_create_location(
         self,
