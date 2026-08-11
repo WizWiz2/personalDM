@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -31,19 +32,28 @@ async def _setup(db_session: AsyncSession):
         SceneCreate(title="Рабочая сцена"),
     )
 
+    # Reproduce the old flaky ordering deterministically: both rows have the exact same
+    # timestamp, while the earlier inserted turn has a lexicographically *larger* UUID.
+    # ORDER BY created_at, id therefore used to invert chronology about half the time in
+    # the random-UUID version of this fixture.
+    tied_created_at = datetime.fromisoformat("2026-01-01T12:00:00.123456+00:00")
     old_turn = Turn(
+        id="ffffffff-ffff-ffff-ffff-ffffffffffff",
         campaign_id=str(campaign_id),
         scene_id=str(scene.id),
         role="assistant",
         content="Старый ответ.",
         status="active",
+        created_at=tied_created_at,
     )
     new_turn = Turn(
+        id="00000000-0000-0000-0000-000000000001",
         campaign_id=str(campaign_id),
         scene_id=str(scene.id),
         role="assistant",
         content="Новый ответ.",
         status="active",
+        created_at=tied_created_at,
     )
     db_session.add_all([old_turn, new_turn])
     await db_session.flush()

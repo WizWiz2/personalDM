@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import ClassVar
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.memory_taxonomy_table import FactMemoryProfile, NarrativeDetail
@@ -169,7 +169,10 @@ class MemoryOperationsService:
                     Turn.status == "active",
                     Turn.scene_id.is_not(None),
                 )
-                .order_by(Turn.created_at, Turn.id)
+                # PersonalDM's durable store is SQLite. UUID text is identity, not chronology:
+                # when two turns share one timestamp, SQLite rowid preserves insertion order
+                # instead of turning a random UUID into the memory-age tie-breaker.
+                .order_by(Turn.created_at, literal_column("turns.rowid"))
             )
         ).scalars().all()
         positions: dict[str, dict[str, int]] = defaultdict(dict)
