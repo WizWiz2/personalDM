@@ -12,6 +12,11 @@ from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
+from app.services.player_intent_contract import (
+    language_mismatch,
+    unauthorized_player_speech,
+    unresolved_player_completion,
+)
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 
 
@@ -34,6 +39,10 @@ Return repair_required only for concrete violations of that authority:
 - MOVEMENT/TIME: prose completes a location/time/focus change not authorized by scene_disposition,
   transition_type or action_sequence.
 - OUTCOME: prose contradicts approved observable_consequences or a completed structured sequence.
+- CURRENT TURN: prose answers or repeats a previous turn instead of the current player_input and
+  current observable_consequences.
+- LANGUAGE: when player_input is Russian, final narration must be Russian. Established canonical
+  names may remain exact, but Chinese/English prose or translated character names are not valid.
 - COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
 
 Do not reconstruct hidden campaign rules. Do not complain that an approved new NPC was not in the
@@ -112,13 +121,37 @@ Return exactly:
             )
             result = NarrationValidationResult.model_validate(data)
             result = self.apply_deterministic_authority(result, authority)
-            return self.apply_deterministic_actor_agency(
+            result = self.apply_deterministic_language(
+                result,
+                authority,
+                candidate_text,
+            )
+            return self.apply_deterministic_player_agency(
                 result,
                 authority,
                 candidate_text,
             )
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise NarrationValidationError(str(exc)) from exc
+
+    @staticmethod
+    def _append_error(
+        result: NarrationValidationResult,
+        violation: NarrationViolation,
+        summary: str,
+    ) -> NarrationValidationResult:
+        if any(
+            item.violation_type == violation.violation_type
+            and item.severity == "error"
+            and item.evidence == violation.evidence
+            for item in result.violations
+        ):
+            return result
+        return NarrationValidationResult(
+            verdict="repair_required",
+            summary=summary,
+            violations=[*result.violations, violation],
+        )
 
     @staticmethod
     def apply_deterministic_authority(
@@ -162,27 +195,91 @@ Return exactly:
             violations=filtered,
         )
 
-    @staticmethod
-    def apply_deterministic_actor_agency(
+    @classmethod
+    def apply_deterministic_language(
+        cls,
         result: NarrationValidationResult,
         authority: TurnAuthority,
         candidate_text: str,
     ) -> NarrationValidationResult:
-        """Actor output may never rely on the LLM validator to protect the human protagonist.
-
-        Small local models sometimes append a protagonist reaction after an otherwise valid NPC
-        answer and then incorrectly judge their own prose as valid. The publication scrubber is a
-        deterministic second opinion for actor turns: if it would remove player-owned prose, force
-        the normal repair/fallback path even when the control model returned ``pass``.
-        """
-        if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
+        """Weak multilingual models may drift scripts even after the validator says pass."""
+        if not language_mismatch(candidate_text, authority.player_input):
             return result
+        return cls._append_error(
+            result,
+            NarrationViolation(
+                violation_type="other",
+                severity="error",
+                evidence="Наррация сменила язык относительно русского ввода игрока.",
+                correction=(
+                    "Переписать весь внутриигровой ответ на русском языке, сохранив точные "
+                    "канонические имена без перевода или переименования."
+                ),
+            ),
+            "Детерминированная проверка обнаружила смену языка наррации.",
+        )
+
+    @classmethod
+    def apply_deterministic_player_agency(
+        cls,
+        result: NarrationValidationResult,
+        authority: TurnAuthority,
+        candidate_text: str,
+    ) -> NarrationValidationResult:
+        """Protect unresolved choices and new protagonist speech independently of the LLM judge."""
         if any(
             item.violation_type == "player_agency" and item.severity == "error"
             for item in result.violations
         ):
             return result
 
+        if unauthorized_player_speech(
+            candidate_text,
+            player_input=authority.player_input,
+            player_name=authority.player_character_name,
+        ):
+            result = cls._append_error(
+                result,
+                NarrationViolation(
+                    violation_type="player_agency",
+                    severity="error",
+                    evidence=(
+                        f"Нарратор придумал новую прямую реплику героя "
+                        f"{authority.player_character_name or 'игрока'}."
+                    ),
+                    correction=(
+                        "Удалить придуманную реплику протагониста; его слова задаёт только человек."
+                    ),
+                ),
+                "Детерминированная проверка обнаружила придуманную реплику героя.",
+            )
+
+        if unresolved_player_completion(
+            candidate_text,
+            player_input=authority.player_input,
+            player_name=authority.player_character_name,
+        ):
+            result = cls._append_error(
+                result,
+                NarrationViolation(
+                    violation_type="player_agency",
+                    severity="error",
+                    evidence=(
+                        "Нарратор завершил одну из альтернатив, которую игрок оставил нерешённой."
+                    ),
+                    correction=(
+                        "Оставить выбор открытым и описать только уже совершённое действие или "
+                        "внешнюю реакцию мира."
+                    ),
+                ),
+                "Детерминированная проверка обнаружила самовольное завершение выбора игрока.",
+            )
+
+        if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
+            return result
+
+        # Actor output gets an additional broad deterministic scrub. Small local models often append
+        # a protagonist reaction after an otherwise useful NPC reply and then approve themselves.
         sanitized, diagnostics = NarrationPublicationGuard.publish(
             authority,
             candidate_text,
@@ -194,23 +291,32 @@ Return exactly:
         ):
             return result
 
-        violation = NarrationViolation(
-            violation_type="player_agency",
-            severity="error",
-            evidence=(
-                f"Ответ за {authority.acting_character_name or 'NPC'} содержит новую реплику "
-                f"или самостоятельное действие героя {authority.player_character_name}."
+        return cls._append_error(
+            result,
+            NarrationViolation(
+                violation_type="player_agency",
+                severity="error",
+                evidence=(
+                    f"Ответ за {authority.acting_character_name or 'NPC'} содержит новую реплику "
+                    f"или самостоятельное действие героя {authority.player_character_name}."
+                ),
+                correction=(
+                    f"Оставить только ответ и действия {authority.acting_character_name or 'NPC'}; "
+                    f"следующую реплику или действие {authority.player_character_name} вводит человек."
+                ),
             ),
-            correction=(
-                f"Оставить только ответ и действия {authority.acting_character_name or 'NPC'}; "
-                f"следующую реплику или действие {authority.player_character_name} вводит человек."
-            ),
+            "Детерминированная проверка обнаружила управление героем в ответе NPC.",
         )
-        return NarrationValidationResult(
-            verdict="repair_required",
-            summary="Детерминированная проверка обнаружила управление героем в ответе NPC.",
-            violations=[*result.violations, violation],
-        )
+
+    @classmethod
+    def apply_deterministic_actor_agency(
+        cls,
+        result: NarrationValidationResult,
+        authority: TurnAuthority,
+        candidate_text: str,
+    ) -> NarrationValidationResult:
+        """Backward-compatible entry point for actor-agency regression tests."""
+        return cls.apply_deterministic_player_agency(result, authority, candidate_text)
 
     @staticmethod
     def repair_prompt(
