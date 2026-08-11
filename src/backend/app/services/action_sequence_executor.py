@@ -119,13 +119,28 @@ class ActionSequenceExecutor:
 
             if step.transition.required:
                 allow_route_discovery = False
+                require_existing_route = False
                 if step.transition.transition_type == "location_transition":
-                    allow_route_discovery = (
-                        await self._transitions.route_discovery_allowed(
-                            route_discovery_turn_id,
-                            step.transition.destination_location,
-                        )
+                    authorization = await self._transitions.authorize_destination(
+                        route_discovery_turn_id,
+                        step.transition.destination_location,
                     )
+                    if authorization.applicable and not authorization.authorized:
+                        db_step.status = "blocked"
+                        db_step.blocking_reason = (
+                            "Player destination is not authorized: "
+                            f"{authorization.reason}"
+                        )
+                        db_step.target_scene_id = (
+                            str(current_scene_id) if current_scene_id else None
+                        )
+                        sequence.blocked_step_index = index
+                        blocked = True
+                        continue
+                    allow_route_discovery = (
+                        authorization.applicable and authorization.authorized
+                    )
+                    require_existing_route = not authorization.applicable
                 try:
                     applied = await self._transitions.apply(
                         campaign_id,
@@ -133,6 +148,7 @@ class ActionSequenceExecutor:
                         None,
                         step.transition,
                         allow_route_discovery=allow_route_discovery,
+                        require_existing_route=require_existing_route,
                     )
                 except ValueError as exc:
                     db_step.status = "blocked"

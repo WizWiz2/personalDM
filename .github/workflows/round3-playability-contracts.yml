@@ -13,6 +13,7 @@ on:
       - "src/backend/app/services/entity_identity.py"
       - "src/backend/app/services/entity_registrar.py"
       - "src/backend/app/services/player_intent_contract.py"
+      - "src/backend/app/services/player_destination_authorization.py"
       - "src/backend/app/services/scene_state_service.py"
       - "src/backend/app/services/scene_transition_executor.py"
       - "src/backend/app/services/turn_saga.py"
@@ -30,6 +31,7 @@ on:
       - "src/backend/tests/test_round7_planner_intent_invariants.py"
       - "src/backend/tests/test_round9_narration_contract.py"
       - "src/backend/tests/test_round10_navigation_truth.py"
+      - "src/backend/tests/test_round11_destination_authorization.py"
       - "src/backend/tests/test_golden_playthrough.py"
       - "src/backend/tests/test_actor_agency_failclosed.py"
       - "src/backend/tests/test_planner_intent_contract.py"
@@ -66,6 +68,7 @@ jobs:
             src/backend/app/services/entity_identity.py \
             src/backend/app/services/entity_registrar.py \
             src/backend/app/services/player_intent_contract.py \
+            src/backend/app/services/player_destination_authorization.py \
             src/backend/app/services/scene_state_service.py \
             src/backend/app/services/scene_transition_executor.py \
             src/backend/app/services/turn_saga.py \
@@ -87,6 +90,7 @@ jobs:
             tests/test_round7_planner_intent_invariants.py \
             tests/test_round9_narration_contract.py \
             tests/test_round10_navigation_truth.py \
+            tests/test_round11_destination_authorization.py \
             tests/test_golden_playthrough.py \
             tests/test_actor_agency_failclosed.py \
             tests/test_planner_intent_contract.py \

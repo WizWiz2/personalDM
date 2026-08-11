@@ -230,7 +230,7 @@ async def test_generic_travel_shorthand_cannot_choose_between_two_departments(
         TurnCreate(role="user", content="Еду в Департамент."),
     )
 
-    with pytest.raises(ValueError, match="not an available exit"):
+    with pytest.raises(ValueError, match="destination reference is ambiguous"):
         await SceneTransitionExecutor(db_session).apply(
             campaign_id,
             source.id,
