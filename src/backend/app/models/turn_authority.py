@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PlannedNpcIntroduction(BaseModel):
@@ -76,6 +76,41 @@ class TurnAuthority(BaseModel):
     allow_new_complication: bool = False
     complication_source: str | None = None
     action_sequence: dict | None = None
+
+    @model_validator(mode="after")
+    def executed_sequence_owns_partial_outcomes(self):
+        """A blocked/skipped sequence cannot retain prose consequences for steps that never ran."""
+        sequence = self.action_sequence or {}
+        steps = sequence.get("steps")
+        if not isinstance(steps, list) or not steps:
+            return self
+        if not any(
+            isinstance(step, dict) and step.get("status") in {"blocked", "skipped"}
+            for step in steps
+        ):
+            return self
+
+        executed: list[str] = []
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            status = step.get("status")
+            if status == "completed":
+                outcome = " ".join(str(step.get("observable_outcome") or "").split())
+                if outcome and outcome not in executed:
+                    executed.append(outcome)
+            elif status == "blocked":
+                intent = " ".join(str(step.get("intent") or "действие").split())
+                message = f"Действие не выполнено: {intent}."
+                if message not in executed:
+                    executed.append(message)
+                break
+        self.observable_consequences = executed
+        if not any("BLOCKED" in value for value in self.narration_guidance):
+            self.narration_guidance.append(
+                "BLOCKED и SKIPPED шаги не произошли; останови описание на фактическом препятствии."
+            )
+        return self
 
     @property
     def allowed_new_npc_names(self) -> list[str]:
