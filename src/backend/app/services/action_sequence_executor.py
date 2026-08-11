@@ -119,6 +119,7 @@ class ActionSequenceExecutor:
 
             if step.transition.required:
                 allow_route_discovery = False
+                require_existing_route = False
                 if step.transition.transition_type == "location_transition":
                     authorization = await self._transitions.authorize_destination(
                         route_discovery_turn_id,
@@ -139,6 +140,7 @@ class ActionSequenceExecutor:
                     allow_route_discovery = (
                         authorization.applicable and authorization.authorized
                     )
+                    require_existing_route = not authorization.applicable
                 try:
                     applied = await self._transitions.apply(
                         campaign_id,
@@ -146,6 +148,7 @@ class ActionSequenceExecutor:
                         None,
                         step.transition,
                         allow_route_discovery=allow_route_discovery,
+                        require_existing_route=require_existing_route,
                     )
                 except ValueError as exc:
                     db_step.status = "blocked"
