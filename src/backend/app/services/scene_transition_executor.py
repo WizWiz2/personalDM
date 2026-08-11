@@ -434,10 +434,13 @@ class SceneTransitionExecutor:
             source_location_id,
             include_hidden=True,
         )
-        if not any(item.to_location_id == target_location_id for item in exits):
+        if not exits:
             raise ValueError(
                 "Player destination is unresolved; an existing route is required"
             )
+        # When other exits exist, let SceneStateService report its normal
+        # not-an-available-exit / inactive / undiscovered diagnostic. This keeps
+        # structural blockers precise while still preventing empty-graph discovery.
 
     async def _resolve_or_create_location(
         self,
