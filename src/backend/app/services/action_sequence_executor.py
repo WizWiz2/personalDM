@@ -120,11 +120,24 @@ class ActionSequenceExecutor:
             if step.transition.required:
                 allow_route_discovery = False
                 if step.transition.transition_type == "location_transition":
-                    allow_route_discovery = (
-                        await self._transitions.route_discovery_allowed(
-                            route_discovery_turn_id,
-                            step.transition.destination_location,
+                    authorization = await self._transitions.authorize_destination(
+                        route_discovery_turn_id,
+                        step.transition.destination_location,
+                    )
+                    if authorization.applicable and not authorization.authorized:
+                        db_step.status = "blocked"
+                        db_step.blocking_reason = (
+                            "Player destination is not authorized: "
+                            f"{authorization.reason}"
                         )
+                        db_step.target_scene_id = (
+                            str(current_scene_id) if current_scene_id else None
+                        )
+                        sequence.blocked_step_index = index
+                        blocked = True
+                        continue
+                    allow_route_discovery = (
+                        authorization.applicable and authorization.authorized
                     )
                 try:
                     applied = await self._transitions.apply(
