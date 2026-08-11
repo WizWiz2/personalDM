@@ -56,6 +56,8 @@ class ActionSequenceExecutor:
         source_scene_id: UUID | None,
         trigger_turn_id: UUID,
         plan: ActionSequencePlan,
+        *,
+        route_discovery_turn_id: UUID | None = None,
     ) -> ActionSequenceExecution:
         existing = await self.existing_for_turn(campaign_id, trigger_turn_id)
         if existing:
@@ -116,12 +118,21 @@ class ActionSequenceExecutor:
                 continue
 
             if step.transition.required:
+                allow_route_discovery = False
+                if step.transition.transition_type == "location_transition":
+                    allow_route_discovery = (
+                        await self._transitions.route_discovery_allowed(
+                            route_discovery_turn_id,
+                            step.transition.destination_location,
+                        )
+                    )
                 try:
                     applied = await self._transitions.apply(
                         campaign_id,
                         current_scene_id,
                         None,
                         step.transition,
+                        allow_route_discovery=allow_route_discovery,
                     )
                 except ValueError as exc:
                     db_step.status = "blocked"

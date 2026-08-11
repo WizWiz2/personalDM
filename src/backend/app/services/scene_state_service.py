@@ -260,13 +260,21 @@ class SceneStateService:
             (
                 item
                 for item in exits
-                if item.to_location_id == target_location_id and item.active
+                if item.to_location_id == target_location_id
             ),
             None,
         )
         if direct:
-            if not direct.discovered and not allow_discovery:
-                raise ValueError("Destination exit has not been discovered")
+            if not direct.active:
+                detail = f" ({direct.access_rule})" if direct.access_rule else ""
+                raise ValueError(f"Destination route is currently inactive{detail}")
+            if not direct.discovered:
+                if not allow_discovery:
+                    raise ValueError("Destination exit has not been discovered")
+                row = await self._session.get(LocationExit, str(direct.id))
+                if row:
+                    row.discovered = True
+                    await self._session.flush()
             return
         if exits and not allow_discovery:
             names = ", ".join(item.to_location_name for item in exits if item.active)

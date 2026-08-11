@@ -9,9 +9,12 @@ on:
     paths:
       - "src/backend/app/models/turn.py"
       - "src/backend/app/models/turn_authority.py"
+      - "src/backend/app/services/action_sequence_executor.py"
       - "src/backend/app/services/entity_identity.py"
       - "src/backend/app/services/entity_registrar.py"
       - "src/backend/app/services/player_intent_contract.py"
+      - "src/backend/app/services/scene_state_service.py"
+      - "src/backend/app/services/scene_transition_executor.py"
       - "src/backend/app/services/turn_saga.py"
       - "src/backend/app/services/turn_authority_planner.py"
       - "src/backend/app/services/turn_authority_service.py"
@@ -26,6 +29,7 @@ on:
       - "src/backend/tests/test_round6_entity_identity.py"
       - "src/backend/tests/test_round7_planner_intent_invariants.py"
       - "src/backend/tests/test_round9_narration_contract.py"
+      - "src/backend/tests/test_round10_navigation_truth.py"
       - "src/backend/tests/test_golden_playthrough.py"
       - "src/backend/tests/test_actor_agency_failclosed.py"
       - "src/backend/tests/test_planner_intent_contract.py"
@@ -58,9 +62,12 @@ jobs:
           python -m compileall -q \
             src/backend/app/models/turn.py \
             src/backend/app/models/turn_authority.py \
+            src/backend/app/services/action_sequence_executor.py \
             src/backend/app/services/entity_identity.py \
             src/backend/app/services/entity_registrar.py \
             src/backend/app/services/player_intent_contract.py \
+            src/backend/app/services/scene_state_service.py \
+            src/backend/app/services/scene_transition_executor.py \
             src/backend/app/services/turn_saga.py \
             src/backend/app/services/turn_authority_planner.py \
             src/backend/app/services/turn_authority_service.py \
@@ -79,6 +86,7 @@ jobs:
             tests/test_round6_entity_identity.py \
             tests/test_round7_planner_intent_invariants.py \
             tests/test_round9_narration_contract.py \
+            tests/test_round10_navigation_truth.py \
             tests/test_golden_playthrough.py \
             tests/test_actor_agency_failclosed.py \
             tests/test_planner_intent_contract.py \

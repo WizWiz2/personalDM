@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
@@ -10,7 +11,7 @@ from app.db.action_sequence_table import ActionSequence
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant
+from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant, Turn
 from app.models.action_sequence import ActionSequenceExecution
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate, SceneRead
@@ -34,6 +35,43 @@ class AppliedSceneTransition:
 
 class SceneTransitionExecutor:
     """Prepare, finalize and compensate structured scene boundaries."""
+
+    EXPLICIT_TRAVEL_PATTERNS = (
+        (
+            r"\b(?:иду|пойду|отправляюсь|направляюсь|возвращаюсь|вхожу|захожу|выхожу|"
+            r"еду|поеду|выезжаю|добираюсь|доберусь|следую)\s+"
+            r"(?:обратно\s+)?(?:в|во|на|к|до)\b"
+        ),
+        (
+            r"\b(?:go|going|return|returning|enter|entering|leave|leaving|head|heading|"
+            r"travel|traveling|travelling|drive|driving|ride|riding)\s+"
+            r"(?:back\s+)?(?:to|into|for)\b"
+        ),
+    )
+    LOCATION_TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+    GENERIC_LOCATION_TOKENS = frozenset(
+        {
+            "бар",
+            "дом",
+            "здание",
+            "квартира",
+            "комната",
+            "офис",
+            "улица",
+            "район",
+            "квартал",
+            "департамент",
+            "вход",
+            "door",
+            "room",
+            "street",
+            "district",
+            "office",
+            "apartment",
+            "department",
+            "entrance",
+        }
+    )
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -81,12 +119,95 @@ class SceneTransitionExecutor:
             ).scene
         return self._to_applied(row, scene, action_sequence)
 
+    @staticmethod
+    def _tokens_match(left: str, right: str) -> bool:
+        if left == right:
+            return True
+        return len(left) >= 4 and len(right) >= 4 and left[:4] == right[:4]
+
+    @classmethod
+    def _destination_reference(
+        cls,
+        player_input: str,
+        destination: str,
+    ) -> tuple[bool, set[str]]:
+        input_tokens = cls.LOCATION_TOKEN_RE.findall((player_input or "").casefold())
+        destination_tokens = cls.LOCATION_TOKEN_RE.findall((destination or "").casefold())
+        if not input_tokens or not destination_tokens:
+            return False, set()
+
+        specific = [
+            token
+            for token in destination_tokens
+            if len(token) >= 4 and token not in cls.GENERIC_LOCATION_TOKENS
+        ]
+        if any(
+            cls._tokens_match(target, source)
+            for target in specific
+            for source in input_tokens
+        ):
+            return True, set()
+
+        generic_matches = {
+            target
+            for target in destination_tokens
+            if target in cls.GENERIC_LOCATION_TOKENS
+            and any(cls._tokens_match(target, source) for source in input_tokens)
+        }
+        return False, generic_matches
+
+    async def route_discovery_allowed(
+        self,
+        trigger_turn_id: UUID | None,
+        destination: str | None,
+    ) -> bool:
+        """Let only an explicit, unambiguous human destination open a missing route."""
+        if not trigger_turn_id or not destination:
+            return False
+        turn = await self._session.get(Turn, str(trigger_turn_id))
+        if not turn or turn.role != "user":
+            return False
+        text = " ".join((turn.content or "").casefold().split())
+        explicit_travel = any(
+            re.search(pattern, text, flags=re.IGNORECASE)
+            for pattern in self.EXPLICIT_TRAVEL_PATTERNS
+        )
+        if not explicit_travel:
+            return False
+
+        specific_match, generic_matches = self._destination_reference(text, destination)
+        if specific_match:
+            return True
+        if not generic_matches:
+            return False
+
+        campaign_id = UUID(turn.campaign_id)
+        locations = await self._locations.list_by_campaign(campaign_id)
+        target = self._match_location(locations, destination)
+        if not target:
+            return False
+
+        compatible = []
+        for location in locations:
+            location_tokens = self.LOCATION_TOKEN_RE.findall(
+                location.canonical_name.casefold()
+            )
+            if any(
+                self._tokens_match(generic, token)
+                for generic in generic_matches
+                for token in location_tokens
+            ):
+                compatible.append(location)
+        return len(compatible) == 1 and compatible[0].id == target.id
+
     async def apply(
         self,
         campaign_id: UUID,
         source_scene_id: UUID | None,
         trigger_turn_id: UUID | None,
         plan: SceneTransitionPlan,
+        *,
+        allow_route_discovery: bool | None = None,
     ) -> AppliedSceneTransition | None:
         if not plan.required or plan.transition_type == "none":
             return None
@@ -131,11 +252,16 @@ class SceneTransitionExecutor:
                     plan.destination_parent_location,
                 )
             )
+            if allow_route_discovery is None:
+                allow_route_discovery = await self.route_discovery_allowed(
+                    trigger_turn_id,
+                    plan.destination_location,
+                )
             await self._state.ensure_destination(
                 campaign_id,
                 source_location_id,
                 target_location_id,
-                allow_discovery=destination_created,
+                allow_discovery=destination_created or bool(allow_route_discovery),
             )
 
         target_scene = await self._scenes.create(
@@ -222,6 +348,7 @@ class SceneTransitionExecutor:
             source_scene_id,
             trigger_turn_id,
             sequence_plan,
+            route_discovery_turn_id=trigger_turn_id,
         )
         if not execution.final_scene_id:
             raise ValueError("Compound action sequence has no final scene")
