@@ -11,20 +11,29 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Entity
 from app.models.character import CharacterCreate
 from app.models.turn_authority import TurnAuthority
+from app.services.entity_identity import identity_key
 
 
 @dataclass(frozen=True)
 class MaterializedTurnOutcome:
     introduced_character_ids: tuple[UUID, ...] = ()
+    arrived_existing_participants: tuple[tuple[UUID, UUID], ...] = ()
+
+    @property
+    def arrived_existing_character_ids(self) -> tuple[UUID, ...]:
+        return tuple(entity_id for _scene_id, entity_id in self.arrived_existing_participants)
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self.introduced_character_ids or self.arrived_existing_participants)
 
 
 class TurnOutcomeMaterializer:
     """Apply structured outcomes before prose and bind their provenance after publication.
 
-    Planned NPCs are part of the game outcome, not narrator inventions. They are therefore created
-    before narrator generation so the narrator context and validator see actual structured scene
-    participants. Until an assistant turn is successfully saved, their provenance remains bound to
-    the triggering user turn and can be compensated if generation truly fails.
+    New NPCs are created exactly once. Known NPC references normalized by TurnAuthority are attached
+    to the target scene without recreating the entity, and only when Authority has already verified
+    that the character is physically at the target location.
     """
 
     def __init__(self, session: AsyncSession):
@@ -38,10 +47,27 @@ class TurnOutcomeMaterializer:
         *,
         source_turn_id: UUID,
     ) -> MaterializedTurnOutcome:
-        if not authority.allowed_new_npcs:
+        if not authority.allowed_new_npcs and not authority.allowed_existing_npc_arrivals:
             return MaterializedTurnOutcome()
         if not authority.target_scene_id:
-            raise ValueError("Planned NPC introduction has no authoritative target scene")
+            raise ValueError("Planned NPC materialization has no authoritative target scene")
+
+        existing_participants = set(
+            await self._scenes.get_participants(authority.target_scene_id)
+        )
+        arrived_existing: list[tuple[UUID, UUID]] = []
+        for arrival in authority.allowed_existing_npc_arrivals:
+            if arrival.entity_id in existing_participants:
+                continue
+            # Authority already checked current_location_id == target location. Keep movement
+            # disabled here so materialization can never turn an identity repair into teleportation.
+            await self._scenes.add_participant(
+                authority.target_scene_id,
+                arrival.entity_id,
+                allow_movement=False,
+            )
+            arrived_existing.append((authority.target_scene_id, arrival.entity_id))
+            existing_participants.add(arrival.entity_id)
 
         known = await self._entities.list_by_campaign(
             authority.campaign_id,
@@ -49,12 +75,12 @@ class TurnOutcomeMaterializer:
         )
         known_names: set[str] = set()
         for entity in known:
-            known_names.add(self._key(entity.canonical_name))
-            known_names.update(self._key(alias) for alias in entity.aliases)
+            known_names.add(identity_key(entity.canonical_name))
+            known_names.update(identity_key(alias) for alias in entity.aliases)
 
         created_ids: list[UUID] = []
         for introduction in authority.allowed_new_npcs:
-            key = self._key(introduction.canonical_name)
+            key = identity_key(introduction.canonical_name)
             if key in known_names:
                 raise ValueError(
                     "Cannot materialize planned new NPC because that identity already exists: "
@@ -72,6 +98,7 @@ class TurnOutcomeMaterializer:
                         "introduction_turn_id": str(source_turn_id),
                         "introduction_trigger_turn_id": str(authority.trigger_turn_id),
                         "introduction_reason": introduction.reason,
+                        "role": introduction.role,
                         "temporary_name": introduction.temporary_name,
                     },
                 ),
@@ -85,7 +112,10 @@ class TurnOutcomeMaterializer:
             known_names.add(key)
 
         await self._session.flush()
-        return MaterializedTurnOutcome(tuple(created_ids))
+        return MaterializedTurnOutcome(
+            introduced_character_ids=tuple(created_ids),
+            arrived_existing_participants=tuple(arrived_existing),
+        )
 
     async def bind_to_assistant(
         self,
@@ -108,14 +138,14 @@ class TurnOutcomeMaterializer:
         await self._session.flush()
 
     async def rollback(self, outcome: MaterializedTurnOutcome) -> None:
-        """Compensate prepared introductions when a real generation/state failure aborts the turn."""
+        """Compensate prepared entity changes when a real generation/state failure aborts."""
+        for scene_id, entity_id in outcome.arrived_existing_participants:
+            # Existing characters must never be deleted. Remove only the participant relation
+            # inserted by this turn; historical participation in older scenes stays intact.
+            await self._scenes.remove_participant(scene_id, entity_id)
         for entity_id in outcome.introduced_character_ids:
             await self._entities.delete(entity_id)
         await self._session.flush()
-
-    @staticmethod
-    def _key(value: object) -> str:
-        return " ".join(str(value or "").casefold().split())
 
 
 __all__ = ["MaterializedTurnOutcome", "TurnOutcomeMaterializer"]

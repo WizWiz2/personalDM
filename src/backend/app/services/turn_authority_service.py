@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
-from app.models.turn_authority import TurnAuthority
+from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
+from app.services.entity_identity import identity_key, resolve_character_candidates
 from app.services.scene_state_service import SceneStateService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 
@@ -16,7 +17,14 @@ class TurnAuthorityError(ValueError):
 
 
 class TurnAuthorityService:
-    """Build the sole narrator/validator authority from structured state plus the plan."""
+    """Build the sole narrator/validator authority from structured state plus the plan.
+
+    Entity identity is canonicalized here rather than delegated back to the control model. Exact
+    names and aliases are compared through a mixed-script-safe key. A temporary generic role may
+    also resolve to one known character already at the target location (for example
+    ``Трактирщик`` -> ``Хозяин таверны``). Cross-location identity repair remains forbidden: this
+    service never teleports a known character just to make a planner answer fit.
+    """
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -63,33 +71,86 @@ class TurnAuthorityService:
         )
 
         present_names = list(target_state.participant_names) if target_state else []
-        present_keys = {self._key(value) for value in present_names}
+        present_keys = {identity_key(value) for value in present_names}
         all_characters = await self._entities.list_by_campaign(
             campaign_id,
             entity_type="character",
         )
-        known_alias_keys: dict[str, str] = {}
-        for entity in all_characters:
-            for value in (entity.canonical_name, *entity.aliases):
-                known_alias_keys[self._key(value)] = entity.canonical_name
 
-        introductions = list(plan.npc_introductions) if plan else []
-        for introduction in introductions:
-            key = self._key(introduction.canonical_name)
-            if key in known_alias_keys:
-                raise TurnAuthorityError(
-                    "Planner tried to introduce an already known character as new: "
-                    f"{introduction.canonical_name}"
+        character_states = {}
+        character_locations: dict[UUID, UUID | None] = {}
+        for entity in all_characters:
+            character = await self._entities.get_character(entity.id)
+            if not character:
+                continue
+            entity_id = UUID(str(entity.id))
+            character_states[entity_id] = character
+            character_locations[entity_id] = character.current_location_id
+
+        target_location_id = target_state.location_id if target_state else None
+        introductions = []
+        existing_arrivals: list[ExistingNpcArrival] = []
+        for introduction in list(plan.npc_introductions) if plan else []:
+            matches = resolve_character_candidates(
+                all_characters,
+                proposed_name=introduction.canonical_name,
+                proposed_role=introduction.role,
+                temporary_name=introduction.temporary_name,
+                target_location_id=target_location_id,
+                character_locations=character_locations,
+            )
+            unique_matches = {UUID(str(entity.id)): entity for entity in matches}
+            if len(unique_matches) > 1:
+                names = ", ".join(
+                    sorted(entity.canonical_name for entity in unique_matches.values())
                 )
-            if key in present_keys:
                 raise TurnAuthorityError(
-                    f"Planned new NPC is already present: {introduction.canonical_name}"
+                    "Planner NPC identity is ambiguous for "
+                    f"{introduction.canonical_name}: {names}"
                 )
+            if not unique_matches:
+                introductions.append(introduction)
+                continue
+
+            existing_id, existing = next(iter(unique_matches.items()))
+            existing_key = identity_key(existing.canonical_name)
+            if existing_key in present_keys:
+                # The model merely misclassified an already-present known character as new.
+                # Keep the existing participant and discard the duplicate creation request.
+                continue
+
+            character = character_states.get(existing_id)
+            if (
+                character
+                and target_location_id
+                and character.current_location_id == target_location_id
+            ):
+                existing_arrivals.append(
+                    ExistingNpcArrival(
+                        entity_id=existing_id,
+                        canonical_name=existing.canonical_name,
+                        reason=introduction.reason,
+                    )
+                )
+                present_names.append(existing.canonical_name)
+                present_keys.add(existing_key)
+                continue
+
+            location = (
+                str(character.current_location_id)
+                if character and character.current_location_id
+                else "неизвестна"
+            )
+            target = str(target_location_id) if target_location_id else "неизвестна"
+            raise TurnAuthorityError(
+                "Известный персонаж не может появиться без структурного перемещения: "
+                f"{existing.canonical_name} находится в {location}, target location = {target}"
+            )
 
         absent_names = [
             entity.canonical_name
             for entity in all_characters
-            if self._key(entity.canonical_name) not in present_keys
+            if identity_key(entity.canonical_name) not in present_keys
         ]
 
         disposition = "actor_turn" if plan is None else plan.scene_disposition
@@ -131,6 +192,7 @@ class TurnAuthorityService:
             present_character_names=present_names,
             known_absent_character_names=absent_names,
             allowed_new_npcs=introductions,
+            allowed_existing_npc_arrivals=existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
             dramatic_mode=(
@@ -155,10 +217,6 @@ class TurnAuthorityService:
             ),
             action_sequence=executed_sequence,
         )
-
-    @staticmethod
-    def _key(value: object) -> str:
-        return " ".join(str(value or "").casefold().split())
 
 
 __all__ = ["TurnAuthorityError", "TurnAuthorityService"]

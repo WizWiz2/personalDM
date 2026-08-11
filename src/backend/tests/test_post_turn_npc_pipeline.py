@@ -1,8 +1,11 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
+from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.role_model_router import ModelRole
+from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 
 
 NARRATION = (
@@ -14,27 +17,31 @@ async def narrator_stream(*args, **kwargs):
     yield NARRATION
 
 
+def authority_plan() -> CoordinatedTurnPlan:
+    return CoordinatedTurnPlan(
+        player_intent="Спросить бармена о свободной комнате.",
+        resolution="conversation",
+        npc_introductions=[
+            PlannedNpcIntroduction(
+                canonical_name="Бармен Роэн",
+                role="бармен",
+                description="Бармен Медного Котла.",
+                reason="Игрок напрямую обращается к бармену в текущей таверне.",
+            )
+        ],
+        observable_consequences=[
+            "Бармен Роэн отвечает, что комната наверху свободна."
+        ],
+        ending_hook="Ответ бармена получен.",
+    )
+
+
 async def role_json(self, provider, selection, messages, **kwargs):
     if selection.role == ModelRole.NARRATION_VALIDATOR:
         return {
             "verdict": "pass",
             "summary": "Narration respects scene state and player agency.",
             "violations": [],
-        }
-    if selection.role == ModelRole.ENTITY_REGISTRAR:
-        return {
-            "characters": [
-                {
-                    "canonical_name": "Бармен Роэн",
-                    "aliases": ["Роэн"],
-                    "description": "Бармен Медного Котла.",
-                    "role": "бармен",
-                    "evidence": "Бармен Роэн ставит перед тобой кружку",
-                    "presence": "present",
-                    "importance": "supporting",
-                    "persistent": True,
-                }
-            ]
         }
     if selection.role == ModelRole.SCRIBE:
         return {
@@ -66,12 +73,12 @@ async def role_json(self, provider, selection, messages, **kwargs):
     raise AssertionError(f"Unexpected structured role: {selection.role}")
 
 
-def test_post_turn_registers_npc_before_scribe_resolves_event_participant(
+def test_authority_materializes_npc_before_scribe_resolves_event_participant(
     client: TestClient,
 ):
     campaign_id = client.post(
         "/api/campaigns",
-        json={"name": "Registrar pipeline"},
+        json={"name": "Authority NPC pipeline"},
     ).json()["id"]
     tavern = client.post(
         f"/api/campaigns/{campaign_id}/locations",
@@ -94,7 +101,12 @@ def test_post_turn_registers_npc_before_scribe_resolves_event_participant(
         params={"entity_id": hero["id"]},
     )
 
-    with patch(
+    with patch.object(
+        TurnAuthorityPlanner,
+        "plan",
+        new_callable=AsyncMock,
+        return_value=authority_plan(),
+    ), patch(
         "app.providers.llm_provider.LLMProvider.generate_stream",
         side_effect=narrator_stream,
     ), patch(
@@ -117,20 +129,19 @@ def test_post_turn_registers_npc_before_scribe_resolves_event_participant(
 
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["health"]["failed_jobs"] == 0
-    assert snapshot["health"]["auto_registered_npcs"] == 1
-    npc = snapshot["auto_registered_npcs"][0]
-    assert npc["name"] == "Бармен Роэн"
-    assert npc["current_location_id"] == tavern["id"]
-    assert npc["scene_ids"] == [scene["id"]]
+    # Authority owns first appearances. Legacy EntityRegistrar must not infer the same NPC again.
+    assert snapshot["health"]["auto_registered_npcs"] == 0
+    assert set(snapshot["active_scene"]["participant_names"]) == {
+        "Эйдан",
+        "Бармен Роэн",
+    }
 
     event_proposal = next(
         proposal
         for proposal in snapshot["proposals"]
         if proposal["change_type"] == "event"
     )
-    assert event_proposal["payload"]["participant_ids"] == [npc["id"]]
+    participant_ids = event_proposal["payload"]["participant_ids"]
+    assert len(participant_ids) == 1
+    UUID(participant_ids[0])  # ProposalPresenceResolver replaced the model-authored name with ID.
     assert event_proposal["payload"]["location_id"] == tavern["id"]
-    assert set(snapshot["active_scene"]["participant_names"]) == {
-        "Эйдан",
-        "Бармен Роэн",
-    }

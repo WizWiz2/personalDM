@@ -53,8 +53,8 @@ class TurnSaga(LegacyTurnRunner):
             + "\nHard rules:\n"
             "- Render this authority; do not create a competing interpretation.\n"
             "- The human player's voluntary actions/dialogue are limited to player_input.\n"
-            "- allowed_new_npcs are already approved structured first appearances. If they are "
-            "listed in the current scene context, treat them as physically present.\n"
+            "- allowed_new_npcs are approved structured first appearances; "
+            "allowed_existing_npc_arrivals are known identities approved to be present here.\n"
             "- known_absent_characters may not appear physically.\n"
             "- Never complete a scene boundary absent from scene_disposition/transition_type.\n"
             "- Preserve observable_consequences, canon_constraints and completed action steps.\n"
@@ -166,10 +166,10 @@ class TurnSaga(LegacyTurnRunner):
         materializer: TurnOutcomeMaterializer | None,
         outcome: MaterializedTurnOutcome | None,
     ) -> None:
-        if not materializer or not outcome or not outcome.introduced_character_ids:
+        if not materializer or not outcome or not outcome.has_changes:
             return
-        # Audit helpers may have committed while prose was being checked. Treat prepared NPCs like
-        # prepared scene transitions: compensate them explicitly on a real aborted turn.
+        # Audit helpers may have committed while prose was being checked. Treat prepared entity
+        # changes like prepared scene transitions: compensate them explicitly on a real abort.
         await self._session.rollback()
         await materializer.rollback(outcome)
         await self._session.commit()
@@ -261,10 +261,11 @@ class TurnSaga(LegacyTurnRunner):
                             plan.scene_transition,
                         )
                         if applied_transition:
+                            # Keep the long-standing prepare/commit seam used by resume, debugger and
+                            # transition compensation. Authority rejection below explicitly rolls a
+                            # prepared boundary back instead of leaving a Round-5 half-turn.
                             await self._session.commit()
                     except ValueError as exc:
-                        # Never continue with a transition-shaped plan after its structured
-                        # boundary failed. That old fail-open path produced prose/state drift.
                         await self._session.rollback()
                         failed_plan = plan.model_dump(mode="json")
                         plan = CoordinatedTurnPlan.conservative_fallback(turn_create.content)
@@ -276,6 +277,7 @@ class TurnSaga(LegacyTurnRunner):
                             "plan": plan.model_dump(mode="json"),
                         }
                         applied_transition = None
+                        effective_scene_id = source_scene_id
                         transition_metadata = {
                             "status": "rejected_before_narration",
                             "source_scene_id": (
@@ -285,7 +287,6 @@ class TurnSaga(LegacyTurnRunner):
                         }
 
                 if applied_transition:
-                    await self._session.commit()
                     effective_scene_id = applied_transition.target_scene_id
                     transition_metadata = {
                         "status": (
@@ -333,6 +334,45 @@ class TurnSaga(LegacyTurnRunner):
             except TurnAuthorityError as exc:
                 if turn_create.acting_character_id is not None:
                     raise
+
+                if applied_transition and applied_transition.status == "prepared":
+                    # This boundary belongs to the current unfinished turn. Compensate it before
+                    # fallback publication so the active scene/player location are restored.
+                    if not await self._rollback_prepared_transition(
+                        transition_executor,
+                        applied_transition,
+                    ):
+                        raise RuntimeError(
+                            "Authority rejection could not roll back its prepared scene transition"
+                        ) from exc
+                    applied_transition = None
+                    effective_scene_id = source_scene_id
+                    transition_metadata = {
+                        "status": "rolled_back_after_authority_rejection",
+                        "source_scene_id": (
+                            str(source_scene_id) if source_scene_id else None
+                        ),
+                        "error": str(exc)[:2000],
+                    }
+                elif applied_transition:
+                    # Regeneration/resume may reuse a transition that was already accepted by a
+                    # previous assistant turn. Do not rewrite established world state because a new
+                    # planner response has bad entity classification; fallback stays at the target.
+                    transition_metadata = {
+                        **transition_metadata,
+                        "status": "reused_after_authority_rejection",
+                        "error": str(exc)[:2000],
+                    }
+                else:
+                    effective_scene_id = source_scene_id
+                    transition_metadata = {
+                        "status": "authority_rejected_without_transition",
+                        "source_scene_id": (
+                            str(source_scene_id) if source_scene_id else None
+                        ),
+                        "error": str(exc)[:2000],
+                    }
+
                 plan = CoordinatedTurnPlan.conservative_fallback(turn_create.content)
                 planner_metadata = {
                     **planner_metadata,
@@ -349,16 +389,22 @@ class TurnSaga(LegacyTurnRunner):
                     plan=plan,
                     acting_character_id=None,
                 )
+                narrator_messages, context_metadata = await self._recompile_narrator_context(
+                    compiler=compiler,
+                    campaign_id=campaign_id,
+                    turn_create=turn_create,
+                    scene_id=effective_scene_id,
+                    max_budget_override=max_budget_override,
+                )
 
-            # Structured first appearances become real scene participants BEFORE prose generation.
-            # This removes the old cycle where Narrator mentioned an NPC that did not structurally
-            # exist until after Validator had already judged the text.
+            # Authority is coherent. New NPCs are created; known same-location identities are
+            # attached to the scene without duplication or implicit movement.
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(
                 authority,
                 source_turn_id=user_turn.id,
             )
-            if materialized_outcome.introduced_character_ids:
+            if materialized_outcome.has_changes:
                 await self._session.commit()
                 narrator_messages, context_metadata = await self._recompile_narrator_context(
                     compiler=compiler,
@@ -384,12 +430,16 @@ class TurnSaga(LegacyTurnRunner):
                     "turn_materialization": {
                         "status": (
                             "prepared_before_narration"
-                            if materialized_outcome.introduced_character_ids
+                            if materialized_outcome.has_changes
                             else "not_required"
                         ),
                         "introduced_character_ids": [
                             str(value)
                             for value in materialized_outcome.introduced_character_ids
+                        ],
+                        "arrived_existing_character_ids": [
+                            str(value)
+                            for value in materialized_outcome.arrived_existing_character_ids
                         ],
                     },
                 }
@@ -441,6 +491,7 @@ class TurnSaga(LegacyTurnRunner):
                     materialized_outcome,
                     saved_assistant.id,
                 )
+            if materializer and materialized_outcome.has_changes:
                 context_metadata["turn_materialization"]["status"] = "applied"
                 context_metadata["turn_materialization"]["source_turn_id"] = str(
                     saved_assistant.id

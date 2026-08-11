@@ -17,6 +17,7 @@ from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import evidence_supported
+from app.services.entity_identity import identity_key, resolve_character_candidates
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
 
@@ -103,6 +104,9 @@ class EntityRegistrar:
             return result
 
         entities = await self._entities.list_by_campaign(campaign_id)
+        character_entities = [
+            entity for entity in entities if entity.entity_type == "character"
+        ]
         known_lines = [
             f"- {entity.canonical_name} [{entity.entity_type}]"
             + (f"; aliases: {', '.join(entity.aliases)}" if entity.aliases else "")
@@ -170,6 +174,12 @@ class EntityRegistrar:
             }
             return result
 
+        character_locations: dict[UUID, UUID | None] = {}
+        for entity in character_entities:
+            character = await self._entities.get_character(entity.id)
+            if character:
+                character_locations[UUID(str(entity.id))] = character.current_location_id
+
         index = self._entity_index(entities)
         for mention in envelope.characters:
             if not mention.persistent:
@@ -180,8 +190,42 @@ class EntityRegistrar:
             if not name:
                 continue
 
-            entity = index.get(name.casefold())
+            entity = index.get(identity_key(name))
+            if entity is None:
+                contextual = resolve_character_candidates(
+                    character_entities,
+                    proposed_name=name,
+                    proposed_role=mention.role,
+                    temporary_name=mention.temporary_name,
+                    target_location_id=scene.location_id,
+                    character_locations=character_locations,
+                )
+                unique_contextual = {
+                    UUID(str(candidate.id)): candidate for candidate in contextual
+                }
+                if len(unique_contextual) > 1:
+                    names = ", ".join(
+                        sorted(
+                            candidate.canonical_name
+                            for candidate in unique_contextual.values()
+                        )
+                    )
+                    result.conflicts.append(
+                        {
+                            "description": (
+                                f"Временное имя {name} неоднозначно совпадает с известными "
+                                f"персонажами в этой локации: {names}"
+                            ),
+                            "evidence": mention.evidence,
+                            "error": "Ambiguous role/location entity identity",
+                        }
+                    )
+                    continue
+                if unique_contextual:
+                    entity = next(iter(unique_contextual.values()))
+
             if entity and str(entity.id) == campaign.player_character_id:
+                # Mixed-script variants such as Эйdan/Rэт resolve to the real player identity here.
                 continue
             if entity and entity.entity_type != "character":
                 result.conflicts.append(
@@ -229,9 +273,11 @@ class EntityRegistrar:
                     db_entity.provenance = "narrator_extracted"
                 character_id = character.id
                 result.created_ids.append(character_id)
-                index[name.casefold()] = character
+                index[identity_key(name)] = character
                 for alias in character.aliases:
-                    index[alias.casefold()] = character
+                    index[identity_key(alias)] = character
+                character_entities.append(character)
+                character_locations[character.id] = character.current_location_id
 
             result.resolved_ids.append(character_id)
             if mention.presence == "present":
@@ -310,9 +356,9 @@ class EntityRegistrar:
     def _entity_index(entities) -> dict[str, object]:
         result = {}
         for entity in entities:
-            result[entity.canonical_name.casefold()] = entity
+            result[identity_key(entity.canonical_name)] = entity
             for alias in entity.aliases:
-                result[alias.casefold()] = entity
+                result[identity_key(alias)] = entity
         return result
 
     @staticmethod
@@ -335,9 +381,11 @@ class EntityRegistrar:
     @staticmethod
     def _clean_aliases(values: list[str], canonical_name: str) -> list[str]:
         result = []
-        canonical = canonical_name.casefold()
+        seen = {identity_key(canonical_name)}
         for value in values:
             clean = " ".join(str(value).split()).strip(" .,:;!?—–-")
-            if clean and clean.casefold() != canonical and clean not in result:
+            key = identity_key(clean)
+            if clean and key and key not in seen:
                 result.append(clean[:120])
+                seen.add(key)
         return result[:8]
