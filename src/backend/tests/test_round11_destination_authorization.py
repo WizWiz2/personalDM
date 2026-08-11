@@ -265,6 +265,99 @@ async def test_return_clause_after_observation_is_authorized_independently(
 
 
 @pytest.mark.asyncio
+async def test_implied_room_is_unresolved_but_existing_route_can_execute(
+    db_session: AsyncSession,
+):
+    world = await _world(db_session)
+    room = await LocationRepository(db_session).create(
+        world["campaign_id"],
+        LocationCreate(canonical_name="Guest Room 3"),
+    )
+    await SceneStateService(db_session).create_exit(
+        world["campaign_id"],
+        world["office"].id,
+        LocationExitCreate(to_location_id=room.id, label="Guest room"),
+    )
+    turn = await TurnRepository(db_session).create(
+        world["campaign_id"],
+        TurnCreate(role="user", content="I rent the room and go there to sleep."),
+    )
+    authorizer = PlayerDestinationAuthorizer(db_session)
+    authorization = await authorizer.authorize(turn.id, room.canonical_name)
+
+    assert authorization.applicable is False
+    assert authorization.authorized is False
+
+    applied = await SceneTransitionExecutor(db_session).apply(
+        world["campaign_id"],
+        world["source"].id,
+        turn.id,
+        SceneTransitionPlan(
+            required=True,
+            transition_type="location_transition",
+            destination_location=room.canonical_name,
+        ),
+    )
+    assert applied is not None
+    assert applied.target_location_id == room.id
+
+
+@pytest.mark.asyncio
+async def test_unresolved_destination_cannot_discover_missing_route(
+    db_session: AsyncSession,
+):
+    world = await _world(db_session)
+    room = await LocationRepository(db_session).create(
+        world["campaign_id"],
+        LocationCreate(canonical_name="Guest Room 3"),
+    )
+    turn = await TurnRepository(db_session).create(
+        world["campaign_id"],
+        TurnCreate(role="user", content="I rent the room and go there to sleep."),
+    )
+
+    with pytest.raises(ValueError, match="existing route is required"):
+        await SceneTransitionExecutor(db_session).apply(
+            world["campaign_id"],
+            world["source"].id,
+            turn.id,
+            SceneTransitionPlan(
+                required=True,
+                transition_type="location_transition",
+                destination_location=room.canonical_name,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_unresolved_destination_cannot_create_new_location(
+    db_session: AsyncSession,
+):
+    world = await _world(db_session)
+    turn = await TurnRepository(db_session).create(
+        world["campaign_id"],
+        TurnCreate(role="user", content="I go there and look around."),
+    )
+
+    with pytest.raises(ValueError, match="new location cannot be created"):
+        await SceneTransitionExecutor(db_session).apply(
+            world["campaign_id"],
+            world["source"].id,
+            turn.id,
+            SceneTransitionPlan(
+                required=True,
+                transition_type="location_transition",
+                destination_location="Secret Annex",
+            ),
+        )
+
+    locations = await LocationRepository(db_session).list_by_campaign(
+        world["campaign_id"]
+    )
+    assert not any(item.canonical_name == "Secret Annex" for item in locations)
+
+
+@pytest.mark.asyncio
 async def test_scope_trap_authorizes_merchants_but_not_basement(
     db_session: AsyncSession,
 ):
@@ -288,8 +381,9 @@ async def test_scope_trap_authorizes_merchants_but_not_basement(
     )
 
     assert merchants.authorized is True
+    assert basement.applicable is True
     assert basement.authorized is False
-    assert basement.reason == "planner destination is not selected by any player travel clause"
+    assert basement.reason == "destination is only mentioned in a non-committal clause"
 
 
 @pytest.mark.asyncio
@@ -353,6 +447,6 @@ async def test_scope_trap_sequence_stops_after_named_destination(
     ]
     assert applied.action_sequence.blocked_step_index == 1
     assert applied.target_location_id == world["merchants"].id
-    assert "not selected" in (
+    assert "non-committal" in (
         applied.action_sequence.steps[1].blocking_reason or ""
     )
