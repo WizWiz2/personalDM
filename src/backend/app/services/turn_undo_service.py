@@ -25,21 +25,10 @@ class TurnUndoService:
         self._bridges = SceneBridgeService(session)
 
     async def undo_last_pair(self, campaign_id: UUID) -> bool:
-        turns = await self._turns.get_history(
-            campaign_id,
-            limit=2,
-            active_only=True,
-            channel="narrative",
-        )
-        if len(turns) != 2:
+        pair = await self._turns.get_latest_undoable_pair(campaign_id)
+        if pair is None:
             return False
-        user_turn, assistant_turn = turns
-        if (
-            user_turn.role != "user"
-            or assistant_turn.role != "assistant"
-            or assistant_turn.parent_turn_id != user_turn.id
-        ):
-            return False
+        user_turn, assistant_turn = pair
 
         sequence_executor = ActionSequenceExecutor(self._session)
         action_sequence = await sequence_executor.find_applied_for_turn(
@@ -61,7 +50,11 @@ class TurnUndoService:
                 )
             ).scalar_one_or_none()
 
-        if not await self._turns.undo_last_pair(campaign_id):
+        if not await self._turns.undo_pair(
+            campaign_id,
+            user_turn.id,
+            assistant_turn.id,
+        ):
             return False
 
         if action_sequence:
