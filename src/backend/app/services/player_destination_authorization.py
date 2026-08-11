@@ -19,22 +19,33 @@ class DestinationAuthorization:
     matched_clause: str | None = None
 
 
-class PlayerDestinationAuthorizer:
-    """Authorize planner destinations from the player's actual travel clauses.
+@dataclass(frozen=True)
+class _InputClause:
+    text: str
+    travel: bool
 
-    The planner may propose a destination, but it cannot make an ambiguous or
-    unrelated location choice authoritative. This service independently checks
-    the persisted human input and keeps travel-clause scope deterministic.
+
+class PlayerDestinationAuthorizer:
+    """Independently authorize planner destinations from persisted player input.
+
+    The result is deliberately tri-state through ``applicable``/``authorized``:
+
+    * applicable + authorized: the player clearly selected this destination;
+    * applicable + unauthorized: the input clearly does not authorize this choice;
+    * not applicable: the text is inconclusive, so only an already-existing
+      structural route may carry the movement. Inconclusive text never grants
+      route discovery or creation of a new destination.
     """
 
     TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
     TRAVEL_ANCHOR_RE = re.compile(
         r"\b(?:"
-        r"go|going|return|returning|enter|entering|head|heading|travel|traveling|"
-        r"travelling|drive|driving|ride|riding|get|getting|walk|walking|step|stepping|"
-        r"make\s+(?:my|our|their|his|her)\s+way|"
+        r"go|going|return|returning|enter|entering|leave|leaving|head|heading|"
+        r"travel|traveling|travelling|drive|driving|ride|riding|get|getting|"
+        r"walk|walking|step|stepping|make\s+(?:my|our|their|his|her)\s+way|"
         r"иду|пойду|еду|поеду|отправляюсь|направляюсь|возвращаюсь|вхожу|захожу|"
-        r"зайду|выхожу|выезжаю|добираюсь|доберусь|следую|спускаюсь|поднимаюсь"
+        r"зайду|выхожу|ухожу|уйду|выезжаю|добираюсь|доберусь|следую|"
+        r"спускаюсь|поднимаюсь"
         r")\b",
         re.IGNORECASE,
     )
@@ -49,6 +60,15 @@ class PlayerDestinationAuthorizer:
     )
     CONJUNCTION_BEFORE_TRAVEL_RE = re.compile(
         r"\s+\b(?:and|и|а)\b\s+(?=" + TRAVEL_ANCHOR_RE.pattern + r")",
+        re.IGNORECASE,
+    )
+    NONCOMMITTAL_RE = re.compile(
+        r"\b(?:wonder|wondering|what(?:'s|\s+is)?|whether|maybe|perhaps|consider|"
+        r"curious|думаю|интересно|может|возможно|ли|что\s+там|что\s+в)\b",
+        re.IGNORECASE,
+    )
+    ANAPHORIC_TRAVEL_RE = re.compile(
+        r"\b(?:there|inside|outside|back|туда|сюда|там|обратно|внутрь|наружу|домой)\b",
         re.IGNORECASE,
     )
     GENERIC_LOCATION_TOKENS = frozenset(
@@ -97,37 +117,26 @@ class PlayerDestinationAuthorizer:
     ) -> DestinationAuthorization:
         clean_destination = " ".join((destination or "").split())
         if not trigger_turn_id or not clean_destination:
-            return DestinationAuthorization(
-                applicable=False,
-                authorized=False,
-                reason="no human trigger or destination",
-                destination=clean_destination,
-            )
+            return self._unresolved(clean_destination, "no human trigger or destination")
 
         turn = await self._session.get(Turn, str(trigger_turn_id))
         if not turn or turn.role != "user":
-            return DestinationAuthorization(
-                applicable=False,
-                authorized=False,
-                reason="trigger is not a human user turn",
-                destination=clean_destination,
+            return self._unresolved(
+                clean_destination,
+                "trigger is not a human user turn",
             )
 
-        clauses = self._travel_clauses(turn.content or "")
-        if not clauses:
-            return DestinationAuthorization(
-                applicable=True,
-                authorized=False,
-                reason="player input contains no explicit travel clause",
-                destination=clean_destination,
-            )
-
+        clauses = self._clauses(turn.content or "")
         locations = await self._locations.list_by_campaign(UUID(turn.campaign_id))
         target = self._match_location(locations, clean_destination)
         ambiguous_generic = False
+        anaphoric_travel = False
+
         for clause in clauses:
+            if not clause.travel:
+                continue
             specific_match, generic_matches = self._destination_reference(
-                clause,
+                clause.text,
                 clean_destination,
             )
             if specific_match:
@@ -136,41 +145,73 @@ class PlayerDestinationAuthorizer:
                     authorized=True,
                     reason="destination is specifically named in a travel clause",
                     destination=clean_destination,
-                    matched_clause=clause,
+                    matched_clause=clause.text,
                 )
-            if not generic_matches:
-                continue
+            if generic_matches:
+                compatible = [
+                    location
+                    for location in locations
+                    if self._location_matches_generic(
+                        location.canonical_name,
+                        generic_matches,
+                    )
+                ]
+                if len(compatible) == 1 and target and compatible[0].id == target.id:
+                    return DestinationAuthorization(
+                        applicable=True,
+                        authorized=True,
+                        reason="generic travel reference resolves to one known location",
+                        destination=clean_destination,
+                        matched_clause=clause.text,
+                    )
+                if len(compatible) > 1:
+                    ambiguous_generic = True
+            if self.ANAPHORIC_TRAVEL_RE.search(clause.text):
+                anaphoric_travel = True
 
-            compatible = [
-                location
-                for location in locations
-                if self._location_matches_generic(location.canonical_name, generic_matches)
-            ]
-            if len(compatible) == 1 and target and compatible[0].id == target.id:
+        if ambiguous_generic:
+            return DestinationAuthorization(
+                applicable=True,
+                authorized=False,
+                reason="player destination reference is ambiguous",
+                destination=clean_destination,
+            )
+
+        for clause in clauses:
+            if clause.travel:
+                continue
+            specific_match, generic_matches = self._destination_reference(
+                clause.text,
+                clean_destination,
+            )
+            if not specific_match and not generic_matches:
+                continue
+            if self.NONCOMMITTAL_RE.search(clause.text):
                 return DestinationAuthorization(
                     applicable=True,
-                    authorized=True,
-                    reason="generic travel reference resolves to one known location",
+                    authorized=False,
+                    reason="destination is only mentioned in a non-committal clause",
                     destination=clean_destination,
-                    matched_clause=clause,
+                    matched_clause=clause.text,
                 )
-            if len(compatible) > 1:
-                ambiguous_generic = True
+            return self._unresolved(
+                clean_destination,
+                "destination is implied by a committed non-travel action",
+                clause.text,
+            )
 
-        reason = (
-            "player destination reference is ambiguous"
-            if ambiguous_generic
-            else "planner destination is not selected by any player travel clause"
-        )
-        return DestinationAuthorization(
-            applicable=True,
-            authorized=False,
-            reason=reason,
-            destination=clean_destination,
+        if anaphoric_travel:
+            return self._unresolved(
+                clean_destination,
+                "travel clause uses an anaphoric destination",
+            )
+        return self._unresolved(
+            clean_destination,
+            "player input does not independently identify planner destination",
         )
 
     @classmethod
-    def _travel_clauses(cls, text: str) -> list[str]:
+    def _clauses(cls, text: str) -> list[_InputClause]:
         normalized = " ".join(text.casefold().split())
         if not normalized:
             return []
@@ -186,15 +227,16 @@ class PlayerDestinationAuthorizer:
                 if piece.strip()
             )
 
-        result: list[str] = []
+        result: list[_InputClause] = []
         previous_was_travel = False
         for part in parts:
             explicit = bool(cls.TRAVEL_ANCHOR_RE.search(part))
-            elliptical = previous_was_travel and bool(cls.ELLIPTICAL_TRAVEL_RE.search(part))
-            is_travel = explicit or elliptical
-            if is_travel:
-                result.append(part)
-            previous_was_travel = is_travel
+            elliptical = previous_was_travel and bool(
+                cls.ELLIPTICAL_TRAVEL_RE.search(part)
+            )
+            travel = explicit or elliptical
+            result.append(_InputClause(text=part, travel=travel))
+            previous_was_travel = travel
         return result
 
     @classmethod
@@ -252,6 +294,20 @@ class PlayerDestinationAuthorizer:
             if any(alias.casefold() == needle for alias in location.aliases):
                 return location
         return None
+
+    @staticmethod
+    def _unresolved(
+        destination: str,
+        reason: str,
+        matched_clause: str | None = None,
+    ) -> DestinationAuthorization:
+        return DestinationAuthorization(
+            applicable=False,
+            authorized=False,
+            reason=reason,
+            destination=destination,
+            matched_clause=matched_clause,
+        )
 
 
 __all__ = ["DestinationAuthorization", "PlayerDestinationAuthorizer"]
