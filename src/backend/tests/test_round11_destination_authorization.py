@@ -265,7 +265,7 @@ async def test_return_clause_after_observation_is_authorized_independently(
 
 
 @pytest.mark.asyncio
-async def test_implied_room_is_unresolved_but_existing_route_can_execute(
+async def test_anaphoric_travel_resolves_from_committed_destination(
     db_session: AsyncSession,
 ):
     world = await _world(db_session)
@@ -273,20 +273,18 @@ async def test_implied_room_is_unresolved_but_existing_route_can_execute(
         world["campaign_id"],
         LocationCreate(canonical_name="Guest Room 3"),
     )
-    await SceneStateService(db_session).create_exit(
-        world["campaign_id"],
-        world["office"].id,
-        LocationExitCreate(to_location_id=room.id, label="Guest room"),
-    )
     turn = await TurnRepository(db_session).create(
         world["campaign_id"],
         TurnCreate(role="user", content="I rent the room and go there to sleep."),
     )
-    authorizer = PlayerDestinationAuthorizer(db_session)
-    authorization = await authorizer.authorize(turn.id, room.canonical_name)
+    authorization = await PlayerDestinationAuthorizer(db_session).authorize(
+        turn.id,
+        room.canonical_name,
+    )
 
-    assert authorization.applicable is False
-    assert authorization.authorized is False
+    assert authorization.applicable is True
+    assert authorization.authorized is True
+    assert "anaphoric" in authorization.reason
 
     applied = await SceneTransitionExecutor(db_session).apply(
         world["campaign_id"],
@@ -313,8 +311,13 @@ async def test_unresolved_destination_cannot_discover_missing_route(
     )
     turn = await TurnRepository(db_session).create(
         world["campaign_id"],
-        TurnCreate(role="user", content="I rent the room and go there to sleep."),
+        TurnCreate(role="user", content="I rent the room and sleep."),
     )
+    authorization = await PlayerDestinationAuthorizer(db_session).authorize(
+        turn.id,
+        room.canonical_name,
+    )
+    assert authorization.applicable is False
 
     with pytest.raises(ValueError, match="existing route is required"):
         await SceneTransitionExecutor(db_session).apply(
