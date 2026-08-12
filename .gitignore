@@ -69,3 +69,8 @@ coverage.xml
 # Project specific
 scratch/
 src/backend/scratch/
+
+# Frontend
+node_modules/
+src/frontend/dist/
+*.tsbuildinfo
