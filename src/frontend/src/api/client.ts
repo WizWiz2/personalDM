@@ -64,6 +64,7 @@ export interface SessionZeroInterviewState {
 export interface SessionZeroInterviewSnapshot {
   opening_message: string
   status: string
+  summary: string
   state: SessionZeroInterviewState
 }
 
@@ -78,6 +79,7 @@ export interface SessionZeroInterviewTurnResult {
   }
   completed: boolean
   scene_title: string | null
+  summary: string
   state: SessionZeroInterviewState
 }
 
