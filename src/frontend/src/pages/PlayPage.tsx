@@ -87,6 +87,17 @@ export function PlayPage() {
   }, [modeKey, mode])
 
   useEffect(() => {
+    if (
+      acceptedTurn
+      && generation?.user_turn_id === acceptedTurn.id
+      && generation.status === 'completed'
+    ) {
+      setAcceptedTurn(null)
+      window.sessionStorage.removeItem(acceptedKey)
+    }
+  }, [acceptedKey, acceptedTurn, generation?.status, generation?.user_turn_id])
+
+  useEffect(() => {
     const current = generation ? { id: generation.id, status: generation.status } : null
     const previous = previousGeneration.current
     previousGeneration.current = current
