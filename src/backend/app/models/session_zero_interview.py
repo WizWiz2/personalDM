@@ -175,11 +175,33 @@ class SessionZeroInterviewModelDecision(BaseModel):
                     for item in calls
                 )
                 else (
-                    "Я сохранил твой ответ. Продолжи с той деталью героя или мира, "
-                    "которая сейчас кажется наиболее важной."
+                    "Я сохранил твой ответ. Что тебе хочется определить дальше — "
+                    "героя, мир или стартовую ситуацию?"
                 )
             )
         return converted
+
+    @model_validator(mode="after")
+    def keep_conversation_open_until_finalize(self) -> SessionZeroInterviewModelDecision:
+        """A Session Zero DM must keep leading until it explicitly starts the game.
+
+        Local models often acknowledge a detail with a closed phrase such as
+        ``Хорошо, запишем`` and then stop. That leaves the player responsible for
+        inventing the next interview topic. Unless the same decision requests
+        ``finalize_session_zero``, deterministically keep the conversational door open
+        with one broad question. The neural agent still decides the content; this is a
+        presentation-independent safety net shared by CLI and GUI.
+        """
+        if self.ready_to_finalize:
+            return self
+        message = self.assistant_message.strip()
+        if "?" not in message:
+            separator = " " if message else ""
+            self.assistant_message = (
+                f"{message}{separator}Что тебе хочется добавить или уточнить дальше — "
+                "про героя, мир или начало приключения?"
+            )
+        return self
 
     @property
     def patch(self) -> SessionZeroInterviewPatch:
