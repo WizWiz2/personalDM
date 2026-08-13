@@ -87,6 +87,7 @@ class TurnAuthority(BaseModel):
         technical = (
             "player destination is not authorized",
             "not an available exit",
+            "destination route is currently inactive",
             "requires a check",
             "requires player input",
             "route discovery",
@@ -199,6 +200,7 @@ class TurnAuthority(BaseModel):
                 "character_beats": self.character_beats,
                 "narration_guidance": self.narration_guidance,
                 "ending_hook": self.ending_hook,
+                "execution_section": "[EXECUTED ACTION SEQUENCE]",
             }
         )
         return payload
