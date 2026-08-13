@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Literal
 from uuid import UUID
 
@@ -77,6 +78,33 @@ class TurnAuthority(BaseModel):
     complication_source: str | None = None
     action_sequence: dict | None = None
 
+    @staticmethod
+    def _safe_blocking_reason(value: object) -> str | None:
+        reason = " ".join(str(value or "").split()).strip()
+        if not reason:
+            return None
+        folded = reason.casefold()
+        technical = (
+            "player destination is not authorized",
+            "not an available exit",
+            "destination route is currently inactive",
+            "requires a check",
+            "requires player input",
+            "route discovery",
+            "source_scene",
+            "target_scene",
+        )
+        if any(token in folded for token in technical):
+            return None
+        if re.search(
+            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+            reason,
+            flags=re.IGNORECASE,
+        ):
+            return None
+        return reason
+
     @model_validator(mode="after")
     def executed_sequence_owns_partial_outcomes(self):
         """A blocked/skipped sequence cannot retain prose consequences for steps that never ran."""
@@ -100,15 +128,16 @@ class TurnAuthority(BaseModel):
                 if outcome and outcome not in executed:
                     executed.append(outcome)
             elif status == "blocked":
-                intent = " ".join(str(step.get("intent") or "действие").split())
-                message = f"Действие не выполнено: {intent}."
+                reason = self._safe_blocking_reason(step.get("blocking_reason"))
+                message = reason or "Продвинуться дальше пока не удаётся."
                 if message not in executed:
                     executed.append(message)
                 break
         self.observable_consequences = executed
         if not any("BLOCKED" in value for value in self.narration_guidance):
             self.narration_guidance.append(
-                "BLOCKED и SKIPPED шаги не произошли; останови описание на фактическом препятствии."
+                "Заблокированный и последующие пропущенные шаги не произошли; опиши только "
+                "фактическое препятствие без технических статусов движка."
             )
         return self
 
@@ -171,12 +200,9 @@ class TurnAuthority(BaseModel):
                 "character_beats": self.character_beats,
                 "narration_guidance": self.narration_guidance,
                 "ending_hook": self.ending_hook,
+                "execution_section": "[EXECUTED ACTION SEQUENCE]",
             }
         )
-        if self.action_sequence:
-            # Keep a human/debugger-visible marker while the data itself remains part of
-            # this single authority object, not a second injected contract.
-            payload["execution_section"] = "[EXECUTED ACTION SEQUENCE]"
         return payload
 
 

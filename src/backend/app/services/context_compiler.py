@@ -27,6 +27,22 @@ class ContextCompiler(BaseContextCompiler):
         NarrativeDetailsContextProvider.name,
     )
 
+    NARRATOR_SURFACE_CONTRACT = """[PLAYER-FACING NARRATION CONTRACT]
+Write the first draft in the same player-facing form that can be published without repair.
+- If the latest player message is Russian, write the entire in-game response in Russian. Keep only
+  established proper names unchanged; never switch to Chinese or English explanatory prose.
+- Address the human-controlled protagonist in second person. Do not repeatedly narrate the
+  protagonist by canonical name in third person. The player's message already owns every voluntary
+  action or line of dialogue; describe only its resolved effect and the world's response.
+- Write only in-world prose. Never expose UUIDs, slugs, database/location paths, route diagnostics,
+  TURN AUTHORITY fields, BLOCKED/SKIPPED labels, validator language, or phrases about "the player",
+  "the response", "the narration", or waiting for the player's next input.
+- If an action is structurally blocked, describe only the concrete in-world obstacle or lack of
+  progress supported by the prompt. Do not print an engine status or technical rejection reason.
+- Do not restate the current input as a summary. Advance from it to the smallest concrete,
+  authority-supported consequence and stop before inventing the protagonist's next choice.
+"""
+
     PLAYER_CONTROL_CONTRACT = """[PLAYER-CONTROLLED PROTAGONIST: {player_name}]
 {player_name} is controlled exclusively by the human player. The latest user message is the complete
 speech/action the human supplied for this turn. You may perceive it, answer it, react to it, or ask a
@@ -92,6 +108,28 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
 
         return "\n".join(result)
 
+    async def _apply_narrator_surface_contract(
+        self,
+        messages: list[ChatMessage],
+        metadata: dict,
+        acting_character_id: UUID | None,
+    ) -> tuple[list[ChatMessage], dict]:
+        if acting_character_id is not None or not messages:
+            return messages, metadata
+        first, *rest = messages
+        audited = dict(metadata)
+        layers = list(audited.get("included_layers") or [])
+        if "layer_0a_narrator_surface" not in layers:
+            layers.append("layer_0a_narrator_surface")
+        audited["included_layers"] = layers
+        return [
+            ChatMessage(
+                role=first.role,
+                content=f"{first.content}\n\n{self.NARRATOR_SURFACE_CONTRACT}",
+            ),
+            *rest,
+        ], audited
+
     async def _apply_actor_ownership_contract(
         self,
         campaign_id: UUID,
@@ -155,6 +193,11 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
             scene_id=scene_id,
             current_user_content=current_user_content,
             max_budget_override=max_budget_override,
+        )
+        messages, metadata = await self._apply_narrator_surface_contract(
+            messages,
+            metadata,
+            acting_character_id,
         )
         messages, metadata = await self._apply_actor_ownership_contract(
             campaign_id,

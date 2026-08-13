@@ -67,6 +67,26 @@ class NarrationPublicationGuard:
         "turn",
         "feel",
     )
+    UUID_PATTERN = re.compile(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+        r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b"
+    )
+    TECHNICAL_PATTERN = re.compile(
+        r"(?:\bturn[_ ]authority\b|\bsource_scene_id\b|\btarget_scene_id\b|"
+        r"\bsource_location\b|\btarget_location\b|\broute_discovery\b|"
+        r"\bvalidator(?:_status)?\b|\bnarration_validation\b|"
+        r"\bBLOCKED\b|\bSKIPPED\b|\bCOMPLETED\b|"
+        r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+){2,}\b)",
+        flags=re.IGNORECASE,
+    )
+    META_PATTERN = re.compile(
+        r"(?:ответ\s+заканчива(?:ется|ет)|"
+        r"жд[её]т\s+дальнейших\s+(?:слов|действий)\s+игрока|"
+        r"игрок\s+(?:должен|может|теперь)|"
+        r"player\s+(?:must|should|can|input)|"
+        r"waits?\s+for\s+(?:the\s+)?player)",
+        flags=re.IGNORECASE,
+    )
 
     @classmethod
     def publish(
@@ -84,7 +104,7 @@ class NarrationPublicationGuard:
 
         # A rejected ordinary narration may have omitted or distorted approved consequences even
         # after the flagged fragment is removed. Do not attempt semantic salvage here: project the
-        # authoritative result directly. This is deliberately boring rather than wrong.
+        # authoritative result directly. This is deliberately conservative rather than wrong.
         if errors and authority.scene_disposition != "actor_turn":
             fallback = cls.render_authority(authority)
             return fallback, {
@@ -143,34 +163,62 @@ class NarrationPublicationGuard:
 
     @classmethod
     def render_authority(cls, authority: TurnAuthority) -> str:
-        """Render the minimum useful in-world result that structured state guarantees."""
+        """Render a minimal in-world result without exposing control-plane language."""
         parts: list[str] = []
 
         for consequence in authority.observable_consequences:
-            cls._append_unique(parts, consequence)
+            safe = cls._player_facing_fragment(consequence)
+            if safe:
+                cls._append_unique(parts, safe)
 
         if not parts and authority.source_location_path != authority.target_location_path:
             if authority.target_location_path:
-                destination = authority.target_location_path[-1]
-                cls._append_unique(parts, f"Путь приводит к {destination}.")
+                destination = cls._player_facing_fragment(authority.target_location_path[-1])
+                if destination:
+                    cls._append_unique(parts, f"Путь приводит к {destination}")
 
         if authority.scene_disposition == "actor_turn":
-            actor = authority.acting_character_name or "Собеседник"
+            actor = cls._player_facing_fragment(authority.acting_character_name or "Собеседник")
             if not parts:
-                cls._append_unique(
-                    parts,
-                    f"{actor} заканчивает ответ и ждёт дальнейших слов или действий игрока.",
-                )
+                cls._append_unique(parts, f"{actor or 'Собеседник'} умолкает")
         elif authority.ending_hook:
-            cls._append_unique(parts, authority.ending_hook)
+            hook = cls._player_facing_fragment(authority.ending_hook)
+            if hook:
+                cls._append_unique(parts, hook)
 
         if not parts:
-            cls._append_unique(
-                parts,
-                "Ситуация остаётся без нового подтверждённого результата.",
-            )
+            blocked = cls._blocked_in_world_fallback(authority)
+            cls._append_unique(parts, blocked or "Пока ничего заметно не меняется")
 
         return " ".join(cls._as_sentence(value) for value in parts if value.strip()).strip()
+
+    @classmethod
+    def _blocked_in_world_fallback(cls, authority: TurnAuthority) -> str | None:
+        sequence = authority.action_sequence or {}
+        steps = sequence.get("steps")
+        if not isinstance(steps, list):
+            return None
+        for step in steps:
+            if not isinstance(step, dict) or step.get("status") != "blocked":
+                continue
+            reason = cls._player_facing_fragment(step.get("blocking_reason"))
+            if reason and not reason.casefold().startswith("player destination"):
+                return reason
+            return "Продвинуться дальше пока не удаётся"
+        return None
+
+    @classmethod
+    def _player_facing_fragment(cls, value: object) -> str | None:
+        clean = " ".join(str(value or "").split()).strip()
+        if not clean:
+            return None
+        if clean.casefold().startswith("действие не выполнено:"):
+            return None
+        if cls.UUID_PATTERN.search(clean) or cls.TECHNICAL_PATTERN.search(clean):
+            return None
+        if cls.META_PATTERN.search(clean):
+            return None
+        return clean
 
     @classmethod
     def _drop_flagged_segments(
