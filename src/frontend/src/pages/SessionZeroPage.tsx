@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
+  ApiError,
   api,
   readableError,
   type SessionZeroInterviewSnapshot,
@@ -15,11 +16,15 @@ export function SessionZeroPage() {
   const [campaign, setCampaign] = useState<Campaign | null>(null)
   const [setup, setSetup] = useState<SessionZero | null>(null)
   const [interview, setInterview] = useState<SessionZeroInterviewSnapshot | null>(null)
+  const [summary, setSummary] = useState('')
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
+  const [lastTechnicalError, setLastTechnicalError] = useState('')
+  const [notice, setNotice] = useState('')
   const transcriptEnd = useRef<HTMLDivElement | null>(null)
+  const autoRetryAttempted = useRef(false)
 
   const load = async () => {
     setLoading(true)
@@ -33,6 +38,7 @@ export function SessionZeroPage() {
       setCampaign(c)
       setSetup(s)
       setInterview(i)
+      setSummary(i.summary)
     } catch (err) {
       setError(readableError(err))
     } finally {
@@ -40,7 +46,10 @@ export function SessionZeroPage() {
     }
   }
 
-  useEffect(() => { void load() }, [campaignId])
+  useEffect(() => {
+    autoRetryAttempted.current = false
+    void load()
+  }, [campaignId])
 
   useEffect(() => {
     transcriptEnd.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
@@ -59,47 +68,103 @@ export function SessionZeroPage() {
     ])
     setSetup(s)
     setInterview(i)
+    setSummary(i.summary)
   }
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault()
-    const message = input.trim()
-    if (!message || sending || setup?.status === 'completed') return
-    setSending(true)
-    setError('')
-    setInput('')
-    try {
-      const result = await api.answerSessionZeroInterview(campaignId, message)
-      setInterview((current) => current ? {
-        ...current,
-        status: result.completed ? 'completed' : current.status,
-        state: result.state,
-      } : current)
-      if (result.completed) {
-        setSetup(await api.getSessionZero(campaignId))
-      }
-    } catch (err) {
-      setError(readableError(err))
-      await refreshAfterTurn().catch(() => undefined)
-    } finally {
-      setSending(false)
-    }
+  const applyTurnResult = async (result: Awaited<ReturnType<typeof api.retrySessionZeroInterview>>) => {
+    setInterview((current) => current ? {
+      ...current,
+      status: result.completed ? 'completed' : current.status,
+      summary: result.summary,
+      state: result.state,
+    } : current)
+    setSummary(result.summary)
+    setLastTechnicalError('')
+    if (result.completed) setSetup(await api.getSessionZero(campaignId))
   }
 
   const retry = async () => {
     if (sending) return
     setSending(true)
     setError('')
+    setNotice('')
     try {
-      const result = await api.retrySessionZeroInterview(campaignId)
-      setInterview((current) => current ? {
-        ...current,
-        status: result.completed ? 'completed' : current.status,
-        state: result.state,
-      } : current)
-      if (result.completed) setSetup(await api.getSessionZero(campaignId))
+      await applyTurnResult(await api.retrySessionZeroInterview(campaignId))
     } catch (err) {
       setError(readableError(err))
+      setLastTechnicalError(extractTechnicalError(err))
+      await refreshAfterTurn().catch(() => undefined)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const completed = setup?.status === 'completed' || interview?.status === 'completed'
+  const pending = Boolean(interview?.state.pending_user_message)
+
+  // CLI parity: reopening a conversation with a persisted pending answer retries it once automatically.
+  useEffect(() => {
+    if (
+      !loading &&
+      pending &&
+      !completed &&
+      !sending &&
+      !autoRetryAttempted.current
+    ) {
+      autoRetryAttempted.current = true
+      void retry()
+    }
+  }, [loading, pending, completed, sending])
+
+  const showSummary = () => {
+    setNotice(summary || interview?.state.last_summary || 'Сводка пока пуста.')
+  }
+
+  const showLastError = () => {
+    setNotice(
+      lastTechnicalError
+        ? `Последняя техническая ошибка: ${lastTechnicalError}`
+        : 'Технической ошибки в этой сессии пока нет.',
+    )
+  }
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    const message = input.trim()
+    if (!message || sending || completed) return
+
+    const command = message.toLocaleLowerCase('ru-RU')
+    if (command === '/later') {
+      setInput('')
+      navigate('/campaigns')
+      return
+    }
+    if (command === '/summary') {
+      setInput('')
+      showSummary()
+      return
+    }
+    if (command === '/error') {
+      setInput('')
+      showLastError()
+      return
+    }
+    if (command === '/retry') {
+      setInput('')
+      if (pending) void retry()
+      else setNotice('Нет сохранённого ответа, ожидающего обработки.')
+      return
+    }
+
+    setSending(true)
+    setError('')
+    setNotice('')
+    setInput('')
+    try {
+      await applyTurnResult(await api.answerSessionZeroInterview(campaignId, message))
+    } catch (err) {
+      setError(readableError(err))
+      setLastTechnicalError(extractTechnicalError(err))
       await refreshAfterTurn().catch(() => undefined)
     } finally {
       setSending(false)
@@ -109,8 +174,6 @@ export function SessionZeroPage() {
   const draft = interview?.state.draft
   const world = draft?.world
   const hero = draft?.character
-  const completed = setup?.status === 'completed' || interview?.status === 'completed'
-  const pending = Boolean(interview?.state.pending_user_message)
 
   return <div className="global-page session-zero-page">
     <header className="global-topbar session-zero-topbar">
@@ -120,8 +183,9 @@ export function SessionZeroPage() {
       </div>
       <div className="session-zero-top-actions">
         {!completed && <span className="session-zero-save-state">Сохраняется автоматически</span>}
+        {!completed && <button className="btn ghost" onClick={showSummary}>Сводка</button>}
         <button className="btn" onClick={() => navigate('/campaigns')}>
-          <Icons.back />К кампаниям
+          <Icons.back />{completed ? 'К кампаниям' : 'Продолжить позже'}
         </button>
       </div>
     </header>
@@ -134,7 +198,7 @@ export function SessionZeroPage() {
           <div className="session-zero-intro">
             <span className="eyebrow">До первой сцены</span>
             <h2>Соберём игру разговором</h2>
-            <p>Можно начать с мира, героя, жанра или просто с ощущения. Мастер сам подхватит важные детали и не будет прогонять тебя по анкете.</p>
+            <p>Это тот же разговорный режим, что и в CLI: отвечай свободно, исправляй сказанное и начинай с любой стороны будущей игры. Мастер сам решит, когда данных достаточно.</p>
           </div>
 
           <div className="session-zero-transcript" aria-live="polite">
@@ -153,24 +217,38 @@ export function SessionZeroPage() {
             <div ref={transcriptEnd} />
           </div>
 
+          {notice && <div className="session-zero-system-note">
+            <span>{notice}</span>
+            <button type="button" onClick={() => setNotice('')} aria-label="Закрыть"><Icons.close /></button>
+          </div>}
+
           {error && <div className="session-zero-inline-error">
             <strong>Ответ мастера не получен.</strong>
             <span>{error}</span>
-            {pending && <button className="btn" disabled={sending} onClick={() => void retry()}><Icons.refresh />Повторить</button>}
+            <div className="session-zero-error-actions">
+              {pending && <button className="btn" disabled={sending} onClick={() => void retry()}><Icons.refresh />Повторить</button>}
+              <button className="btn ghost" type="button" onClick={showLastError}>Техническая причина</button>
+            </div>
           </div>}
 
-          {completed ? <div className="session-zero-ready">
-            <div>
-              <span className="eyebrow">Готово</span>
-              <strong>Нулевая сессия завершена</strong>
-              <p>{setup?.starting_scene_title || 'Первая сцена подготовлена.'}</p>
+          {completed ? <>
+            <div className="session-zero-final-summary">
+              <span className="eyebrow">Итоговые договорённости</span>
+              <p>{summary || interview.state.last_summary || 'Нулевая сессия завершена.'}</p>
             </div>
-            <button className="btn primary" onClick={() => navigate(`/campaign/${campaignId}/play`)}>
-              Начать приключение <Icons.chevron />
-            </button>
-          </div> : pending && !sending ? <div className="session-zero-pending">
-            <span>Последний ответ сохранён, но модель не успела его обработать.</span>
-            <button className="btn primary" onClick={() => void retry()}><Icons.refresh />Продолжить</button>
+            <div className="session-zero-ready">
+              <div>
+                <span className="eyebrow">Готово</span>
+                <strong>Нулевая сессия завершена</strong>
+                <p>{setup?.starting_scene_title || 'Первая сцена подготовлена.'}</p>
+              </div>
+              <button className="btn primary" onClick={() => navigate(`/campaign/${campaignId}/play`)}>
+                Начать приключение <Icons.chevron />
+              </button>
+            </div>
+          </> : pending && !sending ? <div className="session-zero-pending">
+            <span>Последний ответ сохранён. Можно повторить его без повторного ввода.</span>
+            <button className="btn primary" onClick={() => void retry()}><Icons.refresh />Повторить</button>
           </div> : <form className="session-zero-composer" onSubmit={submit}>
             <textarea
               value={input}
@@ -186,7 +264,7 @@ export function SessionZeroPage() {
               }}
             />
             <div className="session-zero-composer-footer">
-              <span>Enter — отправить · Shift+Enter — новая строка</span>
+              <span>Enter — отправить · Shift+Enter — новая строка · /summary /retry /error /later</span>
               <button className="send-btn" type="submit" disabled={sending || !input.trim()} aria-label="Отправить">
                 <Icons.send />
               </button>
@@ -220,9 +298,9 @@ export function SessionZeroPage() {
             <PreviewText value={world?.starting_situation} fallback="Стартовая ситуация ещё не определена." />
           </section>
 
-          {interview.state.last_summary && <details className="session-zero-summary-details">
+          {summary && <details className="session-zero-summary-details">
             <summary>Текущая сводка</summary>
-            <p>{interview.state.last_summary}</p>
+            <p>{summary}</p>
           </details>}
         </aside>
       </div>}
@@ -230,6 +308,17 @@ export function SessionZeroPage() {
       {!loading && error && !interview && <ErrorState message={error} action={<button className="btn" onClick={() => void load()}>Повторить</button>} />}
     </main>
   </div>
+}
+
+function extractTechnicalError(error: unknown): string {
+  if (error instanceof ApiError) {
+    const payload = error.detail as { detail?: unknown } | null
+    const detail = payload?.detail
+    if (detail && typeof detail === 'object' && 'technical_detail' in detail) {
+      return String((detail as { technical_detail: unknown }).technical_detail)
+    }
+  }
+  return readableError(error)
 }
 
 function PreviewField({ label, value }: { label: string; value?: string | null }) {
