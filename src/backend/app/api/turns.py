@@ -14,7 +14,6 @@ from app.application import (
     TurnRegenerationError,
 )
 from app.db.engine import get_session
-from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.models.jobs import GenerationRunRead
 from app.models.turn import TurnCreate, TurnRead
@@ -110,8 +109,7 @@ async def get_latest_generation(
     campaign_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    runs = await GenerationRunRepository(session).list_for_campaign(campaign_id, limit=1)
-    return runs[0] if runs else None
+    return await DetachedTurnDispatcher.latest_generation(campaign_id, session)
 
 
 @router.post("/stop")
