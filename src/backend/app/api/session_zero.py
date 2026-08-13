@@ -115,7 +115,7 @@ async def get_session_zero_interview(
     campaign_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    """Return the persisted conversational Session Zero state for GUI/CLI parity."""
+    """Return the same persisted conversational state that the CLI consumes."""
     try:
         setup = await SessionZeroService(session).get(campaign_id)
         interview = SessionZeroInterviewService(session)
@@ -123,6 +123,7 @@ async def get_session_zero_interview(
         return {
             "opening_message": interview.OPENING_MESSAGE,
             "status": setup.status,
+            "summary": state.last_summary or interview.summary(state.draft),
             "state": state.model_dump(mode="json"),
         }
     except ValueError as exc:
@@ -162,6 +163,7 @@ async def _run_interview_turn(
             "decision": decision.model_dump(mode="json"),
             "completed": completed,
             "scene_title": scene_title,
+            "summary": state.last_summary or interview.summary(state.draft),
             "state": state.model_dump(mode="json"),
         }
     except SessionZeroInterviewIncompleteError as exc:
@@ -174,13 +176,24 @@ async def _run_interview_turn(
             },
         ) from exc
     except LLMProviderError as exc:
-        # The service persists the user's message before contacting the provider.
-        # A retry can therefore safely continue the same conversation later.
+        # Exactly like CLI: the player's answer is already persisted and can be retried.
+        rate_limited = interview.is_rate_limited_error(exc)
+        public_message = (
+            "Провайдер временно отклонил запрос из-за лимита. Твой ответ сохранён. "
+            "Подожди немного и повтори запрос."
+            if rate_limited
+            else (
+                "Модель не смогла обработать запрос. Твой ответ сохранён. "
+                "Можно повторить его без потери разговора."
+            )
+        )
         raise HTTPException(
             status_code=502,
             detail={
                 "code": "session_zero_provider_error",
-                "message": str(exc),
+                "message": public_message,
+                "technical_detail": " ".join(str(exc).split())[:2000],
+                "rate_limited": rate_limited,
                 "retryable": True,
             },
         ) from exc
