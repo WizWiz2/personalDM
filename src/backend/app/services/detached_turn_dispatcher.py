@@ -42,6 +42,48 @@ class DetachedTurnDispatcher:
     _tasks: dict[str, asyncio.Task] = {}
 
     @classmethod
+    def _has_live_task(cls, campaign_id: UUID) -> bool:
+        campaign_key = str(campaign_id)
+        detached = cls._tasks.get(campaign_key)
+        return bool(
+            (detached is not None and not detached.done())
+            or campaign_key in active_tasks
+        )
+
+    @classmethod
+    async def latest_generation(
+        cls,
+        campaign_id: UUID,
+        session: AsyncSession,
+    ) -> GenerationRunRead | None:
+        """Return latest run and fail-closed stale `running` rows after process loss.
+
+        An in-memory task cannot survive a backend restart. Without this reconciliation a
+        durable `running` row would make the GUI display “мастер думает” forever. The
+        accepted player turn remains auditable, but is marked failed so it is never
+        mistaken for a completed game action.
+        """
+        runs = GenerationRunRepository(session)
+        latest = await runs.list_for_campaign(campaign_id, limit=1)
+        if not latest:
+            return None
+        run = latest[0]
+        if run.status != "running" or cls._has_live_task(campaign_id):
+            return run
+
+        await runs.set_status(
+            run.id,
+            "failed",
+            error="Generation worker disappeared before completion",
+        )
+        turns = TurnRepository(session)
+        stale_user = await turns.get_by_id(run.user_turn_id)
+        if stale_user and stale_user.status == "active":
+            await turns.mark_failed(stale_user.id)
+        await session.commit()
+        return await runs.get_by_user_turn(run.user_turn_id)
+
+    @classmethod
     async def submit(
         cls,
         campaign_id: UUID,
@@ -51,32 +93,13 @@ class DetachedTurnDispatcher:
         if data.role != "user":
             raise ValueError("Detached public input accepts only role='user'")
 
-        campaign_key = str(campaign_id)
         turns = TurnRepository(session)
         runs = GenerationRunRepository(session)
-
-        latest = (await runs.list_for_campaign(campaign_id, limit=1))
-        active = cls._tasks.get(campaign_key)
-        if latest and latest[0].status == "running":
-            # A durable running row plus an in-process task means a real turn is still
-            # resolving. If neither task registry knows about it after a process restart,
-            # recover the stale row instead of blocking the campaign forever.
-            if (
-                (active is not None and not active.done())
-                or campaign_key in active_tasks
-            ):
-                raise GenerationAlreadyRunningError(
-                    "Previous player turn is still being resolved"
-                )
-            await runs.set_status(
-                latest[0].id,
-                "failed",
-                error="Generation worker disappeared before completion",
+        latest = await cls.latest_generation(campaign_id, session)
+        if latest and latest.status == "running":
+            raise GenerationAlreadyRunningError(
+                "Previous player turn is still being resolved"
             )
-            stale_user = await turns.get_by_id(latest[0].user_turn_id)
-            if stale_user and stale_user.status == "active":
-                await turns.mark_failed(stale_user.id)
-            await session.commit()
 
         command = parse_meta_command(data.content)
         if command is not None:
@@ -128,6 +151,7 @@ class DetachedTurnDispatcher:
             ),
             name=f"interactive-turn-{campaign_id}",
         )
+        campaign_key = str(campaign_id)
         cls._tasks[campaign_key] = task
 
         def _forget(done: asyncio.Task) -> None:
