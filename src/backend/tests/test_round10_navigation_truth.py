@@ -279,12 +279,13 @@ def test_blocked_execution_removes_planned_success_from_authority():
     )
 
     assert authority.observable_consequences == [
-        "Действие не выполнено: Доехать до Департамента."
+        "Продвинуться дальше пока не удаётся."
     ]
     payload = authority.narrator_payload()
     assert "Рэт прибывает в Департамент." not in payload["observable_consequences"]
     assert "Дежурный отвечает на вопрос." not in payload["observable_consequences"]
-    assert "BLOCKED" in payload["narration_guidance"][-1]
+    assert "Destination route is currently inactive" not in payload["observable_consequences"]
+    assert "технических статусов движка" in payload["narration_guidance"][-1]
 
 
 @pytest.mark.asyncio
