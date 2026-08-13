@@ -13,6 +13,74 @@ import type {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')
 
+export interface SessionZeroInterviewWorldDraft {
+  setting_name: string | null
+  genre: string | null
+  premise: string | null
+  tone: string | null
+  themes: string[]
+  boundaries: string[]
+  boundaries_confirmed: boolean
+  rules_system: string | null
+  world_summary: string | null
+  play_style: string | null
+  narrative_style: string | null
+  content_rating: string | null
+  starting_location_name: string | null
+  starting_situation: string | null
+  starting_scene_title: string | null
+}
+
+export interface SessionZeroInterviewCharacterDraft {
+  name: string | null
+  description: string | null
+  appearance: string | null
+  personality: string | null
+  values: string[]
+  fears: string[]
+  desires: string[]
+  voice: string | null
+  speech_patterns: string | null
+  biography: string | null
+  capabilities: string[]
+  limitations: string[]
+  first_goal: string | null
+}
+
+export interface SessionZeroInterviewState {
+  version: number
+  response_language: string
+  messages: Array<{ role: 'user' | 'assistant'; content: string }>
+  draft: {
+    world: SessionZeroInterviewWorldDraft
+    character: SessionZeroInterviewCharacterDraft
+  }
+  pending_user_message: string | null
+  last_summary: string | null
+  last_question_topics: string[]
+  delegated_fields: string[]
+}
+
+export interface SessionZeroInterviewSnapshot {
+  opening_message: string
+  status: string
+  state: SessionZeroInterviewState
+}
+
+export interface SessionZeroInterviewTurnResult {
+  decision: {
+    assistant_message: string
+    ready_to_finalize: boolean
+    draft: SessionZeroInterviewState['draft']
+    missing_topics: string[]
+    question_topics: string[]
+    summary: string | null
+  }
+  completed: boolean
+  scene_title: string | null
+  state: SessionZeroInterviewState
+}
+
 export class ApiError extends Error {
   status: number
   detail: unknown
@@ -67,6 +135,20 @@ export const api = {
 
   getSessionZero: (campaignId: UUID) =>
     request<SessionZero>(`/api/campaigns/${campaignId}/session-zero`),
+  getSessionZeroInterview: (campaignId: UUID) =>
+    request<SessionZeroInterviewSnapshot>(
+      `/api/campaigns/${campaignId}/session-zero/interview`,
+    ),
+  answerSessionZeroInterview: (campaignId: UUID, message: string) =>
+    request<SessionZeroInterviewTurnResult>(
+      `/api/campaigns/${campaignId}/session-zero/interview/answer`,
+      { method: 'POST', body: JSON.stringify({ message }) },
+    ),
+  retrySessionZeroInterview: (campaignId: UUID) =>
+    request<SessionZeroInterviewTurnResult>(
+      `/api/campaigns/${campaignId}/session-zero/interview/retry`,
+      { method: 'POST' },
+    ),
 
   listTurns: (campaignId: UUID, limit = 100, channel: 'all' | 'narrative' | 'meta' = 'all') =>
     request<Turn[]>(
