@@ -44,8 +44,9 @@ class MetaCommandRunner:
     """Answer out-of-character questions without touching campaign truth.
 
     This path may read the full structured campaign snapshot and recent narrative/meta
-    dialogue. It never invokes the planner, scene-transition executor, generation-run
-    repository, entity registrar, Scribe, Curator or post-turn processor.
+    dialogue. It never invokes the planner, scene-transition executor, entity registrar,
+    Scribe, Curator or post-turn processor. A previously persisted meta-user turn may be
+    supplied by the detached GUI dispatcher so browser navigation cannot cancel it.
     """
 
     HISTORY_LIMIT = 10
@@ -92,6 +93,8 @@ class MetaCommandRunner:
         campaign_id: UUID,
         query: str,
         scene_id: UUID | None,
+        *,
+        exclude_turn_id: UUID | None = None,
     ) -> tuple[list[ChatMessage], dict]:
         compiled, metadata = await ContextCompiler(self._session).compile_context(
             campaign_id=campaign_id,
@@ -107,10 +110,13 @@ class MetaCommandRunner:
                 content=self._meta_system(snapshot, narrative_messages),
             )
         ]
-        for turn in await self._turn_repo.get_meta_history(
+        meta_history = await self._turn_repo.get_meta_history(
             campaign_id,
             limit=self.HISTORY_LIMIT,
-        ):
+        )
+        for turn in meta_history:
+            if exclude_turn_id is not None and turn.id == exclude_turn_id:
+                continue
             messages.append(
                 ChatMessage(
                     role=self._display_meta_role(turn.role),
@@ -134,6 +140,8 @@ class MetaCommandRunner:
         self,
         campaign_id: UUID,
         command: MetaCommand,
+        *,
+        existing_user_turn_id: UUID | None = None,
     ) -> AsyncIterator[str]:
         campaign = await self._campaign_repo.get_by_id(campaign_id)
         if not campaign:
@@ -147,26 +155,37 @@ class MetaCommandRunner:
             campaign_id,
             query,
             campaign.current_scene_id,
+            exclude_turn_id=existing_user_turn_id,
         )
 
-        user_turn = await self._turn_repo.create(
-            campaign_id,
-            TurnCreate(
-                role="meta_user",
-                content=command.raw_content,
-                context_snapshot={
-                    "channel": "meta",
-                    "command": command.name,
-                    "read_only": True,
-                    "scene_id_observed": (
-                        str(campaign.current_scene_id)
-                        if campaign.current_scene_id
-                        else None
-                    ),
-                },
-            ),
-        )
-        await self._session.commit()
+        if existing_user_turn_id is not None:
+            user_turn = await self._turn_repo.get_by_id(existing_user_turn_id)
+            if (
+                user_turn is None
+                or user_turn.campaign_id != campaign_id
+                or user_turn.role != "meta_user"
+            ):
+                yield "[Meta command failed: accepted meta user turn was not found.]"
+                return
+        else:
+            user_turn = await self._turn_repo.create(
+                campaign_id,
+                TurnCreate(
+                    role="meta_user",
+                    content=command.raw_content,
+                    context_snapshot={
+                        "channel": "meta",
+                        "command": command.name,
+                        "read_only": True,
+                        "scene_id_observed": (
+                            str(campaign.current_scene_id)
+                            if campaign.current_scene_id
+                            else None
+                        ),
+                    },
+                ),
+            )
+            await self._session.commit()
 
         primary = await self._config_repo.get_by_campaign_id(campaign_id)
         selection = await RoleModelRouter(self._config_repo).resolve(
