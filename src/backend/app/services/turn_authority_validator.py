@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from app.config import settings
 from app.models.narration_validation import (
@@ -43,6 +44,9 @@ Return repair_required only for concrete violations of that authority:
   current observable_consequences.
 - LANGUAGE: when player_input is Russian, final narration must be Russian. Established canonical
   names may remain exact, but Chinese/English prose or translated character names are not valid.
+- SURFACE: player-facing prose must not expose UUIDs, slugs, route/debug paths, TURN AUTHORITY,
+  BLOCKED/SKIPPED/COMPLETED labels, validator diagnostics, or meta commentary about the response,
+  narration, engine, player input, or waiting for the player's next message.
 - COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
 
 Do not reconstruct hidden campaign rules. Do not complain that an approved new NPC was not in the
@@ -64,6 +68,29 @@ Return exactly:
   ]
 }
 """
+
+    UUID_PATTERN = re.compile(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
+        r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b"
+    )
+    TECHNICAL_TOKEN_PATTERN = re.compile(
+        r"(?:\bturn[_ ]authority\b|\bsource_scene_id\b|\btarget_scene_id\b|"
+        r"\bsource_location\b|\btarget_location\b|\broute_discovery\b|"
+        r"\bplayer destination is not authorized\b|\bvalidator(?:_status)?\b|"
+        r"\bnarration_validation\b|\bBLOCKED\b|\bSKIPPED\b|\bCOMPLETED\b|"
+        r"\[[A-Z][A-Z _-]{5,}\]|\b[a-z][a-z0-9]+(?:_[a-z0-9]+){2,}\b)",
+        flags=re.IGNORECASE,
+    )
+    META_SURFACE_PATTERN = re.compile(
+        r"(?:ответ\s+заканчива(?:ется|ет)|"
+        r"жд[её]т\s+дальнейших\s+(?:слов|действий)\s+игрока|"
+        r"игрок\s+(?:должен|может|теперь)|"
+        r"следующ(?:ий|ую|ее)\s+(?:ход|реплик|действ).*игрок|"
+        r"player\s+(?:must|should|can|input)|"
+        r"waits?\s+for\s+(?:the\s+)?player|"
+        r"candidate\s+narration|engine\s+state)",
+        flags=re.IGNORECASE,
+    )
 
     def __init__(self, router: RoleModelRouter):
         self._router = router
@@ -124,6 +151,10 @@ Return exactly:
             result = self.apply_deterministic_language(
                 result,
                 authority,
+                candidate_text,
+            )
+            result = self.apply_deterministic_surface_quality(
+                result,
                 candidate_text,
             )
             return self.apply_deterministic_player_agency(
@@ -217,6 +248,36 @@ Return exactly:
                 ),
             ),
             "Детерминированная проверка обнаружила смену языка наррации.",
+        )
+
+    @classmethod
+    def apply_deterministic_surface_quality(
+        cls,
+        result: NarrationValidationResult,
+        candidate_text: str,
+    ) -> NarrationValidationResult:
+        """Keep debug/control-plane language out of text shown to the player."""
+        evidence = None
+        if cls.UUID_PATTERN.search(candidate_text):
+            evidence = "Наррация содержит внутренний UUID."
+        elif cls.TECHNICAL_TOKEN_PATTERN.search(candidate_text):
+            evidence = "Наррация содержит технический идентификатор или статус движка."
+        elif cls.META_SURFACE_PATTERN.search(candidate_text):
+            evidence = "Наррация описывает ответ/игрока как элементы интерфейса вместо мира игры."
+        if evidence is None:
+            return result
+        return cls._append_error(
+            result,
+            NarrationViolation(
+                violation_type="other",
+                severity="error",
+                evidence=evidence,
+                correction=(
+                    "Удалить служебный или мета-текст и выразить только подтверждённое событие "
+                    "внутриигровой прозой без внутренних идентификаторов."
+                ),
+            ),
+            "Детерминированная проверка обнаружила технический или мета-текст.",
         )
 
     @classmethod
@@ -334,7 +395,10 @@ Return exactly:
             "[REPAIR AGAINST TURN AUTHORITY]\n"
             "Перепиши кандидат в один законченный внутриигровой ответ на русском языке. Сохрани "
             "только разрешённые ниже исходы. Удали каждое нарушение. Не добавляй заменяющего NPC, "
-            "поворот, перемещение или действие протагониста. Верни только художественную прозу.\n\n"
+            "поворот, перемещение или действие протагониста. Обращайся к герою во втором лице; "
+            "не используй его имя как постоянный субъект повествования. Не выводи UUID, slugs, "
+            "маршруты, BLOCKED/SKIPPED, поля authority/validator или мета-фразы про игрока, ответ "
+            "и следующий ввод. Верни только естественную художественную прозу.\n\n"
             "AUTHORITY:\n"
             + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
             + "\n\nVIOLATIONS:\n"
