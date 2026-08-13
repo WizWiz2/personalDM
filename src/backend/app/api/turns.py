@@ -1,7 +1,7 @@
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,28 +15,20 @@ from app.application import (
 )
 from app.db.engine import get_session
 from app.db.repositories.turn_repo import TurnRepository
+from app.models.jobs import GenerationRunRead
 from app.models.turn import TurnCreate, TurnRead
+from app.services.detached_turn_dispatcher import (
+    DetachedTurnDispatcher,
+    GenerationAlreadyRunningError,
+)
 
 router = APIRouter(prefix="/api/campaigns/{campaign_id}/turns", tags=["turns"])
 
 
-@router.post("", response_class=StreamingResponse)
-async def send_turn(
-    campaign_id: UUID,
-    data: TurnCreate,
-    session: AsyncSession = Depends(get_session),
-):
-    if data.role != "user":
-        raise HTTPException(
-            status_code=400,
-            detail="The public turn endpoint accepts only role='user'",
-        )
-
-    try:
-        route = await GameApplication(session).route_input(campaign_id, data)
-    except CampaignNotFoundError as exc:
+def _raise_input_error(campaign_id: UUID, exc: Exception) -> None:
+    if isinstance(exc, CampaignNotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except GameNotReadyError as exc:
+    if isinstance(exc, GameNotReadyError):
         raise HTTPException(
             status_code=409,
             detail={
@@ -46,8 +38,32 @@ async def send_turn(
                 "session_zero_url": f"/api/campaigns/{campaign_id}/session-zero",
             },
         ) from exc
-    except CurrentSceneError as exc:
+    if isinstance(exc, (CurrentSceneError, GenerationAlreadyRunningError)):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    raise exc
+
+
+@router.post("", response_class=StreamingResponse)
+async def send_turn(
+    campaign_id: UUID,
+    data: TurnCreate,
+    session: AsyncSession = Depends(get_session),
+):
+    """Compatibility streaming endpoint used by older clients and tests.
+
+    New GUI clients should use `/async`; its generation is detached from the HTTP
+    connection and therefore survives React navigation and other parallel UI work.
+    """
+    if data.role != "user":
+        raise HTTPException(
+            status_code=400,
+            detail="The public turn endpoint accepts only role='user'",
+        )
+
+    try:
+        route = await GameApplication(session).route_input(campaign_id, data)
+    except (CampaignNotFoundError, GameNotReadyError, CurrentSceneError) as exc:
+        _raise_input_error(campaign_id, exc)
 
     return StreamingResponse(
         route.stream,
@@ -56,14 +72,54 @@ async def send_turn(
     )
 
 
+@router.post("/async", status_code=status.HTTP_202_ACCEPTED)
+async def send_turn_async(
+    campaign_id: UUID,
+    data: TurnCreate,
+    session: AsyncSession = Depends(get_session),
+):
+    """Persist the player's input first and resolve it in a server-owned background task."""
+    if data.role != "user":
+        raise HTTPException(
+            status_code=400,
+            detail="The public turn endpoint accepts only role='user'",
+        )
+    try:
+        accepted = await DetachedTurnDispatcher.submit(campaign_id, data, session)
+    except (
+        CampaignNotFoundError,
+        GameNotReadyError,
+        CurrentSceneError,
+        GenerationAlreadyRunningError,
+    ) as exc:
+        _raise_input_error(campaign_id, exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "accepted": True,
+        "channel": accepted.channel,
+        "user_turn": accepted.user_turn,
+        "generation": accepted.generation,
+    }
+
+
+@router.get("/generation/latest", response_model=GenerationRunRead | None)
+async def get_latest_generation(
+    campaign_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    return await DetachedTurnDispatcher.latest_generation(campaign_id, session)
+
+
 @router.post("/stop")
 async def stop_generation(
     campaign_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    return {
-        "success": await GameApplication(session).stop_generation(campaign_id)
-    }
+    requested = await GameApplication(session).stop_generation(campaign_id)
+    detached = DetachedTurnDispatcher.cancel_task(campaign_id)
+    return {"success": bool(requested or detached)}
 
 
 @router.get("", response_model=list[TurnRead])
