@@ -3,10 +3,10 @@ chcp 65001 >nul
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 cd /d "%~dp0"
-title Personal DM - One-Click Launcher
+title Personal DM
 cls
 echo =======================================================================
-echo              PERSONAL DM - AUTOMATIC ENV SETUP AND LAUNCHER
+echo                  PERSONAL DM - ONE-CLICK LAUNCHER
 echo =======================================================================
 echo.
 
@@ -38,6 +38,14 @@ goto :check_llm
 echo [Setup] Virtual environment found. Activating...
 call src\backend\venv\Scripts\activate.bat
 
+rem Existing venvs may predate the interactive launcher dependency.
+python -c "import questionary" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [Setup] Updating launcher dependencies...
+    pip install -e src\backend[dev]
+    if %errorlevel% neq 0 goto :err_deps
+)
+
 :check_llm
 rem 3. Use either a configured cloud provider or a local Ollama installation.
 set "ENV_FILE=src\backend\.env"
@@ -50,14 +58,12 @@ if not "%CLOUD_API_KEY%"=="" goto :cloud_ok
 call :find_ollama
 if defined OLLAMA_CMD goto :ollama_ok
 
-echo [Setup] No local Ollama installation or cloud LLM key was found.
-echo.
-echo Choose how Personal DM should run:
-echo   [1] Install and use local Ollama with Gemma 4 (downloads a model)
-echo   [2] Configure a cloud OpenAI-compatible provider
-choice /c 12 /n /m "Select 1 or 2"
-if errorlevel 2 goto :configure_cloud
-goto :err_ollama
+python src\backend\launcher.py --provider-choice
+set "PROVIDER_CHOICE=%ERRORLEVEL%"
+if %PROVIDER_CHOICE% GEQ 30 goto :end
+if %PROVIDER_CHOICE% GEQ 20 goto :configure_cloud
+if %PROVIDER_CHOICE% GEQ 10 goto :err_ollama
+goto :end
 
 :configure_cloud
 echo.
@@ -79,7 +85,6 @@ if "%CLOUD_CONTEXT%"=="" set "CLOUD_CONTEXT=128000"
     echo PDM_LLM_MODEL=%CLOUD_MODEL%
     echo PDM_LLM_API_KEY=%CLOUD_API_KEY%
     echo PDM_LLM_CONTEXT_WINDOW=%CLOUD_CONTEXT%
-    rem Use the same cloud model for structured control tasks unless overridden later.
     echo PDM_CONTROL_LLM_MODEL=%CLOUD_MODEL%
 )
 echo [Setup] Cloud provider configured.
@@ -87,16 +92,14 @@ goto :cloud_ok
 
 :cloud_ok
 echo [Setup] Cloud LLM configuration found in %ENV_FILE%.
-goto :run_cli
+goto :launch_menu
 
 :check_ollama
-rem Compatibility entry point for the installer below.
 call :find_ollama
 if defined OLLAMA_CMD goto :ollama_ok
 goto :err_ollama
 
 :find_ollama
-rem Check PATH first, then the default install paths.
 set "OLLAMA_CMD=ollama"
 ollama --version >nul 2>&1
 if %errorlevel% EQU 0 exit /b 0
@@ -123,15 +126,11 @@ if %errorlevel% EQU 0 goto :pull_model
 echo [Setup] Ollama is installed but not running. Starting Ollama app...
 if exist "%LocalAppData%\Programs\Ollama\ollama app.exe" start "" "%LocalAppData%\Programs\Ollama\ollama app.exe" & goto :wait_ollama
 if exist "%ProgramFiles%\Ollama\ollama app.exe" start "" "%ProgramFiles%\Ollama\ollama app.exe" & goto :wait_ollama
-
-rem Fallback launch daemon
 start /B "" "%OLLAMA_CMD%" serve >nul 2>&1
 
 :wait_ollama
 echo Waiting for Ollama service to boot up...
 timeout /t 5 /nobreak >nul
-
-rem Double check
 curl -s -I http://localhost:11434/ >nul 2>&1
 if %errorlevel% EQU 0 goto :pull_model
 echo [WARNING] Could not automatically start Ollama.
@@ -141,18 +140,15 @@ pause
 :pull_model
 rem 5. Pull Gemma
 echo [Setup] Ensuring Gemma 4 (4B parameters) is downloaded...
-echo Running: %OLLAMA_CMD% pull gemma4:e4b
 "%OLLAMA_CMD%" pull gemma4:e4b
 if %errorlevel% neq 0 goto :err_gemma
 echo [Setup] Gemma 4 model is ready!
+goto :launch_menu
 
-:run_cli
-rem 6. Run CLI
-echo [Launch] Starting Game Console Mirror...
+:launch_menu
+rem 6. Unified GUI/CLI launcher.
 echo.
-cd src\backend
-python cli.py
-cd ..\..
+python src\backend\launcher.py
 goto :end
 
 :err_python
