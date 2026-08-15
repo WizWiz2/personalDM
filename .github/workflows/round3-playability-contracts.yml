@@ -82,7 +82,9 @@ jobs:
 
       - name: Test playability, identity and planner contracts
         working-directory: src/backend
+        shell: bash
         run: |
+          set +e
           pytest -q \
             tests/test_round3_playability_recovery.py \
             tests/test_round5_authority_preflight.py \
@@ -97,4 +99,11 @@ jobs:
             tests/test_planner_intent_repair.py \
             tests/test_planner_control_plane_simplification.py \
             tests/test_narration_validation.py \
-            --tb=short
+            --tb=short 2>&1 | tee /tmp/round3-pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '^FAILED ' /tmp/round3-pytest.log | while IFS= read -r line; do
+              echo "::error title=Round 3 pytest::$line"
+            done
+          fi
+          exit "$status"
