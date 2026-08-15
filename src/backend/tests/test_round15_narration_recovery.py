@@ -31,9 +31,9 @@ def _validation(*violations: dict) -> NarrationValidationResult:
     )
 
 
-def test_publication_guard_removes_exact_bad_segment_and_keeps_safe_prose():
+def test_ordinary_rejected_narration_projects_authority_even_if_one_bad_segment_is_exact():
     authority = _authority()
-    candidate = "Замок покрыт ржавчиной. Элдон решает немедленно войти внутрь."
+    candidate = "Дежурный внезапно отступает в тень. Элдон решает немедленно войти внутрь."
     validation = _validation(
         {
             "violation_type": "player_agency",
@@ -50,31 +50,8 @@ def test_publication_guard_removes_exact_bad_segment_and_keeps_safe_prose():
     )
 
     assert published == "Замок покрыт ржавчиной."
-    assert diagnostics["mode"] == "sanitized_candidate"
-    assert diagnostics["matched_error_count"] == 1
-
-
-def test_publication_guard_scrubs_named_player_action_when_validator_evidence_is_generic():
-    authority = _authority()
-    candidate = "Замок остаётся закрытым. Элдон колеблется, решая, стоит ли ломать дверь."
-    validation = _validation(
-        {
-            "violation_type": "player_agency",
-            "severity": "error",
-            "evidence": "Нарратор приписывает герою новое решение.",
-            "correction": "Не принимать решение за игрока.",
-        }
-    )
-
-    published, diagnostics = NarrationPublicationGuard.publish(
-        authority,
-        candidate,
-        validation,
-    )
-
-    assert published == "Замок остаётся закрытым."
-    assert diagnostics["mode"] == "sanitized_candidate"
-    assert diagnostics["ordinary_agency_scrubbed"] is True
+    assert "отступает" not in published
+    assert diagnostics["mode"] == "authority_projection"
 
 
 def test_legacy_no_result_stub_is_never_published_from_authority_projection():
@@ -105,6 +82,7 @@ def test_repair_prompt_regenerates_from_authority_without_rejected_candidate_anc
 
     prompt = TurnAuthorityValidator.repair_prompt(authority, rejected, validation)
 
+    assert "[REPAIR REJECTED NARRATION]" in prompt
     assert "С НУЛЯ" in prompt
     assert "REJECTED CANDIDATE OMITTED" in prompt
     assert rejected not in prompt
