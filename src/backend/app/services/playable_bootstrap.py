@@ -34,10 +34,11 @@ class PlayableBootstrapService:
     then has only two bad options -- hallucinate missing world structure or correctly block every
     attempted action.
 
-    This service is deliberately deterministic and conservative. It never invents a plot twist.
-    It only supplies mundane affordances when Session Zero did not materialize any:
-    - a temporary local contact unless the requested opening is explicitly solitary;
-    - one inspectable object tied to the already agreed starting situation;
+    This service is deliberately deterministic and conservative. It never invents a plot twist
+    or an unmentioned person. It supplies only mundane affordances grounded in the already agreed
+    Session Zero contract:
+    - a temporary local contact only when the starting situation itself establishes such a role;
+    - one inspectable object tied to the agreed starting situation;
     - one mundane discovered route for an obviously enclosed start, unless the agreed situation
       explicitly says that enclosure is sealed.
 
@@ -89,6 +90,25 @@ class PlayableBootstrapService:
         "кают",
         "кабинет",
         "мастерск",
+    )
+    CONTACT_MARKERS = (
+        "хозяин",
+        "бармен",
+        "трактирщик",
+        "трактирщиц",
+        "заказчик",
+        "работодатель",
+        "грузчик",
+        "охранник",
+        "страж",
+        "дежурн",
+        "продавец",
+        "торговец",
+        "официант",
+        "официантк",
+        "проводник",
+        "собеседник",
+        "свидетел",
     )
     JOB_MARKERS = (
         "заказ",
@@ -155,7 +175,11 @@ class PlayableBootstrapService:
         non_player_participants = [
             value for value in state.participant_ids if value != player_character_id
         ]
-        if not non_player_participants and not self._explicitly_solitary(situation):
+        if (
+            not non_player_participants
+            and not self._explicitly_solitary(situation)
+            and self._mentions_contact(situation)
+        ):
             starter = await self._create_local_contact(
                 campaign_id,
                 scene_id,
@@ -247,6 +271,7 @@ class PlayableBootstrapService:
                     "source": self.SOURCE,
                     "temporary_name": True,
                     "bootstrap_role": role,
+                    "role": role,
                     "tone": tone,
                 },
             ),
@@ -340,8 +365,15 @@ class PlayableBootstrapService:
 
     @classmethod
     def _contact_identity(cls, situation: str) -> tuple[str, str]:
-        if cls._contains_any(situation, cls.HOSPITALITY_MARKERS):
-            return "Хозяин заведения", "хозяин или дежурный заведения"
+        folded = situation.casefold().replace("ё", "е")
+        if any(token in folded for token in ("бармен", "трактирщик", "трактирщиц", "хозяин")):
+            return "Хозяин заведения", "трактирщик или хозяин заведения"
+        if "грузчик" in folded:
+            return "Грузчик", "местный грузчик"
+        if any(token in folded for token in ("охранник", "страж", "дежурн")):
+            return "Дежурный", "местный дежурный или страж"
+        if any(token in folded for token in ("продавец", "торговец")):
+            return "Торговец", "местный торговец"
         if cls._contains_any(situation, cls.JOB_MARKERS):
             return "Заказчик", "заказчик"
         return "Местный", "местный собеседник"
@@ -353,6 +385,10 @@ class PlayableBootstrapService:
     @classmethod
     def _explicitly_sealed(cls, situation: str) -> bool:
         return cls._contains_any(situation, cls.SEALED_MARKERS)
+
+    @classmethod
+    def _mentions_contact(cls, situation: str) -> bool:
+        return cls._contains_any(situation, cls.CONTACT_MARKERS)
 
     @classmethod
     def _looks_enclosed(cls, location_name: str, situation: str) -> bool:
