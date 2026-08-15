@@ -5,6 +5,7 @@ from typing import Any
 _INSTALLED = False
 _GUARDS = (
     "memory_scribe",
+    "session_zero_finalize",
     "thesis_lifecycle",
 )
 
@@ -13,16 +14,18 @@ def install_runtime() -> None:
     """Install the remaining global runtime guards exactly once.
 
     Turn orchestration, context and narration composition are explicit dependencies. Runtime
-    bootstrap now installs only the two legacy guards that still mutate public extension points.
+    bootstrap installs the compatibility guards that still mutate public extension points.
     """
     global _INSTALLED
     if _INSTALLED:
         return
 
     from app.services.memory_scribe_guard import install as install_memory_scribe
+    from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle
 
     install_memory_scribe()
+    install_session_zero_finalize()
     install_thesis_lifecycle()
     _INSTALLED = True
 
