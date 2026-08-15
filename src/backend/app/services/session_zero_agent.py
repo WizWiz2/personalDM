@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.goal_repo import GoalRepository
+from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.character import CharacterCreate
 from app.models.goal import GoalCreate
 from app.models.location import LocationCreate
@@ -18,9 +25,6 @@ from app.models.session_zero_interview import (
 )
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services.character_card_service import CharacterCardService
-from app.services.goal_service import GoalService
-from app.services.location_service import LocationService
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.session_zero_service import SessionZeroService
 
@@ -34,26 +38,83 @@ class SessionZeroInterviewIncompleteError(ValueError):
 
 
 class SessionZeroAgent:
-    MAX_HISTORY_MESSAGES = 14
-    SYSTEM_PROMPT = """Ты проводишь нулевую сессию настольной ролевой игры как живой мастер.
-Это разговор, а не анкета. Слушай игрока, запоминай уже сказанное, не переспрашивай
-сформулированные вещи и не навязывай обязательные поля как список вопросов.
+    """A conversational agent that owns Session Zero dialogue decisions.
 
-Ты можешь использовать два инструмента:
-1. update_session_zero — записать новые или исправленные договорённости.
-2. finalize_session_zero — объявить, что данных достаточно и можно начинать игру.
+    The application supplies conversation history and the accumulated draft. The agent
+    decides what to say and emits provider-neutral tool calls. It is deliberately not
+    given a scripted question order.
+    """
 
-Правила разговора:
-- Пиши игроку по-русски, если он не попросил другой язык.
-- question_topics перечисляет только темы реального вопроса текущей реплики.
-- Не спрашивай то, что уже есть в текущей карточке.
-- Не меняй подтверждённые факты без явного исправления игрока.
-- Не делай вид, что игра уже началась, пока не вызван finalize_session_zero.
-- Не придумывай действия, решения или реплики персонажа игрока.
-- В assistant_message возвращай только обычную реплику мастера, без JSON/markdown-инструкций.
+    MAX_HISTORY_MESSAGES = 12
+    MODEL_RESPONSE_TOKENS = 1200
+    RATE_LIMIT_RETRY_CAP_SECONDS = 12.0
+    SYSTEM_PROMPT = """[PERSONAL DM — SESSION ZERO AGENT]
+Ты отдельный нейро-мастер, который проводит живую нулевую сессию для одного игрока.
+Это разговор, а не анкета и не последовательное заполнение полей.
+
+ГЛАВНАЯ ЗАДАЧА
+- Понять, во что человеку хочется играть, помочь сформировать героя и естественную
+  стартовую ситуацию.
+- Вести беседу самостоятельно: реагировать на смысл ответа, предлагать идеи, объединять
+  связанные вопросы и менять тему, когда игроку нечего добавить.
+- Не перечислять поля карточки и не допрашивать игрока о каждом пункте.
+
+ИЗВЕСТНЫЕ СЕТТИНГИ
+- Если игрок называет известный сеттинг, систему или вселенную, используй свои знания о
+  ней. Не проси игрока пересказывать базовый канон и не делай вид, что название тебе
+  неизвестно.
+- По умолчанию считай, что берётся узнаваемый канон. Уточняй только важные отклонения,
+  эпоху, редакцию или акцент, если это действительно влияет на игру.
+- Например, после «В Shadowrun» уместно коротко подтвердить понимание мира и перейти к
+  желаемому акценту или герою, одновременно сохранив базовые сведения о сеттинге.
+
+ЕСТЕСТВЕННЫЙ РАЗГОВОР
+- Отвечай только по-русски, кроме собственных имён и официальных названий.
+- Обычно задавай не больше одного вопроса; два тесно связанных вопроса допустимы, если
+  в разговоре это звучит естественно.
+- Если игрок говорит «не знаю», «не могу сказать», «без разницы» или передаёт выбор
+  мастеру, выбери разумный безопасный вариант для мира, тона, стиля или старта и двигайся
+  дальше. Не задавай тот же вопрос повторно.
+- Не повторяй уже заданный вопрос и не отвечай пустыми фразами вроде «Продолжим нулевую
+  сессию» без содержательного движения разговора.
+- Не придумывай за игрока его текущие решения, реплики и чувства.
+- Личные границы считаются подтверждёнными только после явного ответа игрока. Их нельзя
+  выводить из сеттинга или характера героя.
+
+КАРТОЧКА
+- Сохраняй подтверждённые факты и разумные низкорисковые выводы через инструмент
+  update_session_zero.
+- Подробная карточка нужна, но её не обязательно собирать отдельным вопросом на каждое
+  поле. Часть внешности, манеры речи, биографии, способностей и ограничений можно вывести
+  из цельного концепта или предложить самому.
+- Ценности, страхи и желания можно аккуратно предложить как интерпретацию, но итоговая
+  сводка будет показана игроку для подтверждения.
+- Не стирай и не переписывай подтверждённые данные без явной поправки игрока.
+
+ИНСТРУМЕНТЫ
+1. update_session_zero — скрыто обновляет только новые данные текущего хода.
+   Передай patch с секциями world и character. Не копируй карточку целиком.
+2. finalize_session_zero — сообщи, что разговор естественно готов перейти к итоговой
+   сводке. Вызывай только когда карточка достаточно цельная и старт можно запустить.
+
+Верни один короткий JSON:
+{
+  "assistant_message": "обычная живая реплика мастера",
+  "tool_calls": [
+    {"name": "update_session_zero", "patch": {"world": {}, "character": {}}}
+  ],
+  "question_topics": []
+}
+
+question_topics — необязательная диагностическая метка. Код не выбирает по ней вопрос и
+не заменяет твою реплику. Не показывай названия инструментов или JSON игроку.
 """
 
-    def __init__(self, provider: LLMProvider, router: RoleModelRouter):
+    def __init__(
+        self,
+        provider: LLMProvider,
+        router: RoleModelRouter,
+    ) -> None:
         self._provider = provider
         self._router = router
 
@@ -69,9 +130,12 @@ class SessionZeroAgent:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        gaps = SessionZeroInterviewService.missing_fields(state.draft)
         system_content = (
             f"{self.SYSTEM_PROMPT}\n\n"
-            f"[ТЕКУЩАЯ КАРТОЧКА — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{current}"
+            f"[ТЕКУЩАЯ КАРТОЧКА — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{current}\n\n"
+            "[ПРОБЕЛЫ КАРТОЧКИ — ЭТО НЕ СПИСОК ВОПРОСОВ ИГРОКУ]\n"
+            f"{json.dumps(gaps, ensure_ascii=False)}"
         )
         messages = [
             ChatMessage(role="system", content=system_content),
@@ -89,52 +153,86 @@ class SessionZeroAgent:
                     content=(
                         "[РЕЗУЛЬТАТ ИНСТРУМЕНТА / FEEDBACK]\n"
                         + json.dumps(feedback, ensure_ascii=False)
+                        + "\nСам реши, как естественно продолжить разговор. Не перечисляй "
+                        "поля и не превращай ответ в анкету."
                     ),
                 )
             )
         data = await self._generate(selection, messages)
         return SessionZeroInterviewModelDecision.model_validate(data)
 
-    async def _generate(self, selection, messages):
-        return await self._router.generate_json(
-            self._provider,
-            selection,
-            messages,
-            max_tokens=1200,
-            temperature=0.25,
-            response_model=SessionZeroInterviewModelDecision,
-        )
+    async def _generate(self, selection, messages: list[ChatMessage]) -> dict:
+        try:
+            return await self._router.generate_json(
+                self._provider,
+                selection,
+                messages,
+                max_tokens=self.MODEL_RESPONSE_TOKENS,
+                temperature=0.35,
+                response_model=SessionZeroInterviewModelDecision,
+            )
+        except LLMProviderError as exc:
+            delay = self._rate_limit_retry_seconds(str(exc))
+            if delay is None:
+                raise
+            await asyncio.sleep(delay)
+            return await self._router.generate_json(
+                self._provider,
+                selection,
+                messages,
+                max_tokens=self.MODEL_RESPONSE_TOKENS,
+                temperature=0.0,
+                response_model=SessionZeroInterviewModelDecision,
+            )
 
     @classmethod
     def _rate_limit_retry_seconds(cls, error: str) -> float | None:
-        match = re.search(r"retry(?:ing)?\s+after\s+([0-9.]+)\s*s", error, re.IGNORECASE)
-        if match:
-            return float(match.group(1))
-        return None
+        folded = error.casefold()
+        if "http 429" not in folded and "rate_limit" not in folded:
+            return None
+        match = re.search(
+            r"(?:try again in|retry after)\s*([0-9]+(?:\.[0-9]+)?)\s*s",
+            error,
+            re.IGNORECASE,
+        )
+        if not match:
+            return 1.0
+        return min(
+            cls.RATE_LIMIT_RETRY_CAP_SECONDS,
+            max(0.25, float(match.group(1))),
+        )
 
 
 class SessionZeroInterviewService:
+    """Persistence and tool-execution boundary for the conversational agent."""
+
     STATE_KEY = "session_zero_interview"
+    MAX_HISTORY_MESSAGES = SessionZeroAgent.MAX_HISTORY_MESSAGES
+    MODEL_RESPONSE_TOKENS = SessionZeroAgent.MODEL_RESPONSE_TOKENS
+    RATE_LIMIT_RETRY_CAP_SECONDS = SessionZeroAgent.RATE_LIMIT_RETRY_CAP_SECONDS
+    OPENING_MESSAGE = (
+        "Во что тебе хочется сыграть именно сейчас? Можно начать с мира, жанра, "
+        "героя или просто с ощущения, которое хочется получить от кампании."
+    )
     CORRECTION_MARKERS = (
-        "нет,",
-        "нет ",
         "исправ",
-        "точнее",
-        "на самом деле",
-        "я передумал",
-        "я передумала",
         "не так",
-        "поменя",
+        "замени",
+        "передумал",
+        "на самом деле",
+        "точнее",
+        "поправка",
+        "пусть будет",
     )
 
-    def __init__(self, session) -> None:
+    def __init__(self, session: AsyncSession):
         self._session = session
         self._session_zero = SessionZeroService(session)
-        self._locations = LocationService(session)
-        self._entities = CharacterCardService(session)
-        self._goals = GoalService(session)
+        self._entities = EntityRepository(session)
+        self._locations = LocationRepository(session)
+        self._goals = GoalRepository(session)
         self._provider = LLMProvider()
-        self._router = RoleModelRouter(session)
+        self._router = RoleModelRouter(ProviderConfigRepository(session))
         self._agent = SessionZeroAgent(self._provider, self._router)
 
     async def get_state(self, campaign_id: UUID) -> SessionZeroInterviewState:
@@ -410,13 +508,6 @@ class SessionZeroInterviewService:
         if missing:
             raise SessionZeroInterviewIncompleteError(missing)
 
-        # `finalize` is a command boundary, so retries must be safe. Once SessionZeroService has
-        # committed the playable start, returning it again is preferable to re-creating the same
-        # location/hero and hitting the campaign entity uniqueness constraint.
-        setup = await self._session_zero.get(campaign_id)
-        if setup.status == "completed":
-            return await self._session_zero.complete(campaign_id)
-
         world = state.draft.world
         character = state.draft.character
         try:
@@ -455,6 +546,7 @@ class SessionZeroInterviewService:
                 hero.id,
                 GoalCreate(description=character.first_goal, priority=100),
             )
+            setup = await self._session_zero.get(campaign_id)
             custom = dict(setup.custom_fields)
             custom[self.STATE_KEY] = state.model_dump(mode="json")
             await self._session_zero.update(
