@@ -38,7 +38,8 @@ class PlayableBootstrapService:
     It only supplies mundane affordances when Session Zero did not materialize any:
     - a temporary local contact unless the requested opening is explicitly solitary;
     - one inspectable object tied to the already agreed starting situation;
-    - one mundane discovered route unless the agreed start explicitly says the place is sealed.
+    - one mundane discovered route for an obviously enclosed start, unless the agreed situation
+      explicitly says that enclosure is sealed.
 
     Existing structured affordances always win. Re-running the service is idempotent.
     """
@@ -68,6 +69,26 @@ class PlayableBootstrapService:
         "герметич",
         "в ловушке",
         "плен",
+    )
+    ENCLOSED_LOCATION_MARKERS = (
+        "трактир",
+        "таверн",
+        "постоял",
+        "гостиниц",
+        "бар",
+        "кафе",
+        "комнат",
+        "дом",
+        "здани",
+        "офис",
+        "склад",
+        "лавк",
+        "магазин",
+        "подвал",
+        "башн",
+        "кают",
+        "кабинет",
+        "мастерск",
     )
     JOB_MARKERS = (
         "заказ",
@@ -123,6 +144,10 @@ class PlayableBootstrapService:
         if state.location_id != starting_location_id:
             raise ValueError("Playable bootstrap starting location differs from active scene")
 
+        starting_location = await self._locations.get_by_id(starting_location_id)
+        if starting_location is None:
+            raise ValueError("Starting location disappeared during playable bootstrap")
+
         created_npc_id = None
         created_object_id = None
         created_exit_location_id = None
@@ -149,7 +174,12 @@ class PlayableBootstrapService:
             )
 
         state = await self._state.require_valid(campaign_id, scene_id)
-        if not state.available_exits and not self._explicitly_sealed(situation):
+        should_create_exit = (
+            not state.available_exits
+            and not self._explicitly_sealed(situation)
+            and self._looks_enclosed(starting_location.canonical_name, situation)
+        )
+        if should_create_exit:
             destination = await self._create_fallback_destination(
                 campaign_id,
                 starting_location_id,
@@ -310,10 +340,10 @@ class PlayableBootstrapService:
 
     @classmethod
     def _contact_identity(cls, situation: str) -> tuple[str, str]:
-        if cls._contains_any(situation, cls.JOB_MARKERS):
-            return "Заказчик", "заказчик"
         if cls._contains_any(situation, cls.HOSPITALITY_MARKERS):
             return "Хозяин заведения", "хозяин или дежурный заведения"
+        if cls._contains_any(situation, cls.JOB_MARKERS):
+            return "Заказчик", "заказчик"
         return "Местный", "местный собеседник"
 
     @classmethod
@@ -323,6 +353,13 @@ class PlayableBootstrapService:
     @classmethod
     def _explicitly_sealed(cls, situation: str) -> bool:
         return cls._contains_any(situation, cls.SEALED_MARKERS)
+
+    @classmethod
+    def _looks_enclosed(cls, location_name: str, situation: str) -> bool:
+        return cls._contains_any(
+            f"{location_name} {situation}",
+            cls.ENCLOSED_LOCATION_MARKERS,
+        )
 
     @staticmethod
     def _contains_any(value: str, markers: tuple[str, ...]) -> bool:
