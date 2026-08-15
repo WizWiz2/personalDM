@@ -56,11 +56,14 @@ def test_blocked_sequence_does_not_put_engine_status_into_observable_consequence
         observable_consequences=["Действие не выполнено: Иду в закрытый подвал."],
     )
 
-    assert turn.observable_consequences == ["Продвинуться дальше пока не удаётся."]
+    assert turn.observable_consequences == [
+        "Неясно, куда именно ведёт этот шаг; путь остаётся прежним."
+    ]
     payload = turn.narrator_payload()
     assert payload["execution_section"] == "[EXECUTED ACTION SEQUENCE]"
     assert "Действие не выполнено" not in " ".join(payload["observable_consequences"])
     assert "Player destination" not in " ".join(payload["observable_consequences"])
+    assert "Продвинуться дальше" not in " ".join(payload["observable_consequences"])
 
 
 def test_safe_projection_never_exposes_meta_actor_waiting_message():

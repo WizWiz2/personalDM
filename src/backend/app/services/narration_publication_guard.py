@@ -75,6 +75,9 @@ class NarrationPublicationGuard:
         r"(?:\bturn[_ ]authority\b|\bsource_scene_id\b|\btarget_scene_id\b|"
         r"\bsource_location\b|\btarget_location\b|\broute_discovery\b|"
         r"\bvalidator(?:_status)?\b|\bnarration_validation\b|"
+        r"player destination is (?:unresolved|not authorized)|"
+        r"existing route is required|destination route is currently inactive|"
+        r"destination is not an available exit|"
         r"\bBLOCKED\b|\bSKIPPED\b|\bCOMPLETED\b|"
         r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+){2,}\b)",
         flags=re.IGNORECASE,
@@ -89,7 +92,8 @@ class NarrationPublicationGuard:
     )
     LEGACY_STUB_PATTERN = re.compile(
         r"(?:действие\s+не\s+выполнено\s*:|"
-        r"попытка\s+пока\s+не\s+приводит\s+к\s+подтвержд[её]нному\s+результату)",
+        r"попытка\s+пока\s+не\s+приводит\s+к\s+подтвержд[её]нному\s+результату|"
+        r"продвинуться\s+дальше\s+пока\s+не\s+уда[её]тся)",
         flags=re.IGNORECASE,
     )
 
@@ -107,9 +111,6 @@ class NarrationPublicationGuard:
             if item.severity == "error"
         ]
 
-        # Even when the validator quotes one bad sentence exactly, an unflagged sibling sentence can
-        # still invent a world outcome. Ordinary narration therefore remains conservative: after a
-        # second rejection publish typed authority rather than partially trusting rejected prose.
         if errors and authority.scene_disposition != "actor_turn":
             fallback = cls.render_authority(authority)
             return fallback, {
@@ -132,6 +133,8 @@ class NarrationPublicationGuard:
             sanitized = actor_safe
 
         sanitized = cls._clean(sanitized)
+        if sanitized and cls._player_facing_fragment(sanitized) is None:
+            sanitized = ""
         all_evidence_removed = bool(errors) and matched_errors >= len(errors)
         only_player_agency = bool(errors) and all(
             item.violation_type == "player_agency" for item in errors
@@ -210,10 +213,8 @@ class NarrationPublicationGuard:
         for step in steps:
             if not isinstance(step, dict) or step.get("status") != "blocked":
                 continue
-            reason = cls._player_facing_fragment(step.get("blocking_reason"))
-            if reason and not reason.casefold().startswith("player destination"):
-                return reason
-            return "Продвинуться дальше пока не удаётся"
+            reason = TurnAuthority._player_facing_blocking_reason(step.get("blocking_reason"))
+            return reason or "Путь вперёд остаётся закрыт"
         return None
 
     @classmethod

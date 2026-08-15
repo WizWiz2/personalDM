@@ -278,9 +278,7 @@ def test_blocked_execution_removes_planned_success_from_authority():
         },
     )
 
-    assert authority.observable_consequences == [
-        "Продвинуться дальше пока не удаётся."
-    ]
+    assert authority.observable_consequences == ["Путь туда сейчас недоступен."]
     payload = authority.narrator_payload()
     assert "Рэт прибывает в Департамент." not in payload["observable_consequences"]
     assert "Дежурный отвечает на вопрос." not in payload["observable_consequences"]

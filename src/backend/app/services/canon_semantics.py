@@ -107,10 +107,13 @@ def evidence_supported(evidence: str, authoritative_text: str) -> bool:
 
 
 def authority_allows(authority: CanonAuthority, change_type: ChangeType) -> bool:
+    # The envelope must at least classify a knowledge proposal as a character claim. The stronger
+    # proof -- that the assistant turn is structurally owned by a registered NPC actor -- lives in
+    # MemoryScribeGuard where acting_character_id is available.
+    if change_type == ChangeType.KNOWLEDGE:
+        return authority == CanonAuthority.CHARACTER_CLAIM
     if authority in {CanonAuthority.DM_CONFIRMED, CanonAuthority.PUBLIC_OBSERVATION}:
         return change_type != ChangeType.CANON_GAP
-    if authority == CanonAuthority.CHARACTER_CLAIM:
-        return change_type == ChangeType.KNOWLEDGE
     return False
 
 
