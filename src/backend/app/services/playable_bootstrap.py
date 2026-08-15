@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -39,7 +38,7 @@ class PlayableBootstrapService:
     It only supplies mundane affordances when Session Zero did not materialize any:
     - a temporary local contact unless the requested opening is explicitly solitary;
     - one inspectable object tied to the already agreed starting situation;
-    - one mundane discovered route out of an otherwise sealed starting location.
+    - one mundane discovered route unless the agreed start explicitly says the place is sealed.
 
     Existing structured affordances always win. Re-running the service is idempotent.
     """
@@ -56,6 +55,19 @@ class PlayableBootstrapService:
         "пустом здан",
         "заброш",
         "изолирован",
+    )
+    SEALED_MARKERS = (
+        "заперт",
+        "заперта",
+        "запертом",
+        "запертой",
+        "выход закрыт",
+        "выход заблокирован",
+        "не может выйти",
+        "не может выбраться",
+        "герметич",
+        "в ловушке",
+        "плен",
     )
     JOB_MARKERS = (
         "заказ",
@@ -95,8 +107,6 @@ class PlayableBootstrapService:
         if not situation:
             raise ValueError("Playable bootstrap requires a concrete starting situation")
 
-        # A scene goal/time anchor is part of the structured state, not narrator prose. The start
-        # can therefore be reasoned about even before the first generated turn exists.
         await self._state.update(
             campaign_id,
             scene_id,
@@ -139,7 +149,7 @@ class PlayableBootstrapService:
             )
 
         state = await self._state.require_valid(campaign_id, scene_id)
-        if not state.available_exits:
+        if not state.available_exits and not self._explicitly_sealed(situation):
             destination = await self._create_fallback_destination(
                 campaign_id,
                 starting_location_id,
@@ -309,6 +319,10 @@ class PlayableBootstrapService:
     @classmethod
     def _explicitly_solitary(cls, situation: str) -> bool:
         return cls._contains_any(situation, cls.SOLITARY_MARKERS)
+
+    @classmethod
+    def _explicitly_sealed(cls, situation: str) -> bool:
+        return cls._contains_any(situation, cls.SEALED_MARKERS)
 
     @staticmethod
     def _contains_any(value: str, markers: tuple[str, ...]) -> bool:
