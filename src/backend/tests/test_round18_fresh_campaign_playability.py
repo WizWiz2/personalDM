@@ -11,7 +11,9 @@ from app.models.turn import TurnCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.campaign_service import CampaignService
 from app.services.canon_semantics import proposals_from_envelope
+from app.services.memory_scribe import MemoryScribe
 from app.services.meta_command_router import MetaCommandRunner
+from app.services.playable_bootstrap import PlayableBootstrapService
 from app.services.scene_state_service import SceneStateService
 from app.services.session_zero_interview import SessionZeroInterviewService
 from app.services.turn_runner import TurnRunner
@@ -112,6 +114,15 @@ async def test_playable_bootstrap_is_idempotent_after_completion(db_session):
     ]
 
 
+def test_bootstrap_does_not_open_an_explicitly_sealed_start():
+    assert PlayableBootstrapService._explicitly_sealed(
+        "Вера заперта в комнате, выход закрыт снаружи."
+    )
+    assert not PlayableBootstrapService._explicitly_sealed(
+        "Вера завтракает в трактире и может выйти наружу."
+    )
+
+
 @pytest.mark.asyncio
 async def test_direct_turn_runner_cannot_turn_dm_command_into_gameplay(db_session):
     async def fake_meta_stream(self, campaign_id, command, **kwargs):
@@ -170,52 +181,15 @@ def test_unresolved_destination_blocker_becomes_in_world_text():
     assert "Продвинуться дальше" not in authority.observable_consequences[0]
 
 
-def test_silence_cannot_become_character_knowledge():
-    data = {
+def _knowledge_envelope(evidence: str, *, authority: str = "character_claim") -> dict:
+    return {
         "outcomes": [
             {
                 "id": "o1",
                 "kind": "knowledge_transfer",
-                "description": "Грузчик якобы сообщил, что не знает о работе.",
-                "evidence": "Грузчик молчит и не отвечает.",
-                "authority": "character_claim",
-                "durable": True,
-            }
-        ],
-        "proposals": [
-            {
-                "outcome_id": "o1",
-                "change_type": "knowledge",
-                "payload": {
-                    "recipient_id": "Вера",
-                    "proposition": "Грузчик не знает о работе.",
-                    "source_character_id": "Грузчик",
-                    "confidence": 0.8,
-                    "status": "known",
-                },
-            }
-        ],
-    }
-
-    proposals, audit = proposals_from_envelope(
-        data,
-        "Грузчик молчит и не отвечает.",
-    )
-
-    assert all(item.change_type != ChangeType.KNOWLEDGE for item in proposals)
-    assert audit.rejected_authority_count >= 1
-
-
-def test_actual_character_claim_can_still_create_knowledge():
-    evidence = "Владимир говорит: «Старейшина обычно принимает решения за деревню»."
-    data = {
-        "outcomes": [
-            {
-                "id": "o1",
-                "kind": "knowledge_transfer",
-                "description": "Владимир сообщил местное правило.",
+                "description": "Собеседник сообщил сведения.",
                 "evidence": evidence,
-                "authority": "character_claim",
+                "authority": authority,
                 "durable": True,
             }
         ],
@@ -234,41 +208,62 @@ def test_actual_character_claim_can_still_create_knowledge():
         ],
     }
 
-    proposals, audit = proposals_from_envelope(data, evidence)
 
-    assert any(item.change_type == ChangeType.KNOWLEDGE for item in proposals)
-    assert audit.rejected_authority_count == 0
+def test_silence_cannot_become_character_knowledge(db_session):
+    vera = uuid4()
+    gruzchik = uuid4()
+    scribe = MemoryScribe(db_session)
+    evidence = "Грузчик молчит и не отвечает."
+    data = _knowledge_envelope(evidence)
+    data["proposals"][0]["payload"].update(
+        {
+            "proposition": "Грузчик не знает о работе.",
+            "source_character_id": "Грузчик",
+            "status": "known",
+        }
+    )
+
+    proposals = scribe._parse_data(
+        data,
+        evidence,
+        {"вера": str(vera), "грузчик": str(gruzchik)},
+        {str(vera), str(gruzchik)},
+        None,
+        vera,
+        [str(vera), str(gruzchik)],
+    )
+
+    assert all(item.change_type != ChangeType.KNOWLEDGE for item in proposals)
+    assert scribe.last_audit["rejected_authority_count"] >= 1
+
+
+def test_actual_actor_turn_can_still_create_knowledge(db_session):
+    vera = uuid4()
+    vladimir = uuid4()
+    evidence = "Старейшина обычно принимает решения за деревню."
+    scribe = MemoryScribe(db_session)
+
+    proposals = scribe._parse_data(
+        _knowledge_envelope(evidence),
+        evidence,
+        {"вера": str(vera), "владимир": str(vladimir)},
+        {str(vera), str(vladimir)},
+        vladimir,
+        vera,
+        [str(vera), str(vladimir)],
+    )
+
+    knowledge = next(item for item in proposals if item.change_type == ChangeType.KNOWLEDGE)
+    assert knowledge.payload["source_character_id"] == str(vladimir)
+    assert knowledge.payload["recipient_id"] == str(vera)
 
 
 def test_public_observation_cannot_be_mislabeled_as_knowledge():
     evidence = "На двери висит табличка: лавка закрыта до утра."
-    data = {
-        "outcomes": [
-            {
-                "id": "o1",
-                "kind": "world_state",
-                "description": "Лавка закрыта до утра.",
-                "evidence": evidence,
-                "authority": "public_observation",
-                "durable": True,
-            }
-        ],
-        "proposals": [
-            {
-                "outcome_id": "o1",
-                "change_type": "knowledge",
-                "payload": {
-                    "recipient_id": "Вера",
-                    "proposition": "Лавка закрыта до утра.",
-                    "source_character_id": None,
-                    "confidence": 0.8,
-                    "status": "known",
-                },
-            }
-        ],
-    }
-
-    proposals, audit = proposals_from_envelope(data, evidence)
+    proposals, audit = proposals_from_envelope(
+        _knowledge_envelope(evidence, authority="public_observation"),
+        evidence,
+    )
 
     assert all(item.change_type != ChangeType.KNOWLEDGE for item in proposals)
     assert audit.rejected_authority_count >= 1
