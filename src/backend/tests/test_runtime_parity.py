@@ -61,6 +61,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["installed"] is True
     assert cli_manifest["guards"] == [
         "memory_scribe",
+        "session_zero_finalize",
         "thesis_lifecycle",
     ]
     assert cli_manifest["context_pipeline"] == [
