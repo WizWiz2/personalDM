@@ -341,8 +341,6 @@ Return exactly:
         if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
             return result
 
-        # Actor output gets an additional broad deterministic scrub. Small local models often append
-        # a protagonist reaction after an otherwise useful NPC reply and then approve themselves.
         sanitized, diagnostics = NarrationPublicationGuard.publish(
             authority,
             candidate_text,
@@ -394,6 +392,7 @@ Return exactly:
         )
         return (
             "[REPAIR REJECTED NARRATION]\n"
+            "[REPAIR AGAINST TURN AUTHORITY]\n"
             "[REGENERATE NARRATION FROM TURN AUTHORITY]\n"
             "Напиши новый ответ С НУЛЯ. Не редактируй и не продолжай отвергнутый текст: он "
             "намеренно не передан, чтобы не копировать его ошибки. Используй только AUTHORITY ниже. "
