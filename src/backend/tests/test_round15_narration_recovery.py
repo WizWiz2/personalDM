@@ -106,7 +106,7 @@ def test_repair_prompt_regenerates_from_authority_without_rejected_candidate_anc
     prompt = TurnAuthorityValidator.repair_prompt(authority, rejected, validation)
 
     assert "С НУЛЯ" in prompt
-    assert "REJECTED CANDIDATE" not in prompt
+    assert "REJECTED CANDIDATE OMITTED" in prompt
     assert rejected not in prompt
     assert "observable_consequences" in prompt
     assert "Не пересказывай действие игрока" in prompt
