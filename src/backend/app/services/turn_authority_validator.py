@@ -408,6 +408,8 @@ Return exactly:
             + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
             + "\n\nОШИБКИ ПРЕДЫДУЩЕЙ ПОПЫТКИ, КОТОРЫЕ НЕЛЬЗЯ ПОВТОРЯТЬ:\n"
             + (violations or result.summary)
+            + "\n\n[REJECTED CANDIDATE OMITTED]\n"
+            "Исходный отвергнутый текст намеренно не передаётся модели."
         )
 
 
