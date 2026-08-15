@@ -9,6 +9,7 @@ make A/B comparisons reproducible across engine commits.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 try:
@@ -23,6 +24,33 @@ except ImportError:
     from simulation_reliable_soak import SCRIPTED_TURNS, install_reliable_soak
 
 
+def _install_provenance_report(provenance: dict[str, object]) -> None:
+    original_report = facade._campaign_report
+
+    def report_with_provenance(database_path, data_dir):
+        lines = original_report(database_path, data_dir)
+        provenance_path = data_dir / "reliable_soak_provenance.json"
+        provenance_path.write_text(
+            json.dumps(provenance, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        header = [
+            f"- Reliable fixture: `{provenance['fixture_version']}`",
+            f"- Fixture SHA256: `{provenance['fixture_sha256']}`",
+            f"- Scripted corpus SHA256: `{provenance['corpus_sha256']}`",
+            f"- Tested commit: `{provenance['commit']}`",
+            f"- Tested model: `{provenance['model']}`",
+            f"- Tested base URL: `{provenance['base_url']}`",
+            f"- Git working tree dirty: **{bool(provenance['dirty'])}**",
+            "- Dirty status SHA256: "
+            + (f"`{provenance['dirty_status_sha256']}`" if provenance["dirty_status_sha256"] else "none"),
+            f"- Provenance artifact: `{provenance_path}`",
+        ]
+        return [*header, *lines]
+
+    facade._campaign_report = report_with_provenance
+
+
 def configure_reliable_soak() -> None:
     os.environ.setdefault("PDM_SIM_MODE", "quality")
     os.environ.setdefault("PDM_SIM_TURNS", "30")
@@ -32,9 +60,10 @@ def configure_reliable_soak() -> None:
     # Fail before migrations or LLM calls if the local tree cannot support a clean A/B.
     # The fixture hook also replaces dynamic scenario generation and the stochastic NPC
     # Character Builder used only to seed benchmark setup.
-    install_reliable_fixture(facade, SCRIPTED_TURNS)
+    provenance = install_reliable_fixture(facade, SCRIPTED_TURNS)
     install_phase_location_reuse(facade.runtime)
     install_reliable_soak(facade)
+    _install_provenance_report(provenance)
 
 
 async def run() -> None:
