@@ -52,7 +52,7 @@ Return repair_required only for concrete violations of that authority:
 Do not reconstruct hidden campaign rules. Do not complain that an approved new NPC was not in the
 old participant list. Do not invent corrections that change the approved turn outcome.
 For EVERY error, evidence MUST quote the shortest exact offending fragment from candidate prose.
-Do not paraphrase evidence: deterministic publication may remove that exact segment after repair.
+Do not paraphrase evidence: deterministic actor-response publication may remove that exact segment.
 All human-readable fields (summary, evidence, correction) MUST be written in Russian even if the
 candidate or your internal reasoning uses another language.
 
@@ -393,6 +393,7 @@ Return exactly:
             if item.severity == "error"
         )
         return (
+            "[REPAIR REJECTED NARRATION]\n"
             "[REGENERATE NARRATION FROM TURN AUTHORITY]\n"
             "Напиши новый ответ С НУЛЯ. Не редактируй и не продолжай отвергнутый текст: он "
             "намеренно не передан, чтобы не копировать его ошибки. Используй только AUTHORITY ниже. "
