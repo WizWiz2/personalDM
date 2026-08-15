@@ -10,8 +10,10 @@ class NarrationPublicationGuard:
     """Publish safe prose without allowing renderer mistakes to cancel game state.
 
     The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    After a second semantic rejection, salvage only prose segments proven unrelated to validator
-    errors; otherwise render typed authority. Actor turns additionally scrub player-owned segments.
+    Ordinary narration remains fail-closed after a second semantic rejection: prose fragments that
+    were not individually flagged may still contain unapproved world outcomes. Actor turns are the
+    narrow exception because their NPC reply can be scrubbed deterministically of player-owned
+    fragments while retaining the selected speaker's useful content.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -86,8 +88,8 @@ class NarrationPublicationGuard:
         flags=re.IGNORECASE,
     )
     LEGACY_STUB_PATTERN = re.compile(
-        r"(?:^|\b)(?:действие\s+не\s+выполнено\s*:|"
-        r"попытка\s+пока\s+не\s+приводит\s+к\s+подтвержд[её]нному\s+результату)(?:\b|$)",
+        r"(?:действие\s+не\s+выполнено\s*:|"
+        r"попытка\s+пока\s+не\s+приводит\s+к\s+подтвержд[её]нному\s+результату)",
         flags=re.IGNORECASE,
     )
 
@@ -105,12 +107,22 @@ class NarrationPublicationGuard:
             if item.severity == "error"
         ]
 
-        # Prefer deterministic sentence-level salvage before projecting the entire authority.
-        # The validator must have identified every offending error segment; if it did not, we stay
-        # conservative and fall back to typed authority rather than guessing which prose is safe.
+        # Even when the validator quotes one bad sentence exactly, an unflagged sibling sentence can
+        # still invent a world outcome. Ordinary narration therefore remains conservative: after a
+        # second rejection publish typed authority rather than partially trusting rejected prose.
+        if errors and authority.scene_disposition != "actor_turn":
+            fallback = cls.render_authority(authority)
+            return fallback, {
+                "mode": "authority_projection",
+                "candidate_characters": len(candidate),
+                "published_characters": len(fallback),
+                "error_count": len(errors),
+                "matched_error_count": 0,
+                "actor_agency_scrubbed": False,
+            }
+
         sanitized, matched_errors = cls._drop_flagged_segments(candidate, validation)
         actor_scrub_changed = False
-        ordinary_agency_scrubbed = False
         if authority.scene_disposition == "actor_turn":
             actor_safe = cls._drop_player_owned_segments(
                 sanitized,
@@ -118,15 +130,6 @@ class NarrationPublicationGuard:
             )
             actor_scrub_changed = cls._clean(actor_safe) != cls._clean(sanitized)
             sanitized = actor_safe
-        elif errors and authority.player_character_name and all(
-            item.violation_type == "player_agency" for item in errors
-        ):
-            player_safe = cls._drop_player_owned_segments(
-                sanitized,
-                authority.player_character_name,
-            )
-            ordinary_agency_scrubbed = cls._clean(player_safe) != cls._clean(sanitized)
-            sanitized = player_safe
 
         sanitized = cls._clean(sanitized)
         all_evidence_removed = bool(errors) and matched_errors >= len(errors)
@@ -138,17 +141,11 @@ class NarrationPublicationGuard:
             and only_player_agency
             and actor_scrub_changed
         )
-        ordinary_agency_proven_removed = (
-            authority.scene_disposition != "actor_turn"
-            and only_player_agency
-            and ordinary_agency_scrubbed
-        )
 
         if sanitized and (
             not errors
             or all_evidence_removed
             or actor_agency_proven_removed
-            or ordinary_agency_proven_removed
         ):
             return sanitized, {
                 "mode": "sanitized_candidate",
@@ -157,7 +154,6 @@ class NarrationPublicationGuard:
                 "error_count": len(errors),
                 "matched_error_count": matched_errors,
                 "actor_agency_scrubbed": actor_scrub_changed,
-                "ordinary_agency_scrubbed": ordinary_agency_scrubbed,
             }
 
         fallback = cls.render_authority(authority)
@@ -168,7 +164,6 @@ class NarrationPublicationGuard:
             "error_count": len(errors),
             "matched_error_count": matched_errors,
             "actor_agency_scrubbed": actor_scrub_changed,
-            "ordinary_agency_scrubbed": ordinary_agency_scrubbed,
         }
 
     @classmethod
@@ -278,9 +273,6 @@ class NarrationPublicationGuard:
             if not key:
                 continue
 
-            # «Рэт, решай сам», — говорит Грета. is NPC dialogue addressed to the player,
-            # not narration controlled by the player. Do not classify a quoted direct address as
-            # a protagonist action merely because the player's name is the first quoted token.
             quoted_direct_address = bool(
                 re.match(rf"^[\s]*[\"'«]{re.escape(name_key)}\b", key)
             )
