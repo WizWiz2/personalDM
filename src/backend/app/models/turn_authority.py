@@ -79,20 +79,56 @@ class TurnAuthority(BaseModel):
     action_sequence: dict | None = None
 
     @staticmethod
-    def _safe_blocking_reason(value: object) -> str | None:
+    def _player_facing_blocking_reason(value: object) -> str | None:
+        """Translate known control-plane blockers without publishing engine vocabulary."""
         reason = " ".join(str(value or "").split()).strip()
         if not reason:
             return None
         folded = reason.casefold()
+
+        mappings = (
+            (
+                ("player destination is unresolved", "existing route is required"),
+                "Из текущего места пока не виден подтверждённый путь туда.",
+            ),
+            (
+                ("player destination is not authorized",),
+                "Неясно, куда именно ведёт этот шаг; путь остаётся прежним.",
+            ),
+            (
+                ("not an available exit", "destination is not an available exit"),
+                "Из текущего места туда нет доступного прохода.",
+            ),
+            (
+                ("destination route is currently inactive", "route is currently inactive"),
+                "Путь туда сейчас недоступен.",
+            ),
+            (
+                ("destination exit has not been discovered", "exit has not been discovered"),
+                "Путь туда пока не обнаружен.",
+            ),
+            (
+                ("requires a check",),
+                "Без проверки исход этого действия пока не определён.",
+            ),
+            (
+                ("requires player input",),
+                "Нужно уточнить, что именно ты пытаешься сделать.",
+            ),
+        )
+        for tokens, text in mappings:
+            if any(token in folded for token in tokens):
+                return text
+
         technical = (
-            "player destination is not authorized",
-            "not an available exit",
-            "destination route is currently inactive",
-            "requires a check",
-            "requires player input",
             "route discovery",
             "source_scene",
             "target_scene",
+            "source_location_id",
+            "target_location_id",
+            "planner",
+            "validator",
+            "control-plane",
         )
         if any(token in folded for token in technical):
             return None
@@ -128,8 +164,8 @@ class TurnAuthority(BaseModel):
                 if outcome and outcome not in executed:
                     executed.append(outcome)
             elif status == "blocked":
-                reason = self._safe_blocking_reason(step.get("blocking_reason"))
-                message = reason or "Продвинуться дальше пока не удаётся."
+                reason = self._player_facing_blocking_reason(step.get("blocking_reason"))
+                message = reason or "Путь вперёд остаётся закрыт."
                 if message not in executed:
                     executed.append(message)
                 break
