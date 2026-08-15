@@ -46,9 +46,22 @@ def install() -> None:
             if proposal.change_type == ChangeType.SCENE_THESIS:
                 continue
 
+            payload = proposal.payload
+            if proposal.change_type == ChangeType.KNOWLEDGE:
+                # A belief about what an NPC communicated needs structural provenance: the
+                # assistant turn itself must be an actor turn for a registered character. Normal
+                # Narrator prose about silence, failed contact, body language or observation is
+                # never a knowledge-transfer source.
+                if acting_character_id is None:
+                    audit.rejected_authority_count += 1
+                    audit.envelope_valid = False
+                    continue
+                payload = dict(payload)
+                payload["source_character_id"] = str(acting_character_id)
+
             normalized = self._normalize_payload(
                 proposal.change_type,
-                proposal.payload,
+                payload,
                 known_entities,
                 known_ids,
                 acting_character_id,
