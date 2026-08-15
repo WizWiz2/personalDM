@@ -51,6 +51,8 @@ Return repair_required only for concrete violations of that authority:
 
 Do not reconstruct hidden campaign rules. Do not complain that an approved new NPC was not in the
 old participant list. Do not invent corrections that change the approved turn outcome.
+For EVERY error, evidence MUST quote the shortest exact offending fragment from candidate prose.
+Do not paraphrase evidence: deterministic actor-response publication may remove that exact segment.
 All human-readable fields (summary, evidence, correction) MUST be written in Russian even if the
 candidate or your internal reasoning uses another language.
 
@@ -62,7 +64,7 @@ Return exactly:
     {
       "violation_type": "absent_character|absent_object|invalid_movement|invalid_time_advance|player_agency|ungrounded_complication|sequence_violation|canon_conflict|other",
       "severity": "warning|error",
-      "evidence": "candidate fragment or precise description in Russian",
+      "evidence": "exact candidate fragment in Russian",
       "correction": "specific prose-only correction in Russian"
     }
   ]
@@ -339,8 +341,6 @@ Return exactly:
         if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
             return result
 
-        # Actor output gets an additional broad deterministic scrub. Small local models often append
-        # a protagonist reaction after an otherwise useful NPC reply and then approve themselves.
         sanitized, diagnostics = NarrationPublicationGuard.publish(
             authority,
             candidate_text,
@@ -393,18 +393,23 @@ Return exactly:
         return (
             "[REPAIR REJECTED NARRATION]\n"
             "[REPAIR AGAINST TURN AUTHORITY]\n"
-            "Перепиши кандидат в один законченный внутриигровой ответ на русском языке. Сохрани "
-            "только разрешённые ниже исходы. Удали каждое нарушение. Не добавляй заменяющего NPC, "
-            "поворот, перемещение или действие протагониста. Обращайся к герою во втором лице; "
-            "не используй его имя как постоянный субъект повествования. Не выводи UUID, slugs, "
-            "маршруты, BLOCKED/SKIPPED, поля authority/validator или мета-фразы про игрока, ответ "
-            "и следующий ввод. Верни только естественную художественную прозу.\n\n"
+            "[REGENERATE NARRATION FROM TURN AUTHORITY]\n"
+            "Напиши новый ответ С НУЛЯ. Не редактируй и не продолжай отвергнутый текст: он "
+            "намеренно не передан, чтобы не копировать его ошибки. Используй только AUTHORITY ниже. "
+            "Дай один законченный внутриигровой ответ на русском языке. Начни с реакции мира, NPC "
+            "или наблюдаемого результата текущего действия. Не пересказывай действие игрока и не "
+            "продолжай его добровольными действиями, мыслями, решениями, эмоциями или репликами. "
+            "Если нужно описать непосредственное восприятие или внешний эффект для героя, обращайся "
+            "во втором лице. Не используй имя героя как субъект нового действия. Не добавляй NPC, "
+            "поворот, перемещение или время сверх Authority. Не выводи UUID, slugs, маршруты, "
+            "BLOCKED/SKIPPED, поля authority/validator или мета-фразы. Верни только естественную "
+            "художественную прозу.\n\n"
             "AUTHORITY:\n"
             + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
-            + "\n\nVIOLATIONS:\n"
+            + "\n\nОШИБКИ ПРЕДЫДУЩЕЙ ПОПЫТКИ, КОТОРЫЕ НЕЛЬЗЯ ПОВТОРЯТЬ:\n"
             + (violations or result.summary)
-            + "\n\nREJECTED CANDIDATE:\n"
-            + candidate
+            + "\n\n[REJECTED CANDIDATE OMITTED]\n"
+            "Исходный отвергнутый текст намеренно не передаётся модели."
         )
 
 

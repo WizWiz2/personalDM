@@ -10,10 +10,10 @@ class NarrationPublicationGuard:
     """Publish safe prose without allowing renderer mistakes to cancel game state.
 
     The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    After a second semantic rejection, ordinary narrator turns are rendered strictly from typed
-    authority. Actor turns are the one exception: their useful content is the NPC's actual reply,
-    so concrete player-owned fragments may be removed deterministically and the safe NPC remainder
-    can still be published.
+    Ordinary narration remains fail-closed after a second semantic rejection: prose fragments that
+    were not individually flagged may still contain unapproved world outcomes. Actor turns are the
+    narrow exception because their NPC reply can be scrubbed deterministically of player-owned
+    fragments while retaining the selected speaker's useful content.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -87,6 +87,11 @@ class NarrationPublicationGuard:
         r"waits?\s+for\s+(?:the\s+)?player)",
         flags=re.IGNORECASE,
     )
+    LEGACY_STUB_PATTERN = re.compile(
+        r"(?:действие\s+не\s+выполнено\s*:|"
+        r"попытка\s+пока\s+не\s+приводит\s+к\s+подтвержд[её]нному\s+результату)",
+        flags=re.IGNORECASE,
+    )
 
     @classmethod
     def publish(
@@ -102,9 +107,9 @@ class NarrationPublicationGuard:
             if item.severity == "error"
         ]
 
-        # A rejected ordinary narration may have omitted or distorted approved consequences even
-        # after the flagged fragment is removed. Do not attempt semantic salvage here: project the
-        # authoritative result directly. This is deliberately conservative rather than wrong.
+        # Even when the validator quotes one bad sentence exactly, an unflagged sibling sentence can
+        # still invent a world outcome. Ordinary narration therefore remains conservative: after a
+        # second rejection publish typed authority rather than partially trusting rejected prose.
         if errors and authority.scene_disposition != "actor_turn":
             fallback = cls.render_authority(authority)
             return fallback, {
@@ -179,6 +184,10 @@ class NarrationPublicationGuard:
 
         if authority.scene_disposition == "actor_turn":
             actor = cls._player_facing_fragment(authority.acting_character_name or "Собеседник")
+            if not parts and authority.ending_hook:
+                hook = cls._player_facing_fragment(authority.ending_hook)
+                if hook:
+                    cls._append_unique(parts, hook)
             if not parts:
                 cls._append_unique(parts, f"{actor or 'Собеседник'} умолкает")
         elif authority.ending_hook:
@@ -212,7 +221,7 @@ class NarrationPublicationGuard:
         clean = " ".join(str(value or "").split()).strip()
         if not clean:
             return None
-        if clean.casefold().startswith("действие не выполнено:"):
+        if cls.LEGACY_STUB_PATTERN.search(clean):
             return None
         if cls.UUID_PATTERN.search(clean) or cls.TECHNICAL_PATTERN.search(clean):
             return None
@@ -264,9 +273,6 @@ class NarrationPublicationGuard:
             if not key:
                 continue
 
-            # «Рэт, решай сам», — говорит Грета. is NPC dialogue addressed to the player,
-            # not narration controlled by the player. Do not classify a quoted direct address as
-            # a protagonist action merely because the player's name is the first quoted token.
             quoted_direct_address = bool(
                 re.match(rf"^[\s]*[\"'«]{re.escape(name_key)}\b", key)
             )

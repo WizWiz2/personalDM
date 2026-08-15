@@ -200,6 +200,15 @@ class TurnAuthority(BaseModel):
                 "character_beats": self.character_beats,
                 "narration_guidance": self.narration_guidance,
                 "ending_hook": self.ending_hook,
+                "player_agency_contract": {
+                    "response_focus": "world_or_npc_response_to_current_input",
+                    "do_not_restate_player_voluntary_action": True,
+                    "do_not_extend_player_voluntary_action": True,
+                    "do_not_assign_player_thoughts_emotions_or_decisions": True,
+                    "do_not_invent_player_dialogue": True,
+                    "perspective": "second_person_only_for_immediate_perception_or_external_effect",
+                    "stop_before_next_player_choice": True,
+                },
                 "execution_section": "[EXECUTED ACTION SEQUENCE]",
             }
         )
