@@ -40,7 +40,17 @@ jobs:
           --tb=short
       - name: Full backend tests
         working-directory: src/backend
-        run: pytest -q --tb=short
+        shell: bash
+        run: |
+          set +e
+          pytest -q --tb=short 2>&1 | tee /tmp/full-pytest.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            grep -E '^FAILED ' /tmp/full-pytest.log | while IFS= read -r line; do
+              echo "::error title=Full backend pytest::$line"
+            done
+          fi
+          exit "$status"
       - name: Lint milestone files
         run: >-
           ruff check --extend-ignore B008,I001,DTZ003,BLE001
