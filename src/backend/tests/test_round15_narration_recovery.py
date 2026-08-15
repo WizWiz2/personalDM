@@ -70,12 +70,13 @@ def test_legacy_no_result_stub_is_never_published_from_authority_projection():
 
 def test_repair_prompt_regenerates_from_authority_without_rejected_candidate_anchor():
     authority = _authority()
-    rejected = "Элдон решает войти внутрь и улыбается."
+    rejected = "Элдон решает войти внутрь и улыбается. Потом он достаёт нож."
+    evidence = "Элдон решает войти внутрь и улыбается."
     validation = _validation(
         {
             "violation_type": "player_agency",
             "severity": "error",
-            "evidence": "Элдон решает войти внутрь и улыбается.",
+            "evidence": evidence,
             "correction": "Не продолжать действие героя.",
         }
     )
@@ -83,9 +84,12 @@ def test_repair_prompt_regenerates_from_authority_without_rejected_candidate_anc
     prompt = TurnAuthorityValidator.repair_prompt(authority, rejected, validation)
 
     assert "[REPAIR REJECTED NARRATION]" in prompt
+    assert "[REPAIR AGAINST TURN AUTHORITY]" in prompt
     assert "С НУЛЯ" in prompt
     assert "REJECTED CANDIDATE OMITTED" in prompt
+    assert evidence in prompt
     assert rejected not in prompt
+    assert "Потом он достаёт нож" not in prompt
     assert "observable_consequences" in prompt
     assert "Не пересказывай действие игрока" in prompt
 
