@@ -5,6 +5,7 @@ from uuid import UUID
 
 from app.models.turn import TurnCreate
 from app.services.base_turn_runner import active_tasks
+from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
 from app.services.post_turn_dispatcher import PostTurnDispatcher
 from app.services.turn_saga import TurnSaga
 
@@ -29,6 +30,22 @@ class TurnRunner(TurnSaga):
         turn_create: TurnCreate,
         existing_user_turn_id: UUID | None = None,
     ) -> AsyncIterator[str]:
+        # GameApplication is the normal routing boundary, but test harnesses and local agents have
+        # historically called TurnRunner directly. A meta command must never become a narrative
+        # player action merely because a caller bypassed that application facade.
+        command = parse_meta_command(turn_create.content)
+        if command is not None:
+            if existing_user_turn_id is not None:
+                raise ValueError(
+                    "Meta command reached TurnRunner after narrative persistence; route it through GameApplication"
+                )
+            async for item in MetaCommandRunner(self._session).run_stream(
+                campaign_id,
+                command,
+            ):
+                yield item
+            return
+
         async for item in super().run_turn_stream(
             campaign_id,
             turn_create,
