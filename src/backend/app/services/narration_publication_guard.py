@@ -10,10 +10,8 @@ class NarrationPublicationGuard:
     """Publish safe prose without allowing renderer mistakes to cancel game state.
 
     The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    After a second semantic rejection, ordinary narrator turns are rendered strictly from typed
-    authority. Actor turns are the one exception: their useful content is the NPC's actual reply,
-    so concrete player-owned fragments may be removed deterministically and the safe NPC remainder
-    can still be published.
+    After a second semantic rejection, salvage only prose segments proven unrelated to validator
+    errors; otherwise render typed authority. Actor turns additionally scrub player-owned segments.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -87,6 +85,11 @@ class NarrationPublicationGuard:
         r"waits?\s+for\s+(?:the\s+)?player)",
         flags=re.IGNORECASE,
     )
+    LEGACY_STUB_PATTERN = re.compile(
+        r"(?:^|\b)(?:действие\s+не\s+выполнено\s*:|"
+        r"попытка\s+пока\s+не\s+приводит\s+к\s+подтвержд[её]нному\s+результату)(?:\b|$)",
+        flags=re.IGNORECASE,
+    )
 
     @classmethod
     def publish(
@@ -102,22 +105,12 @@ class NarrationPublicationGuard:
             if item.severity == "error"
         ]
 
-        # A rejected ordinary narration may have omitted or distorted approved consequences even
-        # after the flagged fragment is removed. Do not attempt semantic salvage here: project the
-        # authoritative result directly. This is deliberately conservative rather than wrong.
-        if errors and authority.scene_disposition != "actor_turn":
-            fallback = cls.render_authority(authority)
-            return fallback, {
-                "mode": "authority_projection",
-                "candidate_characters": len(candidate),
-                "published_characters": len(fallback),
-                "error_count": len(errors),
-                "matched_error_count": 0,
-                "actor_agency_scrubbed": False,
-            }
-
+        # Prefer deterministic sentence-level salvage before projecting the entire authority.
+        # The validator must have identified every offending error segment; if it did not, we stay
+        # conservative and fall back to typed authority rather than guessing which prose is safe.
         sanitized, matched_errors = cls._drop_flagged_segments(candidate, validation)
         actor_scrub_changed = False
+        ordinary_agency_scrubbed = False
         if authority.scene_disposition == "actor_turn":
             actor_safe = cls._drop_player_owned_segments(
                 sanitized,
@@ -125,6 +118,15 @@ class NarrationPublicationGuard:
             )
             actor_scrub_changed = cls._clean(actor_safe) != cls._clean(sanitized)
             sanitized = actor_safe
+        elif errors and authority.player_character_name and all(
+            item.violation_type == "player_agency" for item in errors
+        ):
+            player_safe = cls._drop_player_owned_segments(
+                sanitized,
+                authority.player_character_name,
+            )
+            ordinary_agency_scrubbed = cls._clean(player_safe) != cls._clean(sanitized)
+            sanitized = player_safe
 
         sanitized = cls._clean(sanitized)
         all_evidence_removed = bool(errors) and matched_errors >= len(errors)
@@ -136,11 +138,17 @@ class NarrationPublicationGuard:
             and only_player_agency
             and actor_scrub_changed
         )
+        ordinary_agency_proven_removed = (
+            authority.scene_disposition != "actor_turn"
+            and only_player_agency
+            and ordinary_agency_scrubbed
+        )
 
         if sanitized and (
             not errors
             or all_evidence_removed
             or actor_agency_proven_removed
+            or ordinary_agency_proven_removed
         ):
             return sanitized, {
                 "mode": "sanitized_candidate",
@@ -149,6 +157,7 @@ class NarrationPublicationGuard:
                 "error_count": len(errors),
                 "matched_error_count": matched_errors,
                 "actor_agency_scrubbed": actor_scrub_changed,
+                "ordinary_agency_scrubbed": ordinary_agency_scrubbed,
             }
 
         fallback = cls.render_authority(authority)
@@ -159,6 +168,7 @@ class NarrationPublicationGuard:
             "error_count": len(errors),
             "matched_error_count": matched_errors,
             "actor_agency_scrubbed": actor_scrub_changed,
+            "ordinary_agency_scrubbed": ordinary_agency_scrubbed,
         }
 
     @classmethod
@@ -179,6 +189,10 @@ class NarrationPublicationGuard:
 
         if authority.scene_disposition == "actor_turn":
             actor = cls._player_facing_fragment(authority.acting_character_name or "Собеседник")
+            if not parts and authority.ending_hook:
+                hook = cls._player_facing_fragment(authority.ending_hook)
+                if hook:
+                    cls._append_unique(parts, hook)
             if not parts:
                 cls._append_unique(parts, f"{actor or 'Собеседник'} умолкает")
         elif authority.ending_hook:
@@ -212,7 +226,7 @@ class NarrationPublicationGuard:
         clean = " ".join(str(value or "").split()).strip()
         if not clean:
             return None
-        if clean.casefold().startswith("действие не выполнено:"):
+        if cls.LEGACY_STUB_PATTERN.search(clean):
             return None
         if cls.UUID_PATTERN.search(clean) or cls.TECHNICAL_PATTERN.search(clean):
             return None
