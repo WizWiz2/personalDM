@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field, ValidationError
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 
 WORD_PATTERN = re.compile(r"[\w-]+", flags=re.UNICODE)
+CLAIM_PATTERN = re.compile(
+    r"(?:[«\"].+?[»\"]|\b(?:говорит|сказал[аи]?|сообщ(?:ает|ил[аи]?)|утверждает|"
+    r"ответил[аи]?|отвечает|пояснил[аи]?|рассказал[аи]?|предупреждает|признал[аи]?|"
+    r"заявляет|шепчет|говорит,?\s+что|says?|said|tells?|claims?|answers?|explains?)\b)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 
 
 class CanonAuthority(str, Enum):
@@ -106,11 +112,19 @@ def evidence_supported(evidence: str, authoritative_text: str) -> bool:
     return overlap >= 0.75
 
 
+def character_claim_supported(evidence: str) -> bool:
+    """A durable character claim needs actual speech, not silence or narrator inference."""
+    return bool(CLAIM_PATTERN.search(evidence or ""))
+
+
 def authority_allows(authority: CanonAuthority, change_type: ChangeType) -> bool:
+    # Knowledge has a stricter provenance boundary than generic observations. Seeing someone
+    # remain silent, fail an interaction, or stand near an object cannot prove a proposition in
+    # the player's mind. A knowledge proposal therefore requires an actual character claim.
+    if change_type == ChangeType.KNOWLEDGE:
+        return authority == CanonAuthority.CHARACTER_CLAIM
     if authority in {CanonAuthority.DM_CONFIRMED, CanonAuthority.PUBLIC_OBSERVATION}:
         return change_type != ChangeType.CANON_GAP
-    if authority == CanonAuthority.CHARACTER_CLAIM:
-        return change_type == ChangeType.KNOWLEDGE
     return False
 
 
@@ -183,6 +197,12 @@ def proposals_from_envelope(
             audit.rejected_evidence_count += 1
             continue
         if not authority_allows(outcome.authority, proposal.change_type):
+            audit.rejected_authority_count += 1
+            continue
+        if (
+            proposal.change_type == ChangeType.KNOWLEDGE
+            and not character_claim_supported(outcome.evidence)
+        ):
             audit.rejected_authority_count += 1
             continue
         if proposal.change_type in {ChangeType.SCENE_THESIS, ChangeType.CANON_GAP}:
