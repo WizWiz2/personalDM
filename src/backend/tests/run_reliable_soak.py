@@ -12,9 +12,11 @@ import os
 
 try:
     from . import run_realistic_simulation as facade
+    from .simulation_phase_location_reuse import install_phase_location_reuse
     from .simulation_reliable_soak import install_reliable_soak
 except ImportError:
     import run_realistic_simulation as facade
+    from simulation_phase_location_reuse import install_phase_location_reuse
     from simulation_reliable_soak import install_reliable_soak
 
 
@@ -23,6 +25,7 @@ def configure_reliable_soak() -> None:
     os.environ.setdefault("PDM_SIM_TURNS", "30")
     os.environ.setdefault("PDM_SIM_RESET", "1")
     os.environ.setdefault("PDM_SIM_PLAYER_SOURCE", "scripted")
+    install_phase_location_reuse(facade.runtime)
     install_reliable_soak(facade)
 
 
