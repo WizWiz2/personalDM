@@ -29,6 +29,7 @@ def install() -> None:
         results: list[ProposedChangeCreate] = []
         surviving_outcomes: set[str] = set()
         failed_normalization: dict[str, dict] = {}
+        rejected_actor_knowledge: set[str] = set()
         existing_gaps = set(audit.gap_outcome_ids)
 
         for proposal in extracted:
@@ -55,6 +56,8 @@ def install() -> None:
                 if acting_character_id is None:
                     audit.rejected_authority_count += 1
                     audit.envelope_valid = False
+                    if outcome_id:
+                        rejected_actor_knowledge.add(outcome_id)
                     continue
                 payload = dict(payload)
                 payload["source_character_id"] = str(acting_character_id)
@@ -104,14 +107,20 @@ def install() -> None:
                 0,
                 audit.covered_outcome_count - len(new_gaps),
             )
-            denominator = audit.covered_outcome_count + audit.gap_count
-            audit.coverage_ratio = (
-                audit.covered_outcome_count / denominator if denominator else 1.0
-            )
             audit.rejected_schema_count += len(new_gaps)
             audit.envelope_valid = False
             audit.error = "One or more supported outcomes failed backend normalization"
 
+        if rejected_actor_knowledge:
+            audit.covered_outcome_count = max(
+                0,
+                audit.covered_outcome_count - len(rejected_actor_knowledge),
+            )
+
+        denominator = audit.covered_outcome_count + audit.gap_count
+        audit.coverage_ratio = (
+            audit.covered_outcome_count / denominator if denominator else 1.0
+        )
         audit.proposal_count = len(results)
         self.last_audit = audit.model_dump()
         return results
