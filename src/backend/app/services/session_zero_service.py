@@ -21,6 +21,7 @@ from app.models.session_zero import (
     SessionZeroUpdate,
 )
 from app.services.character_card_service import CharacterCardService
+from app.services.playable_bootstrap import PlayableBootstrapService
 from app.services.scene_lifecycle import SceneLifecycleService
 
 
@@ -250,6 +251,18 @@ class SessionZeroService:
                     related_entity_ids=[character_id],
                 ),
             )
+
+        # Completion is an atomic playable-world boundary, not merely a status flag. A new
+        # campaign must have a concrete hook and at least one mundane affordance before any
+        # gameplay turn can reach Planner/Narrator.
+        await PlayableBootstrapService(self._session).ensure(
+            campaign_id,
+            scene.id,
+            player_character_id=character_id,
+            starting_location_id=location_id,
+            starting_situation=row.starting_situation or thesis_text,
+            tone=row.tone,
+        )
 
         campaign.description = (
             campaign.description
