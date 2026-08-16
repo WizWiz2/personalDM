@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.models.narration_validation import NarrationValidationResult
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
+from app.providers.llm_provider import LLMProviderError
 from app.services.role_model_router import ModelRole
 
 _INSTALLED = False
@@ -183,30 +184,35 @@ async def _extract_actor_claims(
     if selection is None:
         return []
 
-    data = await scribe._model_router.generate_json(
-        scribe._llm_provider,
-        selection,
-        [
-            ChatMessage(
-                role="system",
-                content=(
-                    "Ты извлекаешь только фактические утверждения из уже опубликованной реплики "
-                    "конкретного NPC. Не извлекай жесты, эмоции, планы, вопросы, художественное "
-                    "описание или слова игрока. Утверждение NPC остаётся character_claim и не "
-                    "становится объективным фактом мира. Для evidence скопируй короткий точный "
-                    "фрагмент исходного ответа. Если NPC не сообщил фактических сведений, верни "
-                    "пустой claims.\n"
-                    f"Говорящий NPC: {actor.canonical_name}.\n"
-                    f"Слушатель: {player.canonical_name}.\n"
-                    "Верни JSON: {\"claims\":[{\"proposition\":\"...\",\"evidence\":\"...\"}]}"
+    try:
+        data = await scribe._model_router.generate_json(
+            scribe._llm_provider,
+            selection,
+            [
+                ChatMessage(
+                    role="system",
+                    content=(
+                        "Ты извлекаешь только фактические утверждения из уже опубликованной реплики "
+                        "конкретного NPC. Не извлекай жесты, эмоции, планы, вопросы, художественное "
+                        "описание или слова игрока. Утверждение NPC остаётся character_claim и не "
+                        "становится объективным фактом мира. Для evidence скопируй короткий точный "
+                        "фрагмент исходного ответа. Если NPC не сообщил фактических сведений, верни "
+                        "пустой claims.\n"
+                        f"Говорящий NPC: {actor.canonical_name}.\n"
+                        f"Слушатель: {player.canonical_name}.\n"
+                        "Верни JSON: {\"claims\":[{\"proposition\":\"...\",\"evidence\":\"...\"}]}"
+                    ),
                 ),
-            ),
-            ChatMessage(role="user", content=assistant_content),
-        ],
-        max_tokens=600,
-        temperature=0.0,
-        response_model=ActorClaimEnvelope,
-    )
+                ChatMessage(role="user", content=assistant_content),
+            ],
+            max_tokens=600,
+            temperature=0.0,
+            response_model=ActorClaimEnvelope,
+        )
+    except (LLMProviderError, ValueError, TypeError):
+        # This is a secondary memory-quality recovery path. It must never turn a successfully
+        # published dialogue turn into a failed post-turn job if the small extractor is unavailable.
+        return []
     envelope = ActorClaimEnvelope.model_validate(data)
     return build_actor_claim_proposals(
         envelope.claims,
@@ -230,6 +236,20 @@ def install() -> None:
     original_validator_payload = TurnAuthority.validator_payload
     original_validate = TurnAuthorityValidator.validate
     original_extract = MemoryScribe.extract_proposals
+
+    if "ACTOR TURN RIGHTS" not in TurnAuthorityValidator.SYSTEM_PROMPT:
+        TurnAuthorityValidator.SYSTEM_PROMPT += """
+
+ACTOR TURN RIGHTS
+When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
+- acting_character is explicitly authorized to speak as themselves, answer the current player
+  message and use local conversational body language;
+- those actor-owned speech/gesture fragments are NOT PLAYER AGENCY violations;
+- player_character still remains fully protected: never invent their speech, voluntary action,
+  choice, thought or emotion;
+- actor_turn does NOT authorize changing the actor's location, introducing other characters or
+  establishing unrelated world outcomes. Report those under the appropriate non-agency violation.
+"""
 
     def actor_aware_validator_payload(self):
         payload = original_validator_payload(self)
