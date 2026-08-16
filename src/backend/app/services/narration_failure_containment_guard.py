@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import wraps
 from uuid import UUID
 
 from sqlalchemy import select
@@ -92,6 +93,7 @@ def install() -> None:
 
     original_generate = AuthorityNarrationPipeline.generate
 
+    @wraps(original_generate)
     async def contained_generate(self, *args, **kwargs):
         try:
             return await original_generate(self, *args, **kwargs)
