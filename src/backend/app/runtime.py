@@ -4,6 +4,7 @@ from typing import Any
 
 _INSTALLED = False
 _GUARDS = (
+    "actor_turn_authority",
     "memory_scribe",
     "session_zero_finalize",
     "thesis_lifecycle",
@@ -20,11 +21,13 @@ def install_runtime() -> None:
     if _INSTALLED:
         return
 
+    from app.services.actor_turn_authority_guard import install as install_actor_turn_authority
     from app.services.memory_scribe_guard import install as install_memory_scribe
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle
 
     install_memory_scribe()
+    install_actor_turn_authority()
     install_session_zero_finalize()
     install_thesis_lifecycle()
     _INSTALLED = True
