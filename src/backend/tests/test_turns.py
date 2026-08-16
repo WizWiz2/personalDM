@@ -80,7 +80,7 @@ def test_public_turn_endpoint_rejects_non_user_roles(client: TestClient):
     assert "only role='user'" in response.json()["detail"]
 
 
-def test_failed_generation_is_not_active_history(client: TestClient):
+def test_failed_generation_after_authority_is_contained(client: TestClient):
     campaign_id = client.post(
         "/api/campaigns",
         json={"name": "Failure Handling"},
@@ -96,15 +96,18 @@ def test_failed_generation_is_not_active_history(client: TestClient):
         )
 
     assert response.status_code == 200
-    assert "Generation failed after retry" in response.text
-    assert client.get(f"/api/campaigns/{campaign_id}/turns").json() == []
+    assert "Generation failed after retry" not in response.text
+    assert "provider returned no usable content" not in response.text
+    assert "The action produces one visible consequence." in response.text
 
-    all_turns = client.get(
-        f"/api/campaigns/{campaign_id}/turns?active_only=False"
-    ).json()
-    assert len(all_turns) == 1
-    assert all_turns[0]["role"] == "user"
-    assert all_turns[0]["status"] == "failed"
+    active_turns = client.get(f"/api/campaigns/{campaign_id}/turns").json()
+    assert len(active_turns) == 2
+    assert active_turns[0]["role"] == "user"
+    assert active_turns[0]["status"] == "active"
+    assert active_turns[1]["role"] == "assistant"
+    assert active_turns[1]["status"] == "active"
+    assert active_turns[1]["parent_turn_id"] == active_turns[0]["id"]
+    assert active_turns[1]["content"] == response.text
 
 
 def test_regeneration_reuses_original_user_turn(client: TestClient, mock_llm):
@@ -342,7 +345,7 @@ def test_planner_transition_rebuilds_narrator_context_without_old_npcs(
     assert len(snapshot["scenes"]) == 2
 
 
-def test_failed_narration_rolls_back_new_scene_transition(client: TestClient):
+def test_failed_narration_preserves_new_scene_transition(client: TestClient):
     state = _create_tavern_state(client)
 
     with patch(
@@ -361,19 +364,24 @@ def test_failed_narration_rolls_back_new_scene_transition(client: TestClient):
             },
         )
 
-    assert "Generation failed after retry" in response.text
+    assert response.status_code == 200
+    assert "Generation failed after retry" not in response.text
+    assert "provider returned no usable content" not in response.text
+    assert "Игрок оказывается в закрытой гостевой комнате." in response.text
+
     snapshot = client.get(
         f"/api/campaigns/{state['campaign_id']}/debugger"
     ).json()
-    assert snapshot["active_scene"]["id"] == state["source_scene"]["id"]
+    assert snapshot["active_scene"]["id"] != state["source_scene"]["id"]
+    assert snapshot["active_scene"]["location_id"] == state["bedroom"]["id"]
     assert len(snapshot["scene_transitions"]) == 1
-    rolled_back = snapshot["scene_transitions"][0]
-    assert rolled_back["status"] == "rolled_back"
-    assert snapshot["last_scene_transition"] is None
+    transition = snapshot["scene_transitions"][0]
+    assert transition["status"] in {"applied", "reused"}
+    assert snapshot["last_scene_transition"]["id"] == transition["id"]
     target = next(
         scene
         for scene in snapshot["scenes"]
-        if scene["id"] == rolled_back["target_scene_id"]
+        if scene["id"] == transition["target_scene_id"]
     )
-    assert target["status"] == "abandoned"
-    assert snapshot["campaign"]["player_location_id"] != state["bedroom"]["id"]
+    assert target["status"] == "active"
+    assert snapshot["campaign"]["player_location_id"] == state["bedroom"]["id"]

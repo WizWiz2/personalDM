@@ -62,6 +62,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["guards"] == [
         "actor_turn_authority",
         "memory_scribe",
+        "narration_failure_containment",
         "session_zero_finalize",
         "thesis_lifecycle",
     ]
@@ -84,6 +85,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "generate_draft",
         "validate_authority",
         "repair_once",
+        "contain_presentation_failure",
         "publish_accepted",
     ]
     assert cli_manifest["turn_stream"].endswith("TurnRunner.run_turn_stream")
