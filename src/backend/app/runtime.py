@@ -7,6 +7,7 @@ _GUARDS = (
     "actor_turn_authority",
     "memory_scribe",
     "narration_failure_containment",
+    "narration_repetition",
     "session_zero_finalize",
     "thesis_lifecycle",
 )
@@ -27,12 +28,14 @@ def install_runtime() -> None:
     from app.services.narration_failure_containment_guard import (
         install as install_narration_failure_containment,
     )
+    from app.services.narration_repetition_guard import install as install_narration_repetition
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle
 
     install_memory_scribe()
     install_actor_turn_authority()
     install_narration_failure_containment()
+    install_narration_repetition()
     install_session_zero_finalize()
     install_thesis_lifecycle()
     _INSTALLED = True
