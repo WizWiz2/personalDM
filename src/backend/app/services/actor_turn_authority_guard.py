@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from uuid import UUID
 
@@ -21,6 +22,15 @@ class ActorClaim(BaseModel):
 
 class ActorClaimEnvelope(BaseModel):
     claims: list[ActorClaim] = Field(default_factory=list)
+
+
+class KnowledgeEntailmentVerdict(BaseModel):
+    index: int = Field(ge=0)
+    supported: bool
+
+
+class KnowledgeEntailmentEnvelope(BaseModel):
+    verdicts: list[KnowledgeEntailmentVerdict] = Field(default_factory=list)
 
 
 _ACTOR_LOCAL_MARKERS = (
@@ -132,6 +142,124 @@ def _evidence_present(evidence: str, authoritative_text: str) -> bool:
     return bool(_key(evidence)) and _key(evidence) in _key(authoritative_text)
 
 
+def _knowledge_evidence(proposal: ProposedChangeCreate) -> str:
+    canon = proposal.payload.get("_canon")
+    if not isinstance(canon, dict):
+        return ""
+    return " ".join(str(canon.get("evidence") or "").split()).strip()
+
+
+def _knowledge_has_actor_provenance(
+    proposal: ProposedChangeCreate,
+    *,
+    acting_character_id: UUID,
+    player_character_id: UUID,
+    authoritative_text: str,
+) -> bool:
+    if proposal.change_type != ChangeType.KNOWLEDGE:
+        return False
+    payload = proposal.payload
+    if str(payload.get("source_character_id") or "") != str(acting_character_id):
+        return False
+    if str(payload.get("recipient_id") or "") != str(player_character_id):
+        return False
+    proposition = " ".join(str(payload.get("proposition") or "").split()).strip()
+    if not proposition:
+        return False
+    canon = payload.get("_canon")
+    if not isinstance(canon, dict) or canon.get("authority") != "character_claim":
+        return False
+    evidence = _knowledge_evidence(proposal)
+    return _evidence_present(evidence, authoritative_text)
+
+
+async def filter_supported_actor_knowledge(
+    scribe,
+    proposals: list[ProposedChangeCreate],
+    *,
+    campaign_id: UUID,
+    assistant_content: str,
+    acting_character_id: UUID,
+    player_character_id: UUID,
+) -> list[ProposedChangeCreate]:
+    """Keep only actor knowledge propositions entailed by their published evidence span.
+
+    Evidence presence and speaker/listener provenance are deterministic. The control model gets one
+    deliberately tiny semantic task: does the exact evidence actually support the proposition? This
+    catches polarity inversions such as "ничего не говорил о заказчике" when the cited line mentions
+    the customer. Missing verdicts, transport errors and ambiguous support fail closed.
+    """
+    candidates: list[ProposedChangeCreate] = []
+    items: list[dict[str, object]] = []
+    for proposal in proposals:
+        if not _knowledge_has_actor_provenance(
+            proposal,
+            acting_character_id=acting_character_id,
+            player_character_id=player_character_id,
+            authoritative_text=assistant_content,
+        ):
+            continue
+        local_index = len(candidates)
+        candidates.append(proposal)
+        items.append(
+            {
+                "index": local_index,
+                "proposition": proposal.payload.get("proposition"),
+                "evidence": _knowledge_evidence(proposal),
+            }
+        )
+
+    if not candidates:
+        return []
+
+    selection = await scribe._model_router.resolve(campaign_id, ModelRole.SCRIBE)
+    if selection is None:
+        return []
+
+    try:
+        data = await scribe._model_router.generate_json(
+            scribe._llm_provider,
+            selection,
+            [
+                ChatMessage(
+                    role="system",
+                    content=(
+                        "Ты проверяешь только логическое следование knowledge-proposition из "
+                        "короткого точного evidence, уже опубликованного игроку. Не проверяй, "
+                        "правдивы ли слова NPC в мире. supported=true только если evidence прямо "
+                        "утверждает proposition или является однозначной перефразировкой. Если "
+                        "proposition добавляет новую деталь, меняет субъект, меняет время/место, "
+                        "требует догадки или противоречит evidence — supported=false. Отрицательное "
+                        "утверждение поддерживается только явным отрицанием в evidence. Не считай "
+                        "молчание доказательством отсутствия знания. Верни verdict для каждого "
+                        "index и ничего больше."
+                    ),
+                ),
+                ChatMessage(
+                    role="user",
+                    content=json.dumps({"items": items}, ensure_ascii=False),
+                ),
+            ],
+            max_tokens=500,
+            temperature=0.0,
+            response_model=KnowledgeEntailmentEnvelope,
+        )
+        envelope = KnowledgeEntailmentEnvelope.model_validate(data)
+    except (LLMProviderError, ValueError, TypeError):
+        return []
+
+    supported = {
+        verdict.index
+        for verdict in envelope.verdicts
+        if verdict.supported and verdict.index < len(candidates)
+    }
+    return [
+        proposal
+        for index, proposal in enumerate(candidates)
+        if index in supported
+    ]
+
+
 def build_actor_claim_proposals(
     claims: list[ActorClaim],
     *,
@@ -139,7 +267,7 @@ def build_actor_claim_proposals(
     player_character_id: UUID,
     authoritative_text: str,
 ) -> list[ProposedChangeCreate]:
-    """Turn validated claims into knowledge with source/recipient fixed by typed authority."""
+    """Turn extractive claims into knowledge with source/recipient fixed by typed authority."""
     proposals: list[ProposedChangeCreate] = []
     seen: set[str] = set()
     for claim in claims:
@@ -158,6 +286,12 @@ def build_actor_claim_proposals(
                     "source_character_id": str(acting_character_id),
                     "confidence": 0.8,
                     "status": "known",
+                    "_canon": {
+                        "kind": "knowledge_transfer",
+                        "evidence": evidence,
+                        "authority": "character_claim",
+                        "durable": True,
+                    },
                 },
             )
         )
@@ -223,7 +357,7 @@ async def _extract_actor_claims(
 
 
 def install() -> None:
-    """Install universal actor-turn authority and knowledge provenance guards."""
+    """Install universal actor-turn authority and evidence-grounded knowledge guards."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -280,12 +414,37 @@ When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
             acting_character_id=acting_character_id,
             player_character_id=player_character_id,
         )
-        if (
-            acting_character_id is None
-            or player_character_id is None
-            or any(item.change_type == ChangeType.KNOWLEDGE for item in proposals)
-        ):
+        if acting_character_id is None or player_character_id is None:
             return proposals
+
+        non_knowledge = [
+            item for item in proposals if item.change_type != ChangeType.KNOWLEDGE
+        ]
+        original_knowledge = [
+            item for item in proposals if item.change_type == ChangeType.KNOWLEDGE
+        ]
+        supported_knowledge = await filter_supported_actor_knowledge(
+            self,
+            original_knowledge,
+            campaign_id=campaign_id,
+            assistant_content=assistant_content,
+            acting_character_id=acting_character_id,
+            player_character_id=player_character_id,
+        )
+        audit = dict(getattr(self, "last_audit", {}) or {})
+        audit.update(
+            {
+                "actor_knowledge_entailment_checked": len(original_knowledge),
+                "actor_knowledge_entailment_kept": len(supported_knowledge),
+                "actor_knowledge_entailment_rejected": (
+                    len(original_knowledge) - len(supported_knowledge)
+                ),
+            }
+        )
+        self.last_audit = audit
+        if supported_knowledge:
+            return [*non_knowledge, *supported_knowledge]
+
         fallback = await _extract_actor_claims(
             self,
             campaign_id=campaign_id,
@@ -293,7 +452,23 @@ When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
             acting_character_id=acting_character_id,
             player_character_id=player_character_id,
         )
-        return [*proposals, *fallback]
+        supported_fallback = await filter_supported_actor_knowledge(
+            self,
+            fallback,
+            campaign_id=campaign_id,
+            assistant_content=assistant_content,
+            acting_character_id=acting_character_id,
+            player_character_id=player_character_id,
+        )
+        audit = dict(getattr(self, "last_audit", {}) or {})
+        audit.update(
+            {
+                "actor_knowledge_fallback_candidates": len(fallback),
+                "actor_knowledge_fallback_kept": len(supported_fallback),
+            }
+        )
+        self.last_audit = audit
+        return [*non_knowledge, *supported_fallback]
 
     TurnAuthority.validator_payload = actor_aware_validator_payload
     TurnAuthorityValidator.validate = actor_aware_validate
@@ -303,8 +478,11 @@ When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
 __all__ = [
     "ActorClaim",
     "ActorClaimEnvelope",
+    "KnowledgeEntailmentEnvelope",
+    "KnowledgeEntailmentVerdict",
     "actor_turn_contract",
     "build_actor_claim_proposals",
+    "filter_supported_actor_knowledge",
     "install",
     "protect_actor_turn_validation",
 ]
