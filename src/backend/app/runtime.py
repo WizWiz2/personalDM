@@ -78,8 +78,10 @@ def runtime_manifest() -> dict[str, Any]:
         ],
         "narration_pipeline": [
             "generate_draft",
+            "guard_repetition",
             "validate_authority",
             "repair_once",
+            "guard_repetition",
             "contain_presentation_failure",
             "publish_accepted",
         ],

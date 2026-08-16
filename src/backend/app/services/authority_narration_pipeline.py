@@ -16,6 +16,7 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narration_repetition_guard import NarrationRepetitionGuard
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.turn_authority_validator import TurnAuthorityValidator
@@ -165,6 +166,49 @@ class AuthorityNarrationPipeline:
             raise LLMProviderError("Narrator returned empty prose")
         return text, dict(self._provider.last_telemetry or {})
 
+    async def _generate_non_repeating(
+        self,
+        *,
+        campaign_id: UUID,
+        scene_id: UUID | None,
+        authority: TurnAuthority,
+        messages: list[ChatMessage],
+        selection: RoleModelSelection,
+        temperature: float,
+    ) -> tuple[str, dict, bool]:
+        guard = NarrationRepetitionGuard(self._session)
+        previous = await guard.recent_responses(campaign_id, scene_id, authority)
+        candidate, first_telemetry = await self._generate_text(
+            messages,
+            selection,
+            temperature=temperature,
+        )
+        actor_turn = authority.scene_disposition == "actor_turn"
+        first_match = guard.detect(candidate, previous, actor_turn=actor_turn)
+        if first_match is None:
+            return candidate, first_telemetry, False
+
+        retry, retry_telemetry = await self._generate_text(
+            guard.retry_messages(messages, authority, first_match),
+            selection,
+            temperature=min(0.7, max(temperature, 0.35)),
+        )
+        second_match = guard.detect(retry, previous, actor_turn=actor_turn)
+        return retry, {
+            **retry_telemetry,
+            "repetition_guard": {
+                "detected": True,
+                "first_similarity": round(first_match.similarity, 4),
+                "first_exact": first_match.exact,
+                "retried": True,
+                "retry_similarity": (
+                    round(second_match.similarity, 4) if second_match else None
+                ),
+                "exhausted": second_match is not None,
+                "first_generation": first_telemetry,
+            },
+        }, second_match is not None
+
     @staticmethod
     def _synthetic_safe_result(summary: str) -> NarrationValidationResult:
         return NarrationValidationResult(
@@ -238,9 +282,12 @@ class AuthorityNarrationPipeline:
         narrator_selection: RoleModelSelection,
         authority: TurnAuthority,
     ) -> AuthorityNarrationResult:
-        draft, narrator_telemetry = await self._generate_text(
-            narrator_messages,
-            narrator_selection,
+        draft, narrator_telemetry, repetition_exhausted = await self._generate_non_repeating(
+            campaign_id=campaign_id,
+            scene_id=scene_id,
+            authority=authority,
+            messages=narrator_messages,
+            selection=narrator_selection,
             temperature=settings.NARRATOR_TEMPERATURE,
         )
 
@@ -260,6 +307,19 @@ class AuthorityNarrationPipeline:
             draft,
             validation_selection.config.model_name if validation_selection else None,
         )
+
+        if repetition_exhausted:
+            return await self._publish_fallback(
+                audit=audit,
+                run=run,
+                authority=authority,
+                candidate="",
+                validation=None,
+                repair_attempts=1,
+                attempt_index=0,
+                reason="near-verbatim narration repetition persisted after one regeneration",
+                telemetry=narrator_telemetry,
+            )
 
         if validation_selection is None:
             if settings.NARRATION_VALIDATOR_FAIL_OPEN:
@@ -343,11 +403,32 @@ class AuthorityNarrationPipeline:
                     content=validator.repair_prompt(authority, draft, result),
                 ),
             ]
-            repaired, repair_telemetry = await self._generate_text(
-                repair_messages,
-                narrator_selection,
-                temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+            repaired, repair_telemetry, repair_repetition_exhausted = (
+                await self._generate_non_repeating(
+                    campaign_id=campaign_id,
+                    scene_id=scene_id,
+                    authority=authority,
+                    messages=repair_messages,
+                    selection=narrator_selection,
+                    temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+                )
             )
+            if repair_repetition_exhausted:
+                return await self._publish_fallback(
+                    audit=audit,
+                    run=run,
+                    authority=authority,
+                    candidate="",
+                    validation=None,
+                    repair_attempts=1,
+                    attempt_index=1,
+                    reason="repaired narration repeated a prior published response after retry",
+                    telemetry={
+                        **narrator_telemetry,
+                        "repair_generation": repair_telemetry,
+                    },
+                )
+
             repaired_result = await validator.validate(
                 validation_selection,
                 authority,

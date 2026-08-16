@@ -148,7 +148,7 @@ jobs:
               """SELECT COUNT(*) FROM turns
                  WHERE campaign_id=? AND role='assistant' AND status='active'
                  AND json_extract(context_snapshot, '$.interagent_protocol.validator_status')
-                     IN ('passed', 'repaired')""",
+                     IN ('passed', 'repaired', 'safe_fallback')""",
               (campaign_id,),
           ).fetchone()[0]
           db.close()
