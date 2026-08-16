@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from functools import wraps
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,7 @@ from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 
 _WORD_RE = re.compile(r"[\w]+", re.UNICODE)
+_INSTALLED = False
 
 
 @dataclass(frozen=True)
@@ -161,4 +163,103 @@ class NarrationRepetitionGuard:
         ]
 
 
-__all__ = ["NarrationRepetitionGuard", "RepetitionMatch"]
+def install() -> None:
+    """Keep the normal authority-validation receipt when repetition falls back to Authority.
+
+    Repetition screening is an explicit narration stage. This small runtime hook only preserves the
+    stronger audit invariant: every published turn still passes through the real authority validator,
+    even when the prose model repeated itself twice and the publication candidate is replaced by a
+    deterministic TurnAuthority projection.
+    """
+    global _INSTALLED
+    if _INSTALLED:
+        return
+    _INSTALLED = True
+
+    from app.services.authority_narration_pipeline import (
+        AuthorityNarrationPipeline,
+        AuthorityNarrationResult,
+    )
+    from app.services.narration_publication_guard import NarrationPublicationGuard
+    from app.services.narration_validator import NarrationValidationError
+    from app.services.role_model_router import ModelRole
+    from app.services.turn_authority_validator import TurnAuthorityValidator
+
+    original_publish_fallback = AuthorityNarrationPipeline._publish_fallback
+
+    @wraps(original_publish_fallback)
+    async def validated_repetition_fallback(self, *args, **kwargs):
+        reason = str(kwargs.get("reason") or "")
+        if "repetition" not in reason:
+            return await original_publish_fallback(self, *args, **kwargs)
+
+        audit = kwargs.get("audit")
+        run = kwargs.get("run")
+        authority = kwargs.get("authority")
+        if audit is None or run is None or authority is None:
+            return await original_publish_fallback(self, *args, **kwargs)
+
+        campaign_id = UUID(str(run.campaign_id))
+        selection = await self._router.resolve(
+            campaign_id,
+            ModelRole.NARRATION_VALIDATOR,
+        )
+        if selection is None:
+            return await original_publish_fallback(self, *args, **kwargs)
+
+        published, publication = NarrationPublicationGuard.publish(authority, "", None)
+        validator = TurnAuthorityValidator(self._router)
+        try:
+            result = await validator.validate(selection, authority, published)
+        except NarrationValidationError:
+            return await original_publish_fallback(self, *args, **kwargs)
+
+        attempt_index = int(kwargs.get("attempt_index") or 0)
+        await audit.record_attempt(
+            run,
+            attempt_index=attempt_index,
+            candidate_text=published,
+            result=result,
+            telemetry={
+                **validator.telemetry,
+                "authority_version": authority.version,
+                "publication_guard": publication,
+                "repetition_authority_projection": True,
+            },
+        )
+        if result.verdict != "pass":
+            fallback_kwargs = dict(kwargs)
+            fallback_kwargs["attempt_index"] = attempt_index + 1
+            return await original_publish_fallback(self, *args, **fallback_kwargs)
+
+        repair_attempts = int(kwargs.get("repair_attempts") or 0)
+        gate = await audit.finalize(
+            run,
+            status="repaired",
+            final_text=published,
+            repair_attempts=repair_attempts,
+            failure_reason=reason[:2000],
+        )
+        telemetry = dict(kwargs.get("telemetry") or {})
+        return AuthorityNarrationResult(
+            text=published,
+            telemetry={
+                **telemetry,
+                "narration_validation": {
+                    "status": gate.status,
+                    "validation_run_id": str(gate.validation_run_id),
+                    "authority_version": authority.version,
+                    "publication_guard": publication,
+                    "repetition_authority_projection": True,
+                    "validator_telemetry": validator.telemetry,
+                    "reason": reason[:2000],
+                },
+            },
+            validation_run_id=gate.validation_run_id,
+            validation_status=gate.status,
+        )
+
+    AuthorityNarrationPipeline._publish_fallback = validated_repetition_fallback
+
+
+__all__ = ["NarrationRepetitionGuard", "RepetitionMatch", "install"]
