@@ -83,8 +83,10 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     ]
     assert cli_manifest["narration_pipeline"] == [
         "generate_draft",
+        "guard_repetition",
         "validate_authority",
         "repair_once",
+        "guard_repetition",
         "contain_presentation_failure",
         "publish_accepted",
     ]
