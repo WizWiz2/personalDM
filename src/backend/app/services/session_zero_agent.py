@@ -91,6 +91,22 @@ class SessionZeroAgent:
   сводка будет показана игроку для подтверждения.
 - Не стирай и не переписывай подтверждённые данные без явной поправки игрока.
 
+СТАРТОВОЕ ПРИСУТСТВИЕ NPC
+- Когда стартовая ситуация становится понятной, ОБЯЗАТЕЛЬНО запиши в
+  world.starter_npcs полный список NPC, которые физически присутствуют в первой сцене,
+  и одновременно поставь world.starter_presence_confirmed=true.
+- Это не список всех персонажей завязки. Не включай пропавших, тех, кого ещё надо найти,
+  далёких владельцев, будущих собеседников, фоновые имена или людей, которые только
+  упомянуты в истории.
+- Если в первой сцене никого кроме героя нет, запиши starter_npcs=[] и всё равно поставь
+  starter_presence_confirmed=true.
+- Если в своей обычной реплике ты показываешь, что «владелица входит», «компаньон сидит
+  напротив», «заказчик ждёт у двери» и т.п., этот же NPC обязан быть в starter_npcs.
+- role описывает его функцию в сцене; name указывай только если имя уже установлено.
+  Не придумывай имя только ради структуры. description/reason могут быть короткими.
+- Не используй профессию или отдельное слово как доказательство физического присутствия:
+  решай присутствие по смыслу всей стартовой ситуации.
+
 ИНСТРУМЕНТЫ
 1. update_session_zero — скрыто обновляет только новые данные текущего хода.
    Передай patch с секциями world и character. Не копируй карточку целиком.
@@ -420,6 +436,9 @@ class SessionZeroInterviewService:
                     continue
                 old_value = getattr(target_section, field_name)
                 if isinstance(old_value, list) and isinstance(new_value, list):
+                    if field_name == "starter_npcs" and explicit_correction:
+                        setattr(target_section, field_name, list(new_value))
+                        continue
                     combined = list(old_value)
                     for item in new_value:
                         if item not in combined:
@@ -456,6 +475,7 @@ class SessionZeroInterviewService:
             "world.play_style": cls._text(world.play_style),
             "world.starting_location_name": cls._text(world.starting_location_name),
             "world.starting_situation": cls._text(world.starting_situation),
+            "world.starter_presence_confirmed": world.starter_presence_confirmed,
             "world.boundaries_confirmed": world.boundaries_confirmed,
             "character.name": cls._text(character.name),
             "character.description": cls._text(character.description),
@@ -477,6 +497,9 @@ class SessionZeroInterviewService:
     def summary(cls, draft: SessionZeroInterviewDraft) -> str:
         world = draft.world
         character = draft.character
+        starter_people = [
+            npc.name or npc.role for npc in world.starter_npcs if npc.present_at_start
+        ]
         return "\n".join(
             [
                 f"Мир: {world.world_summary or world.setting_name or '—'}",
@@ -497,6 +520,7 @@ class SessionZeroInterviewService:
                 f"Первая цель: {character.first_goal or '—'}",
                 f"Старт: {world.starting_location_name or '—'} — "
                 f"{world.starting_situation or '—'}",
+                f"Кто уже в стартовой сцене: {'; '.join(starter_people) or 'никого кроме героя'}",
             ]
         )
 

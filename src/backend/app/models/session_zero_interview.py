@@ -5,6 +5,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
+class SessionZeroStarterNPC(BaseModel):
+    """NPC explicitly established by Session Zero as physically present at game start.
+
+    This is a presence contract, not a generic cast list. Characters who merely exist in the
+    premise, must be found later, or are only mentioned as background must not be included.
+    """
+
+    role: str = Field(min_length=1, max_length=160)
+    name: str | None = Field(default=None, max_length=160)
+    description: str | None = Field(default=None, max_length=600)
+    reason: str | None = Field(default=None, max_length=400)
+    present_at_start: bool = True
+
+
 class SessionZeroWorldDraft(BaseModel):
     setting_name: str | None = None
     genre: str | None = None
@@ -21,6 +35,15 @@ class SessionZeroWorldDraft(BaseModel):
     starting_location_name: str | None = None
     starting_situation: str | None = None
     starting_scene_title: str | None = None
+    starter_npcs: list[SessionZeroStarterNPC] = Field(
+        default_factory=list,
+        max_length=6,
+        description=(
+            "Complete list of NPCs physically present in the opening scene. Exclude missing, future, "
+            "background-only or merely mentioned people."
+        ),
+    )
+    starter_presence_confirmed: bool = False
 
 
 class SessionZeroCharacterDraft(BaseModel):
@@ -62,6 +85,8 @@ class SessionZeroWorldPatch(BaseModel):
     starting_location_name: str | None = None
     starting_situation: str | None = None
     starting_scene_title: str | None = None
+    starter_npcs: list[SessionZeroStarterNPC] | None = None
+    starter_presence_confirmed: bool | None = None
 
 
 class SessionZeroCharacterPatch(BaseModel):
@@ -183,15 +208,7 @@ class SessionZeroInterviewModelDecision(BaseModel):
 
     @model_validator(mode="after")
     def keep_conversation_open_until_finalize(self) -> SessionZeroInterviewModelDecision:
-        """A Session Zero DM must keep leading until it explicitly starts the game.
-
-        Local models often acknowledge a detail with a closed phrase such as
-        ``Хорошо, запишем`` and then stop. That leaves the player responsible for
-        inventing the next interview topic. Unless the same decision requests
-        ``finalize_session_zero``, deterministically keep the conversational door open
-        with one broad question. The neural agent still decides the content; this is a
-        presentation-independent safety net shared by CLI and GUI.
-        """
+        """A Session Zero DM must keep leading until it explicitly starts the game."""
         if self.ready_to_finalize:
             return self
         message = self.assistant_message.strip()
@@ -231,7 +248,7 @@ class SessionZeroInterviewDecision(BaseModel):
 
 
 class SessionZeroInterviewState(BaseModel):
-    version: int = 7
+    version: int = 9
     response_language: str = "ru"
     messages: list[dict[str, str]] = Field(default_factory=list)
     draft: SessionZeroInterviewDraft = Field(
