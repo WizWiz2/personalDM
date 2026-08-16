@@ -48,11 +48,16 @@ def _complete(client: TestClient, *, situation: str, starter_npcs: list[dict]):
         json={},
     )
     assert completed.status_code == 200, completed.text
-    return hero, completed.json()
+    payload = completed.json()
+    participants = client.get(
+        f"/api/scenes/{payload['scene']['id']}/participants"
+    )
+    assert participants.status_code == 200, participants.text
+    return hero, payload, participants.json()
 
 
 def test_arbitrary_present_role_materializes_without_contact_marker(client: TestClient):
-    hero, completed = _complete(
+    hero, _, participants = _complete(
         client,
         situation=(
             "Виктор начинает утро в своей конторе; владелица редкой книжной лавки уже ждёт "
@@ -67,13 +72,12 @@ def test_arbitrary_present_role_materializes_without_contact_marker(client: Test
             }
         ],
     )
-    participants = completed["scene"]["participants"]
     assert hero["id"] in participants
     assert len(participants) == 2
 
 
 def test_confirmed_empty_presence_suppresses_legacy_job_marker_inference(client: TestClient):
-    hero, completed = _complete(
+    hero, _, participants = _complete(
         client,
         situation=(
             "Виктор один в своей конторе просматривает письмо с предложением оплачиваемого заказа; "
@@ -81,11 +85,11 @@ def test_confirmed_empty_presence_suppresses_legacy_job_marker_inference(client:
         ),
         starter_npcs=[],
     )
-    assert completed["scene"]["participants"] == [hero["id"]]
+    assert participants == [hero["id"]]
 
 
 def test_future_character_is_not_materialized(client: TestClient):
-    hero, completed = _complete(
+    hero, _, participants = _complete(
         client,
         situation="Виктор собирается разыскать пропавшего компаньона владельца галереи.",
         starter_npcs=[
@@ -96,7 +100,7 @@ def test_future_character_is_not_materialized(client: TestClient):
             }
         ],
     )
-    assert completed["scene"]["participants"] == [hero["id"]]
+    assert participants == [hero["id"]]
 
 
 def test_presence_contract_is_required_for_conversational_finalize():
