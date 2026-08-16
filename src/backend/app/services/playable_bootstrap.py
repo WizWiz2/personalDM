@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
@@ -14,6 +15,7 @@ from app.models.character import CharacterCreate
 from app.models.entity import EntityCreate, EntityType
 from app.models.location import LocationCreate
 from app.models.scene_state import LocationExitCreate, SceneStateRead, SceneStateUpdate
+from app.models.session_zero_interview import SessionZeroStarterNPC
 from app.services.scene_state_service import SceneStateService
 
 
@@ -28,25 +30,18 @@ class PlayableBootstrapResult:
 class PlayableBootstrapService:
     """Guarantee that a freshly completed Session Zero opens on something playable.
 
-    Session Zero used to materialize only the hero, one location and one scene. That is a
-    structurally valid database state but not necessarily a playable RPG state: the player can
-    have nobody to address, nothing to inspect and no route by which to leave. The turn pipeline
-    then has only two bad options -- hallucinate missing world structure or correctly block every
-    attempted action.
+    Conversational Session Zero owns semantic presence: once it confirms a structured starter-NPC
+    contract, only those explicitly present NPCs may be materialized. The older keyword inference
+    remains solely as a compatibility fallback for manual/legacy setup records that have no
+    structured presence contract at all.
 
-    This service is deliberately deterministic and conservative. It never invents a plot twist
-    or an unmentioned person. It supplies only mundane affordances grounded in the already agreed
-    Session Zero contract:
-    - a temporary local contact when the starting situation establishes such a role, including
-      a job-shaped start that necessarily has a mundane counterparty;
-    - one inspectable object tied to the agreed starting situation;
-    - one mundane discovered route for an obviously enclosed start, unless the agreed situation
-      explicitly says that enclosure is sealed.
-
-    Existing structured affordances always win. Re-running the service is idempotent.
+    The service also supplies one inspectable object and, for an ordinary enclosed start, one
+    mundane route out. Existing structured affordances always win. Re-running is idempotent.
     """
 
     SOURCE = "session_zero_playable_bootstrap"
+    STRUCTURED_SOURCE = "session_zero_structured_presence"
+    INTERVIEW_STATE_KEY = "session_zero_interview"
     SOLITARY_MARKERS = (
         "в одиночестве",
         "совсем один",
@@ -130,6 +125,7 @@ class PlayableBootstrapService:
 
     def __init__(self, session: AsyncSession):
         self._session = session
+        self._setups = CampaignSetupRepository(session)
         self._entities = EntityRepository(session)
         self._locations = LocationRepository(session)
         self._scenes = SceneRepository(session)
@@ -173,22 +169,42 @@ class PlayableBootstrapService:
         created_object_id = None
         created_exit_location_id = None
 
-        non_player_participants = [
-            value for value in state.participant_ids if value != player_character_id
-        ]
-        if (
-            not non_player_participants
-            and not self._explicitly_solitary(situation)
-            and self._mentions_contact(situation)
-        ):
-            starter = await self._create_local_contact(
-                campaign_id,
-                scene_id,
-                starting_location_id,
-                situation,
-                tone,
-            )
-            created_npc_id = starter.id
+        contract_confirmed, starter_npcs = await self._structured_starter_presence(campaign_id)
+        if contract_confirmed:
+            if starter_npcs and self._explicitly_solitary(situation):
+                raise ValueError(
+                    "Structured starter NPC presence conflicts with explicitly solitary start"
+                )
+            for spec in starter_npcs:
+                character, created = await self._ensure_structured_contact(
+                    campaign_id,
+                    scene_id,
+                    starting_location_id,
+                    spec,
+                    situation,
+                    tone,
+                )
+                if created and created_npc_id is None:
+                    created_npc_id = character.id
+        else:
+            # Legacy/manual compatibility only. New conversational Session Zero must confirm
+            # structured presence and therefore never depends on profession keywords.
+            non_player_participants = [
+                value for value in state.participant_ids if value != player_character_id
+            ]
+            if (
+                not non_player_participants
+                and not self._explicitly_solitary(situation)
+                and self._mentions_contact(situation)
+            ):
+                starter = await self._create_local_contact(
+                    campaign_id,
+                    scene_id,
+                    starting_location_id,
+                    situation,
+                    tone,
+                )
+                created_npc_id = starter.id
 
         state = await self._state.require_valid(campaign_id, scene_id)
         if not state.object_ids:
@@ -241,6 +257,105 @@ class PlayableBootstrapService:
             created_object_id=created_object_id,
             created_exit_location_id=created_exit_location_id,
         )
+
+    async def _structured_starter_presence(
+        self,
+        campaign_id: UUID,
+    ) -> tuple[bool, list[SessionZeroStarterNPC]]:
+        row = await self._setups.get(campaign_id)
+        if row is None:
+            return False, []
+        custom = self._setups.decode_dict(row.custom_fields)
+        raw_state = custom.get(self.INTERVIEW_STATE_KEY)
+        if not isinstance(raw_state, dict):
+            return False, []
+        draft = raw_state.get("draft")
+        world = draft.get("world") if isinstance(draft, dict) else None
+        if not isinstance(world, dict) or not bool(world.get("starter_presence_confirmed")):
+            return False, []
+        raw_npcs = world.get("starter_npcs", [])
+        if not isinstance(raw_npcs, list):
+            raise ValueError("Structured starter NPC contract is malformed")
+        parsed: list[SessionZeroStarterNPC] = []
+        for raw in raw_npcs[:6]:
+            try:
+                spec = SessionZeroStarterNPC.model_validate(raw)
+            except ValueError as exc:
+                raise ValueError("Structured starter NPC contract is malformed") from exc
+            if spec.present_at_start:
+                parsed.append(spec)
+        return True, parsed
+
+    async def _ensure_structured_contact(
+        self,
+        campaign_id: UUID,
+        scene_id: UUID,
+        location_id: UUID,
+        spec: SessionZeroStarterNPC,
+        situation: str,
+        tone: str | None,
+    ):
+        preferred = self._starter_name(spec)
+        state = await self._state.require_valid(campaign_id, scene_id)
+        for participant_id in state.participant_ids:
+            participant = await self._entities.get_character(participant_id)
+            if participant and participant.canonical_name.casefold() == preferred.casefold():
+                return participant, False
+
+        # Idempotence without teleportation: an existing same-named character may be reused only
+        # if structured world state already places them at the opening location.
+        for entity in await self._entities.list_by_campaign(campaign_id):
+            if entity.entity_type != EntityType.CHARACTER.value:
+                continue
+            if entity.canonical_name.casefold() != preferred.casefold():
+                continue
+            character = await self._entities.get_character(entity.id)
+            if character and character.current_location_id == location_id:
+                await self._scenes.add_participant(
+                    scene_id,
+                    character.id,
+                    allow_movement=False,
+                )
+                return character, False
+
+        name = await self._unique_name(campaign_id, EntityType.CHARACTER.value, preferred)
+        role = self._clean(spec.role)
+        reason = self._clean(spec.reason) or situation
+        character = await self._entities.create_character(
+            campaign_id,
+            CharacterCreate(
+                canonical_name=name,
+                description=(
+                    self._clean(spec.description)
+                    or f"Стартовый персонаж ({role}), присутствующий по согласованной ситуации: {reason}"
+                ),
+                appearance=(
+                    "Внешность пока определена только настолько, насколько требуется стартовой сцене."
+                ),
+                personality="Ведёт себя в рамках своей роли и известных обстоятельств.",
+                voice="Манера речи уточняется в живом диалоге.",
+                speech_patterns="Отвечает только из собственных знаний и положения в сцене.",
+                biography=f"На старте кампании выступает как {role}.",
+                backstory_public=f"{role}; физически присутствует в первой сцене.",
+                current_location_id=location_id,
+                current_intentions=[reason],
+                custom_fields={
+                    "source": self.STRUCTURED_SOURCE,
+                    "temporary_name": not bool(self._clean(spec.name)),
+                    "bootstrap_role": role,
+                    "role": role,
+                    "starter_presence_reason": reason,
+                    "tone": tone,
+                },
+            ),
+        )
+        await self._scenes.add_participant(scene_id, character.id, allow_movement=False)
+        return character, True
+
+    @classmethod
+    def _starter_name(cls, spec: SessionZeroStarterNPC) -> str:
+        value = cls._clean(spec.name) or cls._clean(spec.role) or "Местный собеседник"
+        return value[:1].upper() + value[1:] if value else "Местный собеседник"
 
     async def _create_local_contact(
         self,
@@ -389,11 +504,8 @@ class PlayableBootstrapService:
 
     @classmethod
     def _mentions_contact(cls, situation: str) -> bool:
-        # A job-shaped opening already establishes a mundane counterparty even when the local
-        # Session Zero model phrases the structured situation as "получить заказ" and mentions
-        # the arriving client only in its public reply. This is not permission to materialize an
-        # arbitrary named NPC: the deterministic bootstrap creates exactly one temporary
-        # role-bound contact ("Заказчик") and only when no other NPC is already present.
+        # Legacy/manual compatibility only. Conversational Session Zero uses the structured
+        # starter-presence contract above and never calls this path.
         return cls._contains_any(situation, cls.CONTACT_MARKERS) or cls._contains_any(
             situation, cls.JOB_MARKERS
         )
