@@ -37,7 +37,8 @@ class PlayableBootstrapService:
     This service is deliberately deterministic and conservative. It never invents a plot twist
     or an unmentioned person. It supplies only mundane affordances grounded in the already agreed
     Session Zero contract:
-    - a temporary local contact only when the starting situation itself establishes such a role;
+    - a temporary local contact when the starting situation establishes such a role, including
+      a job-shaped start that necessarily has a mundane counterparty;
     - one inspectable object tied to the agreed starting situation;
     - one mundane discovered route for an obviously enclosed start, unless the agreed situation
       explicitly says that enclosure is sealed.
@@ -388,7 +389,14 @@ class PlayableBootstrapService:
 
     @classmethod
     def _mentions_contact(cls, situation: str) -> bool:
-        return cls._contains_any(situation, cls.CONTACT_MARKERS)
+        # A job-shaped opening already establishes a mundane counterparty even when the local
+        # Session Zero model phrases the structured situation as "получить заказ" and mentions
+        # the arriving client only in its public reply. This is not permission to materialize an
+        # arbitrary named NPC: the deterministic bootstrap creates exactly one temporary
+        # role-bound contact ("Заказчик") and only when no other NPC is already present.
+        return cls._contains_any(situation, cls.CONTACT_MARKERS) or cls._contains_any(
+            situation, cls.JOB_MARKERS
+        )
 
     @classmethod
     def _looks_enclosed(cls, location_name: str, situation: str) -> bool:
