@@ -35,7 +35,15 @@ class SessionZeroWorldDraft(BaseModel):
     starting_location_name: str | None = None
     starting_situation: str | None = None
     starting_scene_title: str | None = None
-    starter_npcs: list[SessionZeroStarterNPC] = Field(default_factory=list, max_length=6)
+    starter_npcs: list[SessionZeroStarterNPC] = Field(
+        default_factory=list,
+        max_length=6,
+        description=(
+            "Complete list of NPCs physically present in the opening scene. Exclude missing, future, "
+            "background-only or merely mentioned people."
+        ),
+    )
+    starter_presence_confirmed: bool = False
 
 
 class SessionZeroCharacterDraft(BaseModel):
@@ -78,6 +86,7 @@ class SessionZeroWorldPatch(BaseModel):
     starting_situation: str | None = None
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] | None = None
+    starter_presence_confirmed: bool | None = None
 
 
 class SessionZeroCharacterPatch(BaseModel):
@@ -239,7 +248,7 @@ class SessionZeroInterviewDecision(BaseModel):
 
 
 class SessionZeroInterviewState(BaseModel):
-    version: int = 8
+    version: int = 9
     response_language: str = "ru"
     messages: list[dict[str, str]] = Field(default_factory=list)
     draft: SessionZeroInterviewDraft = Field(
