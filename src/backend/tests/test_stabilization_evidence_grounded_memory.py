@@ -5,12 +5,11 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.proposed_change import ChangeType, ProposedChangeCreate
+from app.models.proposed_change import ChangeType
 from app.providers.llm_provider import LLMProviderError
 from app.services.actor_turn_authority_guard import (
-    ActorClaim,
-    build_actor_claim_proposals,
-    filter_supported_actor_knowledge,
+    build_actor_evidence_proposals,
+    extract_actor_evidence_proposals,
 )
 
 
@@ -18,37 +17,12 @@ PUBLISHED = (
     "Бармен понижает голос. «Кто-то уже спрашивал про „Морскую Звезду“. "
     "Он назвался заказчиком и ушёл к седьмому причалу»."
 )
-EVIDENCE = "Кто-то уже спрашивал про „Морскую Звезду“. Он назвался заказчиком"
-
-
-def _knowledge(
-    *,
-    source_id,
-    recipient_id,
-    proposition: str,
-    evidence: str = EVIDENCE,
-) -> ProposedChangeCreate:
-    return ProposedChangeCreate(
-        change_type=ChangeType.KNOWLEDGE,
-        payload={
-            "recipient_id": str(recipient_id),
-            "source_character_id": str(source_id),
-            "proposition": proposition,
-            "confidence": 0.8,
-            "status": "known",
-            "_canon": {
-                "kind": "knowledge_transfer",
-                "evidence": evidence,
-                "authority": "character_claim",
-                "durable": True,
-            },
-        },
-    )
+EXACT = "Он назвался заказчиком и ушёл к седьмому причалу"
 
 
 class FakeRouter:
-    def __init__(self, verdicts=None, error: Exception | None = None):
-        self.verdicts = verdicts or []
+    def __init__(self, spans=None, error: Exception | None = None):
+        self.spans = spans or []
         self.error = error
         self.calls = 0
         self.last_messages = None
@@ -61,134 +35,29 @@ class FakeRouter:
         self.last_messages = messages
         if self.error:
             raise self.error
-        return {"verdicts": self.verdicts}
+        return {"evidence_spans": self.spans}
+
+
+class FakeEntities:
+    async def get_character(self, entity_id):
+        return SimpleNamespace(
+            canonical_name="Бармен" if str(entity_id).endswith("1") else "Мария"
+        )
 
 
 def _scribe(router: FakeRouter):
     return SimpleNamespace(
         _model_router=router,
         _llm_provider=SimpleNamespace(),
+        _entity_repo=FakeEntities(),
     )
 
 
-@pytest.mark.asyncio
-async def test_round22_negative_inference_is_rejected_when_evidence_says_opposite():
+def test_proposition_is_exact_published_evidence_not_second_llm_paraphrase():
     actor_id = uuid4()
     player_id = uuid4()
-    bad = _knowledge(
-        source_id=actor_id,
-        recipient_id=player_id,
-        proposition="Бармен ничего не говорил о заказчике.",
-    )
-    router = FakeRouter(verdicts=[{"index": 0, "supported": False}])
-
-    result = await filter_supported_actor_knowledge(
-        _scribe(router),
-        [bad],
-        campaign_id=uuid4(),
-        assistant_content=PUBLISHED,
-        acting_character_id=actor_id,
-        player_character_id=player_id,
-    )
-
-    assert result == []
-    assert router.calls == 1
-    prompt = "\n".join(message.content for message in router.last_messages)
-    assert "Бармен ничего не говорил о заказчике" in prompt
-    assert EVIDENCE in prompt
-    assert "Отрицательное утверждение поддерживается только явным отрицанием" in prompt
-
-
-@pytest.mark.asyncio
-async def test_supported_paraphrase_keeps_character_claim_not_objective_fact():
-    actor_id = uuid4()
-    player_id = uuid4()
-    good = _knowledge(
-        source_id=actor_id,
-        recipient_id=player_id,
-        proposition="Бармен сообщил, что человек назвался заказчиком.",
-    )
-    router = FakeRouter(verdicts=[{"index": 0, "supported": True}])
-
-    result = await filter_supported_actor_knowledge(
-        _scribe(router),
-        [good],
-        campaign_id=uuid4(),
-        assistant_content=PUBLISHED,
-        acting_character_id=actor_id,
-        player_character_id=player_id,
-    )
-
-    assert result == [good]
-    assert result[0].change_type == ChangeType.KNOWLEDGE
-    assert result[0].payload["_canon"]["authority"] == "character_claim"
-
-
-@pytest.mark.asyncio
-async def test_wrong_speaker_or_non_extractable_evidence_fails_before_model_call():
-    actor_id = uuid4()
-    player_id = uuid4()
-    other_id = uuid4()
-    wrong_source = _knowledge(
-        source_id=other_id,
-        recipient_id=player_id,
-        proposition="Кто-то назвался заказчиком.",
-    )
-    invented_evidence = _knowledge(
-        source_id=actor_id,
-        recipient_id=player_id,
-        proposition="Заказчик был в красном пальто.",
-        evidence="Заказчик был в красном пальто.",
-    )
-    router = FakeRouter(verdicts=[{"index": 0, "supported": True}])
-
-    result = await filter_supported_actor_knowledge(
-        _scribe(router),
-        [wrong_source, invented_evidence],
-        campaign_id=uuid4(),
-        assistant_content=PUBLISHED,
-        acting_character_id=actor_id,
-        player_character_id=player_id,
-    )
-
-    assert result == []
-    assert router.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_entailment_transport_failure_fails_closed():
-    actor_id = uuid4()
-    player_id = uuid4()
-    candidate = _knowledge(
-        source_id=actor_id,
-        recipient_id=player_id,
-        proposition="Бармен сообщил, что человек назвался заказчиком.",
-    )
-    router = FakeRouter(error=LLMProviderError("planned verifier failure"))
-
-    result = await filter_supported_actor_knowledge(
-        _scribe(router),
-        [candidate],
-        campaign_id=uuid4(),
-        assistant_content=PUBLISHED,
-        acting_character_id=actor_id,
-        player_character_id=player_id,
-    )
-
-    assert result == []
-    assert router.calls == 1
-
-
-def test_fallback_claim_keeps_exact_evidence_provenance_for_entailment():
-    actor_id = uuid4()
-    player_id = uuid4()
-    proposals = build_actor_claim_proposals(
-        [
-            ActorClaim(
-                proposition="Человек назвался заказчиком.",
-                evidence=EVIDENCE,
-            )
-        ],
+    proposals = build_actor_evidence_proposals(
+        [EXACT],
         acting_character_id=actor_id,
         player_character_id=player_id,
         authoritative_text=PUBLISHED,
@@ -196,7 +65,102 @@ def test_fallback_claim_keeps_exact_evidence_provenance_for_entailment():
 
     assert len(proposals) == 1
     payload = proposals[0].payload
+    assert proposals[0].change_type == ChangeType.KNOWLEDGE
+    assert payload["proposition"] == EXACT
+    assert payload["_canon"]["evidence"] == EXACT
     assert payload["source_character_id"] == str(actor_id)
     assert payload["recipient_id"] == str(player_id)
-    assert payload["_canon"]["evidence"] == EVIDENCE
     assert payload["_canon"]["authority"] == "character_claim"
+
+
+def test_round22_polarity_inversion_cannot_be_built_without_published_span():
+    actor_id = uuid4()
+    player_id = uuid4()
+    proposals = build_actor_evidence_proposals(
+        ["Бармен ничего не говорил о заказчике."],
+        acting_character_id=actor_id,
+        player_character_id=player_id,
+        authoritative_text=PUBLISHED,
+    )
+
+    assert proposals == []
+
+
+def test_explicit_negative_statement_is_valid_when_npc_actually_said_it():
+    actor_id = uuid4()
+    player_id = uuid4()
+    published = "Сторож качает головой. «Я не видел Ивана после полуночи»."
+    evidence = "Я не видел Ивана после полуночи"
+
+    proposals = build_actor_evidence_proposals(
+        [evidence],
+        acting_character_id=actor_id,
+        player_character_id=player_id,
+        authoritative_text=published,
+    )
+
+    assert len(proposals) == 1
+    assert proposals[0].payload["proposition"] == evidence
+
+
+@pytest.mark.asyncio
+async def test_extractor_uses_one_semantic_call_and_backend_rejects_invented_span():
+    actor_id = uuid4()
+    player_id = uuid4()
+    router = FakeRouter(
+        spans=[
+            EXACT,
+            "Заказчик был в красном пальто.",
+        ]
+    )
+
+    result = await extract_actor_evidence_proposals(
+        _scribe(router),
+        campaign_id=uuid4(),
+        assistant_content=PUBLISHED,
+        acting_character_id=actor_id,
+        player_character_id=player_id,
+    )
+
+    assert router.calls == 1
+    assert len(result) == 1
+    assert result[0].payload["proposition"] == EXACT
+    prompt = "\n".join(message.content for message in router.last_messages)
+    assert "ACTOR EVIDENCE EXTRACTOR" in prompt
+    assert "копируй его дословно" in prompt
+
+
+@pytest.mark.asyncio
+async def test_extractor_failure_does_not_create_or_invent_memory():
+    actor_id = uuid4()
+    player_id = uuid4()
+    router = FakeRouter(error=LLMProviderError("planned extractor failure"))
+
+    result = await extract_actor_evidence_proposals(
+        _scribe(router),
+        campaign_id=uuid4(),
+        assistant_content=PUBLISHED,
+        acting_character_id=actor_id,
+        player_character_id=player_id,
+    )
+
+    assert result == []
+    assert router.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_silence_never_calls_extractor_or_creates_knowledge():
+    actor_id = uuid4()
+    player_id = uuid4()
+    router = FakeRouter(spans=["Я видел Ивана вчера"])
+
+    result = await extract_actor_evidence_proposals(
+        _scribe(router),
+        campaign_id=uuid4(),
+        assistant_content="Бармен умолкает.",
+        acting_character_id=actor_id,
+        player_character_id=player_id,
+    )
+
+    assert result == []
+    assert router.calls == 0
