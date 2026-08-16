@@ -8,10 +8,9 @@ from app.models.narration_validation import NarrationValidationResult
 from app.models.proposed_change import ChangeType
 from app.models.turn_authority import TurnAuthority
 from app.services.actor_turn_authority_guard import (
-    ActorClaim,
-    _extract_actor_claims,
     actor_turn_contract,
-    build_actor_claim_proposals,
+    build_actor_evidence_proposals,
+    extract_actor_evidence_proposals,
     protect_actor_turn_validation,
 )
 from app.runtime import runtime_manifest
@@ -115,17 +114,12 @@ def test_actor_claim_provenance_is_fixed_by_typed_actor():
     actor_id = uuid4()
     player_id = uuid4()
     text = "Грузчик отвечает: «Моего брата зовут Иван Сергеевич. Он пропал вчера вечером»."
-    proposals = build_actor_claim_proposals(
-        [
-            ActorClaim(
-                proposition="Брата Грузчика зовут Иван Сергеевич.",
-                evidence="Моего брата зовут Иван Сергеевич",
-            ),
-            ActorClaim(
-                proposition="Иван Сергеевич пропал вчера вечером.",
-                evidence="Он пропал вчера вечером",
-            ),
-        ],
+    spans = [
+        "Моего брата зовут Иван Сергеевич",
+        "Он пропал вчера вечером",
+    ]
+    proposals = build_actor_evidence_proposals(
+        spans,
         acting_character_id=actor_id,
         player_character_id=player_id,
         authoritative_text=text,
@@ -135,16 +129,12 @@ def test_actor_claim_provenance_is_fixed_by_typed_actor():
     assert all(item.change_type == ChangeType.KNOWLEDGE for item in proposals)
     assert all(item.payload["source_character_id"] == str(actor_id) for item in proposals)
     assert all(item.payload["recipient_id"] == str(player_id) for item in proposals)
+    assert [item.payload["proposition"] for item in proposals] == spans
 
 
 def test_actor_claim_requires_exact_published_evidence():
-    proposals = build_actor_claim_proposals(
-        [
-            ActorClaim(
-                proposition="У Грузчика есть брат.",
-                evidence="Этой фразы в ответе не было",
-            )
-        ],
+    proposals = build_actor_evidence_proposals(
+        ["Этой фразы в ответе не было"],
         acting_character_id=uuid4(),
         player_character_id=uuid4(),
         authoritative_text="Грузчик молча теребит рукав.",
@@ -170,12 +160,7 @@ async def test_empty_general_scribe_can_recover_actor_claims():
             resolve=AsyncMock(return_value=SimpleNamespace()),
             generate_json=AsyncMock(
                 return_value={
-                    "claims": [
-                        {
-                            "proposition": "Брата Грузчика зовут Иван Сергеевич.",
-                            "evidence": "Моего брата зовут Иван Сергеевич",
-                        }
-                    ]
+                    "evidence_spans": ["Моего брата зовут Иван Сергеевич"]
                 }
             ),
         ),
@@ -183,7 +168,7 @@ async def test_empty_general_scribe_can_recover_actor_claims():
     )
     text = "Грузчик отвечает: «Моего брата зовут Иван Сергеевич»."
 
-    proposals = await _extract_actor_claims(
+    proposals = await extract_actor_evidence_proposals(
         scribe,
         campaign_id=uuid4(),
         assistant_content=text,
@@ -195,6 +180,7 @@ async def test_empty_general_scribe_can_recover_actor_claims():
     assert proposals[0].change_type == ChangeType.KNOWLEDGE
     assert proposals[0].payload["source_character_id"] == str(actor_id)
     assert proposals[0].payload["recipient_id"] == str(player_id)
+    assert proposals[0].payload["proposition"] == "Моего брата зовут Иван Сергеевич"
 
 
 def test_runtime_manifest_reports_actor_turn_guard():
