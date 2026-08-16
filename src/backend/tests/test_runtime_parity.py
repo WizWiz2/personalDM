@@ -63,6 +63,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "actor_turn_authority",
         "memory_scribe",
         "narration_failure_containment",
+        "narration_repetition",
         "session_zero_finalize",
         "thesis_lifecycle",
     ]
