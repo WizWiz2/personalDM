@@ -78,12 +78,3 @@ async def test_round19_job_start_materializes_customer_before_gameplay(db_sessio
         if name == "Заказчик"
     )
     assert customer_id != completed.setup.player_character_id
-
-
-@pytest.mark.asyncio
-async def test_job_bootstrap_does_not_duplicate_an_existing_npc(db_session):
-    # The integration regression above proves the job-shaped contract creates exactly one
-    # participant on a fresh start. Existing participant precedence remains an invariant in
-    # PlayableBootstrapService.ensure: it must never create a second synthetic customer when a
-    # concrete NPC has already been materialized by another structured setup path.
-    assert "not non_player_participants" in PlayableBootstrapService.ensure.__code__.co_names or True
