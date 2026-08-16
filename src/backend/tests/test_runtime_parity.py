@@ -93,9 +93,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "AuthorityNarrationPipeline.generate"
     )
     assert cli_manifest["authority_planner"].endswith("TurnAuthorityPlanner.plan")
-    assert cli_manifest["authority_validator"].endswith(
-        "TurnAuthorityValidator.validate"
-    )
+    assert "actor_turn_authority_guard" in cli_manifest["authority_validator"]
+    assert cli_manifest["authority_validator"].endswith("actor_aware_validate")
     assert cli_manifest["context_compiler"].endswith(
         "ContextCompiler.compile_context"
     )
