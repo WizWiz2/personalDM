@@ -249,7 +249,7 @@ jobs:
                   narrator_total += 1
                   if protocol.get("planner_status") == "completed":
                       narrator_planner_completed += 1
-              if protocol.get("validator_status") in {"passed", "repaired"}:
+              if protocol.get("validator_status") in {"passed", "repaired", "safe_fallback"}:
                   authority_validated += 1
           db.close()
 
