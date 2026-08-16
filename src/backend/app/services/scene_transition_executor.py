@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.action_sequence_table import ActionSequence
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.db.scene_location_table import SceneLocationLink
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant
 from app.models.action_sequence import ActionSequenceExecution
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate, SceneRead
+from app.services.location_identity import same_location_reference
 from app.services.player_destination_authorization import (
     DestinationAuthorization,
     PlayerDestinationAuthorizer,
@@ -155,6 +157,11 @@ class SceneTransitionExecutor:
         target_location_id = source_location_id
         destination_created = False
         if plan.transition_type == "location_transition":
+            existing_target = await self._resolve_existing_location(
+                campaign_id,
+                source_location_id,
+                plan.destination_location or "",
+            )
             authorization = None
             if trigger_turn_id:
                 authorization = await self.authorize_destination(
@@ -167,11 +174,6 @@ class SceneTransitionExecutor:
                         f"{authorization.reason}"
                     )
                 if not authorization.applicable:
-                    locations = await self._locations.list_by_campaign(campaign_id)
-                    existing_target = self._match_location(
-                        locations,
-                        " ".join((plan.destination_location or "").split()),
-                    )
                     if existing_target is None:
                         raise ValueError(
                             "Player destination is unresolved; "
@@ -179,13 +181,17 @@ class SceneTransitionExecutor:
                         )
                     require_existing_route = True
 
-            target_location_id, destination_created = (
-                await self._resolve_or_create_location(
-                    campaign_id,
-                    plan.destination_location or "",
-                    plan.destination_parent_location,
+            if existing_target is not None:
+                target_location_id = existing_target.id
+                destination_created = False
+            else:
+                target_location_id, destination_created = (
+                    await self._resolve_or_create_location(
+                        campaign_id,
+                        plan.destination_location or "",
+                        plan.destination_parent_location,
+                    )
                 )
-            )
             if allow_route_discovery is None:
                 allow_route_discovery = bool(
                     authorization
@@ -220,17 +226,30 @@ class SceneTransitionExecutor:
             time_after=plan.time_after,
         )
 
-        participant_ids = await self._participants_to_carry(
+        carried_ids = await self._participants_to_carry(
             campaign_id,
             campaign.player_character_id,
             source_scene_id,
             plan,
         )
-        for participant_id in participant_ids:
+        for participant_id in carried_ids:
             await self._scenes.add_participant(
                 target_scene.id,
                 participant_id,
                 allow_movement=True,
+            )
+
+        resident_ids = await self._known_residents_at_location(
+            campaign_id,
+            target_location_id,
+        )
+        for participant_id in resident_ids:
+            if participant_id in carried_ids:
+                continue
+            await self._scenes.add_participant(
+                target_scene.id,
+                participant_id,
+                allow_movement=False,
             )
 
         target_scene = (
@@ -442,6 +461,56 @@ class SceneTransitionExecutor:
         # not-an-available-exit / inactive / undiscovered diagnostic. This keeps
         # structural blockers precise while still preventing empty-graph discovery.
 
+    async def _resolve_existing_location(
+        self,
+        campaign_id: UUID,
+        source_location_id: UUID | None,
+        destination: str,
+    ):
+        """Resolve destination identity from structural routes before global text matching.
+
+        A direct exit is stronger evidence than model-authored word order or number spelling. The
+        route-local comparison is intentionally conservative and must resolve to exactly one target;
+        it never performs campaign-global fuzzy merging.
+        """
+        clean_destination = " ".join(destination.split())
+        if not clean_destination:
+            return None
+        locations = await self._locations.list_by_campaign(campaign_id)
+        by_id = {location.id: location for location in locations}
+
+        if source_location_id:
+            exits = await self._state.list_exits(
+                campaign_id,
+                source_location_id,
+                include_hidden=True,
+            )
+            matched_ids: set[UUID] = set()
+            for exit_row in exits:
+                target = by_id.get(exit_row.to_location_id)
+                if target is None:
+                    continue
+                candidates = [
+                    target.canonical_name,
+                    *target.aliases,
+                    exit_row.to_location_name,
+                    exit_row.label,
+                ]
+                if any(
+                    same_location_reference(clean_destination, candidate)
+                    for candidate in candidates
+                    if candidate
+                ):
+                    matched_ids.add(target.id)
+            if len(matched_ids) == 1:
+                return by_id[next(iter(matched_ids))]
+            if len(matched_ids) > 1:
+                raise ValueError(
+                    "Player destination matches multiple existing routes"
+                )
+
+        return self._match_location(locations, clean_destination)
+
     async def _resolve_or_create_location(
         self,
         campaign_id: UUID,
@@ -524,6 +593,38 @@ class SceneTransitionExecutor:
             if carry_all or names & requested:
                 selected.append(entity_id)
         return selected
+
+    async def _known_residents_at_location(
+        self,
+        campaign_id: UUID,
+        location_id: UUID | None,
+    ) -> list[UUID]:
+        """Restore previously presented characters that still physically occupy the target.
+
+        ``current_location_id`` alone is not enough: a character may exist in the world without
+        ever having been presented to the player. Requiring a previous SceneParticipant row at the
+        same physical location preserves revisit continuity without exposing hidden population.
+        """
+        if location_id is None:
+            return []
+        result = await self._session.execute(
+            select(Entity.id)
+            .join(Character, Character.entity_id == Entity.id)
+            .join(SceneParticipant, SceneParticipant.entity_id == Entity.id)
+            .join(
+                SceneLocationLink,
+                SceneLocationLink.scene_id == SceneParticipant.scene_id,
+            )
+            .where(
+                Entity.campaign_id == str(campaign_id),
+                Entity.entity_type == "character",
+                Character.current_location_id == str(location_id),
+                SceneLocationLink.location_id == str(location_id),
+            )
+            .distinct()
+            .order_by(Entity.canonical_name)
+        )
+        return [UUID(value) for value in result.scalars().all()]
 
     async def _restore_scene_participant_locations(self, scene_id: UUID) -> None:
         location_id = await self._scenes.get_location_id(scene_id)
