@@ -19,10 +19,7 @@ from app.models.scene import SceneCreate
 from app.models.turn import ChatMessage, TurnCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
-from app.services.narration_repetition_guard import (
-    NarrationRepetitionGuard,
-    install as install_repetition_guard,
-)
+from app.services.narration_repetition_guard import NarrationRepetitionGuard
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
@@ -181,31 +178,26 @@ async def test_actor_repeat_gets_one_retry_before_validation(
 
 
 @pytest.mark.asyncio
-async def test_persistent_repeat_publishes_validated_authority_instead_of_looping(
+async def test_persistent_repeat_publishes_authority_instead_of_looping(
     db_session: AsyncSession,
     monkeypatch,
 ):
-    install_repetition_guard()
     campaign_id, scene_id, authority = await _setup_actor_turn(db_session)
     pipeline = AuthorityNarrationPipeline(db_session, FakeRouter())
     calls = 0
-    validated_candidates: list[str] = []
 
     async def always_repeat(messages, selection, *, temperature):
         nonlocal calls
         calls += 1
         return PREVIOUS_REPLY, {"model": "gemma4:e4b", "attempt": calls}
 
-    async def pass_projection(self, selection, current_authority, candidate):
-        validated_candidates.append(candidate)
-        return NarrationValidationResult(
-            verdict="pass",
-            summary="authority projection is safe",
-            violations=[],
+    async def validator_must_not_run(self, selection, current_authority, candidate):
+        raise AssertionError(
+            "deterministic TurnAuthority projection is already the authority source"
         )
 
     monkeypatch.setattr(pipeline, "_generate_text", always_repeat)
-    monkeypatch.setattr(TurnAuthorityValidator, "validate", pass_projection)
+    monkeypatch.setattr(TurnAuthorityValidator, "validate", validator_must_not_run)
 
     result = await pipeline.generate(
         campaign_id=campaign_id,
@@ -222,12 +214,11 @@ async def test_persistent_repeat_publishes_validated_authority_instead_of_loopin
     )
 
     assert calls == 2
-    assert result.validation_status == "repaired"
+    assert result.validation_status == "safe_fallback"
     assert result.text == "Бармен сохраняет прежнюю позицию."
     assert result.text != PREVIOUS_REPLY
-    assert validated_candidates == [result.text]
     assert result.telemetry["repetition_guard"]["exhausted"] is True
     assert (
-        result.telemetry["narration_validation"]["repetition_authority_projection"]
+        result.telemetry["narration_validation"]["semantic_failure_recovered"]
         is True
     )
