@@ -18,12 +18,7 @@ class TurnRepository(BaseRepository):
         campaign_id: UUID,
         data: TurnCreate,
     ) -> str | None:
-        """Bind narrative turns to scene state and isolate meta dialogue.
-
-        Meta turns are deliberately scene-less. They may inspect the current scene in
-        their compiled context, but persisting them must never imply movement, presence
-        or a scene transition.
-        """
+        """Bind narrative turns to scene state and isolate meta dialogue."""
         campaign_key = str(campaign_id)
 
         if data.role in META_ROLES:
@@ -53,12 +48,9 @@ class TurnRepository(BaseRepository):
                 if not resolved:
                     resolved = parent.scene_id
                 elif resolved != parent.scene_id:
-                    transition = (data.context_snapshot or {}).get(
-                        "scene_transition"
-                    ) or {}
+                    transition = (data.context_snapshot or {}).get("scene_transition") or {}
                     authorized = (
-                        transition.get("status")
-                        in {"prepared", "applied", "reused"}
+                        transition.get("status") in {"prepared", "applied", "reused"}
                         and str(transition.get("target_scene_id") or "") == resolved
                         and str(transition.get("source_scene_id") or "")
                         == str(parent.scene_id or "")
@@ -81,18 +73,36 @@ class TurnRepository(BaseRepository):
                 )
         return resolved
 
+    @staticmethod
+    def _effective_acting_character_id(data: TurnCreate) -> UUID | None:
+        """Persist the actor that TurnAuthority actually authorized.
+
+        Public `/talk` input is routed into Planner without an unconditional acting actor. The final
+        authority snapshot is therefore the source of truth for assistant provenance. Direct/legacy
+        callers that explicitly provide an actor keep the old behavior.
+        """
+        if data.acting_character_id is not None:
+            return data.acting_character_id
+        if data.role != "assistant" or not isinstance(data.context_snapshot, dict):
+            return None
+        authority = data.context_snapshot.get("turn_authority")
+        value = authority.get("acting_character_id") if isinstance(authority, dict) else None
+        try:
+            return UUID(str(value)) if value else None
+        except (TypeError, ValueError):
+            return None
+
     async def create(self, campaign_id: UUID, data: TurnCreate) -> TurnRead:
         context_str = (
             json.dumps(data.context_snapshot)
             if data.context_snapshot is not None
             else None
         )
+        effective_actor = self._effective_acting_character_id(data)
         db_turn = Turn(
             campaign_id=str(campaign_id),
             scene_id=await self._resolve_scene_id(campaign_id, data),
-            acting_character_id=(
-                str(data.acting_character_id) if data.acting_character_id else None
-            ),
+            acting_character_id=str(effective_actor) if effective_actor else None,
             role=data.role,
             content=data.content,
             parent_turn_id=str(data.parent_turn_id) if data.parent_turn_id else None,
@@ -189,13 +199,7 @@ class TurnRepository(BaseRepository):
         self,
         campaign_id: UUID,
     ) -> tuple[TurnRead, TurnRead] | None:
-        """Resolve the latest narrative pair from durable parent provenance.
-
-        Undo must not depend on the user and assistant rows being adjacent in history. A
-        delayed assistant row from an older turn, meta traffic, or another historical row
-        may sit between them. The newest active narrative row must still be an assistant,
-        and its explicit parent must be an active user turn in the same campaign.
-        """
+        """Resolve the latest narrative pair from durable parent provenance."""
         campaign_key = str(campaign_id)
         newest = (
             await self._session.execute(
