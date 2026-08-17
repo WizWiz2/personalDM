@@ -93,6 +93,23 @@ Return exactly:
         r"candidate\s+narration|engine\s+state)",
         flags=re.IGNORECASE,
     )
+    # High-confidence physical relocation vocabulary. The guard deliberately does not treat local
+    # movement such as "подходит к окну" as a location transition.
+    PHYSICAL_RELOCATION_PATTERN = re.compile(
+        r"\b(?:возвраща\w*|прибыва\w*|добира\w*|оказыва\w*|покида\w*|"
+        r"выш(?:ел|ла|ли)|выходит|вош(?:ел|ла|ли)|входит|заходит|заш(?:ел|ла|ли)|"
+        r"направля\w*|движ\w*|ид[её]т|пош[её]л|следу\w*)\b",
+        flags=re.IGNORECASE,
+    )
+    PHYSICAL_DESTINATION_PATTERN = re.compile(
+        r"\b(?:морг\w*|офис\w*|библиотек\w*|улиц\w*|переул\w*|площад\w*|"
+        r"таверн\w*|трактир\w*|склад\w*|порт\w*|причал\w*|набереж\w*|"
+        r"станц\w*|больниц\w*|участ\w*|магазин\w*|лавк\w*|дом\w*|здани\w*|"
+        r"квартал\w*|район\w*|город\w*|деревн\w*|замок\w*|крепост\w*|"
+        r"вокзал\w*|аэропорт\w*|театр\w*|двор\w*|школ\w*|храм\w*|"
+        r"церк\w*|башн\w*|гостиниц\w*|кафе\w*|бар\w*|ресторан\w*)\b",
+        flags=re.IGNORECASE,
+    )
 
     def __init__(self, router: RoleModelRouter):
         self._router = router
@@ -157,6 +174,11 @@ Return exactly:
             )
             result = self.apply_deterministic_surface_quality(
                 result,
+                candidate_text,
+            )
+            result = self.apply_deterministic_movement_surface(
+                result,
+                authority,
                 candidate_text,
             )
             return self.apply_deterministic_player_agency(
@@ -283,6 +305,63 @@ Return exactly:
         )
 
     @classmethod
+    def _unauthorized_physical_movement_segment(
+        cls,
+        authority: TurnAuthority,
+        candidate_text: str,
+    ) -> str | None:
+        # A real structured location change is authoritative and may be narrated freely.
+        if authority.source_location_path != authority.target_location_path:
+            return None
+        if authority.scene_disposition == "location_transition" or authority.transition_type == "location_transition":
+            return None
+
+        player_name = " ".join((authority.player_character_name or "").casefold().split())
+        for segment in re.split(r"(?<=[.!?…])\s+|[\r\n]+", candidate_text or ""):
+            clean = " ".join(segment.split()).strip()
+            if not clean:
+                continue
+            folded = clean.casefold()
+            # The statement must be about the player, not an NPC independently changing rooms.
+            if player_name:
+                if player_name not in folded and not re.search(r"\b(?:ты|вы)\b", folded):
+                    continue
+            elif not re.search(r"\b(?:ты|вы)\b", folded):
+                continue
+            if not cls.PHYSICAL_RELOCATION_PATTERN.search(folded):
+                continue
+            if not cls.PHYSICAL_DESTINATION_PATTERN.search(folded):
+                continue
+            return clean
+        return None
+
+    @classmethod
+    def apply_deterministic_movement_surface(
+        cls,
+        result: NarrationValidationResult,
+        authority: TurnAuthority,
+        candidate_text: str,
+    ) -> NarrationValidationResult:
+        """Reject Round-26 prose/state divergence even if the LLM validator misses it."""
+        evidence = cls._unauthorized_physical_movement_segment(authority, candidate_text)
+        if evidence is None:
+            return result
+        return cls._append_error(
+            result,
+            NarrationViolation(
+                violation_type="invalid_movement",
+                severity="error",
+                evidence=evidence,
+                correction=(
+                    "Не описывать прибытие, возврат, выход или переход героя в другую физическую "
+                    "локацию: TurnAuthority не содержит structured location transition. Можно "
+                    "описать только результат, разрешённый текущей локацией."
+                ),
+            ),
+            "Детерминированная проверка обнаружила физическое перемещение без structured transition.",
+        )
+
+    @classmethod
     def apply_deterministic_player_agency(
         cls,
         result: NarrationValidationResult,
@@ -341,10 +420,6 @@ Return exactly:
         if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
             return result
 
-        # Publication is now fail-closed for any unvalidated candidate. Actor-agency detection must
-        # therefore inspect the actor response directly instead of abusing publish(..., None) as a
-        # diagnostic API. This keeps the security boundary strict without marking every valid NPC
-        # answer as a player-agency violation.
         actor_safe = NarrationPublicationGuard._drop_player_owned_segments(
             candidate_text,
             authority.player_character_name,
