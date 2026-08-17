@@ -142,7 +142,7 @@ async def test_invalid_draft_is_repaired_before_delivery(
 
 
 @pytest.mark.asyncio
-async def test_validator_failure_is_explicitly_failed_open(
+async def test_validator_failure_keeps_unvalidated_draft_off_published_surface(
     client: TestClient,
     db_session: AsyncSession,
 ):
@@ -166,12 +166,18 @@ async def test_validator_failure_is_explicitly_failed_open(
         )
 
     assert response.status_code == 200, response.text
-    assert response.text == INVALID_DRAFT
+    # Round 26 established that the persisted/player-facing surface is a canonical security
+    # boundary. Operational fail-open status may preserve availability, but it may no longer expose
+    # the unvalidated draft to the player or post-turn memory/registrar consumers.
+    assert response.text != INVALID_DRAFT
+    assert "Криповый бармен" not in response.text
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
-    assert history[-1]["content"] == INVALID_DRAFT
+    assert history[-1]["content"] == response.text
+    assert history[-1]["content"] != INVALID_DRAFT
     validation = await latest_validation(db_session)
     assert validation.status == "failed_open"
-    assert validation.final_text == INVALID_DRAFT
+    assert validation.final_text == response.text
+    assert validation.final_text != INVALID_DRAFT
     assert "control model unavailable" in (validation.failure_reason or "")
 
 
