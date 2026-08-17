@@ -7,13 +7,13 @@ from app.models.turn_authority import TurnAuthority
 
 
 class NarrationPublicationGuard:
-    """Publish safe prose without allowing renderer mistakes to cancel game state.
+    """Publish only a validated narrative surface or a deterministic Authority projection.
 
     The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    Ordinary narration remains fail-closed after a second semantic rejection: prose fragments that
-    were not individually flagged may still contain unapproved world outcomes. Actor turns are the
-    narrow exception because their NPC reply can be scrubbed deterministically of player-owned
-    fragments while retaining the selected speaker's useful content.
+    Once validation reports an error the candidate is untrusted as a whole: downstream code must
+    never recover selected fragments from rejected prose because an unflagged fragment can still
+    contain player-owned speech, an unauthorized NPC, or an invented world outcome. One model repair
+    happens before this guard; if that repair still fails, publication is rebuilt from Authority.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -104,59 +104,39 @@ class NarrationPublicationGuard:
         candidate: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
-        """Return safe prose plus publication diagnostics."""
+        """Return the sole player/downstream-safe narrative surface.
+
+        A missing validation result is also fail-closed here. Explicit fail-open policy belongs at a
+        higher operational layer; this boundary never treats an unvalidated draft as canon-safe.
+        """
         errors = [
             item
             for item in (validation.violations if validation else [])
             if item.severity == "error"
         ]
 
-        if errors and authority.scene_disposition != "actor_turn":
+        if validation is None or errors:
             fallback = cls.render_authority(authority)
             return fallback, {
                 "mode": "authority_projection",
                 "candidate_characters": len(candidate),
                 "published_characters": len(fallback),
                 "error_count": len(errors),
-                "matched_error_count": 0,
-                "actor_agency_scrubbed": False,
+                "candidate_discarded": True,
+                "validated_surface": False,
             }
 
-        sanitized, matched_errors = cls._drop_flagged_segments(candidate, validation)
-        actor_scrub_changed = False
-        if authority.scene_disposition == "actor_turn":
-            actor_safe = cls._drop_player_owned_segments(
-                sanitized,
-                authority.player_character_name,
-            )
-            actor_scrub_changed = cls._clean(actor_safe) != cls._clean(sanitized)
-            sanitized = actor_safe
-
-        sanitized = cls._clean(sanitized)
+        sanitized = cls._clean(candidate)
         if sanitized and cls._player_facing_fragment(sanitized) is None:
             sanitized = ""
-        all_evidence_removed = bool(errors) and matched_errors >= len(errors)
-        only_player_agency = bool(errors) and all(
-            item.violation_type == "player_agency" for item in errors
-        )
-        actor_agency_proven_removed = (
-            authority.scene_disposition == "actor_turn"
-            and only_player_agency
-            and actor_scrub_changed
-        )
-
-        if sanitized and (
-            not errors
-            or all_evidence_removed
-            or actor_agency_proven_removed
-        ):
+        if sanitized:
             return sanitized, {
-                "mode": "sanitized_candidate",
+                "mode": "validated_candidate",
                 "candidate_characters": len(candidate),
                 "published_characters": len(sanitized),
-                "error_count": len(errors),
-                "matched_error_count": matched_errors,
-                "actor_agency_scrubbed": actor_scrub_changed,
+                "error_count": 0,
+                "candidate_discarded": False,
+                "validated_surface": True,
             }
 
         fallback = cls.render_authority(authority)
@@ -164,9 +144,9 @@ class NarrationPublicationGuard:
             "mode": "authority_projection",
             "candidate_characters": len(candidate),
             "published_characters": len(fallback),
-            "error_count": len(errors),
-            "matched_error_count": matched_errors,
-            "actor_agency_scrubbed": actor_scrub_changed,
+            "error_count": 0,
+            "candidate_discarded": True,
+            "validated_surface": False,
         }
 
     @classmethod
@@ -236,6 +216,7 @@ class NarrationPublicationGuard:
         candidate: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str, int]:
+        """Legacy helper retained for callers/tests; rejected prose is no longer publishable."""
         if not validation or not validation.violations:
             return candidate, 0
         segments = cls._segments(candidate)
@@ -264,6 +245,7 @@ class NarrationPublicationGuard:
 
     @classmethod
     def _drop_player_owned_segments(cls, candidate: str, player_name: str | None) -> str:
+        """Legacy diagnostic helper; safe fallback no longer publishes partially scrubbed prose."""
         name = " ".join((player_name or "").split()).strip()
         if not name:
             return candidate

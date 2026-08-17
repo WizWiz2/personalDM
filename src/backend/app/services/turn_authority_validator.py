@@ -341,15 +341,15 @@ Return exactly:
         if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
             return result
 
-        sanitized, diagnostics = NarrationPublicationGuard.publish(
-            authority,
+        # Publication is now fail-closed for any unvalidated candidate. Actor-agency detection must
+        # therefore inspect the actor response directly instead of abusing publish(..., None) as a
+        # diagnostic API. This keeps the security boundary strict without marking every valid NPC
+        # answer as a player-agency violation.
+        actor_safe = NarrationPublicationGuard._drop_player_owned_segments(
             candidate_text,
-            None,
+            authority.player_character_name,
         )
-        if (
-            diagnostics.get("mode") == "sanitized_candidate"
-            and " ".join(sanitized.split()) == " ".join(candidate_text.split())
-        ):
+        if " ".join(actor_safe.split()) == " ".join(candidate_text.split()):
             return result
 
         return cls._append_error(
