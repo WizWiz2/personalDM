@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.turn import TurnCreate
+from app.models.turn import ChatMessage, TurnCreate
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_authority_service import TurnAuthorityService
 from app.services.turn_runner import TurnRunner
@@ -26,7 +26,63 @@ def test_talk_target_is_routing_context_not_planner_bypass():
     assert routed.acting_character_id is None
     assert routed.context_snapshot["input_routing"]["addressed_character_id"] == str(anna_id)
     assert routed.context_snapshot["input_routing"]["planner_bypass"] is False
+    assert routed.context_snapshot["input_routing"]["user_actor"] == "player_character"
     assert TurnRunner._addressed_character_id(routed) == anna_id
+
+
+@pytest.mark.asyncio
+async def test_round26_planner_context_never_turns_addressee_into_speaker(monkeypatch):
+    anna_id = uuid4()
+    seen: dict = {}
+
+    class FakeCompiler:
+        def __init__(self, _session):
+            pass
+
+        async def compile_context(self, **kwargs):
+            seen.update(kwargs)
+            return [
+                ChatMessage(role="system", content="BASE PLAYER CONTEXT"),
+                ChatMessage(role="user", content=kwargs["current_user_content"]),
+            ], {}
+
+    class FakeEntityRepository:
+        def __init__(self, _session):
+            pass
+
+        async def get_character(self, entity_id):
+            assert entity_id == anna_id
+            return SimpleNamespace(id=anna_id, canonical_name="Ирина")
+
+    monkeypatch.setattr("app.services.context_compiler.ContextCompiler", FakeCompiler)
+    monkeypatch.setattr("app.services.turn_runner.EntityRepository", FakeEntityRepository)
+
+    runner = TurnRunner.__new__(TurnRunner)
+    runner._session = SimpleNamespace()
+    routed = TurnRunner._route_addressed_input(
+        TurnCreate(
+            role="user",
+            content="Ирина, я слушаю. Расскажите по порядку.",
+            acting_character_id=anna_id,
+        )
+    )
+
+    compiled, _compiler, _budget = await runner._compile(
+        uuid4(),
+        routed,
+        uuid4(),
+        SimpleNamespace(context_window=6144),
+    )
+    messages, metadata = compiled
+
+    # Round 26 regression: Planner must never receive actor-output context for the listener.
+    assert seen["acting_character_id"] is None
+    assert "Addressed character: Ирина" in messages[0].content
+    assert "listener/target" in messages[0].content
+    assert "NOT the speaker" in messages[0].content
+    assert "[ACTOR OUTPUT CONTRACT: Ирина]" not in messages[0].content
+    assert metadata["input_routing"]["addressed_character_id"] == str(anna_id)
+    assert metadata["input_routing"]["user_actor"] == "player_character"
 
 
 def test_assistant_persists_actor_from_final_turn_authority():
@@ -79,6 +135,7 @@ async def _service_fixture(*, target_has_anna: bool):
                 "input_routing": {
                     "addressed_character_id": str(anna_id),
                     "planner_bypass": False,
+                    "user_actor": "player_character",
                 }
             }
         )
