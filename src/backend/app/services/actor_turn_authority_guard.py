@@ -224,13 +224,18 @@ async def extract_actor_segment_proposals(
     if not clean or (_SILENCE_PATTERN.search(clean) and len(clean) < 180):
         return []
 
-    actor = await scribe._entity_repo.get_character(acting_character_id)
-    player = await scribe._entity_repo.get_character(player_character_id)
-    if not actor or not player:
-        return []
     segments = segment_actor_response(assistant_content)
     if not segments:
         return []
+
+    # Provenance is already authoritative at this boundary: both IDs come from the persisted
+    # TurnAuthority/campaign contract. Do not require a fully-populated Character extension merely
+    # to ask which published spans were spoken. Entity identity is enough for prompt labels, and
+    # even a missing display row must not silently disable durable character-claim memory.
+    actor = await scribe._entity_repo.get_by_id(acting_character_id)
+    player = await scribe._entity_repo.get_by_id(player_character_id)
+    actor_name = actor.canonical_name if actor else str(acting_character_id)
+    player_name = player.canonical_name if player else str(player_character_id)
 
     selection = await scribe._model_router.resolve(campaign_id, ModelRole.SCRIBE)
     if selection is None:
@@ -256,8 +261,8 @@ async def extract_actor_segment_proposals(
                         "вопросы, приветствия, намерения или предположения рассказчика. Явное "
                         "отрицательное утверждение NPC допустимо. Не решай, прав ли NPC: это лишь "
                         "character_claim. Если фактических утверждений нет, верни пустой список.\n"
-                        f"Говорящий NPC: {actor.canonical_name}.\n"
-                        f"Слушатель: {player.canonical_name}.\n"
+                        f"Говорящий NPC: {actor_name}.\n"
+                        f"Слушатель: {player_name}.\n"
                         "Формат: {\"segment_ids\":[1,2]}"
                     ),
                 ),
