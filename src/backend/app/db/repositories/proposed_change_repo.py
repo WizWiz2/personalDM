@@ -5,8 +5,9 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.db.repositories.base import BaseRepository
-from app.db.tables import ProposedChange
+from app.db.tables import ProposedChange, Turn
 from app.models.proposed_change import (
+    ChangeType,
     ProposalAction,
     ProposedChangeCreate,
     ProposedChangeRead,
@@ -14,15 +15,49 @@ from app.models.proposed_change import (
 
 
 class ProposedChangeRepository(BaseRepository):
+    @staticmethod
+    def _validator_status(turn: Turn | None) -> str | None:
+        if turn is None or not turn.context_snapshot:
+            return None
+        raw = turn.context_snapshot
+        try:
+            snapshot = raw if isinstance(raw, dict) else json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(snapshot, dict):
+            return None
+        protocol = snapshot.get("interagent_protocol")
+        if not isinstance(protocol, dict):
+            return None
+        value = protocol.get("validator_status")
+        return str(value) if value else None
+
     async def create_batch(
         self,
         turn_id: UUID,
         changes: list[ProposedChangeCreate],
     ) -> list[ProposedChangeRead]:
+        """Persist proposals, but never let rejected narration become objective memory."""
+        source_turn = await self._session.get(Turn, str(turn_id))
+        validator_status = self._validator_status(source_turn)
+        contained_publication = validator_status in {"safe_fallback", "failed_open"}
+
         results = []
         for change in changes:
-            payload_str = json.dumps(change.payload)
-            validation_error = change.payload.get("_validation_error")
+            payload = dict(change.payload)
+            if contained_publication:
+                actor_claim = bool(source_turn and source_turn.acting_character_id) and (
+                    change.change_type == ChangeType.KNOWLEDGE
+                )
+                texture_only = change.change_type == ChangeType.NARRATIVE_DETAIL
+                if not actor_claim and not texture_only:
+                    payload.setdefault(
+                        "_validation_error",
+                        "Objective memory is blocked for narration published through containment",
+                    )
+
+            payload_str = json.dumps(payload)
+            validation_error = payload.get("_validation_error")
             db_change = ProposedChange(
                 turn_id=str(turn_id),
                 change_type=change.change_type.value,
@@ -61,10 +96,6 @@ class ProposedChangeRepository(BaseRepository):
             detail = payload.get("_validation_error", "deterministic validation failed")
             raise ValueError(f"Invalid proposal cannot be accepted: {detail}")
 
-        # Safe proposals may now be accepted automatically by the post-turn pipeline.
-        # A client that still repeats the old manual accept call should see an
-        # idempotent success rather than a misleading 400. Mutating an already
-        # resolved proposal (edit/reject) remains forbidden below.
         if (
             db_change.status == "accepted"
             and action.status == "accepted"
@@ -77,7 +108,6 @@ class ProposedChangeRepository(BaseRepository):
                 f"Proposal is already resolved with status '{db_change.status}'"
             )
 
-        # Invalid proposals may only be explicitly rejected.
         if db_change.status == "invalid" and action.status != "rejected":
             raise ValueError("Invalid proposal may only be rejected")
 
