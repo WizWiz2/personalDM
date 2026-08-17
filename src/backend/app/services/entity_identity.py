@@ -47,8 +47,8 @@ _CYRILLIC_TO_LATIN = {
 }
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 
-# These are deliberately coarse occupational identities used only for a conservative
-# same-location repair of temporary generic NPC names. Exact names and aliases always win.
+# Coarse occupational identities are used only for conservative same-location repair of
+# temporary generic NPC names. Exact names and aliases always win.
 _ROLE_FAMILIES: dict[str, tuple[str, ...]] = {
     "innkeeper": (
         "traktirshchik",
@@ -65,17 +65,18 @@ _ROLE_FAMILIES: dict[str, tuple[str, ...]] = {
     "resident": ("zhilets", "resident"),
     "informant": ("informator", "informant"),
     "witness": ("svidetel", "witness"),
+    "photographer": (
+        "fotograf",
+        "sudebnyy fotograf",
+        "kriminalist fotograf",
+        "forensic photographer",
+        "photographer",
+    ),
 }
 
 
 def identity_key(value: object) -> str:
-    """Return a script-stable comparison key for model-authored entity names.
-
-    qwen-class local models occasionally mix Cyrillic and Latin inside one token (``Эйdan``,
-    ``Rэт``). Unicode normalization plus one-way transliteration makes those spellings compare
-    equal without rewriting the user-facing canonical name stored in the database.
-    """
-
+    """Return a script-stable comparison key for model-authored entity names."""
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     transliterated = "".join(_CYRILLIC_TO_LATIN.get(char, char) for char in text)
     return " ".join(_NON_WORD.sub(" ", transliterated).split())
@@ -120,12 +121,21 @@ def role_families(*values: object) -> set[str]:
 def entity_role_families(entity) -> set[str]:
     custom_fields = getattr(entity, "custom_fields", None) or {}
     role = custom_fields.get("role") if isinstance(custom_fields, dict) else None
+    bootstrap_role = (
+        custom_fields.get("bootstrap_role") if isinstance(custom_fields, dict) else None
+    )
     return role_families(
         getattr(entity, "canonical_name", None),
         *getattr(entity, "aliases", []),
         getattr(entity, "description", None),
         role,
+        bootstrap_role,
     )
+
+
+def _existing_temporary_name(entity) -> bool:
+    fields = getattr(entity, "custom_fields", None)
+    return bool(isinstance(fields, dict) and fields.get("temporary_name"))
 
 
 def resolve_character_candidates(
@@ -139,17 +149,15 @@ def resolve_character_candidates(
 ) -> list:
     """Resolve an LLM-proposed NPC identity without semantic LLM arbitration.
 
-    1. Script-normalized canonical name / alias equality is authoritative.
-    2. Only a *temporary generic role name* may fall back to role+location matching.
-    3. Role matching is same-location only. Multiple matches are intentionally returned as
-       ambiguous so the caller can fail closed instead of merging two real NPCs.
+    Same-location role matching is allowed only when one side has an explicitly temporary generic
+    identity. That lets a starter role such as ``Судебный фотограф`` later become ``Ирина`` without
+    creating a second character. Multiple matches remain ambiguous and fail closed at the caller.
     """
-
     entities = list(entities)
     exact = exact_identity_matches(entities, proposed_name)
     if exact:
         return exact
-    if not temporary_name or target_location_id is None:
+    if target_location_id is None:
         return []
 
     requested_roles = role_families(proposed_name, proposed_role)
@@ -160,6 +168,8 @@ def resolve_character_candidates(
     for entity in entities:
         entity_id = UUID(str(entity.id))
         if character_locations.get(entity_id) != target_location_id:
+            continue
+        if not (temporary_name or _existing_temporary_name(entity)):
             continue
         if requested_roles & entity_role_families(entity):
             matches.append(entity)
