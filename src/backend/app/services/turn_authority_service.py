@@ -19,11 +19,16 @@ class TurnAuthorityError(ValueError):
 class TurnAuthorityService:
     """Build the sole narrator/validator authority from structured state plus the plan.
 
+    ``acting_character_id`` on player input identifies the NPC currently addressed by the UI. It
+    does not itself prove that the NPC may own the resulting assistant turn. Planning always happens
+    first; the selected NPC becomes the effective actor only when they are still a participant of
+    the target scene and the structured plan stays in that scene. This lets one input contain both
+    player action and dialogue without turning `/talk` into a Planner bypass.
+
     Entity identity is canonicalized here rather than delegated back to the control model. Exact
     names and aliases are compared through a mixed-script-safe key. A temporary generic role may
-    also resolve to one known character already at the target location (for example
-    ``Трактирщик`` -> ``Хозяин таверны``). Cross-location identity repair remains forbidden: this
-    service never teleports a known character just to make a planner answer fit.
+    also resolve to one known character already at the target location. Cross-location identity
+    repair remains forbidden.
     """
 
     def __init__(self, session: AsyncSession):
@@ -52,7 +57,7 @@ class TurnAuthorityService:
             if campaign.player_character_id
             else None
         )
-        actor = (
+        selected_actor = (
             await self._entities.get_character(acting_character_id)
             if acting_character_id
             else None
@@ -76,6 +81,15 @@ class TurnAuthorityService:
             campaign_id,
             entity_type="character",
         )
+
+        # UI selection is an address target, not unconditional actor authority. If structured
+        # execution moved/focused the turn to a scene where that character is not present, they
+        # cannot answer remotely and their identity must not become memory provenance.
+        actor = selected_actor
+        effective_actor_id = acting_character_id
+        if actor and target_state and identity_key(actor.canonical_name) not in present_keys:
+            actor = None
+            effective_actor_id = None
 
         character_states = {}
         character_locations: dict[UUID, UUID | None] = {}
@@ -115,8 +129,6 @@ class TurnAuthorityService:
             existing_id, existing = next(iter(unique_matches.items()))
             existing_key = identity_key(existing.canonical_name)
             if existing_key in present_keys:
-                # The model merely misclassified an already-present known character as new.
-                # Keep the existing participant and discard the duplicate creation request.
                 continue
 
             character = character_states.get(existing_id)
@@ -153,7 +165,15 @@ class TurnAuthorityService:
             if identity_key(entity.canonical_name) not in present_keys
         ]
 
-        disposition = "actor_turn" if plan is None else plan.scene_disposition
+        planned_disposition = plan.scene_disposition if plan else "stay"
+        # A selected, still-present NPC owns a conversational assistant turn only when structured
+        # planning kept the scene boundary stable. Movement/sequence/focus outcomes remain normal
+        # narrated turns even if the input also addressed that NPC.
+        disposition = (
+            "actor_turn"
+            if actor is not None and planned_disposition == "stay"
+            else planned_disposition
+        )
         transition_type = "none"
         if plan and plan.scene_transition.required:
             transition_type = plan.scene_transition.transition_type
@@ -162,14 +182,8 @@ class TurnAuthorityService:
 
         executed_sequence = None
         if plan and plan.scene_transition.execution_report:
-            # SceneTransitionExecutor receives `plan.scene_transition`, and writes the
-            # actual completed/blocked/skipped ActionSequenceExecution back onto that
-            # boundary object. This exact executed result, not the requested sequence,
-            # is what Narrator and Validator must share through TurnAuthority.
             executed_sequence = dict(plan.scene_transition.execution_report)
         elif plan and plan.action_sequence.steps:
-            # Diagnostic fallback for pre-execution/unit contexts. Public TurnSaga should
-            # normally have an execution_report before it builds authority.
             executed_sequence = {
                 "status": "planned_not_executed",
                 "planned": plan.action_sequence.model_dump(mode="json"),
@@ -180,7 +194,7 @@ class TurnAuthorityService:
             trigger_turn_id=trigger_turn_id,
             player_character_id=campaign.player_character_id,
             player_character_name=(player.canonical_name if player else None),
-            acting_character_id=acting_character_id,
+            acting_character_id=effective_actor_id,
             acting_character_name=(actor.canonical_name if actor else None),
             player_input=player_input,
             source_scene_id=source_scene_id,
@@ -195,9 +209,7 @@ class TurnAuthorityService:
             allowed_existing_npc_arrivals=existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
-            dramatic_mode=(
-                plan.narration_policy.dramatic_mode if plan else "calm"
-            ),
+            dramatic_mode=(plan.narration_policy.dramatic_mode if plan else "calm"),
             observable_consequences=(list(plan.observable_consequences) if plan else []),
             character_beats=(list(plan.character_beats) if plan else []),
             canon_constraints=(list(plan.canon_constraints) if plan else []),
