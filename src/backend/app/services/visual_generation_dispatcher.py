@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 class VisualGenerationDispatcher:
     """Best-effort visual work that must never block or invalidate game state."""
 
+    _tasks: set[asyncio.Task] = set()
+
     @staticmethod
     def schedule_session_zero(campaign_id: UUID, character_id: UUID) -> None:
         if not settings.IMAGE_ENABLED:
@@ -39,8 +41,10 @@ class VisualGenerationDispatcher:
     @staticmethod
     def _spawn(coro, *, name: str) -> None:
         task = asyncio.create_task(coro, name=name)
+        VisualGenerationDispatcher._tasks.add(task)
 
         def _done(completed: asyncio.Task) -> None:
+            VisualGenerationDispatcher._tasks.discard(completed)
             try:
                 completed.result()
             except asyncio.CancelledError:
