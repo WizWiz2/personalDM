@@ -34,7 +34,7 @@ def test_generic_description_does_not_invent_a_name():
     )
 
     assert npc.name is None
-    assert PlayableBootstrapService._starter_name(npc) == "владелица книжной лавки"
+    assert PlayableBootstrapService._starter_name(npc) == "Владелица книжной лавки"
 
 
 def test_nested_session_zero_state_applies_starter_identity_normalization():
