@@ -25,6 +25,7 @@ from app.services.session_zero_service import (
     SessionZeroLockedError,
     SessionZeroService,
 )
+from app.services.visual_generation_dispatcher import VisualGenerationDispatcher
 
 
 router = APIRouter(tags=["session-zero"])
@@ -94,6 +95,10 @@ async def complete_session_zero(
     try:
         result = await SessionZeroService(session).complete(campaign_id, request)
         await session.commit()
+        VisualGenerationDispatcher.schedule_session_zero(
+            campaign_id,
+            result.character_card.character.id,
+        )
         return result
     except SessionZeroIncompleteError as exc:
         await session.rollback()
@@ -203,17 +208,37 @@ async def _run_interview_turn(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+async def _commit_and_schedule_interview_visuals(
+    campaign_id: UUID,
+    session: AsyncSession,
+    result: dict,
+) -> dict:
+    if not result.get("completed"):
+        return result
+    # The visual worker uses a separate DB session. Commit the playable campaign first
+    # so it can never observe half-materialized session-zero state.
+    await session.commit()
+    setup = await SessionZeroService(session).get(campaign_id)
+    if setup.player_character_id:
+        VisualGenerationDispatcher.schedule_session_zero(
+            campaign_id,
+            setup.player_character_id,
+        )
+    return result
+
+
 @router.post("/api/campaigns/{campaign_id}/session-zero/interview/answer")
 async def answer_session_zero_interview(
     campaign_id: UUID,
     request: SessionZeroInterviewAnswerRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    return await _run_interview_turn(
+    result = await _run_interview_turn(
         campaign_id,
         SessionZeroInterviewService(session),
         message=request.message,
     )
+    return await _commit_and_schedule_interview_visuals(campaign_id, session, result)
 
 
 @router.post("/api/campaigns/{campaign_id}/session-zero/interview/retry")
@@ -221,11 +246,12 @@ async def retry_session_zero_interview(
     campaign_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    return await _run_interview_turn(
+    result = await _run_interview_turn(
         campaign_id,
         SessionZeroInterviewService(session),
         retry=True,
     )
+    return await _commit_and_schedule_interview_visuals(campaign_id, session, result)
 
 
 @router.get(
