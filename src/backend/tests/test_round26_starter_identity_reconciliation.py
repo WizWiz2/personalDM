@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from app.models.session_zero_interview import SessionZeroInterviewState, SessionZeroStarterNPC
 from app.services.entity_identity import resolve_character_candidates
-from app.services.playable_bootstrap import PlayableBootstrap
+from app.services.playable_bootstrap import PlayableBootstrapService
 
 
 def test_round26_explicit_irina_is_recovered_from_structured_description():
@@ -15,7 +15,7 @@ def test_round26_explicit_irina_is_recovered_from_structured_description():
     )
 
     assert npc.name == "Ирина"
-    assert PlayableBootstrap._starter_name(npc) == "Ирина"
+    assert PlayableBootstrapService._starter_name(npc) == "Ирина"
 
 
 def test_role_followed_by_explicit_name_is_preserved():
@@ -34,7 +34,7 @@ def test_generic_description_does_not_invent_a_name():
     )
 
     assert npc.name is None
-    assert PlayableBootstrap._starter_name(npc) == "владелица книжной лавки"
+    assert PlayableBootstrapService._starter_name(npc) == "владелица книжной лавки"
 
 
 def test_nested_session_zero_state_applies_starter_identity_normalization():
