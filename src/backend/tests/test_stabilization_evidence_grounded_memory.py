@@ -8,8 +8,9 @@ import pytest
 from app.models.proposed_change import ChangeType
 from app.providers.llm_provider import LLMProviderError
 from app.services.actor_turn_authority_guard import (
-    build_actor_evidence_proposals,
-    extract_actor_evidence_proposals,
+    build_actor_segment_proposals,
+    extract_actor_segment_proposals,
+    segment_actor_response,
 )
 
 
@@ -21,8 +22,8 @@ EXACT = "Он назвался заказчиком и ушёл к седьмо�
 
 
 class FakeRouter:
-    def __init__(self, spans=None, error: Exception | None = None):
-        self.spans = spans or []
+    def __init__(self, segment_ids=None, error: Exception | None = None):
+        self.segment_ids = segment_ids or []
         self.error = error
         self.calls = 0
         self.last_messages = None
@@ -35,7 +36,7 @@ class FakeRouter:
         self.last_messages = messages
         if self.error:
             raise self.error
-        return {"evidence_spans": self.spans}
+        return {"segment_ids": self.segment_ids}
 
 
 class FakeEntities:
@@ -53,68 +54,74 @@ def _scribe(router: FakeRouter):
     )
 
 
-def test_proposition_is_exact_published_evidence_not_second_llm_paraphrase():
+def _segment_id_containing(segments: list[str], fragment: str) -> int:
+    return next(index for index, value in enumerate(segments, start=1) if fragment in value)
+
+
+def test_proposition_is_backend_owned_published_segment_not_llm_text():
     actor_id = uuid4()
     player_id = uuid4()
-    proposals = build_actor_evidence_proposals(
-        [EXACT],
+    segments = segment_actor_response(PUBLISHED)
+    segment_id = _segment_id_containing(segments, EXACT)
+
+    proposals = build_actor_segment_proposals(
+        segments,
+        [segment_id],
         acting_character_id=actor_id,
         player_character_id=player_id,
-        authoritative_text=PUBLISHED,
     )
 
     assert len(proposals) == 1
     payload = proposals[0].payload
     assert proposals[0].change_type == ChangeType.KNOWLEDGE
-    assert payload["proposition"] == EXACT
-    assert payload["_canon"]["evidence"] == EXACT
+    assert payload["proposition"] == segments[segment_id - 1]
+    assert payload["_canon"]["evidence"] == segments[segment_id - 1]
+    assert payload["_canon"]["segment_id"] == segment_id
     assert payload["source_character_id"] == str(actor_id)
     assert payload["recipient_id"] == str(player_id)
     assert payload["_canon"]["authority"] == "character_claim"
 
 
-def test_round22_polarity_inversion_cannot_be_built_without_published_span():
-    actor_id = uuid4()
-    player_id = uuid4()
-    proposals = build_actor_evidence_proposals(
-        ["Бармен ничего не говорил о заказчике."],
-        acting_character_id=actor_id,
-        player_character_id=player_id,
-        authoritative_text=PUBLISHED,
+def test_model_cannot_invent_or_invert_claim_text_because_it_returns_only_ids():
+    segments = segment_actor_response(PUBLISHED)
+    proposals = build_actor_segment_proposals(
+        segments,
+        [999, -1],
+        acting_character_id=uuid4(),
+        player_character_id=uuid4(),
     )
 
     assert proposals == []
+    assert all("ничего не говорил" not in item for item in segments)
 
 
-def test_explicit_negative_statement_is_valid_when_npc_actually_said_it():
+def test_explicit_negative_statement_is_valid_when_published_segment_selected():
     actor_id = uuid4()
     player_id = uuid4()
     published = "Сторож качает головой. «Я не видел Ивана после полуночи»."
-    evidence = "Я не видел Ивана после полуночи"
+    segments = segment_actor_response(published)
+    segment_id = _segment_id_containing(segments, "Я не видел Ивана после полуночи")
 
-    proposals = build_actor_evidence_proposals(
-        [evidence],
+    proposals = build_actor_segment_proposals(
+        segments,
+        [segment_id],
         acting_character_id=actor_id,
         player_character_id=player_id,
-        authoritative_text=published,
     )
 
     assert len(proposals) == 1
-    assert proposals[0].payload["proposition"] == evidence
+    assert "не видел Ивана" in proposals[0].payload["proposition"]
 
 
 @pytest.mark.asyncio
-async def test_extractor_uses_one_semantic_call_and_backend_rejects_invented_span():
+async def test_extractor_uses_one_semantic_call_and_model_returns_only_segment_ids():
     actor_id = uuid4()
     player_id = uuid4()
-    router = FakeRouter(
-        spans=[
-            EXACT,
-            "Заказчик был в красном пальто.",
-        ]
-    )
+    segments = segment_actor_response(PUBLISHED)
+    segment_id = _segment_id_containing(segments, EXACT)
+    router = FakeRouter(segment_ids=[segment_id, 999])
 
-    result = await extract_actor_evidence_proposals(
+    result = await extract_actor_segment_proposals(
         _scribe(router),
         campaign_id=uuid4(),
         assistant_content=PUBLISHED,
@@ -124,10 +131,11 @@ async def test_extractor_uses_one_semantic_call_and_backend_rejects_invented_spa
 
     assert router.calls == 1
     assert len(result) == 1
-    assert result[0].payload["proposition"] == EXACT
+    assert result[0].payload["proposition"] == segments[segment_id - 1]
     prompt = "\n".join(message.content for message in router.last_messages)
-    assert "ACTOR EVIDENCE EXTRACTOR" in prompt
-    assert "копируй его дословно" in prompt
+    assert "ACTOR CLAIM SEGMENT SELECTOR" in prompt
+    assert "Не пиши и не исправляй текст" in prompt
+    assert f"S{segment_id}:" in prompt
 
 
 @pytest.mark.asyncio
@@ -136,7 +144,7 @@ async def test_extractor_failure_does_not_create_or_invent_memory():
     player_id = uuid4()
     router = FakeRouter(error=LLMProviderError("planned extractor failure"))
 
-    result = await extract_actor_evidence_proposals(
+    result = await extract_actor_segment_proposals(
         _scribe(router),
         campaign_id=uuid4(),
         assistant_content=PUBLISHED,
@@ -149,12 +157,12 @@ async def test_extractor_failure_does_not_create_or_invent_memory():
 
 
 @pytest.mark.asyncio
-async def test_silence_never_calls_extractor_or_creates_knowledge():
+async def test_silence_never_calls_selector_or_creates_knowledge():
     actor_id = uuid4()
     player_id = uuid4()
-    router = FakeRouter(spans=["Я видел Ивана вчера"])
+    router = FakeRouter(segment_ids=[1])
 
-    result = await extract_actor_evidence_proposals(
+    result = await extract_actor_segment_proposals(
         _scribe(router),
         campaign_id=uuid4(),
         assistant_content="Бармен умолкает.",
