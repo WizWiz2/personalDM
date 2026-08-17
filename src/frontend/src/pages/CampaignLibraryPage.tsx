@@ -2,6 +2,8 @@ import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import type { Campaign } from '../api/types'
+import { visualUrls } from '../api/visuals'
+import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { Icons } from '../components/Icons'
 import { PixelScene } from '../components/PixelArt'
 import { EmptyState, ErrorState, LoadingState } from '../components/States'
@@ -93,16 +95,17 @@ export function CampaignLibraryPage() {
             <section className="recent-section">
               <h2>Недавнее</h2>
               <div className="recent-list">
-                {recent.map((campaign) => (
-                  <button key={campaign.id} className="recent-campaign" onClick={() => void openCampaign(campaign)}>
-                    <div className="recent-thumb"><PixelScene seed={campaign.name} compact /></div>
+                {recent.map((campaign) => {
+                  const fallback = <PixelScene seed={campaign.name} compact />
+                  return <button key={campaign.id} className="recent-campaign" onClick={() => void openCampaign(campaign)}>
+                    <div className="recent-thumb"><GeneratedPixelArt src={visualUrls.campaignCover(campaign.id)} alt={`Обложка ${campaign.name}`} fallback={fallback} /></div>
                     <div className="recent-copy">
                       <strong>{campaign.name}</strong>
                       <span>{campaign.description || (campaign.current_scene_id ? 'Кампания продолжается' : 'Подготовка кампании')}</span>
                     </div>
                     <span className="recent-time">{relativeUpdated(campaign.updated_at)}</span>
                   </button>
-                ))}
+                })}
               </div>
             </section>
 
@@ -111,7 +114,7 @@ export function CampaignLibraryPage() {
               <div className="campaign-grid">
                 {campaigns.map((campaign) => (
                   <article className="campaign-card" key={campaign.id}>
-                    <div className="campaign-cover"><PixelScene seed={campaign.name} /></div>
+                    <div className="campaign-cover"><GeneratedPixelArt src={visualUrls.campaignCover(campaign.id)} alt={`Обложка ${campaign.name}`} fallback={<PixelScene seed={campaign.name} />} /></div>
                     <div className="campaign-card-body">
                       <span className="eyebrow">{campaign.current_scene_id ? 'Активная' : 'Подготовка'}</span>
                       <h3>{campaign.name}</h3>
