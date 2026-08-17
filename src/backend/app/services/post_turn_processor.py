@@ -14,6 +14,7 @@ from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.proposed_change import ChangeType, ProposalAction
+from app.services.actor_turn_authority_guard import extract_actor_segment_proposals
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
@@ -275,16 +276,42 @@ class PostTurnProcessor:
                             )
                             return
 
-                    proposals = await MemoryScribe(self._session).extract_proposals(
-                        campaign_id=campaign_id,
-                        scene_id=assistant.scene_id,
-                        user_content=user_turn.content,
-                        assistant_content=assistant.content,
-                        acting_character_id=assistant.acting_character_id,
-                        player_character_id=(
-                            campaign.player_character_id if campaign else None
-                        ),
-                    )
+                    scribe = MemoryScribe(self._session)
+                    if (
+                        assistant.acting_character_id is not None
+                        and campaign is not None
+                        and campaign.player_character_id is not None
+                    ):
+                        # Explicit epistemic branch: words spoken by a selected NPC can create only
+                        # sourced character claims. They do not pass through generic Scribe and
+                        # therefore cannot become objective FACT/EVENT/MOVEMENT canon by accident.
+                        proposals = await extract_actor_segment_proposals(
+                            scribe,
+                            campaign_id=campaign_id,
+                            assistant_content=assistant.content,
+                            acting_character_id=assistant.acting_character_id,
+                            player_character_id=campaign.player_character_id,
+                        )
+                        audit = dict(getattr(scribe, "last_audit", {}) or {})
+                        audit.update(
+                            {
+                                "actor_knowledge_mode": "indexed_segments",
+                                "actor_generic_scribe_skipped": True,
+                                "actor_evidence_knowledge_created": len(proposals),
+                            }
+                        )
+                        scribe.last_audit = audit
+                    else:
+                        proposals = await scribe.extract_proposals(
+                            campaign_id=campaign_id,
+                            scene_id=assistant.scene_id,
+                            user_content=user_turn.content,
+                            assistant_content=assistant.content,
+                            acting_character_id=assistant.acting_character_id,
+                            player_character_id=(
+                                campaign.player_character_id if campaign else None
+                            ),
+                        )
                     proposals = [
                         proposal
                         for proposal in proposals

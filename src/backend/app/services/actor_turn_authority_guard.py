@@ -14,10 +14,10 @@ from app.services.role_model_router import ModelRole
 _INSTALLED = False
 
 
-class ActorEvidenceEnvelope(BaseModel):
-    """Exact factual spans copied from one already-published NPC response."""
+class ActorSegmentSelection(BaseModel):
+    """IDs of immutable published segments that contain factual NPC claims."""
 
-    evidence_spans: list[str] = Field(default_factory=list, max_length=8)
+    segment_ids: list[int] = Field(default_factory=list, max_length=8)
 
 
 _ACTOR_LOCAL_MARKERS = (
@@ -50,6 +50,8 @@ _SILENCE_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 _WORD_RE = re.compile(r"[\w]+", flags=re.UNICODE)
+_QUOTE_RE = re.compile(r"«([^»]{2,1600})»|“([^”]{2,1600})”|\"([^\"]{2,1600})\"")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|[\r\n]+")
 
 
 def _key(value: object) -> str:
@@ -60,12 +62,7 @@ def protect_actor_turn_validation(
     authority,
     result: NarrationValidationResult,
 ) -> NarrationValidationResult:
-    """Remove only control-model agency errors that clearly belong to the selected NPC.
-
-    Actor turns authorize the selected character to speak and use local conversational body
-    language. They never authorize player speech/actions, scene movement, third-party NPCs or new
-    world outcomes. Other validator violation types therefore remain untouched.
-    """
+    """Remove only control-model agency errors that clearly belong to the selected NPC."""
     if authority.scene_disposition != "actor_turn" or not authority.acting_character_name:
         return result
 
@@ -126,38 +123,70 @@ def actor_turn_contract(authority) -> dict | None:
     }
 
 
-def _evidence_present(evidence: str, authoritative_text: str) -> bool:
-    return bool(_key(evidence)) and _key(evidence) in _key(authoritative_text)
+def _split_candidate_text(value: str) -> list[str]:
+    return [
+        part.strip()
+        for part in _SENTENCE_SPLIT_RE.split(value)
+        if part and part.strip()
+    ]
 
 
-def build_actor_evidence_proposals(
-    evidence_spans: list[str],
+def segment_actor_response(assistant_content: str, *, max_segments: int = 20) -> list[str]:
+    """Create immutable candidate spans from already-published prose.
+
+    The semantic model never returns text. It can only select these IDs, so punctuation, polarity
+    and subjects cannot drift between publication and persisted character knowledge.
+    """
+    text = assistant_content or ""
+    if not text.strip():
+        return []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str) -> None:
+        segment = raw.strip()
+        key = _key(segment)
+        words = _WORD_RE.findall(key)
+        if not segment or len(words) < 2 or len(segment) > 600 or key in seen:
+            return
+        if segment not in text:
+            return
+        seen.add(key)
+        candidates.append(segment)
+
+    for match in _QUOTE_RE.finditer(text):
+        quoted = next((group for group in match.groups() if group is not None), "")
+        for part in _split_candidate_text(quoted):
+            add(part)
+            if len(candidates) >= max_segments:
+                return candidates
+
+    for part in _split_candidate_text(text):
+        add(part)
+        if len(candidates) >= max_segments:
+            break
+    return candidates
+
+
+def build_actor_segment_proposals(
+    segments: list[str],
+    selected_segment_ids: list[int],
     *,
     acting_character_id: UUID,
     player_character_id: UUID,
-    authoritative_text: str,
 ) -> list[ProposedChangeCreate]:
-    """Build character claims directly from exact published spans.
-
-    The proposition is the evidence itself. There is no second LLM-authored paraphrase to invert
-    polarity, change the subject or invent a detail. Speaker and listener are fixed by typed turn
-    authority, so the result can be false *in-world* if the NPC lies while still being accurate
-    knowledge about what the player character heard.
-    """
     proposals: list[ProposedChangeCreate] = []
-    seen: set[str] = set()
-    for raw in evidence_spans[:8]:
-        evidence = " ".join(str(raw or "").split()).strip()
-        normalized = _key(evidence)
-        words = _WORD_RE.findall(normalized)
-        if (
-            not evidence
-            or normalized in seen
-            or len(words) < 2
-            or not _evidence_present(evidence, authoritative_text)
-        ):
+    seen_ids: set[int] = set()
+    for raw_id in selected_segment_ids[:8]:
+        try:
+            segment_id = int(raw_id)
+        except (TypeError, ValueError):
             continue
-        seen.add(normalized)
+        if segment_id in seen_ids or not (1 <= segment_id <= len(segments)):
+            continue
+        seen_ids.add(segment_id)
+        evidence = segments[segment_id - 1]
         proposals.append(
             ProposedChangeCreate(
                 change_type=ChangeType.KNOWLEDGE,
@@ -168,11 +197,13 @@ def build_actor_evidence_proposals(
                     "confidence": 0.8,
                     "status": "known",
                     "_canon": {
+                        "outcome_id": f"actor-segment-{segment_id}",
                         "kind": "knowledge_transfer",
                         "description": "Игрок услышал это утверждение выбранного NPC.",
                         "evidence": evidence,
                         "authority": "character_claim",
                         "durable": True,
+                        "segment_id": segment_id,
                     },
                 },
             )
@@ -180,7 +211,7 @@ def build_actor_evidence_proposals(
     return proposals
 
 
-async def extract_actor_evidence_proposals(
+async def extract_actor_segment_proposals(
     scribe,
     *,
     campaign_id: UUID,
@@ -188,7 +219,7 @@ async def extract_actor_evidence_proposals(
     acting_character_id: UUID,
     player_character_id: UUID,
 ) -> list[ProposedChangeCreate]:
-    """Extract factual speech once, then let deterministic code own memory semantics."""
+    """Ask Qwen only which immutable published segments are factual actor claims."""
     clean = " ".join((assistant_content or "").split()).strip()
     if not clean or (_SILENCE_PATTERN.search(clean) and len(clean) < 180):
         return []
@@ -197,10 +228,17 @@ async def extract_actor_evidence_proposals(
     player = await scribe._entity_repo.get_character(player_character_id)
     if not actor or not player:
         return []
+    segments = segment_actor_response(assistant_content)
+    if not segments:
+        return []
+
     selection = await scribe._model_router.resolve(campaign_id, ModelRole.SCRIBE)
     if selection is None:
         return []
 
+    segment_block = "\n".join(
+        f"S{index}: {segment}" for index, segment in enumerate(segments, start=1)
+    )
     try:
         data = await scribe._model_router.generate_json(
             scribe._llm_provider,
@@ -209,55 +247,55 @@ async def extract_actor_evidence_proposals(
                 ChatMessage(
                     role="system",
                     content=(
-                        "[ACTOR EVIDENCE EXTRACTOR]\n"
-                        "Из уже опубликованного ответа выбранного NPC выпиши только короткие, "
-                        "самодостаточные фактические утверждения, которые персонаж игрока реально "
-                        "услышал от этого NPC. Каждый элемент evidence_spans ОБЯЗАН быть точным "
-                        "непрерывным фрагментом исходного ответа: копируй его дословно, не "
-                        "перефразируй и не исправляй. Не извлекай жесты, эмоции, атмосферу, "
-                        "описание окружения, вопросы, приветствия, намерения, догадки Narrator или "
-                        "слова игрока. Явное отрицание NPC допустимо как факт его заявления. Не "
-                        "решай, прав ли NPC в мире: это character_claim. Если фактических сведений "
-                        "нет, верни пустой evidence_spans.\n"
+                        "[ACTOR CLAIM SEGMENT SELECTOR]\n"
+                        "Тебе уже даны неизменяемые фрагменты ОПУБЛИКОВАННОГО ответа NPC. "
+                        "Не пиши и не исправляй текст. Верни только номера S-сегментов, в которых "
+                        "сам выбранный NPC сообщает персонажу игрока конкретное фактическое "
+                        "сведение о человеке, месте, предмете, событии, времени, доступе, внешности "
+                        "или наблюдении. Не выбирай жесты, эмоции, атмосферу, описание Narrator, "
+                        "вопросы, приветствия, намерения или предположения рассказчика. Явное "
+                        "отрицательное утверждение NPC допустимо. Не решай, прав ли NPC: это лишь "
+                        "character_claim. Если фактических утверждений нет, верни пустой список.\n"
                         f"Говорящий NPC: {actor.canonical_name}.\n"
                         f"Слушатель: {player.canonical_name}.\n"
-                        "Формат: {\"evidence_spans\":[\"точный фрагмент\"]}"
+                        "Формат: {\"segment_ids\":[1,2]}"
                     ),
                 ),
-                ChatMessage(role="user", content=assistant_content),
+                ChatMessage(role="user", content=segment_block),
             ],
-            max_tokens=500,
+            max_tokens=220,
             temperature=0.0,
-            response_model=ActorEvidenceEnvelope,
+            response_model=ActorSegmentSelection,
         )
-        envelope = ActorEvidenceEnvelope.model_validate(data)
+        envelope = ActorSegmentSelection.model_validate(data)
     except (LLMProviderError, ValueError, TypeError):
-        # Memory extraction is post-turn quality work. It may fail closed without changing or
-        # failing the already-published game turn.
         return []
 
-    return build_actor_evidence_proposals(
-        envelope.evidence_spans,
+    return build_actor_segment_proposals(
+        segments,
+        envelope.segment_ids,
         acting_character_id=acting_character_id,
         player_character_id=player_character_id,
-        authoritative_text=assistant_content,
     )
 
 
 def install() -> None:
-    """Install actor-turn rights and evidence-first actor memory."""
+    """Install only actor-turn narration/validation rights.
+
+    Actor memory is intentionally NOT monkeypatched here. PostTurnProcessor owns the explicit
+    indexed-claim branch so production, tests and background workers all execute the same visible
+    path regardless of import or patch ordering.
+    """
     global _INSTALLED
     if _INSTALLED:
         return
     _INSTALLED = True
 
     from app.models.turn_authority import TurnAuthority
-    from app.services.memory_scribe import MemoryScribe
     from app.services.turn_authority_validator import TurnAuthorityValidator
 
     original_validator_payload = TurnAuthority.validator_payload
     original_validate = TurnAuthorityValidator.validate
-    original_extract = MemoryScribe.extract_proposals
 
     if "ACTOR TURN RIGHTS" not in TurnAuthorityValidator.SYSTEM_PROMPT:
         TurnAuthorityValidator.SYSTEM_PROMPT += """
@@ -284,62 +322,16 @@ When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
         result = await original_validate(self, selection, authority, candidate_text)
         return protect_actor_turn_validation(authority, result)
 
-    async def actor_aware_extract(
-        self,
-        campaign_id,
-        scene_id,
-        user_content,
-        assistant_content,
-        acting_character_id=None,
-        player_character_id=None,
-    ):
-        proposals = await original_extract(
-            self,
-            campaign_id,
-            scene_id,
-            user_content,
-            assistant_content,
-            acting_character_id=acting_character_id,
-            player_character_id=player_character_id,
-        )
-        if acting_character_id is None or player_character_id is None:
-            return proposals
-
-        # Generic Scribe is still useful for non-knowledge world deltas, but actor knowledge itself
-        # is deliberately replaced rather than judged again. This prevents Qwen from authoring a
-        # proposition and then being asked one or two more times whether its own paraphrase is valid.
-        non_knowledge = [
-            item for item in proposals if item.change_type != ChangeType.KNOWLEDGE
-        ]
-        discarded_generic = len(proposals) - len(non_knowledge)
-        actor_knowledge = await extract_actor_evidence_proposals(
-            self,
-            campaign_id=campaign_id,
-            assistant_content=assistant_content,
-            acting_character_id=acting_character_id,
-            player_character_id=player_character_id,
-        )
-        audit = dict(getattr(self, "last_audit", {}) or {})
-        audit.update(
-            {
-                "actor_knowledge_mode": "evidence_first",
-                "actor_generic_knowledge_discarded": discarded_generic,
-                "actor_evidence_knowledge_created": len(actor_knowledge),
-            }
-        )
-        self.last_audit = audit
-        return [*non_knowledge, *actor_knowledge]
-
     TurnAuthority.validator_payload = actor_aware_validator_payload
     TurnAuthorityValidator.validate = actor_aware_validate
-    MemoryScribe.extract_proposals = actor_aware_extract
 
 
 __all__ = [
-    "ActorEvidenceEnvelope",
+    "ActorSegmentSelection",
     "actor_turn_contract",
-    "build_actor_evidence_proposals",
-    "extract_actor_evidence_proposals",
+    "build_actor_segment_proposals",
+    "extract_actor_segment_proposals",
     "install",
     "protect_actor_turn_validation",
+    "segment_actor_response",
 ]
