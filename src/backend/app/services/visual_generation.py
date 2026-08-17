@@ -196,10 +196,40 @@ class ComfyUIClient:
         except httpx.HTTPError:
             return False
 
+    async def release_ollama_vram(self) -> list[str]:
+        """Best-effort unload of locally running Ollama models before a GPU image job.
+
+        PersonalDM uses the same consumer GPU for text and images. Ollama deliberately
+        keeps models resident after a response, so without this hand-off an 8 GB card can
+        enter ComfyUI with several GB already occupied. If Ollama is absent/cloud-only,
+        this is simply a no-op.
+        """
+        if not settings.IMAGE_RELEASE_OLLAMA_VRAM:
+            return []
+        try:
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                running = await client.get("http://127.0.0.1:11434/api/ps")
+                if not running.is_success:
+                    return []
+                names = [
+                    str(item.get("name") or item.get("model"))
+                    for item in (running.json().get("models") or [])
+                    if item.get("name") or item.get("model")
+                ]
+                for name in names:
+                    response = await client.post(
+                        "http://127.0.0.1:11434/api/generate",
+                        json={"model": name, "keep_alive": 0, "stream": False},
+                    )
+                    response.raise_for_status()
+                return names
+        except (httpx.HTTPError, ValueError, TypeError):
+            return []
+
     async def upload_image(self, path: Path, *, prefix: str) -> str:
         if not path.is_file():
             raise ComfyUIError(f"Reference image is missing: {path}")
-        upload_name = f"personaldm/{prefix}/{path.name}"
+        requested_subfolder = f"personaldm/{prefix}"
         try:
             async with httpx.AsyncClient(timeout=settings.IMAGE_TIMEOUT_SECONDS) as client:
                 with path.open("rb") as handle:
@@ -208,7 +238,7 @@ class ComfyUIClient:
                         files={"image": (path.name, handle, "image/png")},
                         data={
                             "type": "input",
-                            "subfolder": f"personaldm/{prefix}",
+                            "subfolder": requested_subfolder,
                             "overwrite": "true",
                         },
                     )
@@ -218,8 +248,8 @@ class ComfyUIClient:
             raise ComfyUIError(f"ComfyUI reference upload failed: {exc}") from exc
 
         name = str(payload.get("name") or path.name)
-        subfolder = str(payload.get("subfolder") or "").strip("/\\")
-        return f"{subfolder}/{name}" if subfolder else upload_name
+        subfolder = str(payload.get("subfolder") or requested_subfolder).strip("/\\")
+        return f"{subfolder}/{name}" if subfolder else name
 
     async def generate(self, workflow: dict[str, dict]) -> bytes:
         try:
@@ -457,6 +487,15 @@ class VisualGenerationService:
                 f"ComfyUI is not reachable at {settings.IMAGE_BASE_URL}"
             )
 
+        released_models = await self._client.release_ollama_vram()
+        if released_models:
+            logger.info(
+                "Released Ollama models before image generation: %s",
+                ", ".join(released_models),
+            )
+            # Give the driver a brief moment to return freed allocations before Klein loads.
+            await asyncio.sleep(0.25)
+
         seed = random.randint(0, 2_147_483_647)
         uploaded: list[str] = []
         for index, reference in enumerate(references or []):
@@ -492,6 +531,7 @@ class VisualGenerationService:
                 "lora_strength": lora_strength,
                 "reference_count": len(uploaded),
                 "text_encoder": settings.IMAGE_TEXT_ENCODER,
+                "released_ollama_models": released_models,
             }
         )
         self._session.add(
