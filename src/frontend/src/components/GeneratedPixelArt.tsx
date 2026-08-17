@@ -25,6 +25,13 @@ export function GeneratedPixelArt({
     className={`generated-pixel-art ${className}`.trim()}
     src={src}
     alt={alt}
+    style={{
+      width: '100%',
+      height: '100%',
+      objectFit: 'cover',
+      display: 'block',
+      imageRendering: 'pixelated',
+    }}
     onError={() => setFailed(true)}
   />
 }
