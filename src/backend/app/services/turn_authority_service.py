@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.tables import Turn
 from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
 from app.services.entity_identity import identity_key, resolve_character_candidates
 from app.services.scene_state_service import SceneStateService
@@ -19,11 +21,11 @@ class TurnAuthorityError(ValueError):
 class TurnAuthorityService:
     """Build the sole narrator/validator authority from structured state plus the plan.
 
-    Entity identity is canonicalized here rather than delegated back to the control model. Exact
-    names and aliases are compared through a mixed-script-safe key. A temporary generic role may
-    also resolve to one known character already at the target location (for example
-    ``Трактирщик`` -> ``Хозяин таверны``). Cross-location identity repair remains forbidden: this
-    service never teleports a known character just to make a planner answer fit.
+    Public `/talk` input records the selected addressee in the source user's routing snapshot before
+    Planner runs. The addressee is not unconditional actor authority: after structured execution the
+    selected NPC may own the response only when they are still present in the target scene and the
+    plan did not create another scene disposition. This lets one input contain both player action and
+    dialogue without turning `/talk` into a Planner bypass.
     """
 
     def __init__(self, session: AsyncSession):
@@ -31,6 +33,27 @@ class TurnAuthorityService:
         self._campaigns = CampaignRepository(session)
         self._entities = EntityRepository(session)
         self._scene_state = SceneStateService(session)
+
+    async def _selected_actor_id(
+        self,
+        trigger_turn_id: UUID,
+        explicit_actor_id: UUID | None,
+    ) -> UUID | None:
+        if explicit_actor_id is not None:
+            return explicit_actor_id
+        row = await self._session.get(Turn, str(trigger_turn_id))
+        if not row or not row.context_snapshot:
+            return None
+        try:
+            snapshot = json.loads(row.context_snapshot)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        routing = snapshot.get("input_routing") if isinstance(snapshot, dict) else None
+        value = routing.get("addressed_character_id") if isinstance(routing, dict) else None
+        try:
+            return UUID(str(value)) if value else None
+        except (TypeError, ValueError):
+            return None
 
     async def build(
         self,
@@ -52,9 +75,13 @@ class TurnAuthorityService:
             if campaign.player_character_id
             else None
         )
-        actor = (
-            await self._entities.get_character(acting_character_id)
-            if acting_character_id
+        selected_actor_id = await self._selected_actor_id(
+            trigger_turn_id,
+            acting_character_id,
+        )
+        selected_actor = (
+            await self._entities.get_character(selected_actor_id)
+            if selected_actor_id
             else None
         )
 
@@ -76,6 +103,12 @@ class TurnAuthorityService:
             campaign_id,
             entity_type="character",
         )
+
+        actor = selected_actor
+        effective_actor_id = selected_actor_id
+        if actor and target_state and identity_key(actor.canonical_name) not in present_keys:
+            actor = None
+            effective_actor_id = None
 
         character_states = {}
         character_locations: dict[UUID, UUID | None] = {}
@@ -115,8 +148,6 @@ class TurnAuthorityService:
             existing_id, existing = next(iter(unique_matches.items()))
             existing_key = identity_key(existing.canonical_name)
             if existing_key in present_keys:
-                # The model merely misclassified an already-present known character as new.
-                # Keep the existing participant and discard the duplicate creation request.
                 continue
 
             character = character_states.get(existing_id)
@@ -153,7 +184,12 @@ class TurnAuthorityService:
             if identity_key(entity.canonical_name) not in present_keys
         ]
 
-        disposition = "actor_turn" if plan is None else plan.scene_disposition
+        planned_disposition = plan.scene_disposition if plan else "stay"
+        disposition = (
+            "actor_turn"
+            if actor is not None and planned_disposition == "stay"
+            else planned_disposition
+        )
         transition_type = "none"
         if plan and plan.scene_transition.required:
             transition_type = plan.scene_transition.transition_type
@@ -162,14 +198,8 @@ class TurnAuthorityService:
 
         executed_sequence = None
         if plan and plan.scene_transition.execution_report:
-            # SceneTransitionExecutor receives `plan.scene_transition`, and writes the
-            # actual completed/blocked/skipped ActionSequenceExecution back onto that
-            # boundary object. This exact executed result, not the requested sequence,
-            # is what Narrator and Validator must share through TurnAuthority.
             executed_sequence = dict(plan.scene_transition.execution_report)
         elif plan and plan.action_sequence.steps:
-            # Diagnostic fallback for pre-execution/unit contexts. Public TurnSaga should
-            # normally have an execution_report before it builds authority.
             executed_sequence = {
                 "status": "planned_not_executed",
                 "planned": plan.action_sequence.model_dump(mode="json"),
@@ -180,7 +210,7 @@ class TurnAuthorityService:
             trigger_turn_id=trigger_turn_id,
             player_character_id=campaign.player_character_id,
             player_character_name=(player.canonical_name if player else None),
-            acting_character_id=acting_character_id,
+            acting_character_id=effective_actor_id,
             acting_character_name=(actor.canonical_name if actor else None),
             player_input=player_input,
             source_scene_id=source_scene_id,
@@ -195,9 +225,7 @@ class TurnAuthorityService:
             allowed_existing_npc_arrivals=existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
-            dramatic_mode=(
-                plan.narration_policy.dramatic_mode if plan else "calm"
-            ),
+            dramatic_mode=(plan.narration_policy.dramatic_mode if plan else "calm"),
             observable_consequences=(list(plan.observable_consequences) if plan else []),
             character_beats=(list(plan.character_beats) if plan else []),
             canon_constraints=(list(plan.canon_constraints) if plan else []),
