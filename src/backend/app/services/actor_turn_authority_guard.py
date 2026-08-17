@@ -150,15 +150,11 @@ def segment_actor_response(assistant_content: str, *, max_segments: int = 20) ->
         words = _WORD_RE.findall(key)
         if not segment or len(words) < 2 or len(segment) > 600 or key in seen:
             return
-        # Every candidate must be an exact contiguous substring of published output. This check is
-        # deterministic because candidates are sliced by backend code, not authored by a model.
         if segment not in text:
             return
         seen.add(key)
         candidates.append(segment)
 
-    # Dialogue quotes are highest-signal candidates. Split their inner text into sentences while
-    # retaining the exact original substring.
     for match in _QUOTE_RE.finditer(text):
         quoted = next((group for group in match.groups() if group is not None), "")
         for part in _split_candidate_text(quoted):
@@ -166,8 +162,6 @@ def segment_actor_response(assistant_content: str, *, max_segments: int = 20) ->
             if len(candidates) >= max_segments:
                 return candidates
 
-    # Some models write actor turns without quotation marks. Add sentence-sized published spans as
-    # fallback candidates; Qwen still decides whether each is actual factual speech or narration.
     for part in _split_candidate_text(text):
         add(part)
         if len(candidates) >= max_segments:
@@ -285,19 +279,22 @@ async def extract_actor_segment_proposals(
 
 
 def install() -> None:
-    """Install actor-turn rights and indexed character-claim memory."""
+    """Install only actor-turn narration/validation rights.
+
+    Actor memory is intentionally NOT monkeypatched here. PostTurnProcessor owns the explicit
+    indexed-claim branch so production, tests and background workers all execute the same visible
+    path regardless of import or patch ordering.
+    """
     global _INSTALLED
     if _INSTALLED:
         return
     _INSTALLED = True
 
     from app.models.turn_authority import TurnAuthority
-    from app.services.memory_scribe import MemoryScribe
     from app.services.turn_authority_validator import TurnAuthorityValidator
 
     original_validator_payload = TurnAuthority.validator_payload
     original_validate = TurnAuthorityValidator.validate
-    original_extract = MemoryScribe.extract_proposals
 
     if "ACTOR TURN RIGHTS" not in TurnAuthorityValidator.SYSTEM_PROMPT:
         TurnAuthorityValidator.SYSTEM_PROMPT += """
@@ -324,51 +321,8 @@ When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
         result = await original_validate(self, selection, authority, candidate_text)
         return protect_actor_turn_validation(authority, result)
 
-    async def actor_aware_extract(
-        self,
-        campaign_id,
-        scene_id,
-        user_content,
-        assistant_content,
-        acting_character_id=None,
-        player_character_id=None,
-    ):
-        if acting_character_id is None or player_character_id is None:
-            return await original_extract(
-                self,
-                campaign_id,
-                scene_id,
-                user_content,
-                assistant_content,
-                acting_character_id=acting_character_id,
-                player_character_id=player_character_id,
-            )
-
-        # Epistemic boundary: actor speech must never mutate objective canon through generic Scribe
-        # FACT/EVENT/MOVEMENT/RELATIONSHIP proposals. Structured world outcomes already belong to
-        # TurnAuthority/materializer. On actor turns Scribe's durable output is character claims
-        # only; transient gaze/pose/texture is extracted independently by MemoryTaxonomyService.
-        actor_knowledge = await extract_actor_segment_proposals(
-            self,
-            campaign_id=campaign_id,
-            assistant_content=assistant_content,
-            acting_character_id=acting_character_id,
-            player_character_id=player_character_id,
-        )
-        audit = dict(getattr(self, "last_audit", {}) or {})
-        audit.update(
-            {
-                "actor_knowledge_mode": "indexed_segments",
-                "actor_generic_scribe_skipped": True,
-                "actor_evidence_knowledge_created": len(actor_knowledge),
-            }
-        )
-        self.last_audit = audit
-        return actor_knowledge
-
     TurnAuthority.validator_payload = actor_aware_validator_payload
     TurnAuthorityValidator.validate = actor_aware_validate
-    MemoryScribe.extract_proposals = actor_aware_extract
 
 
 __all__ = [
