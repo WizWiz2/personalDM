@@ -50,7 +50,6 @@ def test_round26_actor_fallback_discards_entire_rejected_candidate():
         _error("player_agency", "Виктор Соколов кивает и говорит"),
     )
 
-    # Round 26 T8: a partially scrubbed rejected actor reply must never survive the boundary.
     assert "Иван Петров" not in published
     assert "Хорошо" not in published
     assert "Виктор" not in published
@@ -65,11 +64,9 @@ def test_round26_unauthorized_npc_cannot_survive_safe_fallback():
     published, audit = NarrationPublicationGuard.publish(
         authority,
         rejected,
-        _error("unplanned_npc", "Незнакомец в тёмном плаще входит в офис"),
+        _error("other", "Незнакомец в тёмном плаще входит в офис"),
     )
 
-    # Round 26 T9: post-turn jobs consume the persisted published assistant content. If the name is
-    # absent here it cannot become an Event/Entity through the normal authority-managed path.
     assert "Незнакомец" not in published
     assert "плащ" not in published
     assert audit["mode"] == "authority_projection"
