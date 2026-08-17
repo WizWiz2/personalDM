@@ -115,9 +115,6 @@ class TurnRunner(TurnSaga):
             - settings.PLANNER_CONTEXT_RESERVE_TOKENS,
         )
         compiler = ContextCompiler(self._session)
-        # Critical invariant: addressed NPC context must never activate ACTOR OUTPUT CONTRACT for
-        # Planner. That contract means "write as this NPC" and caused Round 26 to invert speaker and
-        # addressee. Planner receives ordinary player context plus a narrow routing note instead.
         messages, metadata = await compiler.compile_context(
             campaign_id=campaign_id,
             acting_character_id=None,
@@ -145,10 +142,11 @@ class TurnRunner(TurnSaga):
         scene_id,
         max_budget_override,
     ):
-        addressed_id = self._addressed_character_id(turn_create)
+        # The addressee is not response-actor authority. Before TurnAuthority exists, narrator
+        # context stays actor-neutral; the typed authority injected later owns actor_turn semantics.
         messages, metadata = await compiler.compile_context(
             campaign_id=campaign_id,
-            acting_character_id=addressed_id,
+            acting_character_id=None,
             scene_id=scene_id,
             current_user_content=turn_create.content,
             max_budget_override=max_budget_override,
