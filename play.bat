@@ -168,9 +168,9 @@ if not exist "%COMFY_EXE%" (
 )
 
 if not exist "%COMFY_WORKSPACE%\ComfyUI\main.py" (
-    echo [Setup] Installing ComfyUI for NVIDIA GPU...
+    echo [Setup] Installing latest stable ComfyUI for NVIDIA GPU...
     set "VIRTUAL_ENV=%COMFY_ENV%"
-    "%COMFY_EXE%" --skip-prompt --workspace="%COMFY_WORKSPACE%" install --skip-manager --nvidia --fast-deps
+    "%COMFY_EXE%" --skip-prompt --workspace="%COMFY_WORKSPACE%" install --version latest --skip-manager --nvidia
     if errorlevel 1 (
         set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
         goto :warn_images
