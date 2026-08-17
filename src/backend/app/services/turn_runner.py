@@ -4,7 +4,8 @@ from collections.abc import AsyncIterator
 from uuid import UUID
 
 from app.config import settings
-from app.models.turn import TurnCreate
+from app.db.repositories.entity_repo import EntityRepository
+from app.models.turn import ChatMessage, TurnCreate
 from app.services.base_turn_runner import active_tasks
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
 from app.services.post_turn_dispatcher import PostTurnDispatcher
@@ -14,12 +15,12 @@ from app.services.turn_saga import TurnSaga
 class TurnRunner(TurnSaga):
     """Public turn orchestrator backed by the explicit inter-agent Turn Saga.
 
-    UI `/talk` historically stored the selected addressee in `acting_character_id`. Passing that
-    value straight into TurnSaga also disabled Planner, so a message such as "я ухожу; Анна, вы со
-    мной?" could never produce structured movement. At this public boundary the selected NPC is now
-    recorded as routing context, while the player turn itself enters Saga unscoped and is always
-    planned. TurnAuthority later decides whether the addressed NPC is still allowed to own the
-    response.
+    UI `/talk` historically stored the selected addressee in `acting_character_id`. That legacy
+    transport field is converted into durable input routing before the turn enters the Saga. The
+    human-controlled player remains the actor of every user turn; the selected NPC is only the
+    addressee. Planner must therefore see normal player context plus an explicit addressee contract,
+    never an actor-output prompt for the NPC. TurnAuthority chooses the response actor only after the
+    structured plan has been resolved.
     """
 
     @staticmethod
@@ -52,6 +53,7 @@ class TurnRunner(TurnSaga):
                 "addressed_character_id": str(turn_create.acting_character_id),
                 "legacy_acting_character_field": True,
                 "planner_bypass": False,
+                "user_actor": "player_character",
             }
         )
         snapshot["input_routing"] = routing
@@ -62,8 +64,45 @@ class TurnRunner(TurnSaga):
             }
         )
 
+    async def _inject_planner_addressee_contract(
+        self,
+        messages: list[ChatMessage],
+        metadata: dict,
+        addressed_character_id: UUID | None,
+    ) -> tuple[list[ChatMessage], dict]:
+        if addressed_character_id is None or not messages:
+            return messages, metadata
+
+        character = await EntityRepository(self._session).get_character(addressed_character_id)
+        addressed_name = character.canonical_name if character else str(addressed_character_id)
+        first, *rest = messages
+        contract = (
+            "[INPUT ROUTING — authoritative]\n"
+            "The latest user message always belongs to the human-controlled player character.\n"
+            f"Addressed character: {addressed_name} ({addressed_character_id}).\n"
+            "This character is the listener/target of the player's message, NOT the speaker or "
+            "source of the user action. Plan the human player's intent and actions. Never rewrite "
+            "the player intent with the addressed character as its subject, and never introduce "
+            "the player character as a new NPC. If the addressed character is still present after "
+            "structured execution, TurnAuthority may later assign that character as response actor.\n"
+        )
+        audited = dict(metadata)
+        routing = dict(audited.get("input_routing") or {})
+        routing.update(
+            {
+                "addressed_character_id": str(addressed_character_id),
+                "addressed_character_name": addressed_name,
+                "user_actor": "player_character",
+            }
+        )
+        audited["input_routing"] = routing
+        return [
+            ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
+            *rest,
+        ], audited
+
     async def _compile(self, campaign_id, turn_create, scene_id, primary_config):
-        """Compile actor-aware context while still reserving budget for Planner."""
+        """Compile Planner context with the player as actor and NPC only as addressee."""
         from app.services.context_compiler import ContextCompiler
 
         addressed_id = self._addressed_character_id(turn_create)
@@ -76,12 +115,20 @@ class TurnRunner(TurnSaga):
             - settings.PLANNER_CONTEXT_RESERVE_TOKENS,
         )
         compiler = ContextCompiler(self._session)
+        # Critical invariant: addressed NPC context must never activate ACTOR OUTPUT CONTRACT for
+        # Planner. That contract means "write as this NPC" and caused Round 26 to invert speaker and
+        # addressee. Planner receives ordinary player context plus a narrow routing note instead.
         messages, metadata = await compiler.compile_context(
             campaign_id=campaign_id,
-            acting_character_id=addressed_id,
+            acting_character_id=None,
             scene_id=scene_id,
             current_user_content=turn_create.content,
             max_budget_override=max_budget_override,
+        )
+        messages, metadata = await self._inject_planner_addressee_contract(
+            messages,
+            metadata,
+            addressed_id,
         )
         return (
             self._reserve_current_user(messages, metadata, turn_create.content),
