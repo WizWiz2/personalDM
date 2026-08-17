@@ -118,6 +118,29 @@ def test_turn_creates_durable_runs_jobs_and_debugger_snapshot(client: TestClient
     assert snapshot["generation_runs"][0]["status"] == "completed"
     assert snapshot["proposals"][0]["payload"]["_canon"]["evidence"]
 
+    assistant = next(turn for turn in snapshot["turns"] if turn["role"] == "assistant")
+    trace_response = client.get(
+        f"/api/campaigns/{campaign_id}/debugger/turns/{assistant['id']}"
+    )
+    assert trace_response.status_code == 200
+    trace = trace_response.json()
+    assert trace["assistant_turn_id"] == assistant["id"]
+    assert trace["input"]["text"] == "Я открываю дверь."
+    assert "routing" in trace
+    assert "planner" in trace
+    assert "authority" in trace
+    assert "validator" in trace
+    assert "memory" in trace
+    assert "diagnostics" in trace
+
+    campaign_trace = client.get(
+        f"/api/campaigns/{campaign_id}/debugger/trace?turn_limit=20"
+    )
+    assert campaign_trace.status_code == 200
+    exported = campaign_trace.json()
+    assert exported["summary"]["assistant_turns"] == 1
+    assert exported["turns"][0]["assistant_turn_id"] == assistant["id"]
+
 
 def test_debugger_page_is_served(client: TestClient):
     response = client.get("/api/debugger")

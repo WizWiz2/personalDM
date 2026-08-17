@@ -10,6 +10,7 @@ from app.db.repositories.job_repo import PostTurnJobRepository
 from app.models.memory_ops import MemoryMaintenanceRequest
 from app.services.debugger_service import DebuggerService
 from app.services.memory_operations import MemoryOperationsService
+from app.services.playtest_trace import PlaytestTraceService
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.presence_debugger import PresenceDebugger
 from app.services.scene_transition_debugger import SceneTransitionDebugger
@@ -60,6 +61,32 @@ async def campaign_debugger(
         snapshot["memory_ops"] = memory_ops
         snapshot.setdefault("health", {}).update(memory_health)
         return snapshot
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/campaigns/{campaign_id}/debugger/turns/{assistant_turn_id}")
+async def playtest_turn_trace(
+    campaign_id: UUID,
+    assistant_turn_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """Causal trace for one published assistant turn."""
+    try:
+        return await PlaytestTraceService(session).turn_trace(campaign_id, assistant_turn_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/campaigns/{campaign_id}/debugger/trace")
+async def playtest_campaign_trace(
+    campaign_id: UUID,
+    turn_limit: int = Query(default=100, ge=1, le=1000),
+    session: AsyncSession = Depends(get_session),
+):
+    """Export-ready flight recorder for a whole live playtest."""
+    try:
+        return await PlaytestTraceService(session).campaign_trace(campaign_id, turn_limit)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
