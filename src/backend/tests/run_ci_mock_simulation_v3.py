@@ -309,6 +309,16 @@ def _scribe(prompt: str) -> str:
     return json.dumps({"outcomes": [outcome], "proposals": [proposal]}, ensure_ascii=False)
 
 
+def _actor_segment_selector(prompt: str) -> str:
+    """Exercise the same indexed actor-claim schema as production."""
+    CALLS["scribe"] += 1
+    segment_ids = [
+        int(value)
+        for value in re.findall(r"^S(\d+):\s+.+$", prompt, flags=re.MULTILINE)
+    ]
+    return json.dumps({"segment_ids": segment_ids[:1]}, ensure_ascii=False)
+
+
 def _turn_authority_plan(prompt: str) -> str:
     """Exercise the real TurnAuthorityPlanner schema instead of silently falling back."""
     CALLS["planner"] += 1
@@ -351,6 +361,8 @@ def _dispatch_json(prompt: str) -> str:
         return _turn_authority_plan(prompt)
     if "[TURN AUTHORITY VALIDATOR]" in prompt:
         return _authority_verdict()
+    if "[ACTOR CLAIM SEGMENT SELECTOR]" in prompt:
+        return _actor_segment_selector(prompt)
     if "Ты проектируешь новый акт автономной кампании" in prompt:
         return _scenario_arc(prompt)
     if "Создай различимую карточку NPC" in prompt:
