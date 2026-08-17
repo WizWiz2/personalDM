@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.tables import Turn
 from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
 from app.services.entity_identity import identity_key, resolve_character_candidates
 from app.services.scene_state_service import SceneStateService
@@ -19,16 +21,11 @@ class TurnAuthorityError(ValueError):
 class TurnAuthorityService:
     """Build the sole narrator/validator authority from structured state plus the plan.
 
-    ``acting_character_id`` on player input identifies the NPC currently addressed by the UI. It
-    does not itself prove that the NPC may own the resulting assistant turn. Planning always happens
-    first; the selected NPC becomes the effective actor only when they are still a participant of
-    the target scene and the structured plan stays in that scene. This lets one input contain both
-    player action and dialogue without turning `/talk` into a Planner bypass.
-
-    Entity identity is canonicalized here rather than delegated back to the control model. Exact
-    names and aliases are compared through a mixed-script-safe key. A temporary generic role may
-    also resolve to one known character already at the target location. Cross-location identity
-    repair remains forbidden.
+    Public `/talk` input records the selected addressee in the source user's routing snapshot before
+    Planner runs. The addressee is not unconditional actor authority: after structured execution the
+    selected NPC may own the response only when they are still present in the target scene and the
+    plan did not create another scene disposition. This lets one input contain both player action and
+    dialogue without turning `/talk` into a Planner bypass.
     """
 
     def __init__(self, session: AsyncSession):
@@ -36,6 +33,27 @@ class TurnAuthorityService:
         self._campaigns = CampaignRepository(session)
         self._entities = EntityRepository(session)
         self._scene_state = SceneStateService(session)
+
+    async def _selected_actor_id(
+        self,
+        trigger_turn_id: UUID,
+        explicit_actor_id: UUID | None,
+    ) -> UUID | None:
+        if explicit_actor_id is not None:
+            return explicit_actor_id
+        row = await self._session.get(Turn, str(trigger_turn_id))
+        if not row or not row.context_snapshot:
+            return None
+        try:
+            snapshot = json.loads(row.context_snapshot)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        routing = snapshot.get("input_routing") if isinstance(snapshot, dict) else None
+        value = routing.get("addressed_character_id") if isinstance(routing, dict) else None
+        try:
+            return UUID(str(value)) if value else None
+        except (TypeError, ValueError):
+            return None
 
     async def build(
         self,
@@ -57,9 +75,13 @@ class TurnAuthorityService:
             if campaign.player_character_id
             else None
         )
+        selected_actor_id = await self._selected_actor_id(
+            trigger_turn_id,
+            acting_character_id,
+        )
         selected_actor = (
-            await self._entities.get_character(acting_character_id)
-            if acting_character_id
+            await self._entities.get_character(selected_actor_id)
+            if selected_actor_id
             else None
         )
 
@@ -82,11 +104,8 @@ class TurnAuthorityService:
             entity_type="character",
         )
 
-        # UI selection is an address target, not unconditional actor authority. If structured
-        # execution moved/focused the turn to a scene where that character is not present, they
-        # cannot answer remotely and their identity must not become memory provenance.
         actor = selected_actor
-        effective_actor_id = acting_character_id
+        effective_actor_id = selected_actor_id
         if actor and target_state and identity_key(actor.canonical_name) not in present_keys:
             actor = None
             effective_actor_id = None
@@ -166,9 +185,6 @@ class TurnAuthorityService:
         ]
 
         planned_disposition = plan.scene_disposition if plan else "stay"
-        # A selected, still-present NPC owns a conversational assistant turn only when structured
-        # planning kept the scene boundary stable. Movement/sequence/focus outcomes remain normal
-        # narrated turns even if the input also addressed that NPC.
         disposition = (
             "actor_turn"
             if actor is not None and planned_disposition == "stay"
