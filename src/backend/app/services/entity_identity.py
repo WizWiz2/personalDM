@@ -47,8 +47,6 @@ _CYRILLIC_TO_LATIN = {
 }
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 
-# These are deliberately coarse occupational identities used only for a conservative
-# same-location repair of temporary generic NPC names. Exact names and aliases always win.
 _ROLE_FAMILIES: dict[str, tuple[str, ...]] = {
     "innkeeper": (
         "traktirshchik",
@@ -69,13 +67,7 @@ _ROLE_FAMILIES: dict[str, tuple[str, ...]] = {
 
 
 def identity_key(value: object) -> str:
-    """Return a script-stable comparison key for model-authored entity names.
-
-    qwen-class local models occasionally mix Cyrillic and Latin inside one token (``Эйdan``,
-    ``Rэт``). Unicode normalization plus one-way transliteration makes those spellings compare
-    equal without rewriting the user-facing canonical name stored in the database.
-    """
-
+    """Return a script-stable comparison key for model-authored entity names."""
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     transliterated = "".join(_CYRILLIC_TO_LATIN.get(char, char) for char in text)
     return " ".join(_NON_WORD.sub(" ", transliterated).split())
@@ -128,6 +120,19 @@ def entity_role_families(entity) -> set[str]:
     )
 
 
+def _structured_starter_role_key(entity) -> str:
+    """Return a role key only for a temporary NPC created by structured Session Zero presence."""
+    custom_fields = getattr(entity, "custom_fields", None) or {}
+    if not isinstance(custom_fields, dict):
+        return ""
+    if not custom_fields.get("temporary_name"):
+        return ""
+    if custom_fields.get("source") != "session_zero_structured_presence":
+        return ""
+    role = custom_fields.get("role") or custom_fields.get("bootstrap_role")
+    return identity_key(role)
+
+
 def resolve_character_candidates(
     entities: Iterable,
     *,
@@ -139,16 +144,32 @@ def resolve_character_candidates(
 ) -> list:
     """Resolve an LLM-proposed NPC identity without semantic LLM arbitration.
 
+    Resolution order:
     1. Script-normalized canonical name / alias equality is authoritative.
-    2. Only a *temporary generic role name* may fall back to role+location matching.
-    3. Role matching is same-location only. Multiple matches are intentionally returned as
-       ambiguous so the caller can fail closed instead of merging two real NPCs.
+    2. A named proposal may reconcile with a *unique same-location temporary structured starter*
+       whose stored role exactly equals the proposed role. This repairs Session Zero payloads where
+       the role survived but an explicitly known name was omitted; ambiguity still fails closed.
+    3. Only a temporary generic role name may fall back to the older coarse role-family matching.
     """
 
     entities = list(entities)
     exact = exact_identity_matches(entities, proposed_name)
     if exact:
         return exact
+
+    if target_location_id is not None and proposed_role:
+        requested_role = identity_key(proposed_role)
+        if requested_role:
+            starter_matches = []
+            for entity in entities:
+                entity_id = UUID(str(entity.id))
+                if character_locations.get(entity_id) != target_location_id:
+                    continue
+                if _structured_starter_role_key(entity) == requested_role:
+                    starter_matches.append(entity)
+            if starter_matches:
+                return starter_matches
+
     if not temporary_name or target_location_id is None:
         return []
 
