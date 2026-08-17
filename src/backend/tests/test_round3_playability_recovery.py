@@ -56,7 +56,7 @@ def _selection(campaign_id):
     )
 
 
-def test_actor_publication_guard_removes_invented_player_reply():
+def test_actor_publication_guard_discards_rejected_actor_candidate():
     authority = TurnAuthority(
         campaign_id=uuid4(),
         trigger_turn_id=uuid4(),
@@ -90,10 +90,15 @@ def test_actor_publication_guard_removes_invented_player_reply():
         validation,
     )
 
-    assert "Тень свернула" in published
+    # Round 26 changed this contract deliberately: once a candidate has validation errors, even
+    # apparently useful unflagged fragments are not trusted. The one repair attempt happens before
+    # this boundary; an exhausted actor response falls back to Authority rather than partial scrub.
+    assert "Тень свернула" not in published
     assert "кивнул" not in published
     assert "Спасибо, Грета" not in published
-    assert diagnostics["mode"] == "sanitized_candidate"
+    assert published == "Старуха Грета умолкает."
+    assert diagnostics["mode"] == "authority_projection"
+    assert diagnostics["candidate_discarded"] is True
 
 
 def test_unresolved_semantic_violation_projects_authority_instead_of_bad_prose():
