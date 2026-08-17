@@ -23,7 +23,11 @@ class TurnCreate(BaseModel):
     role: TurnRole
     content: str
     scene_id: UUID | None = None
+    # `acting_character_id` is the character who is structurally authorized to own the
+    # assistant turn. UI `/talk` selection is different: it is only an addressed NPC and
+    # must not disable planning of the player's own actions.
     acting_character_id: UUID | None = None
+    addressed_character_id: UUID | None = None
     parent_turn_id: UUID | None = None
     model_name: str | None = None
     context_snapshot: dict | None = None
