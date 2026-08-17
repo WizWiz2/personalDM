@@ -197,6 +197,7 @@ def build_actor_segment_proposals(
                     "confidence": 0.8,
                     "status": "known",
                     "_canon": {
+                        "outcome_id": f"actor-segment-{segment_id}",
                         "kind": "knowledge_transfer",
                         "description": "Игрок услышал это утверждение выбранного NPC.",
                         "evidence": evidence,
