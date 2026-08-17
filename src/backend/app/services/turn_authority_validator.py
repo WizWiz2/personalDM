@@ -93,6 +93,27 @@ Return exactly:
         r"candidate\s+narration|engine\s+state)",
         flags=re.IGNORECASE,
     )
+    # Strong scene-boundary verbs only. Ordinary within-room movement ("подходишь к столу") is
+    # intentionally absent so the guard does not turn every spatial gesture into a location change.
+    PLAYER_BOUNDARY_PATTERN = re.compile(
+        r"(?:\bты\s+(?:(?:снова|уже|наконец)\s+)?(?:"
+        r"приходишь|прибываешь|добираешься|возвращаешься|оказываешься|"
+        r"возвращаешься|покидаешь\s+(?:офис|комнату|здание|дом|морг)|"
+        r"входишь\s+в\s+(?:морг|офис|здание|дом|таверну|комнату)"
+        r")\b)",
+        flags=re.IGNORECASE,
+    )
+    # Allow a short physical description between the generic identity and the appearance verb,
+    # e.g. the Round-26 leak "Незнакомец в плаще входит...". References such as "следы
+    # незнакомца" or "я слышал о незнакомце" do not match because they contain no presence verb.
+    GENERIC_NPC_APPEARANCE_PATTERN = re.compile(
+        r"(?:\b(?:незнакомец|незнакомка)\b[^.!?\n]{0,60}\b(?:"
+        r"входит|вош[её]л|вошла|появляется|появил(?:ся|ась)|подходит|подош[её]л|подошла|"
+        r"стоит|сидит|садится)\b|"
+        r"\b(?:входит|вош[её]л|вошла|появляется|появил(?:ся|ась)|подходит|подош[её]л|подошла)"
+        r"\b[^.!?\n]{0,40}\b(?:незнакомец|незнакомка)\b)",
+        flags=re.IGNORECASE,
+    )
 
     def __init__(self, router: RoleModelRouter):
         self._router = router
@@ -157,6 +178,11 @@ Return exactly:
             )
             result = self.apply_deterministic_surface_quality(
                 result,
+                candidate_text,
+            )
+            result = self.apply_deterministic_scene_boundaries(
+                result,
+                authority,
                 candidate_text,
             )
             return self.apply_deterministic_player_agency(
@@ -281,6 +307,68 @@ Return exactly:
             ),
             "Детерминированная проверка обнаружила технический или мета-текст.",
         )
+
+    @classmethod
+    def apply_deterministic_scene_boundaries(
+        cls,
+        result: NarrationValidationResult,
+        authority: TurnAuthority,
+        candidate_text: str,
+    ) -> NarrationValidationResult:
+        """Fail closed on the exact Round-26 prose/state divergences even if the LLM judge misses."""
+        location_changed = authority.source_location_path != authority.target_location_path
+        location_authorized = (
+            authority.scene_disposition == "location_transition"
+            or authority.transition_type == "location_transition"
+            or location_changed
+        )
+        if not location_authorized:
+            match = cls.PLAYER_BOUNDARY_PATTERN.search(candidate_text)
+            if match:
+                result = cls._append_error(
+                    result,
+                    NarrationViolation(
+                        violation_type="invalid_movement",
+                        severity="error",
+                        evidence=match.group(0),
+                        correction=(
+                            "Не описывать завершённый приход, возврат или смену локации героя: "
+                            "TurnAuthority сохранил текущую локацию."
+                        ),
+                    ),
+                    "Детерминированная проверка обнаружила prose/state divergence по локации.",
+                )
+
+        known_names = {
+            str(value).casefold()
+            for value in [
+                *authority.present_character_names,
+                *authority.allowed_new_npc_names,
+                authority.acting_character_name,
+            ]
+            if value
+        }
+        generic_already_known = any(
+            "незнакомец" in value or "незнакомка" in value
+            for value in known_names
+        )
+        if not generic_already_known and not authority.allowed_new_npcs:
+            match = cls.GENERIC_NPC_APPEARANCE_PATTERN.search(candidate_text)
+            if match:
+                result = cls._append_error(
+                    result,
+                    NarrationViolation(
+                        violation_type="absent_character",
+                        severity="error",
+                        evidence=match.group(0),
+                        correction=(
+                            "Удалить физическое появление нового незнакомца: TurnAuthority не "
+                            "разрешал нового NPC в этом ходу."
+                        ),
+                    ),
+                    "Детерминированная проверка обнаружила неразрешённого нового NPC.",
+                )
+        return result
 
     @classmethod
     def apply_deterministic_player_agency(
