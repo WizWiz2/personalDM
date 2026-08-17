@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.tables import Turn
+from app.models.entity import EntityUpdate
 from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
 from app.services.entity_identity import identity_key, resolve_character_candidates
 from app.services.scene_state_service import SceneStateService
@@ -19,14 +20,7 @@ class TurnAuthorityError(ValueError):
 
 
 class TurnAuthorityService:
-    """Build the sole narrator/validator authority from structured state plus the plan.
-
-    Public `/talk` input records the selected addressee in the source user's routing snapshot before
-    Planner runs. The addressee is not unconditional actor authority: after structured execution the
-    selected NPC may own the response only when they are still present in the target scene and the
-    plan did not create another scene disposition. This lets one input contain both player action and
-    dialogue without turning `/talk` into a Planner bypass.
-    """
+    """Build the sole narrator/validator authority from structured state plus the plan."""
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -54,6 +48,31 @@ class TurnAuthorityService:
             return UUID(str(value)) if value else None
         except (TypeError, ValueError):
             return None
+
+    async def _promote_temporary_identity(self, existing, introduction):
+        """Replace a bootstrap role-label with a concrete discovered name, preserving history."""
+        fields = dict(existing.custom_fields or {})
+        if not fields.get("temporary_name") or introduction.temporary_name:
+            return existing
+        proposed = " ".join(str(introduction.canonical_name or "").split()).strip()
+        if not proposed or identity_key(proposed) == identity_key(existing.canonical_name):
+            return existing
+
+        aliases = list(existing.aliases or [])
+        if existing.canonical_name not in aliases:
+            aliases.append(existing.canonical_name)
+        fields["temporary_name"] = False
+        fields["resolved_from_temporary_name"] = existing.canonical_name
+        fields["resolved_by"] = "turn_authority_identity_reconciliation"
+        updated = await self._entities.update(
+            UUID(str(existing.id)),
+            EntityUpdate(
+                canonical_name=proposed,
+                aliases=aliases,
+                custom_fields=fields,
+            ),
+        )
+        return updated or existing
 
     async def build(
         self,
@@ -146,7 +165,26 @@ class TurnAuthorityService:
                 continue
 
             existing_id, existing = next(iter(unique_matches.items()))
+            old_key = identity_key(existing.canonical_name)
+            old_name = existing.canonical_name
+            was_present = old_key in present_keys
+            existing = await self._promote_temporary_identity(existing, introduction)
             existing_key = identity_key(existing.canonical_name)
+            if existing.canonical_name != old_name:
+                if was_present:
+                    present_names = [
+                        existing.canonical_name if identity_key(value) == old_key else value
+                        for value in present_names
+                    ]
+                    present_keys.discard(old_key)
+                    present_keys.add(existing_key)
+                all_characters = [
+                    existing if UUID(str(value.id)) == existing_id else value
+                    for value in all_characters
+                ]
+                if effective_actor_id == existing_id:
+                    actor = await self._entities.get_character(existing_id)
+
             if existing_key in present_keys:
                 continue
 
