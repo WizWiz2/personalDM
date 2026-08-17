@@ -43,7 +43,7 @@ python -c "import questionary, httpx" >nul 2>&1
 if %errorlevel% neq 0 (
     echo [Setup] Updating launcher dependencies...
     pip install -e src\backend[dev]
-    if %errorlevel% neq 0 goto :err_deps
+    if errorlevel 1 goto :err_deps
 )
 
 :check_llm
@@ -149,6 +149,7 @@ goto :image_setup
 rem 6. Provision the local image backend in an isolated environment.
 echo.
 echo [Setup] Checking local pixel-art image generation...
+set "BACKEND_VIRTUAL_ENV=%VIRTUAL_ENV%"
 set "COMFY_WORKSPACE=%CD%\tools\comfy"
 set "COMFY_ENV=%CD%\tools\comfy-runtime"
 set "COMFY_EXE=%COMFY_ENV%\Scripts\comfy.exe"
@@ -157,22 +158,24 @@ if not exist "%COMFY_ENV%\Scripts\python.exe" (
     echo [Setup] Creating isolated ComfyUI environment...
     if not exist "%CD%\tools" mkdir "%CD%\tools"
     python -m venv "%COMFY_ENV%"
-    if %errorlevel% neq 0 goto :warn_images
+    if errorlevel 1 goto :warn_images
 )
 
 if not exist "%COMFY_EXE%" (
     echo [Setup] Installing comfy-cli...
     "%COMFY_ENV%\Scripts\python.exe" -m pip install --upgrade pip comfy-cli
-    if %errorlevel% neq 0 goto :warn_images
+    if errorlevel 1 goto :warn_images
 )
 
 if not exist "%COMFY_WORKSPACE%\ComfyUI\main.py" (
     echo [Setup] Installing ComfyUI for NVIDIA GPU...
-    set "OLD_VIRTUAL_ENV=%VIRTUAL_ENV%"
     set "VIRTUAL_ENV=%COMFY_ENV%"
     "%COMFY_EXE%" --skip-prompt --workspace="%COMFY_WORKSPACE%" install --skip-manager --nvidia --fast-deps
-    set "VIRTUAL_ENV=%OLD_VIRTUAL_ENV%"
-    if %errorlevel% neq 0 goto :warn_images
+    if errorlevel 1 (
+        set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+        goto :warn_images
+    )
+    set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
 )
 
 set "COMFY_MODELS=%COMFY_WORKSPACE%\ComfyUI\models"
@@ -202,11 +205,13 @@ curl -sf http://127.0.0.1:8188/system_stats >nul 2>&1
 if %errorlevel% EQU 0 goto :images_ready
 
 echo [Setup] Starting ComfyUI in low-VRAM background mode...
-set "OLD_VIRTUAL_ENV=%VIRTUAL_ENV%"
 set "VIRTUAL_ENV=%COMFY_ENV%"
 "%COMFY_EXE%" --workspace="%COMFY_WORKSPACE%" launch --background -- --lowvram --disable-auto-launch --port 8188
-set "VIRTUAL_ENV=%OLD_VIRTUAL_ENV%"
-if %errorlevel% neq 0 goto :warn_images
+if errorlevel 1 (
+    set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+    goto :warn_images
+)
+set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
 
 for /l %%I in (1,1,45) do (
     curl -sf http://127.0.0.1:8188/system_stats >nul 2>&1
@@ -216,11 +221,13 @@ for /l %%I in (1,1,45) do (
 goto :warn_images
 
 :images_ready
+set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
 call :set_image_enabled true
 echo [Setup] Pixel-art image backend is ready at http://127.0.0.1:8188
 goto :launch_menu
 
 :warn_images
+set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
 call :set_image_enabled false
 echo [WARNING] Local image generation could not be prepared.
 echo [WARNING] PersonalDM will still start normally; generated art will use the existing fallback visuals.
@@ -244,7 +251,7 @@ exit /b 0
 
 :set_image_enabled
 if not exist "%ENV_FILE%" type nul > "%ENV_FILE%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%ENV_FILE%'; $v='%~1'; $lines=@(); if(Test-Path $p){$lines=Get-Content $p | Where-Object {$_ -notmatch '^PDM_IMAGE_ENABLED='}}; $lines += ('PDM_IMAGE_ENABLED=' + $v); Set-Content -Path $p -Value $lines -Encoding utf8" >nul 2>&1
+python -c "from pathlib import Path; p=Path(r'%ENV_FILE%'); lines=p.read_text(encoding='utf-8-sig').splitlines() if p.exists() else []; lines=[line for line in lines if not line.startswith('PDM_IMAGE_ENABLED=')]; lines.append('PDM_IMAGE_ENABLED=%~1'); p.write_text(chr(10).join(lines)+chr(10), encoding='utf-8')"
 exit /b 0
 
 :launch_menu
@@ -273,14 +280,14 @@ exit /b
 echo [Setup] Ollama is not installed!
 echo [Setup] Downloading Ollama installer automatically...
 curl -L -o "%TEMP%\OllamaSetup.exe" https://ollama.com/download/OllamaSetup.exe
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Failed to download Ollama installer. Please check your internet connection.
     pause
     exit /b
 )
 echo [Setup] Installing Ollama silently (please wait)...
 start /wait "" "%TEMP%\OllamaSetup.exe" /silent
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Ollama installation failed.
     pause
     exit /b
