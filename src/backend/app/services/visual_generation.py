@@ -575,7 +575,41 @@ class VisualGenerationService:
             f"{'PLAYER' if turn.role == 'user' else 'DM'}: {self._compact(turn.content, 900)}"
             for turn in recent
         )
+
+        cast_lines: list[str] = []
+        for index, participant_id in enumerate(
+            state.participant_ids[: settings.IMAGE_MAX_REFERENCES],
+            start=1,
+        ):
+            character = await self._entities.get_character(participant_id)
+            if not character:
+                continue
+            visual_fields = [
+                character.description,
+                character.appearance,
+                character.face_description,
+                character.body_description,
+                character.immutable_features,
+            ]
+            visual = self._compact(
+                "; ".join(
+                    " ".join(str(value).split())
+                    for value in visual_fields
+                    if value
+                ),
+                700,
+            )
+            portrait_hint = (
+                "a matching portrait reference image is supplied"
+                if self.character_portrait_path(participant_id).is_file()
+                else "no portrait reference is available; follow the card description"
+            )
+            cast_lines.append(
+                f"{index}. {character.canonical_name}: {visual or 'keep the established character design'}; {portrait_hint}."
+            )
+
         participants = ", ".join(state.participant_names) or "only the protagonist"
+        cast = "\n".join(cast_lines) or "No detailed character cards are available."
         location = " > ".join(state.location_path) or state.scene_title
         return (
             "pixel art game scene, detailed RPG pixel art, coherent environment, "
@@ -584,8 +618,9 @@ class VisualGenerationService:
             f"Scene: {state.scene_title}. Location: {location}. "
             f"Time: {state.world_time_label or 'unspecified'}. "
             f"Mood/conflict: {state.active_conflict or state.scene_goal or 'follow the narrative tone'}.\n"
-            f"Physically present characters: {participants}. Reference portraits, when supplied, "
-            "represent these same characters and must preserve their recognizable appearance.\n"
+            f"Physically present characters: {participants}. Include only characters who are physically present. "
+            "Reference portraits, when supplied, represent the corresponding established characters and must preserve recognizable appearance.\n"
+            f"CHARACTER CARDS:\n{cast}\n"
             "Depict the current moment implied by the latest story, not an unrelated establishing shot.\n"
             f"LATEST STORY:\n{story or 'No turns yet; depict the established starting scene.'}"
         )
