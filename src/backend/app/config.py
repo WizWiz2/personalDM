@@ -11,6 +11,24 @@ class Settings(BaseSettings):
     LLM_API_KEY: str | None = None
     LLM_CONTEXT_WINDOW: int = 4096
 
+    # Local visual generation. Disabled by default so tests/manual backend starts do not
+    # unexpectedly launch GPU work; play.bat enables it after provisioning ComfyUI.
+    IMAGE_ENABLED: bool = False
+    IMAGE_BASE_URL: str = "http://127.0.0.1:8188"
+    IMAGE_GENERATED_SUBDIR: str = "generated"
+    IMAGE_DIFFUSION_MODEL: str = "flux-2-klein-4b-fp8.safetensors"
+    IMAGE_TEXT_ENCODER: str = "qwen_3_4b_fp4_flux2.safetensors"
+    IMAGE_VAE_MODEL: str = "flux2-vae.safetensors"
+    IMAGE_LORA_MODEL: str = "pixel-art-lora.safetensors"
+    IMAGE_STEPS: int = 4
+    IMAGE_MAX_REFERENCES: int = 6
+    IMAGE_SCENE_HISTORY_TURNS: int = 8
+    IMAGE_TIMEOUT_SECONDS: float = 240.0
+    IMAGE_RELEASE_OLLAMA_VRAM: bool = True
+    IMAGE_PORTRAIT_LORA_STRENGTH: float = 1.05
+    IMAGE_SCENE_LORA_STRENGTH: float = 0.9
+    IMAGE_COVER_LORA_STRENGTH: float = 0.9
+
     # Role-based local model routing. Narration keeps the campaign provider;
     # structured control defaults to the smaller, stricter Qwen model.
     CONTROL_LLM_BASE_URL: str | None = None

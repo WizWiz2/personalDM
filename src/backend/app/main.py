@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.archive import router as archive_router
 from app.api.campaigns import router as campaigns_router
@@ -15,6 +16,7 @@ from app.api.scene_state import router as scene_state_router
 from app.api.scenes import router as scenes_router
 from app.api.session_zero import router as session_zero_router
 from app.api.turns import router as turns_router
+from app.api.visuals import router as visuals_router
 from app.api.world_state import router as world_state_router
 from app.config import settings
 from app.db.engine import get_session
@@ -27,9 +29,17 @@ install_runtime()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     os.makedirs(settings.DATA_DIR, exist_ok=True)
+    os.makedirs(
+        os.path.join(settings.DATA_DIR, settings.IMAGE_GENERATED_SUBDIR),
+        exist_ok=True,
+    )
     print("[personalDM] Starting backend server")
     print(f"[personalDM] Data dir: {settings.DATA_DIR}")
     print(f"[personalDM] Default local LLM: {settings.LLM_MODEL}")
+    print(
+        "[personalDM] Local visuals: "
+        + (f"enabled ({settings.IMAGE_BASE_URL})" if settings.IMAGE_ENABLED else "disabled")
+    )
     worker = None
     worker_task = None
     if get_session not in app.dependency_overrides:
@@ -65,6 +75,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.mount(
+    "/generated",
+    StaticFiles(
+        directory=os.path.join(settings.DATA_DIR, settings.IMAGE_GENERATED_SUBDIR),
+        check_dir=False,
+    ),
+    name="generated",
+)
+
 app.include_router(campaigns_router)
 app.include_router(session_zero_router)
 app.include_router(turns_router)
@@ -76,6 +95,7 @@ app.include_router(memory_router)
 app.include_router(world_state_router)
 app.include_router(debugger_router)
 app.include_router(archive_router)
+app.include_router(visuals_router)
 
 
 @app.get("/health")
@@ -84,4 +104,5 @@ async def health():
         "status": "ok",
         "version": "0.1.0",
         "model": settings.LLM_MODEL,
+        "image_enabled": settings.IMAGE_ENABLED,
     }

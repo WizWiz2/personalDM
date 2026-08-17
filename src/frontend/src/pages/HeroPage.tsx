@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, readableError } from '../api/client'
 import type { CharacterCard, SceneState } from '../api/types'
+import { visualApi, visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
+import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { PixelPortrait } from '../components/PixelArt'
 import { EmptyState, ErrorState, LoadingState } from '../components/States'
 
@@ -11,6 +13,8 @@ export function HeroPage() {
   const [scene, setScene] = useState<SceneState | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [portraitGenerating, setPortraitGenerating] = useState(false)
+  const [portraitNonce, setPortraitNonce] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -49,6 +53,20 @@ export function HeroPage() {
     return card.relationships.filter((rel) => rel.visibility === 'player' || rel.subject_id === character.id)
   }, [card, character])
 
+  const regeneratePortrait = async () => {
+    if (!character || portraitGenerating) return
+    setPortraitGenerating(true)
+    setError('')
+    try {
+      const result = await visualApi.generateCharacterPortrait(character.id)
+      setPortraitNonce(result.seed || Date.now())
+    } catch (err) {
+      setError(readableError(err))
+    } finally {
+      setPortraitGenerating(false)
+    }
+  }
+
   return <div className="workspace-page">
     <header className="workspace-topbar"><div><h1>Герой</h1><p>Досье персонажа</p></div></header>
     <div className="page-content hero-content">
@@ -57,7 +75,14 @@ export function HeroPage() {
       {!loading && !error && !campaign.player_character_id && <EmptyState title="Герой ещё не создан" text="Сначала заверши нулевую сессию." />}
       {card && character && <div className="hero-dossier">
         <aside className="hero-summary">
-          <div className="portrait-frame"><PixelPortrait seed={character.canonical_name} /></div>
+          <div className="portrait-frame">
+            <GeneratedPixelArt
+              src={`${visualUrls.characterPortrait(character.id)}${portraitNonce ? `?v=${portraitNonce}` : ''}`}
+              alt={`Портрет ${character.canonical_name}`}
+              fallback={<PixelPortrait seed={character.canonical_name} />}
+            />
+          </div>
+          <button className="btn" type="button" disabled={portraitGenerating} onClick={() => void regeneratePortrait()}>{portraitGenerating ? 'Рисуем…' : 'Перерисовать портрет'}</button>
           <span className="eyebrow">Игрок</span>
           <h2>{character.canonical_name}</h2>
           <p>{character.description || 'Описание пока не задано.'}</p>

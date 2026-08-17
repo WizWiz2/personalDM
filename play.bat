@@ -38,12 +38,12 @@ goto :check_llm
 echo [Setup] Virtual environment found. Activating...
 call src\backend\venv\Scripts\activate.bat
 
-rem Existing venvs may predate the interactive launcher dependency.
-python -c "import questionary" >nul 2>&1
+rem Existing venvs may predate launcher/backend dependencies.
+python -c "import questionary, httpx" >nul 2>&1
 if %errorlevel% neq 0 (
     echo [Setup] Updating launcher dependencies...
     pip install -e src\backend[dev]
-    if %errorlevel% neq 0 goto :err_deps
+    if errorlevel 1 goto :err_deps
 )
 
 :check_llm
@@ -92,7 +92,7 @@ goto :cloud_ok
 
 :cloud_ok
 echo [Setup] Cloud LLM configuration found in %ENV_FILE%.
-goto :launch_menu
+goto :image_setup
 
 :check_ollama
 call :find_ollama
@@ -143,10 +143,119 @@ echo [Setup] Ensuring Gemma 4 (4B parameters) is downloaded...
 "%OLLAMA_CMD%" pull gemma4:e4b
 if %errorlevel% neq 0 goto :err_gemma
 echo [Setup] Gemma 4 model is ready!
+goto :image_setup
+
+:image_setup
+rem 6. Provision the local image backend in an isolated environment.
+echo.
+echo [Setup] Checking local pixel-art image generation...
+set "BACKEND_VIRTUAL_ENV=%VIRTUAL_ENV%"
+set "COMFY_WORKSPACE=%CD%\tools\comfy"
+set "COMFY_ENV=%CD%\tools\comfy-runtime"
+set "COMFY_EXE=%COMFY_ENV%\Scripts\comfy.exe"
+
+if not exist "%COMFY_ENV%\Scripts\python.exe" (
+    echo [Setup] Creating isolated ComfyUI environment...
+    if not exist "%CD%\tools" mkdir "%CD%\tools"
+    python -m venv "%COMFY_ENV%"
+    if errorlevel 1 goto :warn_images
+)
+
+if not exist "%COMFY_EXE%" (
+    echo [Setup] Installing comfy-cli...
+    "%COMFY_ENV%\Scripts\python.exe" -m pip install --upgrade pip comfy-cli
+    if errorlevel 1 goto :warn_images
+)
+
+if not exist "%COMFY_WORKSPACE%\ComfyUI\main.py" (
+    echo [Setup] Installing latest stable ComfyUI for NVIDIA GPU...
+    set "VIRTUAL_ENV=%COMFY_ENV%"
+    "%COMFY_EXE%" --skip-prompt --workspace="%COMFY_WORKSPACE%" install --version latest --skip-manager --nvidia
+    if errorlevel 1 (
+        set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+        goto :warn_images
+    )
+    set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+)
+
+set "COMFY_MODELS=%COMFY_WORKSPACE%\ComfyUI\models"
+if not exist "%COMFY_MODELS%\diffusion_models" mkdir "%COMFY_MODELS%\diffusion_models"
+if not exist "%COMFY_MODELS%\text_encoders" mkdir "%COMFY_MODELS%\text_encoders"
+if not exist "%COMFY_MODELS%\vae" mkdir "%COMFY_MODELS%\vae"
+if not exist "%COMFY_MODELS%\loras" mkdir "%COMFY_MODELS%\loras"
+
+echo [Setup] Ensuring FLUX.2 Klein 4B FP8 is downloaded...
+call :download_if_missing "%COMFY_MODELS%\diffusion_models\flux-2-klein-4b-fp8.safetensors" "https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors"
+if %errorlevel% neq 0 goto :warn_images
+
+echo [Setup] Ensuring compact Qwen3 4B FP4 image text encoder is downloaded...
+call :download_if_missing "%COMFY_MODELS%\text_encoders\qwen_3_4b_fp4_flux2.safetensors" "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/resolve/main/split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors"
+if %errorlevel% neq 0 goto :warn_images
+
+echo [Setup] Ensuring FLUX.2 VAE is downloaded...
+call :download_if_missing "%COMFY_MODELS%\vae\flux2-vae.safetensors" "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/resolve/main/split_files/vae/flux2-vae.safetensors"
+if %errorlevel% neq 0 goto :warn_images
+
+echo [Setup] Ensuring pixel-art LoRA is downloaded...
+call :download_if_missing "%COMFY_MODELS%\loras\pixel-art-lora.safetensors" "https://huggingface.co/Limbicnation/pixel-art-lora/resolve/main/pytorch_lora_weights.comfyui.safetensors"
+if %errorlevel% neq 0 goto :warn_images
+
+rem Start ComfyUI only if another instance is not already listening on the expected port.
+curl -sf http://127.0.0.1:8188/system_stats >nul 2>&1
+if %errorlevel% EQU 0 goto :images_ready
+
+echo [Setup] Starting ComfyUI in low-VRAM background mode...
+set "VIRTUAL_ENV=%COMFY_ENV%"
+"%COMFY_EXE%" --workspace="%COMFY_WORKSPACE%" launch --background -- --lowvram --disable-auto-launch --port 8188
+if errorlevel 1 (
+    set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+    goto :warn_images
+)
+set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+
+for /l %%I in (1,1,45) do (
+    curl -sf http://127.0.0.1:8188/system_stats >nul 2>&1
+    if not errorlevel 1 goto :images_ready
+    timeout /t 1 /nobreak >nul
+)
+goto :warn_images
+
+:images_ready
+set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+call :set_image_enabled true
+echo [Setup] Pixel-art image backend is ready at http://127.0.0.1:8188
 goto :launch_menu
 
+:warn_images
+set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+call :set_image_enabled false
+echo [WARNING] Local image generation could not be prepared.
+echo [WARNING] PersonalDM will still start normally; generated art will use the existing fallback visuals.
+goto :launch_menu
+
+:download_if_missing
+set "DOWNLOAD_TARGET=%~1"
+set "DOWNLOAD_URL=%~2"
+if exist "%DOWNLOAD_TARGET%" exit /b 0
+if exist "%DOWNLOAD_TARGET%.part" (
+    echo [Setup] Resuming %~nx1 ...
+    curl.exe -fL --retry 3 --retry-delay 2 -C - -o "%DOWNLOAD_TARGET%.part" "%DOWNLOAD_URL%"
+) else (
+    echo [Setup] Downloading %~nx1 ...
+    curl.exe -fL --retry 3 --retry-delay 2 -o "%DOWNLOAD_TARGET%.part" "%DOWNLOAD_URL%"
+)
+if %errorlevel% neq 0 exit /b 1
+move /Y "%DOWNLOAD_TARGET%.part" "%DOWNLOAD_TARGET%" >nul
+if %errorlevel% neq 0 exit /b 1
+exit /b 0
+
+:set_image_enabled
+if not exist "%ENV_FILE%" type nul > "%ENV_FILE%"
+python -c "from pathlib import Path; p=Path(r'%ENV_FILE%'); lines=p.read_text(encoding='utf-8-sig').splitlines() if p.exists() else []; lines=[line for line in lines if not line.startswith('PDM_IMAGE_ENABLED=')]; lines.append('PDM_IMAGE_ENABLED=%~1'); p.write_text(chr(10).join(lines)+chr(10), encoding='utf-8')"
+exit /b 0
+
 :launch_menu
-rem 6. Unified GUI/CLI launcher.
+rem 7. Unified GUI/CLI launcher.
 echo.
 python src\backend\launcher.py
 goto :end
@@ -171,14 +280,14 @@ exit /b
 echo [Setup] Ollama is not installed!
 echo [Setup] Downloading Ollama installer automatically...
 curl -L -o "%TEMP%\OllamaSetup.exe" https://ollama.com/download/OllamaSetup.exe
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Failed to download Ollama installer. Please check your internet connection.
     pause
     exit /b
 )
 echo [Setup] Installing Ollama silently (please wait)...
 start /wait "" "%TEMP%\OllamaSetup.exe" /silent
-if %errorlevel% neq 0 (
+if errorlevel 1 (
     echo [ERROR] Ollama installation failed.
     pause
     exit /b

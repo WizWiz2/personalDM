@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import { submitDetachedTurn } from '../api/turnRuntime'
 import type { SceneState, Turn } from '../api/types'
+import { visualApi, visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
+import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { Icons } from '../components/Icons'
 import { PixelScene } from '../components/PixelArt'
 import { ErrorState, LoadingState } from '../components/States'
@@ -45,6 +47,8 @@ export function PlayPage() {
   const [mode, setMode] = useState<Mode>(() => readStoredMode(modeKey))
   const [input, setInput] = useState(() => window.sessionStorage.getItem(draftKey) ?? '')
   const [drawer, setDrawer] = useState(false)
+  const [sceneGenerating, setSceneGenerating] = useState(false)
+  const [sceneArtNonce, setSceneArtNonce] = useState(0)
   const bottomRef = useRef<HTMLDivElement>(null)
   const previousGeneration = useRef<{ id: string; status: string } | null>(null)
 
@@ -174,6 +178,20 @@ export function PlayPage() {
     } catch (err) { setError(readableError(err)) }
   }
 
+  const generateScene = async () => {
+    if (!scene || sceneGenerating || busy) return
+    setSceneGenerating(true)
+    setError('')
+    try {
+      const result = await visualApi.generateScene(campaign.id, scene.scene_id)
+      setSceneArtNonce(result.seed || Date.now())
+    } catch (err) {
+      setError(readableError(err))
+    } finally {
+      setSceneGenerating(false)
+    }
+  }
+
   if (loading) return <div className="workspace-page"><LoadingState label="Восстанавливаем сцену…" /></div>
 
   const failedAccepted = Boolean(
@@ -181,6 +199,10 @@ export function PlayPage() {
     && generation?.user_turn_id === acceptedTurn.id
     && (generation.status === 'failed' || generation.status === 'cancelled'),
   )
+  const fallbackScene = <PixelScene seed={`${campaign.name}:${scene?.scene_title ?? ''}`} />
+  const sceneArtSrc = scene
+    ? `${visualUrls.scene(scene.scene_id)}${sceneArtNonce ? `?v=${sceneArtNonce}` : ''}`
+    : ''
 
   return (
     <div className="workspace-page play-page">
@@ -188,13 +210,18 @@ export function PlayPage() {
         <div><h1>{campaign.name}</h1><p>{scene?.location_path.join(' · ') || scene?.scene_title || 'Текущая сцена'}</p></div>
         <div className="topbar-actions">
           <button className="btn context-toggle" onClick={() => setDrawer(true)}>Сейчас</button>
-          <button className="btn primary scene-generate" disabled title="Генератор изображений будет подключён отдельным провайдером"><Icons.spark /><span>Сгенерировать сцену</span></button>
+          <button className="btn primary scene-generate" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода мастера: текстовая и графическая модели делят видеопамять' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
         </div>
       </header>
 
       <div className="play-layout">
         <section className="play-column">
-          <div className="scene-art"><PixelScene seed={`${campaign.name}:${scene?.scene_title ?? ''}`} /><div className="scene-overlay"><h2>{scene?.scene_title || 'Сцена'}</h2><span>{[scene?.world_time_label, scene?.location_path.at(-1)].filter(Boolean).join(' · ')}</span></div></div>
+          <div className="scene-art">
+            {scene && sceneArtSrc
+              ? <GeneratedPixelArt src={sceneArtSrc} alt={`Сцена: ${scene.scene_title}`} fallback={fallbackScene} />
+              : fallbackScene}
+            <div className="scene-overlay"><h2>{scene?.scene_title || 'Сцена'}</h2><span>{[scene?.world_time_label, scene?.location_path.at(-1)].filter(Boolean).join(' · ')}</span></div>
+          </div>
 
           {error && <ErrorState message={error} />}
 
