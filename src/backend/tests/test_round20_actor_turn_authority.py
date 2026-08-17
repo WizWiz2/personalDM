@@ -17,17 +17,32 @@ from app.services.actor_turn_authority_guard import (
 from app.runtime import runtime_manifest
 
 
-def _authority() -> TurnAuthority:
+def _authority(
+    *,
+    player_name: str = "Мария",
+    actor_name: str = "Грузчик",
+    player_input: str = "Как зовут вашего брата?",
+) -> TurnAuthority:
     return TurnAuthority(
         campaign_id=uuid4(),
         trigger_turn_id=uuid4(),
         player_character_id=uuid4(),
-        player_character_name="Мария",
+        player_character_name=player_name,
         acting_character_id=uuid4(),
-        acting_character_name="Грузчик",
-        player_input="Как зовут вашего брата?",
+        acting_character_name=actor_name,
+        player_input=player_input,
         scene_disposition="actor_turn",
-        present_character_names=["Мария", "Грузчик"],
+        present_character_names=[player_name, actor_name],
+    )
+
+
+def _validation(*violations: dict) -> NarrationValidationResult:
+    return NarrationValidationResult.model_validate(
+        {
+            "verdict": "repair_required",
+            "summary": "validator reject",
+            "violations": list(violations),
+        }
     )
 
 
@@ -38,28 +53,104 @@ def test_actor_turn_contract_is_role_scoped_not_name_specific():
     assert contract is not None
     assert contract["acting_character"] == "Грузчик"
     assert "speak_as_self" in contract["authorized"]
+    assert "state_personal_memories_observations_and_claims" in contract["authorized"]
+    assert "mention_absent_people_places_objects_or_past_events_as_claims" in contract["authorized"]
     assert "invent_player_dialogue_or_voluntary_action" in contract["not_authorized"]
     assert "move_to_another_location_without_structured_authority" in contract["not_authorized"]
+    assert "character_claim" in contract["epistemic_rule"]
 
 
 def test_actor_owned_dialogue_is_not_player_agency():
     authority = _authority()
-    result = NarrationValidationResult.model_validate(
+    candidate = "Грузчик теребит рукав и отвечает: «Его зовут Иван Сергеевич»."
+    result = _validation(
         {
-            "verdict": "repair_required",
-            "summary": "NPC якобы действует без разрешения.",
-            "violations": [
-                {
-                    "violation_type": "player_agency",
-                    "severity": "error",
-                    "evidence": "Грузчик теребит рукав и отвечает: «Его зовут Иван Сергеевич».",
-                    "correction": "Удалить реплику и действие Грузчика.",
-                }
-            ],
+            "violation_type": "player_agency",
+            "severity": "error",
+            "evidence": candidate,
+            "correction": "Удалить реплику и действие Грузчика.",
         }
     )
 
-    filtered = protect_actor_turn_validation(authority, result)
+    filtered = protect_actor_turn_validation(authority, result, candidate)
+
+    assert filtered.verdict == "pass"
+    assert filtered.violations == []
+
+
+def test_round27_actor_local_body_language_is_not_player_agency():
+    authority = _authority(
+        player_name="Максим Громов",
+        actor_name="Елена Морозова",
+        player_input="Что случилось в архиве?",
+    )
+    candidate = (
+        "Елена Морозова сжимает ремешок сумки и устало вздыхает. "
+        "Елена Морозова отвечает: «Я заметила пропажу вечером»."
+    )
+    result = _validation(
+        {
+            "violation_type": "player_agency",
+            "severity": "error",
+            "evidence": "Елена Морозова сжимает ремешок сумки и устало вздыхает.",
+            "correction": "Удалить неавторизованные жесты Елены Морозовой.",
+        }
+    )
+
+    filtered = protect_actor_turn_validation(authority, result, candidate)
+
+    assert filtered.verdict == "pass"
+    assert filtered.violations == []
+
+
+def test_round27_novel_actor_claim_is_not_ungrounded_complication():
+    authority = _authority(
+        player_name="Максим Громов",
+        actor_name="Елена Морозова",
+        player_input="Что именно случилось в архиве?",
+    )
+    candidate = (
+        "Елена Морозова отвечает: «На витрине был странный символ. "
+        "Я почувствовала запах озона. Свет на несколько секунд погас»."
+    )
+    result = _validation(
+        {
+            "violation_type": "ungrounded_complication",
+            "severity": "error",
+            "evidence": "Я почувствовала запах озона.",
+            "correction": "Удалить запах озона, которого нет в observable_consequences.",
+        },
+        {
+            "violation_type": "ungrounded_complication",
+            "severity": "error",
+            "evidence": "Свет на несколько секунд погас",
+            "correction": "Удалить отключение света как незапланированное обстоятельство.",
+        },
+    )
+
+    filtered = protect_actor_turn_validation(authority, result, candidate)
+
+    assert filtered.verdict == "pass"
+    assert filtered.violations == []
+
+
+def test_actor_claim_may_mention_absent_person_without_materializing_them():
+    authority = _authority(
+        player_name="Максим Громов",
+        actor_name="Елена Морозова",
+        player_input="Кто ещё был в архиве?",
+    )
+    candidate = "Елена Морозова говорит: «Накануне там работал Иван Петров, но сейчас его здесь нет»."
+    result = _validation(
+        {
+            "violation_type": "absent_character",
+            "severity": "error",
+            "evidence": "Иван Петров",
+            "correction": "Удалить упоминание отсутствующего Ивана Петрова.",
+        }
+    )
+
+    filtered = protect_actor_turn_validation(authority, result, candidate)
 
     assert filtered.verdict == "pass"
     assert filtered.violations == []
@@ -67,18 +158,12 @@ def test_actor_owned_dialogue_is_not_player_agency():
 
 def test_actor_turn_still_protects_player_agency():
     authority = _authority()
-    result = NarrationValidationResult.model_validate(
+    result = _validation(
         {
-            "verdict": "repair_required",
-            "summary": "Мастер решил за героя.",
-            "violations": [
-                {
-                    "violation_type": "player_agency",
-                    "severity": "error",
-                    "evidence": "Мария кивает и обещает найти его.",
-                    "correction": "Удалить действие и обещание Марии.",
-                }
-            ],
+            "violation_type": "player_agency",
+            "severity": "error",
+            "evidence": "Мария кивает и обещает найти его.",
+            "correction": "Удалить действие и обещание Марии.",
         }
     )
 
@@ -90,25 +175,45 @@ def test_actor_turn_still_protects_player_agency():
 
 def test_actor_turn_does_not_excuse_unstructured_movement():
     authority = _authority()
-    result = NarrationValidationResult.model_validate(
+    candidate = "Грузчик выходит из конторы и уходит на причал."
+    result = _validation(
         {
-            "verdict": "repair_required",
-            "summary": "NPC самовольно сменил локацию.",
-            "violations": [
-                {
-                    "violation_type": "invalid_movement",
-                    "severity": "error",
-                    "evidence": "Грузчик выходит из конторы и уходит на причал.",
-                    "correction": "Оставить Грузчика в текущей локации.",
-                }
-            ],
+            "violation_type": "invalid_movement",
+            "severity": "error",
+            "evidence": candidate,
+            "correction": "Оставить Грузчика в текущей локации.",
         }
     )
 
-    filtered = protect_actor_turn_validation(authority, result)
+    filtered = protect_actor_turn_validation(authority, result, candidate)
 
     assert filtered.verdict == "repair_required"
     assert filtered.violations[0].violation_type == "invalid_movement"
+
+
+def test_actor_turn_does_not_excuse_narrated_world_complication():
+    authority = _authority(
+        player_name="Максим Громов",
+        actor_name="Елена Морозова",
+        player_input="Что случилось?",
+    )
+    candidate = (
+        "Елена Морозова отвечает: «Я услышала странный шум». "
+        "В этот момент во всём офисе гаснет свет."
+    )
+    result = _validation(
+        {
+            "violation_type": "ungrounded_complication",
+            "severity": "error",
+            "evidence": "В этот момент во всём офисе гаснет свет.",
+            "correction": "Не создавать отключение света без authority.",
+        }
+    )
+
+    filtered = protect_actor_turn_validation(authority, result, candidate)
+
+    assert filtered.verdict == "repair_required"
+    assert filtered.violations[0].violation_type == "ungrounded_complication"
 
 
 def test_actor_claim_provenance_is_fixed_by_typed_actor():
