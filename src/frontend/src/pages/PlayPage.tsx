@@ -179,7 +179,7 @@ export function PlayPage() {
   }
 
   const generateScene = async () => {
-    if (!scene || sceneGenerating) return
+    if (!scene || sceneGenerating || busy) return
     setSceneGenerating(true)
     setError('')
     try {
@@ -210,7 +210,7 @@ export function PlayPage() {
         <div><h1>{campaign.name}</h1><p>{scene?.location_path.join(' · ') || scene?.scene_title || 'Текущая сцена'}</p></div>
         <div className="topbar-actions">
           <button className="btn context-toggle" onClick={() => setDrawer(true)}>Сейчас</button>
-          <button className="btn primary scene-generate" disabled={!scene || sceneGenerating} onClick={() => void generateScene()} title="Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей"><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
+          <button className="btn primary scene-generate" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода мастера: текстовая и графическая модели делят видеопамять' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
         </div>
       </header>
 
