@@ -11,6 +11,21 @@ def test_round30_dialogue_paraphrase_does_not_trigger_stale_plan_guard() -> None
         "Что было необычного в этом месте?",
         "Узнать о странностях той ночи.",
     )
+    assert intent_corresponds(
+        "Вы видели, кто это сделал?",
+        "Получить сведения о возможном виновнике.",
+    )
+
+
+def test_round30_opaque_semantic_summary_is_not_a_lexical_veto() -> None:
+    assert intent_corresponds(
+        "Осматриваю место происшествия.",
+        "Понять обстановку вокруг произошедшего.",
+    )
+    assert intent_corresponds(
+        "Что вы заметили первым?",
+        "Получить дополнительные сведения.",
+    )
 
 
 def test_round30_movement_paraphrase_does_not_trigger_stale_plan_guard() -> None:
@@ -32,6 +47,11 @@ def test_stale_high_risk_plan_is_still_rejected() -> None:
     assert not intent_corresponds(
         "Осматриваю фотографии на столе.",
         "Покинуть офис и отправиться в архив.",
+    )
+    # Sharing the same object noun must not excuse an extra voluntary interaction.
+    assert not intent_corresponds(
+        "Осматриваю старую дверь и герб над ней.",
+        "Постучать в старую дверь и войти внутрь.",
     )
 
 
