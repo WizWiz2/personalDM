@@ -49,7 +49,7 @@ async def test_narrator_and_builder_keep_campaign_model(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_control_roles_default_to_qwen_on_same_local_endpoint(monkeypatch):
+async def test_control_roles_default_to_qwen_without_narrator_fallback(monkeypatch):
     primary = primary_config()
     monkeypatch.setattr(settings, "CONTROL_LLM_MODEL", "qwen2.5:7b")
     monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", None)
@@ -62,11 +62,14 @@ async def test_control_roles_default_to_qwen_on_same_local_endpoint(monkeypatch)
     assert selection.config.model_name == "qwen2.5:7b"
     assert selection.config.base_url == primary.base_url
     assert selection.api_key == "campaign-secret"
-    assert selection.has_distinct_fallback is True
+    assert selection.fallback_config.model_name == "qwen2.5:7b"
+    assert selection.fallback_config.base_url == primary.base_url
+    assert selection.fallback_api_key == "campaign-secret"
+    assert selection.has_distinct_fallback is False
 
 
 @pytest.mark.asyncio
-async def test_control_endpoint_does_not_receive_campaign_secret_implicitly(monkeypatch):
+async def test_control_endpoint_never_receives_campaign_secret_implicitly(monkeypatch):
     primary = primary_config()
     monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", "https://control.example/v1")
     monkeypatch.setattr(settings, "CONTROL_LLM_API_KEY", None)
@@ -76,7 +79,9 @@ async def test_control_endpoint_does_not_receive_campaign_secret_implicitly(monk
 
     assert selection.config.base_url == "https://control.example/v1"
     assert selection.api_key is None
-    assert selection.fallback_api_key == "campaign-secret"
+    assert selection.fallback_config.base_url == "https://control.example/v1"
+    assert selection.fallback_api_key is None
+    assert selection.has_distinct_fallback is False
 
 
 @pytest.mark.asyncio
