@@ -27,6 +27,10 @@ _SILENCE_PATTERN = re.compile(
 )
 
 
+def _key(value: object) -> str:
+    return " ".join(str(value or "").casefold().replace("ё", "е").split())
+
+
 def _set_audit(scribe, audit: dict) -> None:
     safe = dict(audit)
     _ACTOR_AUDIT.set(safe)
@@ -136,7 +140,7 @@ async def extract_actor_segment_proposals_with_audit(
 
     # One background-only retry is safe: Qwen still selects immutable IDs and can never rewrite
     # evidence. Retry both malformed/provider failures and suspicious empty selections on a
-    # substantive actor response; this removes the intermittent Round-28 dropout without adding
+    # substantive actor response; this removes intermittent selector dropout without adding
     # interactive latency or weakening the evidence boundary.
     should_retry_empty = (
         not selected_ids
@@ -199,6 +203,97 @@ async def _persist_actor_audit(processor, job_id: UUID, audit: dict) -> None:
     await processor._session.commit()  # noqa: SLF001
 
 
+def _selected_segment_texts(audit: dict) -> list[str]:
+    candidates = {
+        int(item.get("segment_id")): str(item.get("text") or "")
+        for item in audit.get("candidate_segments", [])
+        if isinstance(item, dict) and item.get("segment_id") is not None
+    }
+    result: list[str] = []
+    for raw_id in audit.get("selected_segment_ids", []):
+        try:
+            segment_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        text = candidates.get(segment_id, "").strip()
+        if text:
+            result.append(text)
+    return result
+
+
+def _selected_claims_already_known(snapshot: dict, audit: dict) -> bool:
+    """Return true when a selected actor claim was deduplicated against an existing belief."""
+    selected = _selected_segment_texts(audit)
+    if not selected:
+        return False
+    actor_id = str(audit.get("actor_id") or "")
+    recipient_id = str(audit.get("recipient_id") or "")
+    known = {
+        _key(item.get("proposition"))
+        for item in snapshot.get("beliefs", [])
+        if str(item.get("source_character_id") or "") == actor_id
+        and str(item.get("character_id") or "") == recipient_id
+        and item.get("is_current", True)
+    }
+    return all(_key(text) in known for text in selected)
+
+
+def _replace_actor_memory_diagnostics(snapshot: dict, audit: dict, trace: dict) -> None:
+    diagnostics = list(trace.get("diagnostics", []))
+    had_dropout = any(item.get("code") == "ACTOR_MEMORY_DROPOUT" for item in diagnostics)
+    if not had_dropout:
+        return
+
+    status = str(audit.get("selector_status") or "")
+    selected = _selected_segment_texts(audit)
+    replacement: dict | None = None
+    remove_dropout = False
+
+    if selected and _selected_claims_already_known(snapshot, audit):
+        # The selector worked and the same source-scoped claims already exist. No new row is the
+        # desired dedup behavior, not a memory failure.
+        remove_dropout = True
+    elif status in {
+        "skipped_silence",
+        "skipped_no_segments",
+        "skipped_missing_actor_or_recipient",
+        "skipped_no_scribe_model",
+    }:
+        remove_dropout = True
+    elif status == "empty_selection":
+        remove_dropout = True
+        substantive = any(
+            len(str(item.get("text") or "").split()) >= 6
+            for item in audit.get("candidate_segments", [])
+            if isinstance(item, dict)
+        )
+        if substantive:
+            replacement = {
+                "code": "ACTOR_SELECTOR_EMPTY",
+                "severity": "warning",
+                "detail": (
+                    "Actor claim selector completed its bounded attempts but selected no factual "
+                    "segments from a substantive published actor response."
+                ),
+            }
+    elif status == "selector_failed":
+        remove_dropout = True
+        replacement = {
+            "code": "ACTOR_SELECTOR_FAILURE",
+            "severity": "warning",
+            "detail": "Actor claim selector failed before producing immutable segment IDs.",
+        }
+
+    if not remove_dropout:
+        return
+    diagnostics = [
+        item for item in diagnostics if item.get("code") != "ACTOR_MEMORY_DROPOUT"
+    ]
+    if replacement is not None:
+        diagnostics.append(replacement)
+    trace["diagnostics"] = diagnostics
+
+
 def _augment_trace(snapshot: dict, assistant_turn_id: str, trace: dict) -> dict:
     assistant = next(
         (
@@ -243,7 +338,10 @@ def _augment_trace(snapshot: dict, assistant_turn_id: str, trace: dict) -> dict:
             "selector_error": None,
         }
 
-    trace.setdefault("memory", {})["actor_selector"] = audit or {}
+    safe_audit = audit or {}
+    trace.setdefault("memory", {})["actor_selector"] = safe_audit
+    if isinstance(audit, dict):
+        _replace_actor_memory_diagnostics(snapshot, audit, trace)
     return trace
 
 
