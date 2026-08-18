@@ -62,9 +62,10 @@ class RoleModelRouter:
     """Resolve one campaign provider into role-specific model selections.
 
     Narration, session zero, and direct out-of-character game-master dialogue use
-    the campaign's primary model. Control roles may use a cheaper isolated endpoint,
-    while retaining a safe fallback that never forwards campaign credentials to
-    another host.
+    the campaign's primary model. Control roles stay on the configured control model: a structured
+    schema failure must never silently switch Planner/Validator/Scribe to the narrator model. This
+    preserves the dual-model contract and keeps failures diagnosable instead of changing semantics
+    mid-turn. Non-control explicit overrides may still retain the campaign primary as fallback.
     """
 
     def __init__(self, config_repo: ProviderConfigRepository):
@@ -136,19 +137,25 @@ class RoleModelRouter:
             api_key = None
 
         source = "role_override" if explicit_model else "control_default"
+        resolved = primary.model_copy(
+            update={
+                "base_url": base_url,
+                "model_name": model_name,
+                "context_window": context_window,
+                "has_api_key": bool(api_key),
+            }
+        )
+        strict_control = role in CONTROL_ROLES
         return RoleModelSelection(
             role=role,
-            config=primary.model_copy(
-                update={
-                    "base_url": base_url,
-                    "model_name": model_name,
-                    "context_window": context_window,
-                    "has_api_key": bool(api_key),
-                }
-            ),
+            config=resolved,
             api_key=api_key,
-            fallback_config=primary,
-            fallback_api_key=primary_key,
+            # Control-plane correctness depends on a stable model role. If Qwen cannot produce a
+            # usable structured response after its own bounded repair attempts, bubble that failure
+            # to the caller's conservative fallback instead of asking Narrator Gemma to become the
+            # planner/validator mid-turn.
+            fallback_config=resolved if strict_control else primary,
+            fallback_api_key=api_key if strict_control else primary_key,
             source=source,
         )
 
