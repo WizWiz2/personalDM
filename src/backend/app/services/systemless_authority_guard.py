@@ -123,6 +123,20 @@ def normalize_addressed_conversation(
     return CoordinatedTurnPlan.model_validate(payload)
 
 
+def ensure_distinct_physical_location(source_location_id, resolved):
+    """Reject a physical transition that resolves back onto its current Location identity."""
+    if (
+        resolved is not None
+        and source_location_id is not None
+        and resolved.id == source_location_id
+    ):
+        raise ValueError(
+            "location_transition resolved to the current physical location; "
+            "use stay/focus_transition instead of claiming physical travel"
+        )
+    return resolved
+
+
 def detect_contained_repetition(
     candidate: str,
     previous_responses: list[str],
@@ -135,7 +149,10 @@ def detect_contained_repetition(
         normalized_previous = NarrationRepetitionGuard._normalized(previous)  # noqa: SLF001
         if len(normalized_previous) < 48:
             continue
-        if normalized_previous != normalized_candidate and normalized_previous in normalized_candidate:
+        if (
+            normalized_previous != normalized_candidate
+            and normalized_previous in normalized_candidate
+        ):
             return RepetitionMatch(
                 previous_text=previous,
                 similarity=1.0,
@@ -155,7 +172,10 @@ def install() -> None:
     original_resolve_existing_location = SceneTransitionExecutor._resolve_existing_location
     original_repetition_detect = NarrationRepetitionGuard.detect
 
-    if "[SYSTEMLESS RESOLUTION — HARD RUNTIME CONTRACT]" not in TurnAuthorityPlanner.AUTHORITY_ADDENDUM:
+    if (
+        "[SYSTEMLESS RESOLUTION — HARD RUNTIME CONTRACT]"
+        not in TurnAuthorityPlanner.AUTHORITY_ADDENDUM
+    ):
         TurnAuthorityPlanner.AUTHORITY_ADDENDUM += _SYSTEMLESS_PROMPT
 
     @classmethod
@@ -185,16 +205,7 @@ def install() -> None:
             source_location_id,
             destination,
         )
-        if (
-            resolved is not None
-            and source_location_id is not None
-            and resolved.id == source_location_id
-        ):
-            raise ValueError(
-                "location_transition resolved to the current physical location; "
-                "use stay/focus_transition instead of claiming physical travel"
-            )
-        return resolved
+        return ensure_distinct_physical_location(source_location_id, resolved)
 
     def repetition_with_containment(
         self,
@@ -222,6 +233,7 @@ def install() -> None:
 
 __all__ = [
     "detect_contained_repetition",
+    "ensure_distinct_physical_location",
     "install",
     "normalize_addressed_conversation",
     "systemless_contract_issues",
