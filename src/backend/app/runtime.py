@@ -5,6 +5,8 @@ from typing import Any
 _INSTALLED = False
 _GUARDS = (
     "actor_turn_authority",
+    "actor_memory_observability",
+    "systemless_authority",
     "memory_scribe",
     "narration_failure_containment",
     "session_zero_finalize",
@@ -22,16 +24,22 @@ def install_runtime() -> None:
     if _INSTALLED:
         return
 
+    from app.services.actor_memory_observability_guard import (
+        install as install_actor_memory_observability,
+    )
     from app.services.actor_turn_authority_guard import install as install_actor_turn_authority
     from app.services.memory_scribe_guard import install as install_memory_scribe
     from app.services.narration_failure_containment_guard import (
         install as install_narration_failure_containment,
     )
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
+    from app.services.systemless_authority_guard import install as install_systemless_authority
     from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle
 
     install_memory_scribe()
     install_actor_turn_authority()
+    install_systemless_authority()
+    install_actor_memory_observability()
     install_narration_failure_containment()
     install_session_zero_finalize()
     install_thesis_lifecycle()
