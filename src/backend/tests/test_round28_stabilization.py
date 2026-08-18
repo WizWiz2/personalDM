@@ -77,7 +77,7 @@ def test_plain_addressed_question_normalizes_to_actor_conversation() -> None:
     assert normalized.observable_consequences == []
 
 
-def test_mixed_world_action_is_not_collapsed_into_conversation() -> None:
+def test_mixed_world_action_keeps_world_step_and_extracts_dialogue_response() -> None:
     plan = _base_plan(
         action_sequence=ActionSequencePlan(
             steps=[
@@ -89,7 +89,7 @@ def test_mixed_world_action_is_not_collapsed_into_conversation() -> None:
                 ActionStepPlan(
                     action_type="interaction",
                     intent="Спросить Виктора о шкафе",
-                    resolution="requires_check",
+                    resolution="requires_choice",
                 ),
             ]
         )
@@ -100,7 +100,8 @@ def test_mixed_world_action_is_not_collapsed_into_conversation() -> None:
         "Осматриваю шкаф. Виктор, что вы о нём знаете?",
     )
 
-    assert len(normalized.action_sequence.steps) == 2
+    assert len(normalized.action_sequence.steps) == 1
+    assert normalized.action_sequence.steps[0].intent == "Обыскать шкаф"
     assert normalized.resolution == "sequence"
 
 
@@ -239,7 +240,7 @@ def test_flight_recorder_surfaces_persisted_actor_selector_audit() -> None:
         ],
         "proposals": [],
     }
-    trace = {"memory": {}}
+    trace = {"memory": {}, "diagnostics": []}
 
     augmented = _augment_trace(snapshot, assistant_id, trace)
 
