@@ -49,17 +49,19 @@ _STOPWORDS = {
 # not story topics or transcript-specific entities.
 _INTENT_MODE_PATTERNS: dict[str, tuple[str, ...]] = {
     "movement": (
-        r"\b(?:иду|идём|идем|пойду|еду|поеду|выхожу|ухожу|покида\w*|направля\w*|"
-        r"отправля\w*|возвраща\w*|перехо\w*|вхо\w*|захо\w*|прихо\w*|добер\w*|"
-        r"добрат\w*|дой\w*|дойти|перемест\w*)\b",
+        r"\b(?:иду|идём|идем|идти|пойду|пойти|еду|ехать|поеду|поехать|выхожу|выйти|"
+        r"ухожу|уйти|покида\w*|направля\w*|отправля\w*|возвраща\w*|перехо\w*|"
+        r"перейти|вхо\w*|войти|захо\w*|зайти|прихо\w*|прийти|добер\w*|добрат\w*|"
+        r"дой\w*|дойти|перемест\w*)\b",
         r"\b(?:go|going|leave|leaving|head|heading|return|returning|enter|entering|"
         r"travel|travelling|traveling|move|moving|reach|arrive|arriving)\b",
     ),
     "observation": (
         r"\b(?:осматр\w*|рассматр\w*|обыск\w*|ищ\w*|изуч\w*|исслед\w*|провер\w*|"
-        r"наблюд\w*|разглядыва\w*|прочес\w*|оцен\w*)\b",
+        r"наблюд\w*|разглядыва\w*|прочес\w*|оцен\w*|заглян\w*|взглян\w*)\b",
         r"\b(?:inspect|inspecting|examine|examining|search|searching|investigate|"
-        r"investigating|study|studying|check|checking|observe|observing|assess|assessing)\b",
+        r"investigating|study|studying|check|checking|observe|observing|assess|assessing|"
+        r"look|looking|peek|peeking)\b",
     ),
     "dialogue": (
         r"\b(?:спраш\w*|спрос\w*|уточн\w*|выясн\w*|узна\w*|расспраш\w*|говор\w*|"
@@ -69,7 +71,7 @@ _INTENT_MODE_PATTERNS: dict[str, tuple[str, ...]] = {
         r"tell|telling|say|saying|speak|speaking|talk|talking|answer|reply)\b",
     ),
     "interaction": (
-        r"\b(?:открыва\w*|закрыва\w*|стуч\w*|звон\w*|нажима\w*|использ\w*|"
+        r"\b(?:(?:при)?откр\w*|закр\w*|(?:по)?стуч\w*|звон\w*|нажима\w*|использ\w*|"
         r"включа\w*|выключа\w*|трога\w*|двига\w*)\b",
         r"\b(?:open|opening|close|closing|knock|knocking|ring|ringing|press|pressing|"
         r"use|using|touch|touching)\b",
@@ -210,6 +212,11 @@ def intent_corresponds(player_input: str, planned_intent: str) -> bool:
     target = _content_tokens(planned_intent)
     if not source or not target:
         return True
+    # Preserve the original contract's tolerance for short diagnostic labels such as "Проверка".
+    # There is too little signal to call a one-token summary stale; structured contracts still gate
+    # movement, contacts and other stateful actions independently.
+    if len(source) < 2 or len(target) < 2:
+        return True
 
     source_modes = _intent_modes(player_input)
     target_modes = _intent_modes(planned_intent)
@@ -231,8 +238,8 @@ def intent_corresponds(player_input: str, planned_intent: str) -> bool:
         return True
 
     # With neither lexical nor structural signal, retain the old fail-closed behavior for substantial
-    # unrelated strings. Very short labels remain tolerated because there is too little evidence.
-    return len(source) < 2 or len(target) < 2
+    # unrelated strings.
+    return False
 
 
 def unresolved_player_completion(
