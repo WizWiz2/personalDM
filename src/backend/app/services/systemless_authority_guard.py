@@ -18,6 +18,11 @@ _DIALOGUE_INPUT_RE = re.compile(
     r"who|what|where|when|why|how|tell\b|explain\b|do\s+you\b))",
     flags=re.IGNORECASE,
 )
+_DIRECT_CONTACT_RU_RE = re.compile(
+    rf"\b(?:расспраш\w*|спрашива\w*)\s+"
+    rf"(?:[^.!?]{{0,24}}\s)?{TurnAuthorityPlanner.GENERIC_CONTACT_ROLE_RU}\b",
+    flags=re.IGNORECASE,
+)
 
 _SYSTEMLESS_PROMPT = """
 
@@ -58,7 +63,7 @@ def systemless_contract_issues(
     direct_contact = TurnAuthorityPlanner._matches_any(  # noqa: SLF001 - same contract owner
         TurnAuthorityPlanner.CONTACT_INTENT_PATTERNS,
         text,
-    )
+    ) or bool(_DIRECT_CONTACT_RU_RE.search(text))
     complication_authorized = bool(
         plan.narration_policy.allow_new_complication
         and plan.narration_policy.complication_source
