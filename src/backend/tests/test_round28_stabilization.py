@@ -120,7 +120,10 @@ def test_player_premise_cannot_create_unsolicited_npc() -> None:
         "Осматриваю дверь, на которой, по словам свидетеля, был странный символ.",
     )
 
-    assert any("new physical NPC introductions are not authorized" in issue for issue in issues)
+    assert any(
+        "new physical NPC introductions are not authorized" in issue
+        for issue in issues
+    )
 
 
 def test_directly_sought_unknown_contact_may_still_be_introduced() -> None:
@@ -140,7 +143,10 @@ def test_directly_sought_unknown_contact_may_still_be_introduced() -> None:
         "Расспрашиваю прохожего о старом особняке.",
     )
 
-    assert not any("new physical NPC introductions are not authorized" in issue for issue in issues)
+    assert not any(
+        "new physical NPC introductions are not authorized" in issue
+        for issue in issues
+    )
 
 
 def test_location_transition_cannot_resolve_to_current_physical_location() -> None:
@@ -206,7 +212,7 @@ async def test_actor_selector_retries_empty_selection_without_rewriting_evidence
 
     assert len(proposals) == 1
     assert scribe._model_router.generate_json.await_count == 2
-    assert proposals[0].payload["evidence"] == published
+    assert proposals[0].payload["_canon"]["evidence"] == published
     assert proposals[0].payload["_canon"]["segment_id"] == 1
     assert scribe.last_audit["selector_attempts"] == 2
     assert scribe.last_audit["selector_status"] == "selected"
