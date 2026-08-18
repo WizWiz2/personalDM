@@ -1,11 +1,59 @@
 from __future__ import annotations
 
+import app.services.actor_turn_authority_guard as actor_guard
 from app.services.actor_turn_authority_guard import (
     actor_turn_contract,
     protect_actor_turn_validation,
 )
 
 _INSTALLED = False
+_QUOTE_CHARS = frozenset('«»“”"')
+
+
+def _strict_actor_speech_fragments(candidate_text: str, actor: str) -> list[str]:
+    """Keep quoted actor speech separate from adjacent narrator/world prose.
+
+    The legacy sentence splitter can see `Марина отвечает: «... .» В этот момент дверь...` as one
+    sentence because punctuation precedes a closing quote. Treat quoted spans explicitly and never
+    widen a mixed quoted+narrated segment into actor-owned evidence.
+    """
+    if not candidate_text or not actor:
+        return []
+
+    fragments: list[str] = []
+    for match in actor_guard._QUOTE_RE.finditer(candidate_text):  # noqa: SLF001
+        quoted = next((group for group in match.groups() if group is not None), "")
+        prefix = actor_guard._key(  # noqa: SLF001
+            candidate_text[max(0, match.start() - 220) : match.start()]
+        )
+        suffix = actor_guard._key(  # noqa: SLF001
+            candidate_text[match.end() : match.end() + 220]
+        )
+        attributed = any(
+            actor in context
+            and any(
+                marker in context
+                for marker in actor_guard._SPEECH_ATTRIBUTION_MARKERS  # noqa: SLF001
+            )
+            for context in (prefix, suffix)
+        )
+        if attributed:
+            fragments.append(actor_guard._key(quoted))  # noqa: SLF001
+
+    for segment in actor_guard._split_candidate_text(candidate_text):  # noqa: SLF001
+        # Quoted speech is already handled above. Skipping any quote-bearing composite segment
+        # prevents following narrator prose from inheriting the actor's epistemic permissions.
+        if any(char in segment for char in _QUOTE_CHARS):
+            continue
+        normalized = actor_guard._key(segment)  # noqa: SLF001
+        if actor not in normalized:
+            continue
+        if any(
+            marker in normalized
+            for marker in actor_guard._SPEECH_ATTRIBUTION_MARKERS  # noqa: SLF001
+        ):
+            fragments.append(normalized)
+    return [value for value in fragments if value]
 
 
 def _actor_turn_view(authority):
@@ -58,6 +106,11 @@ def install() -> None:
 
     from app.models.turn_authority import TurnAuthority
     from app.services.turn_authority_validator import TurnAuthorityValidator
+
+    # Tighten the shared actor-speech boundary for both pure and mixed actor responses. The existing
+    # validator helper resolves this module global at call time, so this fixes the pure actor path too
+    # without duplicating its validation logic.
+    actor_guard._actor_speech_fragments = _strict_actor_speech_fragments  # noqa: SLF001
 
     original_validator_payload = TurnAuthority.validator_payload
     original_validate = TurnAuthorityValidator.validate
