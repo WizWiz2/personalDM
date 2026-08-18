@@ -43,6 +43,56 @@ _STOPWORDS = {
     "want",
 }
 
+# ``player_intent`` is a model-authored semantic summary, not an exact echo. These coarse modes let
+# the deterministic hand-off distinguish a legitimate paraphrase from a stale plan without requiring
+# Russian words to share the same stem. They intentionally describe player-controlled action classes,
+# not story topics or transcript-specific entities.
+_INTENT_MODE_PATTERNS: dict[str, tuple[str, ...]] = {
+    "movement": (
+        r"\b(?:иду|идём|идем|пойду|еду|поеду|выхожу|ухожу|покида\w*|направля\w*|"
+        r"отправля\w*|возвраща\w*|перехо\w*|вхо\w*|захо\w*|прихо\w*|добер\w*|"
+        r"добрат\w*|дой\w*|дойти|перемест\w*)\b",
+        r"\b(?:go|going|leave|leaving|head|heading|return|returning|enter|entering|"
+        r"travel|travelling|traveling|move|moving|reach|arrive|arriving)\b",
+    ),
+    "observation": (
+        r"\b(?:осматр\w*|рассматр\w*|обыск\w*|ищ\w*|изуч\w*|исслед\w*|провер\w*|"
+        r"наблюд\w*|разглядыва\w*|прочес\w*)\b",
+        r"\b(?:inspect|inspecting|examine|examining|search|searching|investigate|"
+        r"investigating|study|studying|check|checking|observe|observing)\b",
+    ),
+    "dialogue": (
+        r"\b(?:спраш\w*|спрос\w*|уточн\w*|выясн\w*|узна\w*|расспраш\w*|говор\w*|"
+        r"скаж\w*|расскаж\w*|объясн\w*|ответ\w*|обращ\w*|поговор\w*)\b",
+        r"\b(?:ask|asking|question|questioning|clarify|clarifying|learn|learning|"
+        r"tell|telling|say|saying|speak|speaking|talk|talking|answer|reply)\b",
+    ),
+    "interaction": (
+        r"\b(?:открыва\w*|закрыва\w*|стуч\w*|звон\w*|нажима\w*|использ\w*|"
+        r"включа\w*|выключа\w*|трога\w*|двига\w*)\b",
+        r"\b(?:open|opening|close|closing|knock|knocking|ring|ringing|press|pressing|"
+        r"use|using|touch|touching)\b",
+    ),
+    "inventory": (
+        r"\b(?:беру|взять|кладу|полож\w*|убира\w*|достаю|достать|переда\w*|отда\w*)\b",
+        r"\b(?:take|taking|pick|picking|put|placing|store|storing|give|giving|hand|handing)\b",
+    ),
+    "wait": (
+        r"\b(?:жду|ждать|ожида\w*)\b",
+        r"\b(?:wait|waiting)\b",
+    ),
+    "rest": (
+        r"\b(?:сплю|спать|отдыха\w*|ложусь|лечь)\b",
+        r"\b(?:sleep|sleeping|rest|resting)\b",
+    ),
+}
+_INTERROGATIVE_RE = re.compile(
+    r"(?:\?|^\s*(?:кто|что|где|куда|откуда|когда|почему|зачем|как|сколько|"
+    r"who|what|where|when|why|how)\b)",
+    flags=re.IGNORECASE,
+)
+_HIGH_RISK_INTENT_MODES = {"movement", "interaction", "inventory", "wait", "rest"}
+
 _PLAYER_COMPLETION_STEMS = (
     "вход",
     "заход",
@@ -124,18 +174,19 @@ def _content_tokens(text: str) -> list[str]:
     ]
 
 
-def intent_corresponds(player_input: str, planned_intent: str) -> bool:
-    """Catch clearly stale plans without requiring the planner to paraphrase lexically.
+def _intent_modes(text: str) -> set[str]:
+    normalized = " ".join((text or "").casefold().replace("ё", "е").split())
+    modes = {
+        mode
+        for mode, patterns in _INTENT_MODE_PATTERNS.items()
+        if any(re.search(pattern, normalized, flags=re.IGNORECASE) for pattern in patterns)
+    }
+    if _INTERROGATIVE_RE.search(normalized):
+        modes.add("dialogue")
+    return modes
 
-    Russian inflection and aspect can substantially change a verb (``стучу`` -> ``постучать``).
-    This gate is intentionally conservative: it only rejects plans with no plausible lexical anchor
-    to the current input. Strong semantic judging remains the Planner's job, while this boundary
-    catches the Round-9 class where a door-opening plan answered an unrelated heraldry input.
-    """
-    source = _content_tokens(player_input)
-    target = _content_tokens(planned_intent)
-    if len(source) < 2 or len(target) < 2:
-        return True
+
+def _has_lexical_anchor(source: list[str], target: list[str]) -> bool:
     for left in source:
         for right in target:
             if left == right or left in right or right in left:
@@ -143,6 +194,36 @@ def intent_corresponds(player_input: str, planned_intent: str) -> bool:
             if SequenceMatcher(None, left, right).ratio() >= 0.56:
                 return True
     return False
+
+
+def intent_corresponds(player_input: str, planned_intent: str) -> bool:
+    """Reject clearly stale intent summaries while accepting genuine semantic paraphrases.
+
+    ``player_intent`` is not authority and need not copy the player's words. The old lexical-only
+    gate rejected ordinary paraphrases such as ``Во сколько это было?`` -> ``Уточнить время`` and
+    could push most live turns into conservative fallback. We retain lexical matching as a strong
+    signal, then fall back to coarse player-action modes. A plan that introduces a new high-risk
+    voluntary action class absent from the current input still fails closed.
+    """
+    source = _content_tokens(player_input)
+    target = _content_tokens(planned_intent)
+    if not source or not target:
+        return True
+    if _has_lexical_anchor(source, target):
+        return True
+
+    source_modes = _intent_modes(player_input)
+    target_modes = _intent_modes(planned_intent)
+    if not source_modes or not target_modes:
+        return len(source) < 2 or len(target) < 2
+    if not (source_modes & target_modes):
+        return False
+
+    # Do not let a stale summary smuggle in a fresh player-controlled movement/interaction/etc.
+    # Example: current input asks about a coat of arms, while an old plan says "knock and enter".
+    if (target_modes & _HIGH_RISK_INTENT_MODES) - source_modes:
+        return False
+    return True
 
 
 def unresolved_player_completion(
