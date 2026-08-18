@@ -57,13 +57,14 @@ _INTENT_MODE_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "observation": (
         r"\b(?:осматр\w*|рассматр\w*|обыск\w*|ищ\w*|изуч\w*|исслед\w*|провер\w*|"
-        r"наблюд\w*|разглядыва\w*|прочес\w*)\b",
+        r"наблюд\w*|разглядыва\w*|прочес\w*|оцен\w*)\b",
         r"\b(?:inspect|inspecting|examine|examining|search|searching|investigate|"
-        r"investigating|study|studying|check|checking|observe|observing)\b",
+        r"investigating|study|studying|check|checking|observe|observing|assess|assessing)\b",
     ),
     "dialogue": (
         r"\b(?:спраш\w*|спрос\w*|уточн\w*|выясн\w*|узна\w*|расспраш\w*|говор\w*|"
-        r"скаж\w*|расскаж\w*|объясн\w*|ответ\w*|обращ\w*|поговор\w*)\b",
+        r"скаж\w*|расскаж\w*|объясн\w*|ответ\w*|обращ\w*|поговор\w*|попрос\w*|"
+        r"получ\w*\s+(?:информац\w*|сведен\w*|ответ\w*))\b",
         r"\b(?:ask|asking|question|questioning|clarify|clarifying|learn|learning|"
         r"tell|telling|say|saying|speak|speaking|talk|talking|answer|reply)\b",
     ),
@@ -199,31 +200,39 @@ def _has_lexical_anchor(source: list[str], target: list[str]) -> bool:
 def intent_corresponds(player_input: str, planned_intent: str) -> bool:
     """Reject clearly stale intent summaries while accepting genuine semantic paraphrases.
 
-    ``player_intent`` is not authority and need not copy the player's words. The old lexical-only
-    gate rejected ordinary paraphrases such as ``Во сколько это было?`` -> ``Уточнить время`` and
-    could push most live turns into conservative fallback. We retain lexical matching as a strong
-    signal, then fall back to coarse player-action modes. A plan that introduces a new high-risk
-    voluntary action class absent from the current input still fails closed.
+    ``player_intent`` is diagnostic text, not player-action authority. Lexical overlap is useful but
+    cannot be mandatory: a control model may validly summarize ``Во сколько это было?`` as
+    ``Получить сведения о времени``. Safety therefore comes first from recognized action classes and
+    the separate structured movement/choice/contact contracts. Opaque semantic paraphrases are not
+    rejected merely for choosing different nouns or verbs.
     """
     source = _content_tokens(player_input)
     target = _content_tokens(planned_intent)
     if not source or not target:
         return True
-    if _has_lexical_anchor(source, target):
-        return True
 
     source_modes = _intent_modes(player_input)
     target_modes = _intent_modes(planned_intent)
-    if not source_modes or not target_modes:
-        return len(source) < 2 or len(target) < 2
-    if not (source_modes & target_modes):
-        return False
 
-    # Do not let a stale summary smuggle in a fresh player-controlled movement/interaction/etc.
-    # Example: current input asks about a coat of arms, while an old plan says "knock and enter".
+    # This check deliberately precedes lexical overlap. Sharing a noun such as "door" must not make
+    # a stale "knock and enter" plan valid when the current player only asked to inspect that door.
     if (target_modes & _HIGH_RISK_INTENT_MODES) - source_modes:
         return False
-    return True
+
+    if _has_lexical_anchor(source, target):
+        return True
+
+    if source_modes and target_modes:
+        return bool(source_modes & target_modes)
+
+    # One side can be an abstract summary that has no recognized action verb ("получить сведения",
+    # "понять обстановку"). Do not turn that vocabulary choice into a conservative-fallback storm.
+    if source_modes or target_modes:
+        return True
+
+    # With neither lexical nor structural signal, retain the old fail-closed behavior for substantial
+    # unrelated strings. Very short labels remain tolerated because there is too little evidence.
+    return len(source) < 2 or len(target) < 2
 
 
 def unresolved_player_completion(
