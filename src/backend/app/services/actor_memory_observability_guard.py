@@ -16,7 +16,10 @@ from app.services.playtest_trace import PlaytestTraceService
 from app.services.role_model_router import ModelRole
 
 _INSTALLED = False
-_ACTOR_AUDIT: ContextVar[dict | None] = ContextVar("actor_memory_audit", default=None)
+_ACTOR_AUDIT: ContextVar[dict | None] = ContextVar(
+    "actor_memory_audit",
+    default=None,
+)
 _SILENCE_PATTERN = re.compile(
     r"\b(?:молчит|умолкает|не\s+отвечает|ничего\s+не\s+говорит|"
     r"silent|says\s+nothing|does\s+not\s+answer)\b",
@@ -58,8 +61,12 @@ async def extract_actor_segment_proposals_with_audit(
         _set_audit(scribe, base_audit)
         return []
 
-    actor = await scribe._entity_repo.get_character(acting_character_id)  # noqa: SLF001
-    player = await scribe._entity_repo.get_character(player_character_id)  # noqa: SLF001
+    actor = await scribe._entity_repo.get_character(  # noqa: SLF001
+        acting_character_id
+    )
+    player = await scribe._entity_repo.get_character(  # noqa: SLF001
+        player_character_id
+    )
     if not actor or not player:
         base_audit["selector_status"] = "skipped_missing_actor_or_recipient"
         _set_audit(scribe, base_audit)
@@ -75,7 +82,10 @@ async def extract_actor_segment_proposals_with_audit(
         _set_audit(scribe, base_audit)
         return []
 
-    selection = await scribe._model_router.resolve(campaign_id, ModelRole.SCRIBE)  # noqa: SLF001
+    selection = await scribe._model_router.resolve(  # noqa: SLF001
+        campaign_id,
+        ModelRole.SCRIBE,
+    )
     if selection is None:
         base_audit["selector_status"] = "skipped_no_scribe_model"
         _set_audit(scribe, base_audit)
@@ -172,7 +182,10 @@ async def _persist_actor_audit(processor, job_id: UUID, audit: dict) -> None:
     job = await processor._session.get(PostTurnJob, str(job_id))  # noqa: SLF001
     if not job or job.job_type != "memory_scribe" or not job.assistant_turn_id:
         return
-    turn = await processor._session.get(Turn, job.assistant_turn_id)  # noqa: SLF001
+    turn = await processor._session.get(  # noqa: SLF001
+        Turn,
+        job.assistant_turn_id,
+    )
     if not turn:
         return
     try:
@@ -201,10 +214,15 @@ def _augment_trace(snapshot: dict, assistant_turn_id: str, trace: dict) -> dict:
     audit = context.get("actor_memory_debug") if isinstance(context, dict) else None
 
     if not isinstance(audit, dict) and assistant.get("actor_id"):
-        candidate_segments = segment_actor_response(str(assistant.get("content") or ""))
+        candidate_segments = segment_actor_response(
+            str(assistant.get("content") or "")
+        )
         selected_ids: list[int] = []
         for proposal in snapshot.get("proposals", []):
-            if proposal.get("turn_id") != assistant_turn_id or proposal.get("change_type") != "knowledge":
+            if (
+                proposal.get("turn_id") != assistant_turn_id
+                or proposal.get("change_type") != "knowledge"
+            ):
                 continue
             payload = proposal.get("payload") or {}
             canon = payload.get("_canon") if isinstance(payload, dict) else None
@@ -241,7 +259,9 @@ def install() -> None:
     original_process_job = PostTurnProcessor.process_job
     original_trace = PlaytestTraceService._trace_from_snapshot
 
-    post_turn_module.extract_actor_segment_proposals = extract_actor_segment_proposals_with_audit
+    post_turn_module.extract_actor_segment_proposals = (
+        extract_actor_segment_proposals_with_audit
+    )
 
     async def audited_process_job(self, job_id, *, already_claimed=False):
         token = _ACTOR_AUDIT.set(None)
@@ -256,7 +276,8 @@ def install() -> None:
             if audit:
                 try:
                     await _persist_actor_audit(self, job_id, audit)
-                except Exception:  # debug persistence must never turn a completed memory job into failure
+                except Exception:
+                    # Debug persistence must never turn a completed memory job into failure.
                     await self._session.rollback()  # noqa: SLF001
             _ACTOR_AUDIT.reset(token)
 
