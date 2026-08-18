@@ -61,6 +61,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["installed"] is True
     assert cli_manifest["guards"] == [
         "actor_turn_authority",
+        "actor_memory_observability",
+        "systemless_authority",
         "memory_scribe",
         "narration_failure_containment",
         "session_zero_finalize",
@@ -96,7 +98,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["narration_pipeline_impl"].endswith(
         "AuthorityNarrationPipeline.generate"
     )
-    assert cli_manifest["authority_planner"].endswith("TurnAuthorityPlanner.plan")
+    assert "systemless_authority_guard" in cli_manifest["authority_planner"]
+    assert cli_manifest["authority_planner"].endswith("guarded_plan")
     assert "actor_turn_authority_guard" in cli_manifest["authority_validator"]
     assert cli_manifest["authority_validator"].endswith("actor_aware_validate")
     assert cli_manifest["context_compiler"].endswith(
