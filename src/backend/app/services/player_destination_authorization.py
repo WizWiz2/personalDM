@@ -95,7 +95,10 @@ class PlayerDestinationAuthorizer:
         }
     )
     DESTINATION_STOP_TOKENS = frozenset(
-        {"около", "возле", "рядом", "near", "around", "the", "and", "with", "который", "которая", "которое"}
+        {
+            "около", "возле", "рядом", "near", "around", "the", "and", "with",
+            "который", "которая", "которое",
+        }
     )
 
     def __init__(self, session: AsyncSession):
@@ -126,14 +129,19 @@ class PlayerDestinationAuthorizer:
         )
         target = self._match_location(locations, clean_destination)
         target_exists = target is not None
-        clauses = self._clauses(turn.content or "")
+        input_text = turn.content or ""
+        clauses = self._clauses(input_text)
+        published_reference = self._is_published_reference(input_text)
         ambiguous_generic = False
         anaphoric_travel = False
 
         for clause in clauses:
             if not clause.travel:
                 continue
-            specific_match, generic_matches = self._destination_reference(clause.text, clean_destination)
+            specific_match, generic_matches = self._destination_reference(
+                clause.text,
+                clean_destination,
+            )
             if specific_match:
                 return self._authorized(
                     clean_destination,
@@ -146,7 +154,10 @@ class PlayerDestinationAuthorizer:
                 # noun. Plain "go to the Department" remains ambiguous if several Departments exist.
                 if self.RETURN_TRAVEL_RE.search(clause.text):
                     direct = await self._compatible_direct_routes(
-                        UUID(turn.campaign_id), source_location_id, locations, generic_matches
+                        UUID(turn.campaign_id),
+                        source_location_id,
+                        locations,
+                        generic_matches,
                     )
                     if len(direct) == 1 and target and direct[0].id == target.id:
                         return self._authorized(
@@ -170,14 +181,19 @@ class PlayerDestinationAuthorizer:
 
             if self.ANAPHORIC_TRAVEL_RE.search(clause.text):
                 anaphoric_travel = True
-            if self._is_published_reference(clause.text):
-                if await self._recently_published_destination(turn, clean_destination):
-                    return self._authorized(
-                        clean_destination,
-                        "anaphoric travel resolves to a recently published destination",
-                        clause.text,
-                        target_exists,
-                    )
+
+        # Relative clauses are deliberately allowed to span clause-parser boundaries. For example,
+        # "еду по адресу, который вы назвали" is split at the comma, but the human commitment and
+        # attribution belong to one input. It still authorizes only a destination grounded by at
+        # least two specific tokens in previously published active assistant text.
+        if published_reference and any(clause.travel for clause in clauses):
+            if await self._recently_published_destination(turn, clean_destination):
+                return self._authorized(
+                    clean_destination,
+                    "anaphoric travel resolves to a recently published destination",
+                    input_text,
+                    target_exists,
+                )
 
         if ambiguous_generic:
             return DestinationAuthorization(
@@ -191,7 +207,10 @@ class PlayerDestinationAuthorizer:
         for clause in clauses:
             if clause.travel:
                 continue
-            specific_match, generic_matches = self._destination_reference(clause.text, clean_destination)
+            specific_match, generic_matches = self._destination_reference(
+                clause.text,
+                clean_destination,
+            )
             if not specific_match and not generic_matches:
                 continue
             if self.NONCOMMITTAL_RE.search(clause.text):
@@ -264,7 +283,11 @@ class PlayerDestinationAuthorizer:
     ):
         if source_location_id is None or not generic_matches:
             return []
-        exits = await self._state.list_exits(campaign_id, source_location_id, include_hidden=True)
+        exits = await self._state.list_exits(
+            campaign_id,
+            source_location_id,
+            include_hidden=True,
+        )
         target_ids = {row.to_location_id for row in exits}
         return [
             location
@@ -351,14 +374,20 @@ class PlayerDestinationAuthorizer:
         previous_was_travel = False
         for part in parts:
             explicit = bool(cls.TRAVEL_ANCHOR_RE.search(part))
-            elliptical = previous_was_travel and bool(cls.ELLIPTICAL_TRAVEL_RE.search(part))
+            elliptical = previous_was_travel and bool(
+                cls.ELLIPTICAL_TRAVEL_RE.search(part)
+            )
             travel = explicit or elliptical
             result.append(_InputClause(text=part, travel=travel))
             previous_was_travel = travel
         return result
 
     @classmethod
-    def _destination_reference(cls, clause: str, destination: str) -> tuple[bool, set[str]]:
+    def _destination_reference(
+        cls,
+        clause: str,
+        destination: str,
+    ) -> tuple[bool, set[str]]:
         clause_tokens = cls.TOKEN_RE.findall(clause.casefold())
         destination_tokens = cls.TOKEN_RE.findall(destination.casefold())
         if not clause_tokens or not destination_tokens:
