@@ -32,11 +32,10 @@ class _InputClause:
 class PlayerDestinationAuthorizer:
     """Independently authorize planner destinations from persisted player input.
 
-    Human intent and the structural location graph are both authority. A unique route from the
-    player's actual source location is stronger than campaign-global lexical ambiguity. Conversely,
-    a model-authored destination may never create a new route merely because it sounds plausible.
-    References such as "the address you named" are resolved only against recently *published*
-    assistant text and only when the planner destination is textually grounded there.
+    Human intent and the structural location graph are both authority. A return/back reference may
+    use one unique direct route to resolve an otherwise generic destination; ordinary generic travel
+    remains fail-closed when multiple campaign locations match. References such as "the address you
+    named" are resolved only against recently published assistant text.
     """
 
     TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
@@ -49,6 +48,10 @@ class PlayerDestinationAuthorizer:
         r"зайду|выхожу|ухожу|уйду|выезжаю|добираюсь|доберусь|следую|"
         r"спускаюсь|поднимаюсь"
         r")\b",
+        re.IGNORECASE,
+    )
+    RETURN_TRAVEL_RE = re.compile(
+        r"\b(?:return|returning|back|возвраща\w*|обратно)\b",
         re.IGNORECASE,
     )
     ELLIPTICAL_TRAVEL_RE = re.compile(
@@ -84,52 +87,15 @@ class PlayerDestinationAuthorizer:
     )
     GENERIC_LOCATION_TOKENS = frozenset(
         {
-            "бар",
-            "дом",
-            "здание",
-            "квартира",
-            "комната",
-            "офис",
-            "улица",
-            "район",
-            "квартал",
-            "департамент",
-            "вход",
-            "подвал",
-            "тоннель",
-            "зал",
-            "рынок",
-            "door",
-            "room",
-            "street",
-            "district",
-            "office",
-            "apartment",
-            "building",
-            "department",
-            "entrance",
-            "basement",
-            "tunnel",
-            "hall",
-            "quarter",
-            "market",
-            "bar",
+            "бар", "дом", "здание", "квартира", "комната", "офис", "улица",
+            "район", "квартал", "департамент", "вход", "подвал", "тоннель", "зал",
+            "рынок", "door", "room", "street", "district", "office", "apartment",
+            "building", "department", "entrance", "basement", "tunnel", "hall",
+            "quarter", "market", "bar",
         }
     )
     DESTINATION_STOP_TOKENS = frozenset(
-        {
-            "около",
-            "возле",
-            "рядом",
-            "near",
-            "around",
-            "the",
-            "and",
-            "with",
-            "который",
-            "которая",
-            "которое",
-        }
+        {"около", "возле", "рядом", "near", "around", "the", "and", "with", "который", "которая", "которое"}
     )
 
     def __init__(self, session: AsyncSession):
@@ -149,17 +115,11 @@ class PlayerDestinationAuthorizer:
 
         turn = await self._session.get(Turn, str(trigger_turn_id))
         if not turn or turn.role != "user":
-            return self._unresolved(
-                clean_destination,
-                "trigger is not a human user turn",
-            )
+            return self._unresolved(clean_destination, "trigger is not a human user turn")
 
         locations = await self._locations.list_by_campaign(UUID(turn.campaign_id))
         source_location_id = await self._source_location_id(turn)
-        source_location = next(
-            (item for item in locations if item.id == source_location_id),
-            None,
-        )
+        source_location = next((item for item in locations if item.id == source_location_id), None)
         clean_destination = self._strip_source_suffix(
             clean_destination,
             source_location.canonical_name if source_location else None,
@@ -173,10 +133,7 @@ class PlayerDestinationAuthorizer:
         for clause in clauses:
             if not clause.travel:
                 continue
-            specific_match, generic_matches = self._destination_reference(
-                clause.text,
-                clean_destination,
-            )
+            specific_match, generic_matches = self._destination_reference(clause.text, clean_destination)
             if specific_match:
                 return self._authorized(
                     clean_destination,
@@ -185,38 +142,34 @@ class PlayerDestinationAuthorizer:
                     target_exists,
                 )
             if generic_matches:
-                # Physical route identity wins over campaign-global text ambiguity. This is what
-                # makes "return to the office" deterministic when the current location exposes one
-                # direct Office exit but the campaign contains several other office-like places.
-                direct = await self._compatible_direct_routes(
-                    UUID(turn.campaign_id),
-                    source_location_id,
-                    locations,
-                    generic_matches,
-                )
-                if len(direct) == 1 and target and direct[0].id == target.id:
-                    return self._authorized(
-                        clean_destination,
-                        "generic travel reference resolves to one direct structural route",
-                        clause.text,
-                        True,
+                # Only explicit return/back semantics may let route identity disambiguate a generic
+                # noun. Plain "go to the Department" remains ambiguous if several Departments exist.
+                if self.RETURN_TRAVEL_RE.search(clause.text):
+                    direct = await self._compatible_direct_routes(
+                        UUID(turn.campaign_id), source_location_id, locations, generic_matches
                     )
-                if len(direct) > 1:
-                    ambiguous_generic = True
-                else:
-                    compatible = self._compatible_locations(locations, generic_matches)
-                    if len(compatible) == 1 and target and compatible[0].id == target.id:
+                    if len(direct) == 1 and target and direct[0].id == target.id:
                         return self._authorized(
                             clean_destination,
-                            "generic travel reference resolves to one known location",
+                            "generic return reference resolves to one direct structural route",
                             clause.text,
                             True,
                         )
-                    if len(compatible) > 1:
+                    if len(direct) > 1:
                         ambiguous_generic = True
+                compatible = self._compatible_locations(locations, generic_matches)
+                if len(compatible) == 1 and target and compatible[0].id == target.id:
+                    return self._authorized(
+                        clean_destination,
+                        "generic travel reference resolves to one known location",
+                        clause.text,
+                        True,
+                    )
+                if len(compatible) > 1:
+                    ambiguous_generic = True
+
             if self.ANAPHORIC_TRAVEL_RE.search(clause.text):
                 anaphoric_travel = True
-
             if self._is_published_reference(clause.text):
                 if await self._recently_published_destination(turn, clean_destination):
                     return self._authorized(
@@ -238,10 +191,7 @@ class PlayerDestinationAuthorizer:
         for clause in clauses:
             if clause.travel:
                 continue
-            specific_match, generic_matches = self._destination_reference(
-                clause.text,
-                clean_destination,
-            )
+            specific_match, generic_matches = self._destination_reference(clause.text, clean_destination)
             if not specific_match and not generic_matches:
                 continue
             if self.NONCOMMITTAL_RE.search(clause.text):
@@ -260,19 +210,6 @@ class PlayerDestinationAuthorizer:
                         "anaphoric travel resolves to a committed destination",
                         clause.text,
                         target_exists,
-                    )
-                direct = await self._compatible_direct_routes(
-                    UUID(turn.campaign_id),
-                    source_location_id,
-                    locations,
-                    generic_matches,
-                )
-                if len(direct) == 1 and target and direct[0].id == target.id:
-                    return self._authorized(
-                        clean_destination,
-                        "anaphoric travel resolves to one direct structural route",
-                        clause.text,
-                        True,
                     )
                 compatible = self._compatible_locations(locations, generic_matches)
                 if len(compatible) == 1 and target and compatible[0].id == target.id:
@@ -327,11 +264,7 @@ class PlayerDestinationAuthorizer:
     ):
         if source_location_id is None or not generic_matches:
             return []
-        exits = await self._state.list_exits(
-            campaign_id,
-            source_location_id,
-            include_hidden=True,
-        )
+        exits = await self._state.list_exits(campaign_id, source_location_id, include_hidden=True)
         target_ids = {row.to_location_id for row in exits}
         return [
             location
@@ -404,7 +337,6 @@ class PlayerDestinationAuthorizer:
         normalized = " ".join(text.casefold().split())
         if not normalized:
             return []
-
         coarse = [part.strip() for part in cls.CHAIN_SEPARATOR_RE.split(normalized)]
         parts: list[str] = []
         for part in coarse:
@@ -415,30 +347,22 @@ class PlayerDestinationAuthorizer:
                 for piece in cls.CONJUNCTION_BEFORE_TRAVEL_RE.split(part)
                 if piece.strip()
             )
-
         result: list[_InputClause] = []
         previous_was_travel = False
         for part in parts:
             explicit = bool(cls.TRAVEL_ANCHOR_RE.search(part))
-            elliptical = previous_was_travel and bool(
-                cls.ELLIPTICAL_TRAVEL_RE.search(part)
-            )
+            elliptical = previous_was_travel and bool(cls.ELLIPTICAL_TRAVEL_RE.search(part))
             travel = explicit or elliptical
             result.append(_InputClause(text=part, travel=travel))
             previous_was_travel = travel
         return result
 
     @classmethod
-    def _destination_reference(
-        cls,
-        clause: str,
-        destination: str,
-    ) -> tuple[bool, set[str]]:
+    def _destination_reference(cls, clause: str, destination: str) -> tuple[bool, set[str]]:
         clause_tokens = cls.TOKEN_RE.findall(clause.casefold())
         destination_tokens = cls.TOKEN_RE.findall(destination.casefold())
         if not clause_tokens or not destination_tokens:
             return False, set()
-
         specific = [
             token
             for token in destination_tokens
@@ -450,7 +374,6 @@ class PlayerDestinationAuthorizer:
             for source in clause_tokens
         ):
             return True, set()
-
         generic_matches = {
             target
             for target in destination_tokens
