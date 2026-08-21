@@ -120,6 +120,7 @@ class ActionSequenceExecutor:
             if step.transition.required:
                 allow_route_discovery = False
                 require_existing_route = False
+                transition_plan = step.transition
                 if step.transition.transition_type == "location_transition":
                     authorization = await self._transitions.authorize_destination(
                         route_discovery_turn_id,
@@ -141,12 +142,23 @@ class ActionSequenceExecutor:
                         authorization.applicable and authorization.authorized
                     )
                     require_existing_route = not authorization.applicable
+                    if authorization.authorized:
+                        updates = {
+                            "destination_location": authorization.destination,
+                        }
+                        # Planner's destination_parent_location is not human authority. For a newly
+                        # discovered travel destination, treating the source as its parent corrupts
+                        # geography (Office -> House). Until containment is independently known, a
+                        # new route-discovered physical location is created at root level.
+                        if not authorization.destination_exists:
+                            updates["destination_parent_location"] = None
+                        transition_plan = step.transition.model_copy(update=updates)
                 try:
                     applied = await self._transitions.apply(
                         campaign_id,
                         current_scene_id,
                         None,
-                        step.transition,
+                        transition_plan,
                         allow_route_discovery=allow_route_discovery,
                         require_existing_route=require_existing_route,
                     )
@@ -288,10 +300,6 @@ class ActionSequenceExecutor:
         if not scene or scene.campaign_id != sequence.campaign_id:
             raise ValueError("Action sequence final scene is missing from campaign")
 
-        # Restore known physical participants first so SceneLifecycle can validate
-        # NPC presence rather than rejecting a stale intermediate location. The
-        # lifecycle call then guarantees that the player is present even if the
-        # target scene did not yet contain an explicit participant row.
         await self._restore_scene_participant_locations(final_scene_id)
         await SceneLifecycleService(self._session).activate(
             campaign_id,
