@@ -17,55 +17,15 @@ class NarrationPublicationGuard:
     """
 
     PLAYER_SPEECH_TAGS = (
-        "сказал",
-        "сказала",
-        "ответил",
-        "ответила",
-        "спросил",
-        "спросила",
-        "произнёс",
-        "произнес",
-        "произнесла",
-        "добавил",
-        "добавила",
-        "said",
-        "asked",
-        "answered",
-        "replied",
+        "сказал", "сказала", "ответил", "ответила", "спросил", "спросила",
+        "произнёс", "произнес", "произнесла", "добавил", "добавила",
+        "said", "asked", "answered", "replied",
     )
     PLAYER_ACTION_STEMS = (
-        "кив",
-        "улыб",
-        "вздох",
-        "реш",
-        "запис",
-        "благодар",
-        "обещ",
-        "соглаш",
-        "отказ",
-        "бер",
-        "взя",
-        "дела",
-        "идёт",
-        "идет",
-        "пош",
-        "подход",
-        "поворач",
-        "протяг",
-        "дума",
-        "чувств",
-        "nod",
-        "smil",
-        "decid",
-        "write",
-        "thank",
-        "promise",
-        "agree",
-        "refus",
-        "take",
-        "walk",
-        "turn",
-        "feel",
+        "кив", "улыб", "вздох", "реш", "запис", "благодар", "обещ", "соглаш",
+        "отказ", "бер", "взя", "дела", "идёт", "идет", "пош", "подход", "поворач",
+        "протяг", "дума", "чувств", "nod", "smil", "decid", "write", "thank",
+        "promise", "agree", "refus", "take", "walk", "turn", "feel",
     )
     UUID_PATTERN = re.compile(
         r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
@@ -104,17 +64,11 @@ class NarrationPublicationGuard:
         candidate: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
-        """Return the sole player/downstream-safe narrative surface.
-
-        A missing validation result is also fail-closed here. Explicit fail-open policy belongs at a
-        higher operational layer; this boundary never treats an unvalidated draft as canon-safe.
-        """
         errors = [
             item
             for item in (validation.violations if validation else [])
             if item.severity == "error"
         ]
-
         if validation is None or errors:
             fallback = cls.render_authority(authority)
             return fallback, {
@@ -152,8 +106,29 @@ class NarrationPublicationGuard:
     @classmethod
     def render_authority(cls, authority: TurnAuthority) -> str:
         """Render a minimal in-world result without exposing control-plane language."""
-        parts: list[str] = []
+        # A blocked sequence is a hard execution boundary. Never append Planner ending_hook or
+        # guidance after it: those fields were authored before execution knew the step had failed.
+        blocked = cls._blocked_in_world_fallback(authority)
+        if blocked is not None:
+            parts: list[str] = []
+            sequence = authority.action_sequence or {}
+            steps = sequence.get("steps") if isinstance(sequence, dict) else None
+            if isinstance(steps, list):
+                for step in steps:
+                    if not isinstance(step, dict):
+                        continue
+                    if step.get("status") == "completed":
+                        safe = cls._player_facing_fragment(step.get("observable_outcome"))
+                        if safe:
+                            cls._append_unique(parts, safe)
+                    elif step.get("status") == "blocked":
+                        cls._append_unique(parts, blocked)
+                        break
+            if not parts:
+                cls._append_unique(parts, blocked)
+            return " ".join(cls._as_sentence(value) for value in parts if value.strip()).strip()
 
+        parts: list[str] = []
         for consequence in authority.observable_consequences:
             safe = cls._player_facing_fragment(consequence)
             if safe:
@@ -179,8 +154,7 @@ class NarrationPublicationGuard:
                 cls._append_unique(parts, hook)
 
         if not parts:
-            blocked = cls._blocked_in_world_fallback(authority)
-            cls._append_unique(parts, blocked or "Пока ничего заметно не меняется")
+            cls._append_unique(parts, "Пока ничего заметно не меняется")
 
         return " ".join(cls._as_sentence(value) for value in parts if value.strip()).strip()
 
@@ -216,7 +190,6 @@ class NarrationPublicationGuard:
         candidate: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str, int]:
-        """Legacy helper retained for callers/tests; rejected prose is no longer publishable."""
         if not validation or not validation.violations:
             return candidate, 0
         segments = cls._segments(candidate)
@@ -227,7 +200,6 @@ class NarrationPublicationGuard:
         ]
         if not error_evidence:
             return candidate, 0
-
         matched: set[int] = set()
         kept: list[str] = []
         for segment in segments:
@@ -245,7 +217,6 @@ class NarrationPublicationGuard:
 
     @classmethod
     def _drop_player_owned_segments(cls, candidate: str, player_name: str | None) -> str:
-        """Legacy diagnostic helper; safe fallback no longer publishes partially scrubbed prose."""
         name = " ".join((player_name or "").split()).strip()
         if not name:
             return candidate
@@ -255,7 +226,6 @@ class NarrationPublicationGuard:
             key = segment.casefold().strip()
             if not key:
                 continue
-
             quoted_direct_address = bool(
                 re.match(rf"^[\s]*[\"'«]{re.escape(name_key)}\b", key)
             )
@@ -263,10 +233,7 @@ class NarrationPublicationGuard:
                 re.match(rf"^[\s—–-]*{re.escape(name_key)}\b", key)
             )
             speech_by_player = any(
-                re.search(
-                    rf"\b{re.escape(tag)}\w*\s+{re.escape(name_key)}\b",
-                    key,
-                )
+                re.search(rf"\b{re.escape(tag)}\w*\s+{re.escape(name_key)}\b", key)
                 for tag in cls.PLAYER_SPEECH_TAGS
             )
             player_then_action = False
