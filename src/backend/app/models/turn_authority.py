@@ -142,19 +142,21 @@ class TurnAuthority(BaseModel):
         return reason
 
     @model_validator(mode="after")
-    def executed_sequence_owns_partial_outcomes(self):
-        """A blocked/skipped sequence cannot retain prose consequences for steps that never ran."""
+    def executed_sequence_owns_outcomes(self):
+        """Executed steps, never Planner prose, own the observable surface of a sequence.
+
+        This is the spatial/canon boundary for compound turns. A completed step may contribute only
+        its persisted observable_outcome. A blocked step contributes only its player-facing blocker.
+        Top-level Planner consequences, hooks and guidance cannot resurrect skipped movement or invent
+        remote findings after execution kept the player in the current physical Location.
+        """
         sequence = self.action_sequence or {}
         steps = sequence.get("steps")
         if not isinstance(steps, list) or not steps:
             return self
-        if not any(
-            isinstance(step, dict) and step.get("status") in {"blocked", "skipped"}
-            for step in steps
-        ):
-            return self
 
         executed: list[str] = []
+        blocked = False
         for step in steps:
             if not isinstance(step, dict):
                 continue
@@ -164,17 +166,43 @@ class TurnAuthority(BaseModel):
                 if outcome and outcome not in executed:
                     executed.append(outcome)
             elif status == "blocked":
+                blocked = True
                 reason = self._player_facing_blocking_reason(step.get("blocking_reason"))
                 message = reason or "Путь вперёд остаётся закрыт."
                 if message not in executed:
                     executed.append(message)
                 break
+
         self.observable_consequences = executed
-        if not any("BLOCKED" in value for value in self.narration_guidance):
-            self.narration_guidance.append(
+
+        if blocked:
+            # Nothing authored for the blocked/skipped future may leak back through softer prose
+            # fields. The publication guard can now project only completed outcomes + blocker.
+            self.character_beats = []
+            self.canon_constraints = []
+            self.ending_hook = ""
+            self.allow_new_complication = False
+            self.complication_source = None
+            self.narration_guidance = [
                 "Заблокированный и последующие пропущенные шаги не произошли; опиши только "
-                "фактическое препятствие без технических статусов движка."
-            )
+                "завершённые шаги и фактическое препятствие без технических статусов движка."
+            ]
+            return self
+
+        if not executed and self.acting_character_id is None:
+            # A local action without a structured observable result authorizes the action itself,
+            # not new physical findings at some place inferred from history. This closes the Round-31
+            # remote-observation leak while still allowing actor-owned replies in mixed turns.
+            self.character_beats = []
+            self.canon_constraints = []
+            self.ending_hook = ""
+            self.allow_new_complication = False
+            self.complication_source = None
+            self.narration_guidance = [
+                "Структурное действие завершено без подтверждённого observable outcome. Опиши только "
+                "само действие в текущей физической локации; не добавляй новые находки, факты, "
+                "перемещение или сведения о другом месте."
+            ]
         return self
 
     @property
