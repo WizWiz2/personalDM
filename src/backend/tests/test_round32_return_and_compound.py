@@ -101,9 +101,9 @@ async def _campaign_with_location_history(db_session: AsyncSession):
 async def test_return_can_resolve_unique_previously_visited_location(
     db_session: AsyncSession,
 ):
-    _, office, _, _, _, house_scene = await _campaign_with_location_history(db_session)
+    campaign_id, office, _, _, _, house_scene = await _campaign_with_location_history(db_session)
     user = await TurnRepository(db_session).create(
-        house_scene.campaign_id,
+        campaign_id,
         TurnCreate(
             role="user",
             scene_id=house_scene.id,
