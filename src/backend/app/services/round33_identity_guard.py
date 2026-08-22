@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from contextvars import ContextVar
 from collections.abc import Iterable
+from contextvars import ContextVar
 
 from app.models.session_zero_interview import SessionZeroStarterNPC
 
@@ -27,8 +27,6 @@ def _merge_starter_spec(
     for field in ("description", "reason"):
         if not _key(payload.get(field)) and _key(getattr(incoming, field)):
             payload[field] = getattr(incoming, field)
-    # Positive physical presence is additive. A later partial patch must not make an already
-    # established starter disappear merely because it omitted/changed this flag.
     payload["present_at_start"] = bool(
         established.present_at_start or incoming.present_at_start
     )
@@ -38,81 +36,65 @@ def _merge_starter_spec(
 def reconcile_starter_npcs(
     specs: Iterable[SessionZeroStarterNPC],
 ) -> list[SessionZeroStarterNPC]:
-    """Collapse a unique role placeholder once Session Zero later gives it a real name.
+    """Collapse repeated role/name representations of one uniquely identified starter.
 
-    Session Zero tool calls are patches. Qwen may first emit `Посетительница`, then refine that same
-    physically-present person to `Анна`, and later repeat either representation with a different
-    description/reason. Plain Pydantic equality treated every variation as another starter and
-    bootstrap materialized two characters. We reconcile only deterministic identity evidence:
+    Session Zero tool calls are patches. Qwen may alternate `Посетительница` and `Анна` for the
+    same physically-present witness. Plain Pydantic equality treats changes in name/description/
+    reason as new list entries and bootstrap then materializes duplicate characters.
 
-    * the same explicit name is the same starter;
-    * one unique unnamed role placeholder may be promoted when a named spec with that exact role
-      arrives;
-    * once that exact role was promoted in this accumulated list, later unnamed repetitions of the
-      same role continue to refine the promoted identity;
-    * two different explicit names are never merged just because their roles match;
-    * multiple ambiguous unnamed placeholders are never arbitrarily collapsed.
+    Reconciliation stays deterministic:
+    * the same explicit name is one identity;
+    * one explicit name plus otherwise-unnamed entries with the exact same role is one identity;
+    * one named entry may promote one unique earlier role placeholder;
+    * two different explicit names with the same role always stay distinct;
+    * when a role has multiple named identities, unnamed entries for that role stay separate rather
+      than being assigned arbitrarily.
     """
-    result: list[SessionZeroStarterNPC] = []
-    promoted_roles: set[str] = set()
+    source = [SessionZeroStarterNPC.model_validate(raw) for raw in specs]
+    explicit_names_by_role: dict[str, set[str]] = {}
+    for spec in source:
+        role_key = _key(spec.role)
+        name_key = _key(spec.name)
+        if role_key and name_key:
+            explicit_names_by_role.setdefault(role_key, set()).add(name_key)
 
-    for raw in specs:
-        spec = SessionZeroStarterNPC.model_validate(raw)
+    result: list[SessionZeroStarterNPC] = []
+    for spec in source:
         if spec in result:
             continue
 
         name_key = _key(spec.name)
         role_key = _key(spec.role)
-        exact_name = [
+        same_name = [
             index
             for index, existing in enumerate(result)
             if name_key and _key(existing.name) == name_key
         ]
-        placeholders = [
-            index
-            for index, existing in enumerate(result)
-            if role_key
-            and _key(existing.role) == role_key
-            and not _key(existing.name)
-        ]
-
-        if name_key and len(exact_name) == 1:
-            target = exact_name[0]
+        if len(same_name) == 1:
+            target = same_name[0]
             result[target] = _merge_starter_spec(result[target], spec)
-
-            # A later named repetition can also prove that one still-unmerged role placeholder was
-            # the same person (named-first / role-only / named sequence). Ambiguity remains closed.
-            placeholders = [
-                index
-                for index, existing in enumerate(result)
-                if index != target
-                and role_key
-                and _key(existing.role) == role_key
-                and not _key(existing.name)
-            ]
-            if len(placeholders) == 1:
-                placeholder = placeholders[0]
-                result[target] = _merge_starter_spec(
-                    result[target],
-                    result[placeholder],
-                )
-                del result[placeholder]
-                promoted_roles.add(role_key)
             continue
 
-        if name_key and not exact_name and len(placeholders) == 1:
-            target = placeholders[0]
-            result[target] = _merge_starter_spec(result[target], spec)
-            promoted_roles.add(role_key)
-            continue
-
-        if not name_key and role_key in promoted_roles:
+        role_names = explicit_names_by_role.get(role_key, set())
+        if len(role_names) == 1:
+            only_name = next(iter(role_names))
             named_same_role = [
                 index
                 for index, existing in enumerate(result)
-                if _key(existing.role) == role_key and _key(existing.name)
+                if _key(existing.role) == role_key
+                and _key(existing.name) == only_name
             ]
-            if len(named_same_role) == 1:
+            unnamed_same_role = [
+                index
+                for index, existing in enumerate(result)
+                if _key(existing.role) == role_key and not _key(existing.name)
+            ]
+
+            if name_key == only_name and len(unnamed_same_role) == 1:
+                target = unnamed_same_role[0]
+                result[target] = _merge_starter_spec(result[target], spec)
+                continue
+            if not name_key and len(named_same_role) == 1:
                 target = named_same_role[0]
                 result[target] = _merge_starter_spec(result[target], spec)
                 continue
