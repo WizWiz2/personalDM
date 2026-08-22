@@ -128,9 +128,7 @@ def _lowercase_literal_mention(label: str | None, player_input: str) -> bool:
 
     This is intentionally ontology-free: instead of maintaining an ever-growing list of doors,
     symbols, clues and other objects, we use the player's own casing as evidence that a literal
-    phrase was not introduced as a proper-named character. It only strips planner-generated
-    introductions grounded in that literal phrase; genuinely invented NPCs remain subject to the
-    normal complication/contact guard.
+    phrase was not introduced as a proper-named character.
     """
     clean = " ".join((label or "").split()).strip()
     if len(clean) < 2:
@@ -148,14 +146,21 @@ def sanitize_player_premise_npc_introductions(
     plan: CoordinatedTurnPlan,
     player_input: str,
 ) -> CoordinatedTurnPlan:
-    """Drop only obvious common-noun premise material mis-typed as a physical NPC.
+    """Salvage a real structured action from an incidental object-as-NPC planner category error.
 
-    A direct request for an unknown ordinary person ("расспрашиваю прохожего") remains eligible for
-    an NPC introduction. An unsolicited genuinely new character also remains in the plan so the
-    normal complication guard can reject it. The sanitizer only handles the category error where
-    the planner copies a lower-case phrase from player input into npc_introductions.
+    Premise-only plans remain fail-closed: if there is no executable structured world action to
+    preserve, the bogus npc_introduction stays in the plan so the existing Round-28 contract rejects
+    it. For an otherwise valid compound sequence, a lower-case literal object copied from player
+    input may be removed without throwing away the player's real actions. Explicit unknown contacts
+    such as "расспрашиваю прохожего" remain eligible NPC introductions.
     """
     if not plan.npc_introductions:
+        return plan
+
+    # Do not convert the Round-28 premise boundary from hard reject into silent acceptance. Silent
+    # normalization exists only to save a real structured action sequence from an incidental type
+    # error in npc_introductions.
+    if not plan.action_sequence.steps:
         return plan
 
     direct_contact = _direct_contact_requested(player_input)
