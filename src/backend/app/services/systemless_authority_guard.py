@@ -115,6 +115,83 @@ def addressed_response_requested(
     return input_uses_addressed_character(player_input)
 
 
+def _direct_contact_requested(player_input: str) -> bool:
+    text = " ".join((player_input or "").split()).casefold()
+    return TurnAuthorityPlanner._matches_any(  # noqa: SLF001 - same contract owner
+        TurnAuthorityPlanner.CONTACT_INTENT_PATTERNS,
+        text,
+    ) or bool(_DIRECT_CONTACT_RU_RE.search(text))
+
+
+def _lowercase_literal_mention(label: str | None, player_input: str) -> bool:
+    """Whether the player used this planner label as an ordinary lower-case premise noun.
+
+    This is intentionally ontology-free: instead of maintaining an ever-growing list of doors,
+    symbols, clues and other objects, we use the player's own casing as evidence that a literal
+    phrase was not introduced as a proper-named character.
+    """
+    clean = " ".join((label or "").split()).strip()
+    if len(clean) < 2:
+        return False
+    pattern = re.compile(rf"(?<!\w){re.escape(clean)}(?!\w)", re.IGNORECASE)
+    for match in pattern.finditer(player_input or ""):
+        mention = match.group(0)
+        cased = [char for char in mention if char.isalpha()]
+        if cased and mention == mention.lower():
+            return True
+    return False
+
+
+def sanitize_player_premise_npc_introductions(
+    plan: CoordinatedTurnPlan,
+    player_input: str,
+) -> CoordinatedTurnPlan:
+    """Salvage a real structured action from an incidental object-as-NPC planner category error.
+
+    Premise-only plans remain fail-closed: if there is no executable structured world action to
+    preserve, the bogus npc_introduction stays in the plan so the existing Round-28 contract rejects
+    it. For an otherwise valid compound sequence, a lower-case literal object copied from player
+    input may be removed without throwing away the player's real actions. Explicit unknown contacts
+    such as "расспрашиваю прохожего" remain eligible NPC introductions.
+    """
+    if not plan.npc_introductions:
+        return plan
+
+    # Do not convert the Round-28 premise boundary from hard reject into silent acceptance. Silent
+    # normalization exists only to save a real structured action sequence from an incidental type
+    # error in npc_introductions.
+    if not plan.action_sequence.steps:
+        return plan
+
+    direct_contact = _direct_contact_requested(player_input)
+    kept = []
+    for introduction in plan.npc_introductions:
+        literal_premise = any(
+            _lowercase_literal_mention(label, player_input)
+            for label in (introduction.canonical_name, introduction.role)
+            if label
+        )
+        if not literal_premise:
+            kept.append(introduction)
+            continue
+
+        contact_label = " ".join(
+            value
+            for value in (introduction.canonical_name, introduction.role)
+            if value
+        )
+        generic_contact = bool(
+            re.search(TurnAuthorityPlanner.GENERIC_CONTACT_ROLE_RU, contact_label, re.IGNORECASE)
+            or re.search(TurnAuthorityPlanner.GENERIC_CONTACT_ROLE_EN, contact_label, re.IGNORECASE)
+        )
+        if direct_contact and generic_contact:
+            kept.append(introduction)
+
+    if len(kept) != len(plan.npc_introductions):
+        plan.npc_introductions[:] = kept
+    return plan
+
+
 def systemless_contract_issues(
     plan: CoordinatedTurnPlan,
     player_input: str,
@@ -122,6 +199,7 @@ def systemless_contract_issues(
     addressed_character: bool = False,
 ) -> list[str]:
     """Return structural issues that cannot be executed by the current systemless runtime."""
+    sanitize_player_premise_npc_introductions(plan, player_input)
     issues: list[str] = []
 
     invalid_checks = [
@@ -136,11 +214,7 @@ def systemless_contract_issues(
             "fiction directly or use response ownership for ordinary NPC dialogue"
         )
 
-    text = " ".join((player_input or "").split()).casefold()
-    direct_contact = TurnAuthorityPlanner._matches_any(  # noqa: SLF001 - same contract owner
-        TurnAuthorityPlanner.CONTACT_INTENT_PATTERNS,
-        text,
-    ) or bool(_DIRECT_CONTACT_RU_RE.search(text))
+    direct_contact = _direct_contact_requested(player_input)
     complication_authorized = bool(
         plan.narration_policy.allow_new_complication
         and plan.narration_policy.complication_source
@@ -315,6 +389,9 @@ def install() -> None:
 
     @classmethod
     def guarded_contract_issues(cls, plan, player_input):
+        # Normalize a model category error before either the base or systemless contract can reject
+        # an otherwise valid compound action as an unauthorized character introduction.
+        sanitize_player_premise_npc_introductions(plan, player_input)
         issues = list(original_contract_issues(plan, player_input))
         addressed = _ADDRESSED_PLANNER_CONTEXT.get()
         for issue in systemless_contract_issues(
@@ -444,5 +521,6 @@ __all__ = [
     "install",
     "normalize_addressed_conversation",
     "normalize_addressed_response",
+    "sanitize_player_premise_npc_introductions",
     "systemless_contract_issues",
 ]

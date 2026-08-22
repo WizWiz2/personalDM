@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Turn
 from app.services.scene_state_service import SceneStateService
 
@@ -33,9 +34,10 @@ class PlayerDestinationAuthorizer:
     """Independently authorize planner destinations from persisted player input.
 
     Human intent and the structural location graph are both authority. A return/back reference may
-    use one unique direct route to resolve an otherwise generic destination; ordinary generic travel
-    remains fail-closed when multiple campaign locations match. References such as "the address you
-    named" are resolved only against recently published assistant text.
+    use one unique direct route or one uniquely matching previously visited physical location before
+    falling back to campaign-global text matching. Ordinary generic travel remains fail-closed when
+    multiple campaign locations match. References such as "the address you named" are resolved only
+    against recently published assistant text.
     """
 
     TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
@@ -150,8 +152,9 @@ class PlayerDestinationAuthorizer:
                     target_exists,
                 )
             if generic_matches:
-                # Only explicit return/back semantics may let route identity disambiguate a generic
-                # noun. Plain "go to the Department" remains ambiguous if several Departments exist.
+                # Return semantics can use physical history before global name matching. A reverse
+                # edge resolves the immediate previous place; older visited locations remain valid
+                # return targets without inventing a fake direct edge in the location graph.
                 if self.RETURN_TRAVEL_RE.search(clause.text):
                     direct = await self._compatible_direct_routes(
                         UUID(turn.campaign_id),
@@ -168,6 +171,24 @@ class PlayerDestinationAuthorizer:
                         )
                     if len(direct) > 1:
                         ambiguous_generic = True
+
+                    visited = await self._compatible_visited_locations(
+                        UUID(turn.campaign_id),
+                        source_location_id,
+                        locations,
+                        generic_matches,
+                        before=turn.created_at,
+                    )
+                    if len(visited) == 1 and target and visited[0].id == target.id:
+                        return self._authorized(
+                            clean_destination,
+                            "generic return reference resolves to one previously visited physical location",
+                            clause.text,
+                            True,
+                        )
+                    if len(visited) > 1:
+                        ambiguous_generic = True
+
                 compatible = self._compatible_locations(locations, generic_matches)
                 if len(compatible) == 1 and target and compatible[0].id == target.id:
                     return self._authorized(
@@ -294,6 +315,58 @@ class PlayerDestinationAuthorizer:
             for location in locations
             if location.id in target_ids
             and self._location_matches_generic(location.canonical_name, generic_matches)
+        ]
+
+    async def _compatible_visited_locations(
+        self,
+        campaign_id: UUID,
+        source_location_id: UUID | None,
+        locations,
+        generic_matches: set[str],
+        *,
+        before,
+    ):
+        """Return generic-matching locations proven to have been physically visited before this turn."""
+        if not generic_matches:
+            return []
+        rows = (
+            await self._session.execute(
+                select(SceneTransition)
+                .where(
+                    SceneTransition.campaign_id == str(campaign_id),
+                    SceneTransition.transition_type == "location_transition",
+                    SceneTransition.status.in_(("prepared", "applied")),
+                    SceneTransition.undone_at.is_(None),
+                    SceneTransition.created_at < before,
+                )
+                .order_by(SceneTransition.created_at.desc())
+            )
+        ).scalars().all()
+
+        visited_ids: list[UUID] = []
+        seen: set[UUID] = set()
+        for row in rows:
+            for raw in (row.target_location_id, row.source_location_id):
+                if not raw:
+                    continue
+                try:
+                    location_id = UUID(str(raw))
+                except (TypeError, ValueError):
+                    continue
+                if location_id == source_location_id or location_id in seen:
+                    continue
+                seen.add(location_id)
+                visited_ids.append(location_id)
+
+        by_id = {location.id: location for location in locations}
+        return [
+            by_id[location_id]
+            for location_id in visited_ids
+            if location_id in by_id
+            and self._location_matches_generic(
+                by_id[location_id].canonical_name,
+                generic_matches,
+            )
         ]
 
     async def _recently_published_destination(self, turn: Turn, destination: str) -> bool:
