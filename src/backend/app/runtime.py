@@ -7,6 +7,7 @@ _GUARDS = (
     "actor_turn_authority",
     "actor_memory_observability",
     "systemless_authority",
+    "round33_identity",
     "mixed_actor_response",
     "memory_scribe",
     "narration_failure_containment",
@@ -34,6 +35,7 @@ def install_runtime() -> None:
     from app.services.narration_failure_containment_guard import (
         install as install_narration_failure_containment,
     )
+    from app.services.round33_identity_guard import install as install_round33_identity
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.systemless_authority_guard import install as install_systemless_authority
     from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle
@@ -41,6 +43,7 @@ def install_runtime() -> None:
     install_memory_scribe()
     install_actor_turn_authority()
     install_systemless_authority()
+    install_round33_identity()
     install_mixed_actor_response()
     install_actor_memory_observability()
     install_narration_failure_containment()
