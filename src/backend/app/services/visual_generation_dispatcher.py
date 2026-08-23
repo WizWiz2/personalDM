@@ -56,16 +56,9 @@ class VisualGenerationDispatcher:
 
     @staticmethod
     async def _session_zero(campaign_id: UUID, character_id: UUID) -> None:
-        # Portrait first because it can immediately become a reference for later scene art.
-        async with AsyncSessionLocal() as session:
-            service = VisualGenerationService(session)
-            try:
-                await service.generate_character_portrait(character_id)
-                await session.commit()
-            except Exception as exc:
-                await session.rollback()
-                logger.info("Player portrait generation skipped: %s", exc)
-
+        # The cover is the first campaign-facing visual after Session Zero, so generate
+        # it before the portrait on a single consumer GPU. This makes Campaign Library
+        # useful as soon as possible while keeping the jobs sequential for 8 GB cards.
         async with AsyncSessionLocal() as session:
             service = VisualGenerationService(session)
             try:
@@ -74,6 +67,15 @@ class VisualGenerationDispatcher:
             except Exception as exc:
                 await session.rollback()
                 logger.info("Campaign cover generation skipped: %s", exc)
+
+        async with AsyncSessionLocal() as session:
+            service = VisualGenerationService(session)
+            try:
+                await service.generate_character_portrait(character_id)
+                await session.commit()
+            except Exception as exc:
+                await session.rollback()
+                logger.info("Player portrait generation skipped: %s", exc)
 
     @staticmethod
     async def _character_portraits(character_ids: tuple[UUID, ...]) -> None:
