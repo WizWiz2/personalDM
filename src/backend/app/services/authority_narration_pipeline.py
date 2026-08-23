@@ -472,7 +472,10 @@ class AuthorityNarrationPipeline:
                 *narrator_messages,
                 ChatMessage(
                     role="user",
-                    content=validator.repair_prompt(authority, draft, result),
+                    content=(
+                        "[REPAIR AGAINST TURN AUTHORITY]\n"
+                        + validator.repair_prompt(authority, draft, result)
+                    ),
                 ),
             ]
             repaired, repair_telemetry, repair_repetition_exhausted = (
