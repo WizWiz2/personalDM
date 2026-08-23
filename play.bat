@@ -221,8 +221,11 @@ if errorlevel 1 goto :warn_images
 "%COMFY_PYTHON%" -m pip install -r "%COMFY_DIR%\requirements.txt"
 if errorlevel 1 goto :warn_images
 
+pushd "%COMFY_DIR%"
 "%COMFY_PYTHON%" -c "import torch; import server; assert torch.cuda.is_available(), 'CUDA is not available to PyTorch'; print('[Setup] ComfyUI GPU:', torch.cuda.get_device_name(0))"
-if errorlevel 1 goto :warn_images
+set "COMFY_VALIDATE_RC=%ERRORLEVEL%"
+popd
+if not "%COMFY_VALIDATE_RC%"=="0" goto :warn_images
 
 > "%COMFY_READY%" echo ready
 
