@@ -7,6 +7,20 @@ from app.services.location_identity import same_location_reference
 
 _INSTALLED = False
 
+# Round 34 used the natural present-tense form "расспрашиваю прохожего". The base planner
+# contract recognized "расспрос..." but not this inflection, so the binary contact contract was
+# never activated for the exact live input.
+_ROUND34_CONTACT_INTENT_PATTERN = (
+    r"\b(?:расспраш\w*|расспрос\w*|спрашива\w*|спросить)\s+"
+    r"(?:[^.!?]{0,24}\s)?"
+    r"(?:информатор\w*|свидетел\w*|продавц\w*|бармен\w*|трактирщ\w*|"
+    r"хозя\w*|охран\w*|дежур\w*|жил\w*|служащ\w*|клерк\w*|прохож\w*)\b"
+)
+_ROUND34_CONTACT_INTENT_RE = re.compile(
+    _ROUND34_CONTACT_INTENT_PATTERN,
+    re.IGNORECASE,
+)
+
 # Keep this vocabulary bounded to the generic contact roles already supported by
 # TurnAuthorityPlanner. These are temporary identities, not invented proper names.
 _GENERIC_CONTACTS: tuple[tuple[re.Pattern[str], str, str], ...] = (
@@ -66,6 +80,14 @@ def _contact_role(player_input: str) -> tuple[str, str] | None:
     return None
 
 
+def _direct_contact_requested(player_input: str, planner_cls) -> bool:
+    text = " ".join((player_input or "").split()).casefold()
+    return planner_cls._matches_any(  # noqa: SLF001 - contract owner helper
+        planner_cls.CONTACT_INTENT_PATTERNS,
+        text,
+    ) or bool(_ROUND34_CONTACT_INTENT_RE.search(text))
+
+
 def _negative_contact_outcome(plan, planner_cls) -> bool:
     consequences = " ".join(plan.observable_consequences).casefold()
     return bool(
@@ -91,9 +113,7 @@ def normalize_affirmative_direct_contact(plan, player_input: str, planner_cls):
     """
     if plan.npc_introductions:
         return plan
-
-    text = " ".join((player_input or "").split()).casefold()
-    if not planner_cls._matches_any(planner_cls.CONTACT_INTENT_PATTERNS, text):  # noqa: SLF001
+    if not _direct_contact_requested(player_input, planner_cls):
         return plan
     if _negative_contact_outcome(plan, planner_cls):
         return plan
@@ -146,6 +166,11 @@ def install() -> None:
 
     original_match_location = PlayerDestinationAuthorizer._match_location
     original_contract_issues = TurnAuthorityPlanner.contract_issues
+
+    # Activate the existing binary direct-contact repair for the natural Russian inflection used in
+    # the live playtest. Appending to the contract vocabulary is safer than special-casing the turn.
+    if _ROUND34_CONTACT_INTENT_PATTERN not in TurnAuthorityPlanner.CONTACT_INTENT_PATTERNS:
+        TurnAuthorityPlanner.CONTACT_INTENT_PATTERNS += (_ROUND34_CONTACT_INTENT_PATTERN,)
 
     def punctuation_tolerant_match(locations, name):
         return unique_equivalent_location(locations, name, original_match_location)
