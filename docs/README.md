@@ -7,18 +7,20 @@
 ### 1. Нормативные продуктовые документы
 
 - `product-foundation.md` — зачем существует продукт, какие свойства важны и чего он сознательно не делает.
-- `MVP-SPEC.md` — исходный контракт первого вертикального среза.
-- принятые ADR — конкретные архитектурные решения, которые могут уточнять или supersede старые части MVP/product docs.
+- `MVP-SPEC.md` — текущий проверяемый контракт вертикального среза и Definition of Playable.
+- принятые ADR — конкретные архитектурные решения, которые могут уточнять или supersede общие product/MVP правила.
 
 ### 2. Текущая реализация
 
-- `runtime-transparency.md` — актуальная карта production runtime: этапы хода, владельцы authority, модели, persisted evidence и известные пробелы наблюдаемости.
+- `runtime-transparency.md` — наиболее подробная актуальная карта production runtime: этапы хода, владельцы authority, модели, persisted evidence и известные пробелы наблюдаемости.
+- `architecture/personal-dm-runtime.md` — current production overview крупными блоками.
+- `architecture/context-pipeline.md` — текущая сборка и budget контекста.
 - `model-role-routing.md` — фактическая маршрутизация model roles.
 - `gemma-narrator-stability.md` — текущие ограничения и recovery-механизмы Narrator.
 - `architecture/interagent-turn-authority.md` — typed `TurnAuthority` contract.
 - `architecture/narration-pipeline.md` — фактический publication pipeline.
 
-Документы `architecture/context-pipeline.md` и `architecture/personal-dm-runtime.md` полезны как история стабилизации архитектуры, но отдельные списки guards, приоритеты клиентов и future-work пункты в них могут устаревать. Для текущего состояния сверяйтесь с `runtime-transparency.md` и `app.runtime.runtime_manifest()`.
+История архитектурной миграции и старые этапы снятия monkeypatch-слоёв остаются в git history; current-state файлы не должны использоваться как дневник прошлых состояний.
 
 ### 3. Исследования
 
@@ -39,8 +41,7 @@
 1. persisted evidence и код текущего `main`;
 2. `runtime_manifest()`;
 3. `runtime-transparency.md`;
-4. специализированные current-state docs (`model-role-routing.md`, `narration-pipeline.md`);
-5. исторические architecture notes.
+4. специализированные current-state docs (`personal-dm-runtime.md`, `context-pipeline.md`, `model-role-routing.md`, `narration-pipeline.md`).
 
 Это различие намеренное: документация не должна притворяться более истинной, чем наблюдаемая система.
 
