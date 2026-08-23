@@ -12,6 +12,16 @@ export interface VisualAsset {
   generated?: boolean
 }
 
+export interface VisualStatus {
+  enabled: boolean
+  connected: boolean
+  provider: string
+  base_url: string
+  model: string
+  text_encoder: string
+  lora: string
+}
+
 async function requestVisual(path: string, init?: RequestInit): Promise<VisualAsset> {
   const response = await fetch(`${API_BASE}${path}`, init)
   if (!response.ok) {
@@ -29,6 +39,12 @@ async function requestVisual(path: string, init?: RequestInit): Promise<VisualAs
   return { ...result, url: absoluteVisualUrl(result.url) }
 }
 
+async function requestVisualStatus(): Promise<VisualStatus> {
+  const response = await fetch(`${API_BASE}/api/visuals/status`)
+  if (!response.ok) throw new Error(`Visual backend status failed: HTTP ${response.status}`)
+  return response.json() as Promise<VisualStatus>
+}
+
 export function absoluteVisualUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path
   return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
@@ -44,6 +60,7 @@ export const visualUrls = {
 }
 
 export const visualApi = {
+  status: requestVisualStatus,
   generateCharacterPortrait: (characterId: UUID) =>
     requestVisual(`/api/characters/${characterId}/visuals/portrait?force=true`, {
       method: 'POST',
@@ -52,8 +69,20 @@ export const visualApi = {
     requestVisual(`/api/campaigns/${campaignId}/visuals/cover?force=true`, {
       method: 'POST',
     }),
-  generateScene: (campaignId: UUID, sceneId: UUID) =>
-    requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {
+  generateScene: async (campaignId: UUID, sceneId: UUID) => {
+    const status = await requestVisualStatus()
+    if (!status.enabled) {
+      throw new Error(
+        'Локальная генерация изображений выключена в запущенном backend. Перезапусти PersonalDM через play.bat.',
+      )
+    }
+    if (!status.connected) {
+      throw new Error(
+        `ComfyUI не отвечает на ${status.base_url}. Перезапусти PersonalDM через play.bat и проверь image setup в окне запуска.`,
+      )
+    }
+    return requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {
       method: 'POST',
-    }),
+    })
+  },
 }
