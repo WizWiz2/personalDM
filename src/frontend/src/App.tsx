@@ -3,6 +3,7 @@ import { CampaignWorkspace } from './components/CampaignWorkspace'
 import { CampaignLibraryPage } from './pages/CampaignLibraryPage'
 import { CampaignSettingsPage } from './pages/CampaignSettingsPage'
 import { ChroniclePage } from './pages/ChroniclePage'
+import { GalleryPage } from './pages/GalleryPage'
 import { HeroPage } from './pages/HeroPage'
 import { PlayPage } from './pages/PlayPage'
 import { SessionZeroPage } from './pages/SessionZeroPage'
@@ -19,6 +20,7 @@ export function App() {
       <Route path="hero" element={<HeroPage />} />
       <Route path="world" element={<WorldPage />} />
       <Route path="chronicle" element={<ChroniclePage />} />
+      <Route path="gallery" element={<GalleryPage />} />
       <Route path="settings" element={<CampaignSettingsPage />} />
     </Route>
     <Route path="*" element={<Navigate to="/campaigns" replace />} />
