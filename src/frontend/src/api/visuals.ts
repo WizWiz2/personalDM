@@ -12,6 +12,16 @@ export interface VisualAsset {
   generated?: boolean
 }
 
+export interface VisualStatus {
+  enabled: boolean
+  connected: boolean
+  provider: string
+  base_url: string
+  model: string
+  text_encoder: string
+  lora: string
+}
+
 async function requestVisual(path: string, init?: RequestInit): Promise<VisualAsset> {
   const response = await fetch(`${API_BASE}${path}`, init)
   if (!response.ok) {
@@ -29,6 +39,12 @@ async function requestVisual(path: string, init?: RequestInit): Promise<VisualAs
   return { ...result, url: absoluteVisualUrl(result.url) }
 }
 
+async function requestVisualStatus(): Promise<VisualStatus> {
+  const response = await fetch(`${API_BASE}/api/visuals/status`)
+  if (!response.ok) throw new Error(`Visual backend status failed: HTTP ${response.status}`)
+  return response.json() as Promise<VisualStatus>
+}
+
 export function absoluteVisualUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path
   return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
@@ -44,6 +60,7 @@ export const visualUrls = {
 }
 
 export const visualApi = {
+  status: requestVisualStatus,
   generateCharacterPortrait: (characterId: UUID) =>
     requestVisual(`/api/characters/${characterId}/visuals/portrait?force=true`, {
       method: 'POST',
