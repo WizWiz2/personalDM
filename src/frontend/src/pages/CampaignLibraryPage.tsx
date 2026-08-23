@@ -73,10 +73,10 @@ export function CampaignLibraryPage() {
         return next
       })
 
-      // Session Zero schedules the cover in the background. A short bounded poll lets
-      // the library replace an early fallback as soon as that first cover lands.
-      if (waiting && attempt < 8) {
-        timer = window.setTimeout(() => { void checkCovers() }, 1500)
+      // A cold local image runtime can need tens of seconds before the first cover is
+      // written. Keep a bounded, cheap status poll long enough to replace the fallback.
+      if (waiting && attempt < 45) {
+        timer = window.setTimeout(() => { void checkCovers() }, 2000)
       }
     }
 
