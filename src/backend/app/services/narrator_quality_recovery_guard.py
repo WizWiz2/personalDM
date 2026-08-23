@@ -322,11 +322,7 @@ def install() -> None:
             return messages
         first, *rest = messages
         compact = compact_narrator_payload(authority)
-        payload = json.dumps(
-            compact,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        payload = json.dumps(compact, ensure_ascii=False)
         sequence_section = (
             "\n[EXECUTED ACTION SEQUENCE]\n"
             if compact.get("action_steps")
