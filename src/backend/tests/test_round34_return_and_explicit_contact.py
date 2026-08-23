@@ -129,7 +129,7 @@ def _contact_plan(*, consequence: str | None, resolution: str = "auto_success"):
                     action_type="interaction",
                     intent="расспросить прохожего о подозрительных людях",
                     resolution=resolution,
-                    safe_mundane=True,
+                    safe_mundane=resolution == "auto_success",
                     observable_outcome=None,
                     blocking_reason=(
                         "Никого подходящего рядом нет."
@@ -145,6 +145,7 @@ def _contact_plan(*, consequence: str | None, resolution: str = "auto_success"):
 
 
 def test_affirmative_auto_success_contact_gets_typed_temporary_identity():
+    install_round34()
     player_input = (
         "На улице расспрашиваю прохожего, не видел ли он кого-нибудь подозрительного."
     )
@@ -166,6 +167,7 @@ def test_affirmative_auto_success_contact_gets_typed_temporary_identity():
 
 
 def test_explicit_negative_contact_does_not_force_materialization():
+    install_round34()
     player_input = "Расспрашиваю прохожего, не видел ли он машину."
     plan = _contact_plan(consequence="Никто из прохожих не останавливается.")
 
@@ -173,9 +175,11 @@ def test_explicit_negative_contact_does_not_force_materialization():
 
     assert plan.npc_introductions == []
     assert plan.action_sequence.steps[0].observable_outcome is None
+    assert TurnAuthorityPlanner.contract_issues(plan, player_input) == []
 
 
 def test_unresolved_contact_without_positive_outcome_is_not_forced_to_succeed():
+    install_round34()
     player_input = "Расспрашиваю прохожего, не видел ли он машину."
     plan = _contact_plan(consequence=None)
 
@@ -183,9 +187,15 @@ def test_unresolved_contact_without_positive_outcome_is_not_forced_to_succeed():
 
     assert plan.npc_introductions == []
     assert plan.action_sequence.steps[0].observable_outcome is None
+    # But the binary contract must now notice this natural Russian phrasing and request repair.
+    assert any(
+        "direct contact" in issue.casefold()
+        for issue in TurnAuthorityPlanner.contract_issues(plan, player_input)
+    )
 
 
 def test_blocked_contact_is_not_promoted_even_with_stale_positive_prose():
+    install_round34()
     player_input = "Расспрашиваю прохожего, не видел ли он машину."
     plan = _contact_plan(
         consequence="Прохожий отвечает на вопрос.",
