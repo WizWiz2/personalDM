@@ -5,18 +5,14 @@ import re
 
 from app.config import settings
 from app.models.narration_validation import NarrationValidationResult, NarrationViolation
-from app.services.player_intent_contract import (
-    unauthorized_player_speech,
-    unresolved_player_completion,
-)
 
 _INSTALLED = False
 
-# These are intentional protagonist actions/emotions that Narrator may not add on its own.
-# Perception verbs such as "видишь" are deliberately absent: describing immediate perception is
-# allowed by the narrator surface contract.
+# Intentional protagonist actions/emotions Narrator may not add on its own. Broad stems are used
+# only when the same stem is absent from player_input, so inflection such as обхожу/обходит remains
+# one player-owned action instead of a false-positive agency violation.
 _PLAYER_ADDITION_STEMS = (
-    "обход",
+    "обхо",
     "оборач",
     "шага",
     "подход",
@@ -50,12 +46,7 @@ _PLAYER_ADDITION_STEMS = (
 
 
 def narrator_context_budget(context_window: int) -> int:
-    """Budget the final Narrator context after Planner has already completed.
-
-    Round 34 still subtracted PLANNER_CONTEXT_RESERVE_TOKENS from the Narrator prompt even though
-    Planner is a previous, separate model call. On a 4096-token local campaign this removed 700
-    tokens from an already small Gemma context. Keep only the response reserve and safety margin.
-    """
+    """Budget final Narrator context after Planner has already completed its separate call."""
     safety_margin = int(context_window * settings.SAFETY_MARGIN_PERCENT)
     return max(
         512,
@@ -93,7 +84,7 @@ def _compact_step(step: object) -> dict | None:
 
 
 def compact_narrator_payload(authority) -> dict:
-    """Return only data needed to render prose, not the full audit/validator object."""
+    """Return prose-rendering data only, while preserving stable typed-authority field names."""
     sequence = authority.action_sequence or {}
     raw_steps = sequence.get("steps") if isinstance(sequence, dict) else None
     steps = []
@@ -114,7 +105,7 @@ def compact_narrator_payload(authority) -> dict:
         "present_characters": authority.present_character_names,
         "known_absent_characters": authority.known_absent_character_names,
         "allowed_new_npcs": [
-            {"name": item.canonical_name, "role": item.role}
+            {"canonical_name": item.canonical_name, "role": item.role}
             for item in authority.allowed_new_npcs
         ],
         "resolution": authority.resolution,
@@ -141,7 +132,7 @@ def _normalized(value: str) -> str:
 
 
 def player_direct_speech(player_input: str) -> list[str]:
-    """Extract explicit player-owned direct speech without trying to understand all prose."""
+    """Extract explicit player-owned direct speech without semantic guessing."""
     text = player_input or ""
     values: list[str] = []
     for match in re.finditer(r"[«\"]([^»\"]{2,240})[»\"]", text):
@@ -185,11 +176,7 @@ def _player_subject_segment(segment: str, player_name: str | None) -> bool:
 
 
 def narrator_ownership_violations(authority, candidate_text: str) -> list[NarrationViolation]:
-    """Catch the live P0 failures independently of the control-model validator.
-
-    1. Player direct speech must not be reassigned to an NPC/world response.
-    2. Narrator must not add a new intentional action or emotion to the protagonist.
-    """
+    """Catch live player-speech inversion and added protagonist agency deterministically."""
     if authority.acting_character_id is not None:
         return []
 
@@ -270,7 +257,7 @@ def apply_narrator_ownership(
 
 
 def _better_authority_fallback(authority, published: str) -> str:
-    """Never tell the player that nothing changed after an applied physical transition."""
+    """Never claim nothing changed after an applied transition or completed observation."""
     if " ".join((published or "").casefold().split()) != "пока ничего заметно не меняется.":
         return published
     if authority.source_location_path != authority.target_location_path and authority.target_location_path:
@@ -288,7 +275,7 @@ def _better_authority_fallback(authority, published: str) -> str:
 
 
 def install() -> None:
-    """Recover the artistic Narrator surface without weakening world-state authority."""
+    """Recover artistic Narrator surface without weakening world-state authority."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -334,20 +321,27 @@ def install() -> None:
         if not messages:
             return messages
         first, *rest = messages
+        compact = compact_narrator_payload(authority)
         payload = json.dumps(
-            compact_narrator_payload(authority),
+            compact,
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        sequence_section = (
+            "\n[EXECUTED ACTION SEQUENCE]\n"
+            if compact.get("action_steps")
+            else ""
+        )
         contract = (
-            "[TURN RESULT — render only; world state is already resolved]\n"
-            f"{payload}\n"
-            "Render the immediate result as natural Russian fiction. Use 1–3 compact paragraphs when "
+            "[TYPED TURN AUTHORITY — compact render contract]\n"
+            f"{payload}"
+            f"{sequence_section}"
+            "\nRender the immediate result as natural Russian fiction. Use 1–3 compact paragraphs when "
             "the scene supports them. Concrete scene detail is welcome, but never invent a new fact, "
-            "NPC, route or outcome beyond TURN RESULT. The human protagonist already performed and "
-            "said exactly player_input: never repeat it as another character's line, never add a new "
-            "voluntary action, thought or emotion, and never narrate the protagonist in third person. "
-            "Describe the world's response and stop before the protagonist's next choice."
+            "NPC, route or outcome beyond this typed result. The human protagonist already performed "
+            "and said exactly player_input: never repeat it as another character's line, never add a "
+            "new voluntary action, thought or emotion, and never narrate the protagonist in third "
+            "person. Describe the world's response and stop before the protagonist's next choice."
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
