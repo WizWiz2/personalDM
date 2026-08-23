@@ -10,10 +10,9 @@ class NarrationPublicationGuard:
     """Publish only a validated narrative surface or a deterministic Authority projection.
 
     The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    Once validation reports an error the candidate is untrusted as a whole: downstream code must
-    never recover selected fragments from rejected prose because an unflagged fragment can still
-    contain player-owned speech, an unauthorized NPC, or an invented world outcome. One model repair
-    happens before this guard; if that repair still fails, publication is rebuilt from Authority.
+    Rejected prose is never published merely because some fragments look safe. Round 37 adds a
+    surgical *repair candidate* helper, but that candidate must be independently revalidated before
+    publication; if it remains invalid, the existing fail-closed authority projection still wins.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -101,6 +100,69 @@ class NarrationPublicationGuard:
             "error_count": 0,
             "candidate_discarded": True,
             "validated_surface": False,
+        }
+
+    @classmethod
+    def surgical_repair_candidate(
+        cls,
+        candidate: str,
+        validation: NarrationValidationResult | None,
+    ) -> tuple[str | None, dict]:
+        """Remove only exactly evidenced bad segments and return an UNTRUSTED repair candidate.
+
+        This helper never authorizes publication. Callers must run the returned text through the
+        same TurnAuthorityValidator again. We only attempt surgery when every error has a concrete
+        evidence span that matches a sentence/line in the rejected draft. Otherwise model repair is
+        safer than guessing which prose a fuzzy diagnostic referred to.
+        """
+        errors = [
+            item
+            for item in (validation.violations if validation else [])
+            if item.severity == "error"
+        ]
+        if not errors:
+            return None, {"strategy": "not_applicable", "reason": "no_error_violations"}
+
+        cleaned, matched = cls._drop_flagged_segments(candidate, validation)
+        cleaned = cls._clean(cleaned)
+        original_len = max(1, len(cls._clean(candidate)))
+        retained_ratio = round(len(cleaned) / original_len, 4) if cleaned else 0.0
+
+        if matched != len(errors):
+            return None, {
+                "strategy": "deterministic_span_removal",
+                "status": "skipped",
+                "reason": "not_all_error_evidence_matched",
+                "matched_errors": matched,
+                "error_count": len(errors),
+                "retained_ratio": retained_ratio,
+            }
+        if len(cleaned) < 60 or retained_ratio < 0.30:
+            return None, {
+                "strategy": "deterministic_span_removal",
+                "status": "skipped",
+                "reason": "too_little_safe_surface_remained",
+                "matched_errors": matched,
+                "error_count": len(errors),
+                "retained_ratio": retained_ratio,
+            }
+        if cls._player_facing_fragment(cleaned) is None:
+            return None, {
+                "strategy": "deterministic_span_removal",
+                "status": "skipped",
+                "reason": "remaining_surface_not_player_facing",
+                "matched_errors": matched,
+                "error_count": len(errors),
+                "retained_ratio": retained_ratio,
+            }
+
+        return cleaned, {
+            "strategy": "deterministic_span_removal",
+            "status": "candidate",
+            "matched_errors": matched,
+            "error_count": len(errors),
+            "retained_ratio": retained_ratio,
+            "removed_characters": max(0, original_len - len(cleaned)),
         }
 
     @classmethod
