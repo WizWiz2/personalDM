@@ -27,6 +27,7 @@ const nav = [
   { to: 'hero', label: 'Герой', icon: Icons.hero },
   { to: 'world', label: 'Мир и знания', icon: Icons.world },
   { to: 'chronicle', label: 'Хроника', icon: Icons.chronicle },
+  { to: 'gallery', label: 'Галерея', icon: Icons.gallery },
   { to: 'settings', label: 'Кампания', icon: Icons.settings },
 ]
 
