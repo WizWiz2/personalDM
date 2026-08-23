@@ -102,8 +102,12 @@ export const visualApi = {
         `ComfyUI не отвечает на ${status.base_url}. Перезапусти PersonalDM через play.bat и проверь image setup в окне запуска.`,
       )
     }
-    return requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {
+    const result = await requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {
       method: 'POST',
     })
+    window.dispatchEvent(new CustomEvent('personaldm:visual-generated', {
+      detail: { url: result.url, kind: result.kind },
+    }))
+    return result
   },
 }
