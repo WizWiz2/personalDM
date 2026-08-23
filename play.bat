@@ -146,39 +146,92 @@ echo [Setup] Gemma 4 model is ready!
 goto :image_setup
 
 :image_setup
-rem 6. Provision the local image backend in an isolated environment.
+rem 6. Provision the local image backend directly. Do not depend on comfy-cli:
+rem    it adds another installer layer and can hide the useful git/network error.
 echo.
 echo [Setup] Checking local pixel-art image generation...
 set "BACKEND_VIRTUAL_ENV=%VIRTUAL_ENV%"
-set "COMFY_WORKSPACE=%CD%\tools\comfy"
+set "COMFY_ROOT=%CD%\tools\comfy"
+set "COMFY_DIR=%COMFY_ROOT%\ComfyUI"
 set "COMFY_ENV=%CD%\tools\comfy-runtime"
-set "COMFY_EXE=%COMFY_ENV%\Scripts\comfy.exe"
+set "COMFY_PYTHON=%COMFY_ENV%\Scripts\python.exe"
+set "COMFY_READY=%COMFY_ENV%\.personaldm-ready"
+set "COMFY_ZIP=%TEMP%\personaldm-comfyui-master.zip"
+set "COMFY_UNPACK=%TEMP%\personaldm-comfyui-unpack"
 
-if not exist "%COMFY_ENV%\Scripts\python.exe" (
-    echo [Setup] Creating isolated ComfyUI environment...
-    if not exist "%CD%\tools" mkdir "%CD%\tools"
+if not exist "%CD%\tools" mkdir "%CD%\tools"
+if not exist "%COMFY_ROOT%" mkdir "%COMFY_ROOT%"
+
+rem 6a. Install ComfyUI source. Prefer git; if git/network clone fails, use GitHub ZIP.
+if exist "%COMFY_DIR%\main.py" goto :comfy_source_ready
+
+echo [Setup] Installing ComfyUI source...
+if exist "%COMFY_DIR%" rmdir /S /Q "%COMFY_DIR%"
+
+git --version >nul 2>&1
+if errorlevel 1 goto :comfy_zip_fallback
+
+echo [Setup] Trying Git clone from the official ComfyUI repository...
+git clone --depth 1 https://github.com/Comfy-Org/ComfyUI.git "%COMFY_DIR%"
+if exist "%COMFY_DIR%\main.py" goto :comfy_source_ready
+
+echo [Setup] Git clone failed. Falling back to GitHub ZIP...
+if exist "%COMFY_DIR%" rmdir /S /Q "%COMFY_DIR%"
+
+:comfy_zip_fallback
+if exist "%COMFY_ZIP%" del /Q "%COMFY_ZIP%"
+if exist "%COMFY_UNPACK%" rmdir /S /Q "%COMFY_UNPACK%"
+
+echo [Setup] Downloading ComfyUI source archive...
+curl.exe -fL --retry 3 --retry-delay 2 -o "%COMFY_ZIP%" "https://github.com/Comfy-Org/ComfyUI/archive/refs/heads/master.zip"
+if errorlevel 1 goto :warn_images
+
+echo [Setup] Extracting ComfyUI...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%COMFY_ZIP%' -DestinationPath '%COMFY_UNPACK%' -Force"
+if errorlevel 1 goto :warn_images
+if not exist "%COMFY_UNPACK%\ComfyUI-master\main.py" goto :warn_images
+move /Y "%COMFY_UNPACK%\ComfyUI-master" "%COMFY_DIR%" >nul
+if errorlevel 1 goto :warn_images
+if exist "%COMFY_ZIP%" del /Q "%COMFY_ZIP%"
+if exist "%COMFY_UNPACK%" rmdir /S /Q "%COMFY_UNPACK%"
+
+:comfy_source_ready
+if not exist "%COMFY_DIR%\main.py" goto :warn_images
+
+rem 6b. Build a dedicated Python runtime. Python 3.11 is supported by current ComfyUI.
+if not exist "%COMFY_PYTHON%" (
+    echo [Setup] Creating isolated ComfyUI Python environment...
     python -m venv "%COMFY_ENV%"
     if errorlevel 1 goto :warn_images
 )
 
-if not exist "%COMFY_EXE%" (
-    echo [Setup] Installing comfy-cli...
-    "%COMFY_ENV%\Scripts\python.exe" -m pip install --upgrade pip comfy-cli
-    if errorlevel 1 goto :warn_images
-)
+rem A failed previous comfy-cli attempt may have left this venv behind. The marker is
+rem written only after the actual ComfyUI runtime imports successfully.
+if exist "%COMFY_READY%" goto :comfy_runtime_ready
 
-if not exist "%COMFY_WORKSPACE%\ComfyUI\main.py" (
-    echo [Setup] Installing latest stable ComfyUI for NVIDIA GPU...
-    set "VIRTUAL_ENV=%COMFY_ENV%"
-    "%COMFY_EXE%" --skip-prompt --workspace="%COMFY_WORKSPACE%" install --version latest --skip-manager --nvidia
-    if errorlevel 1 (
-        set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
-        goto :warn_images
-    )
-    set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
-)
+echo [Setup] Installing ComfyUI runtime dependencies...
+"%COMFY_PYTHON%" -m pip install --upgrade pip
+if errorlevel 1 goto :warn_images
 
-set "COMFY_MODELS=%COMFY_WORKSPACE%\ComfyUI\models"
+rem RTX 20-series and newer are supported by the current CUDA 13 PyTorch wheels.
+echo [Setup] Installing NVIDIA PyTorch runtime...
+"%COMFY_PYTHON%" -m pip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+if errorlevel 1 goto :warn_images
+
+"%COMFY_PYTHON%" -m pip install -r "%COMFY_DIR%\requirements.txt"
+if errorlevel 1 goto :warn_images
+
+pushd "%COMFY_DIR%"
+"%COMFY_PYTHON%" -c "import torch; import server; assert torch.cuda.is_available(), 'CUDA is not available to PyTorch'; print('[Setup] ComfyUI GPU:', torch.cuda.get_device_name(0))"
+set "COMFY_VALIDATE_RC=%ERRORLEVEL%"
+popd
+if not "%COMFY_VALIDATE_RC%"=="0" goto :warn_images
+
+> "%COMFY_READY%" echo ready
+
+:comfy_runtime_ready
+set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+set "COMFY_MODELS=%COMFY_DIR%\models"
 if not exist "%COMFY_MODELS%\diffusion_models" mkdir "%COMFY_MODELS%\diffusion_models"
 if not exist "%COMFY_MODELS%\text_encoders" mkdir "%COMFY_MODELS%\text_encoders"
 if not exist "%COMFY_MODELS%\vae" mkdir "%COMFY_MODELS%\vae"
@@ -186,38 +239,36 @@ if not exist "%COMFY_MODELS%\loras" mkdir "%COMFY_MODELS%\loras"
 
 echo [Setup] Ensuring FLUX.2 Klein 4B FP8 is downloaded...
 call :download_if_missing "%COMFY_MODELS%\diffusion_models\flux-2-klein-4b-fp8.safetensors" "https://huggingface.co/black-forest-labs/FLUX.2-klein-4b-fp8/resolve/main/flux-2-klein-4b-fp8.safetensors"
-if %errorlevel% neq 0 goto :warn_images
+if errorlevel 1 goto :warn_images
 
 echo [Setup] Ensuring compact Qwen3 4B FP4 image text encoder is downloaded...
 call :download_if_missing "%COMFY_MODELS%\text_encoders\qwen_3_4b_fp4_flux2.safetensors" "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/resolve/main/split_files/text_encoders/qwen_3_4b_fp4_flux2.safetensors"
-if %errorlevel% neq 0 goto :warn_images
+if errorlevel 1 goto :warn_images
 
 echo [Setup] Ensuring FLUX.2 VAE is downloaded...
 call :download_if_missing "%COMFY_MODELS%\vae\flux2-vae.safetensors" "https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-4b/resolve/main/split_files/vae/flux2-vae.safetensors"
-if %errorlevel% neq 0 goto :warn_images
+if errorlevel 1 goto :warn_images
 
 echo [Setup] Ensuring pixel-art LoRA is downloaded...
 call :download_if_missing "%COMFY_MODELS%\loras\pixel-art-lora.safetensors" "https://huggingface.co/Limbicnation/pixel-art-lora/resolve/main/pytorch_lora_weights.comfyui.safetensors"
-if %errorlevel% neq 0 goto :warn_images
+if errorlevel 1 goto :warn_images
 
 rem Start ComfyUI only if another instance is not already listening on the expected port.
 curl -sf http://127.0.0.1:8188/system_stats >nul 2>&1
 if %errorlevel% EQU 0 goto :images_ready
 
 echo [Setup] Starting ComfyUI in low-VRAM background mode...
-set "VIRTUAL_ENV=%COMFY_ENV%"
-"%COMFY_EXE%" --workspace="%COMFY_WORKSPACE%" launch --background -- --lowvram --disable-auto-launch --port 8188
-if errorlevel 1 (
-    set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
-    goto :warn_images
-)
-set "VIRTUAL_ENV=%BACKEND_VIRTUAL_ENV%"
+pushd "%COMFY_DIR%"
+start "" /B "%COMFY_PYTHON%" main.py --lowvram --disable-auto-launch --port 8188 >nul 2>&1
+popd
 
-for /l %%I in (1,1,45) do (
+for /l %%I in (1,1,60) do (
     curl -sf http://127.0.0.1:8188/system_stats >nul 2>&1
     if not errorlevel 1 goto :images_ready
     timeout /t 1 /nobreak >nul
 )
+
+echo [WARNING] ComfyUI did not become healthy on port 8188.
 goto :warn_images
 
 :images_ready
