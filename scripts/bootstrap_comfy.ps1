@@ -64,9 +64,7 @@ if (-not (Test-Path (Join-Path $ComfyDir 'main.py'))) {
     Remove-Item $extractDir -Recurse -Force -ErrorAction SilentlyContinue
 
     try {
-        $release = Invoke-RestMethod \
-            -Uri 'https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest' \
-            -Headers @{ 'User-Agent' = 'PersonalDM-bootstrap' }
+        $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/Comfy-Org/ComfyUI/releases/latest' -Headers @{ 'User-Agent' = 'PersonalDM-bootstrap' }
         $downloadUrl = [string]$release.zipball_url
         if ([string]::IsNullOrWhiteSpace($downloadUrl)) {
             throw 'GitHub latest release did not contain zipball_url.'
@@ -79,10 +77,7 @@ if (-not (Test-Path (Join-Path $ComfyDir 'main.py'))) {
         $downloadUrl = 'https://github.com/Comfy-Org/ComfyUI/archive/refs/heads/master.zip'
     }
 
-    Invoke-WebRequest \
-        -Uri $downloadUrl \
-        -OutFile $archivePart \
-        -Headers @{ 'User-Agent' = 'PersonalDM-bootstrap' }
+    Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePart -Headers @{ 'User-Agent' = 'PersonalDM-bootstrap' }
     Move-Item $archivePart $archive -Force
 
     Expand-Archive -Path $archive -DestinationPath $extractDir -Force
