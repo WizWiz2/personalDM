@@ -11,6 +11,7 @@ _GUARDS = (
     "round34_live",
     "mixed_actor_response",
     "memory_scribe",
+    "narrator_quality_recovery",
     "narration_failure_containment",
     "session_zero_finalize",
     "thesis_lifecycle",
@@ -36,6 +37,9 @@ def install_runtime() -> None:
     from app.services.narration_failure_containment_guard import (
         install as install_narration_failure_containment,
     )
+    from app.services.narrator_quality_recovery_guard import (
+        install as install_narrator_quality_recovery,
+    )
     from app.services.round33_identity_guard import install as install_round33_identity
     from app.services.round34_live_guard import install as install_round34_live
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
@@ -49,6 +53,7 @@ def install_runtime() -> None:
     install_round34_live()
     install_mixed_actor_response()
     install_actor_memory_observability()
+    install_narrator_quality_recovery()
     install_narration_failure_containment()
     install_session_zero_finalize()
     install_thesis_lifecycle()
