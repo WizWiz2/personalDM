@@ -34,8 +34,9 @@ class AuthorityNarrationPipeline:
     """Render one authoritative turn without letting renderer mistakes cancel game state.
 
     Planner/engine own the outcome. Narrator and validator are presentation layers. A semantic prose
-    violation gets one model repair and then a deterministic safe publication; only real provider
-    or structured-state failures are allowed to fail the turn.
+    violation first gets a deterministic surgical removal when exact evidence permits it, then one
+    preserve-first model repair if necessary, and finally a deterministic safe publication. Only
+    real provider or structured-state failures are allowed to fail the turn.
     """
 
     def __init__(
@@ -136,18 +137,12 @@ class AuthorityNarrationPipeline:
             if not partial:
                 raise
 
-            # A genuine output truncation gets exactly one continuation request. This is not a
-            # blind replay: the model receives the emitted tail and is asked only for the missing
-            # ending, so a long valid turn is not discarded because num_predict was exhausted.
             continuation_messages = self._continuation_messages(messages, partial)
-            try:
-                continuation, second_telemetry = await self._stream_once(
-                    continuation_messages,
-                    selection,
-                    temperature=temperature,
-                )
-            except LLMProviderTruncatedError:
-                raise
+            continuation, second_telemetry = await self._stream_once(
+                continuation_messages,
+                selection,
+                temperature=temperature,
+            )
             merged = self._merge_continuation(partial, continuation).strip()
             if not merged:
                 raise LLMProviderError("Narrator truncation recovery produced no usable prose")
@@ -270,6 +265,49 @@ class AuthorityNarrationPipeline:
             },
             validation_run_id=gate.validation_run_id,
             validation_status="safe_fallback",
+        )
+
+    async def _try_surgical_repair(
+        self,
+        *,
+        audit: NarrationValidator,
+        run,
+        validator: TurnAuthorityValidator,
+        validation_selection: RoleModelSelection,
+        authority: TurnAuthority,
+        draft: str,
+        initial_result: NarrationValidationResult,
+        attempt_index: int,
+    ) -> tuple[str | None, NarrationValidationResult | None, dict, bool]:
+        candidate, surgery = NarrationPublicationGuard.surgical_repair_candidate(
+            draft,
+            initial_result,
+        )
+        if candidate is None:
+            return None, None, surgery, False
+
+        result = await validator.validate(
+            validation_selection,
+            authority,
+            candidate,
+        )
+        await audit.record_attempt(
+            run,
+            attempt_index=attempt_index,
+            candidate_text=candidate,
+            result=result,
+            telemetry={
+                **validator.telemetry,
+                "authority_version": authority.version,
+                "repair_strategy": "deterministic_span_removal",
+                "surgical_repair": surgery,
+            },
+        )
+        return (
+            candidate if result.verdict == "pass" else None,
+            result,
+            surgery,
+            True,
         )
 
     async def generate(
@@ -396,6 +434,40 @@ class AuthorityNarrationPipeline:
                     validation_status=gate.status,
                 )
 
+            surgical, surgical_result, surgery, surgery_attempted = await self._try_surgical_repair(
+                audit=audit,
+                run=run,
+                validator=validator,
+                validation_selection=validation_selection,
+                authority=authority,
+                draft=draft,
+                initial_result=result,
+                attempt_index=1,
+            )
+            if surgical is not None:
+                gate = await audit.finalize(
+                    run,
+                    status="repaired",
+                    final_text=surgical,
+                    repair_attempts=1,
+                )
+                return AuthorityNarrationResult(
+                    text=surgical,
+                    telemetry={
+                        **narrator_telemetry,
+                        "narration_validation": {
+                            "status": gate.status,
+                            "validation_run_id": str(gate.validation_run_id),
+                            "authority_version": authority.version,
+                            "repair_strategy": "deterministic_span_removal",
+                            "surgical_repair": surgery,
+                            "validator_telemetry": validator.telemetry,
+                        },
+                    },
+                    validation_run_id=gate.validation_run_id,
+                    validation_status=gate.status,
+                )
+
             repair_messages = [
                 *narrator_messages,
                 ChatMessage(
@@ -413,6 +485,8 @@ class AuthorityNarrationPipeline:
                     temperature=settings.NARRATION_REPAIR_TEMPERATURE,
                 )
             )
+            model_attempt_index = 2 if surgery_attempted else 1
+            repair_attempts = 2 if surgery_attempted else 1
             if repair_repetition_exhausted:
                 return await self._publish_fallback(
                     audit=audit,
@@ -420,11 +494,12 @@ class AuthorityNarrationPipeline:
                     authority=authority,
                     candidate="",
                     validation=None,
-                    repair_attempts=1,
-                    attempt_index=1,
+                    repair_attempts=repair_attempts,
+                    attempt_index=model_attempt_index,
                     reason="repaired narration repeated a prior published response after retry",
                     telemetry={
                         **narrator_telemetry,
+                        "surgical_repair": surgery,
                         "repair_generation": repair_telemetry,
                     },
                 )
@@ -436,12 +511,14 @@ class AuthorityNarrationPipeline:
             )
             await audit.record_attempt(
                 run,
-                attempt_index=1,
+                attempt_index=model_attempt_index,
                 candidate_text=repaired,
                 result=repaired_result,
                 telemetry={
                     **validator.telemetry,
                     "authority_version": authority.version,
+                    "repair_strategy": "preserve_first_model_edit",
+                    "surgical_repair": surgery,
                     "repair_generation": repair_telemetry,
                 },
             )
@@ -452,14 +529,15 @@ class AuthorityNarrationPipeline:
                     authority=authority,
                     candidate=repaired,
                     validation=repaired_result,
-                    repair_attempts=1,
-                    attempt_index=2,
+                    repair_attempts=repair_attempts,
+                    attempt_index=model_attempt_index + 1,
                     reason=(
                         repaired_result.summary
                         or "narration remained outside turn authority after repair"
                     ),
                     telemetry={
                         **narrator_telemetry,
+                        "surgical_repair": surgery,
                         "repair_generation": repair_telemetry,
                         "validator_telemetry": validator.telemetry,
                     },
@@ -469,7 +547,7 @@ class AuthorityNarrationPipeline:
                 run,
                 status="repaired",
                 final_text=repaired,
-                repair_attempts=1,
+                repair_attempts=repair_attempts,
             )
             return AuthorityNarrationResult(
                 text=repaired,
@@ -480,6 +558,8 @@ class AuthorityNarrationPipeline:
                         "status": gate.status,
                         "validation_run_id": str(gate.validation_run_id),
                         "authority_version": authority.version,
+                        "repair_strategy": "preserve_first_model_edit",
+                        "surgical_repair": surgery,
                         "validator_telemetry": validator.telemetry,
                     },
                 },
