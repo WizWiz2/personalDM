@@ -64,6 +64,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "actor_memory_observability",
         "systemless_authority",
         "round33_identity",
+        "round34_live",
         "mixed_actor_response",
         "memory_scribe",
         "narration_failure_containment",
