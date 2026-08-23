@@ -30,13 +30,25 @@ TURN AUTHORITY object and candidate prose. The authority object is the sole sour
 what this turn is allowed to establish.
 
 Return repair_required only for concrete violations of that authority:
-- PLAYER AGENCY: the prose adds voluntary protagonist dialogue, gestures, movement, choices,
-  decisions, plans, beliefs, consent, promises, attacks or emotions that are not already contained
-  in player_input. Merely describing perception or externally caused involuntary effects is allowed.
+- PLAYER AGENCY: the prose adds voluntary protagonist dialogue, choices, decisions, plans, beliefs,
+  consent, promises, attacks, thoughts or emotions that are not already contained in player_input.
+  A natural physical paraphrase of an action that authority already completed is allowed: for
+  example player_input "Вхожу в шатёр" may be rendered as "Вы делаете шаг внутрь". Reject only an
+  extra/next action or a stronger interaction that the authority did not complete.
 - CHARACTER PRESENCE: a known_absent_character acts/speaks/appears physically. Characters listed
-  in present_characters are present. Characters listed in allowed_new_npcs are explicitly approved
-  first-time introductions and MUST NOT be rejected as absent.
+  in present_characters are present. Characters listed in allowed_new_npcs or allowed existing
+  arrivals are explicitly approved and MUST NOT be rejected as absent.
+- PRESENT NPC DIALOGUE: a present NPC may naturally answer the current question from their own
+  perspective. Their every sentence does NOT need to appear verbatim in observable_consequences.
+  Reject the speech only when it establishes new objective canon, claims unavailable knowledge,
+  contradicts authority, or performs an unauthorized action. Never repair a legal answer by making
+  the NPC silent unless authority explicitly establishes silence/no response.
 - UNPLANNED NPC: a genuinely new character not listed in allowed_new_npcs is introduced as present.
+- SCENE TEXTURE: neutral local sensory/furnishing details are allowed prose texture when they do not
+  create a new character, route, threat, clue, mechanically/causally significant object, or action
+  outcome. Ordinary light, weather, smell, material, background clutter or room texture is not an
+  absent_object violation merely because it is omitted from objects_here. A new figure, creature,
+  weapon, discoverable clue, locked route or ominous incoming threat is NOT neutral texture.
 - MOVEMENT/TIME: prose completes a location/time/focus change not authorized by scene_disposition,
   transition_type or action_sequence.
 - OUTCOME: prose contradicts approved observable_consequences or a completed structured sequence.
@@ -49,10 +61,11 @@ Return repair_required only for concrete violations of that authority:
   narration, engine, player input, or waiting for the player's next message.
 - COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
 
-Do not reconstruct hidden campaign rules. Do not complain that an approved new NPC was not in the
-old participant list. Do not invent corrections that change the approved turn outcome.
+Do not reconstruct hidden campaign rules. Do not complain that an approved/present NPC was not in
+some older participant list. Do not invent corrections that change the approved turn outcome. Judge
+only the actual offending span: one bad sentence does not make the rest of a grounded draft bad.
 For EVERY error, evidence MUST quote the shortest exact offending fragment from candidate prose.
-Do not paraphrase evidence: deterministic actor-response publication may remove that exact segment.
+Do not paraphrase evidence: deterministic surgical repair may remove that exact segment.
 All human-readable fields (summary, evidence, correction) MUST be written in Russian even if the
 candidate or your internal reasoning uses another language.
 
@@ -218,7 +231,9 @@ Return exactly:
             value.casefold()
             for value in [
                 authority.acting_character_name,
+                *authority.present_character_names,
                 *authority.allowed_new_npc_names,
+                *authority.allowed_existing_npc_arrival_names,
             ]
             if value
         }
@@ -245,7 +260,7 @@ Return exactly:
             summary=(
                 result.summary
                 if errors
-                else "Типизированный TurnAuthority подтверждает этого собеседника или новое появление."
+                else "Типизированный TurnAuthority подтверждает присутствие этого персонажа."
             ),
             violations=filtered,
         )
@@ -467,24 +482,27 @@ Return exactly:
         )
         return (
             "[REPAIR REJECTED NARRATION]\n"
-            "[REPAIR AGAINST TURN AUTHORITY]\n"
-            "[REGENERATE NARRATION FROM TURN AUTHORITY]\n"
-            "Напиши новый ответ С НУЛЯ. Не редактируй и не продолжай отвергнутый текст: он "
-            "намеренно не передан, чтобы не копировать его ошибки. Используй только AUTHORITY ниже. "
-            "Дай один законченный внутриигровой ответ на русском языке. Начни с реакции мира, NPC "
-            "или наблюдаемого результата текущего действия. Не пересказывай действие игрока и не "
-            "продолжай его добровольными действиями, мыслями, решениями, эмоциями или репликами. "
-            "Если нужно описать непосредственное восприятие или внешний эффект для героя, обращайся "
-            "во втором лице. Не используй имя героя как субъект нового действия. Не добавляй NPC, "
-            "поворот, перемещение или время сверх Authority. Не выводи UUID, slugs, маршруты, "
-            "BLOCKED/SKIPPED, поля authority/validator или мета-фразы. Верни только естественную "
-            "художественную прозу.\n\n"
+            "[MINIMAL EDIT AGAINST TURN AUTHORITY]\n"
+            "Отредактируй отвергнутый текст МИНИМАЛЬНО. Сохрани все предложения, абзацы, "
+            "реплики присутствующих NPC, конкретные детали и утверждённые последствия, которые "
+            "не перечислены ниже как нарушения. Не пересочиняй ответ с нуля и не сокращай его до "
+            "служебной заглушки. Удали или перепиши только конкретные offending spans.\n\n"
+            "Критически важно:\n"
+            "- не заменяй легальную реплику NPC на молчание, если Authority не устанавливает "
+            "молчание/no-response;\n"
+            "- естественная формулировка уже выполненного действия допустима, но не добавляй "
+            "следующий шаг, более сильное взаимодействие или новый результат;\n"
+            "- не добавляй мысли, эмоции, решения, планы, согласие или новые реплики героя;\n"
+            "- не добавляй новый NPC, маршрут, угрозу, clue или причинно значимый объект;\n"
+            "- нейтральная сенсорная фактура сцены допустима;\n"
+            "- не выводи UUID, slugs, BLOCKED/SKIPPED, поля authority/validator или мета-фразы;\n"
+            "- верни только цельную естественную художественную прозу на русском языке.\n\n"
             "AUTHORITY:\n"
             + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
-            + "\n\nОШИБКИ ПРЕДЫДУЩЕЙ ПОПЫТКИ, КОТОРЫЕ НЕЛЬЗЯ ПОВТОРЯТЬ:\n"
+            + "\n\nТОЧНЫЕ НАРУШЕНИЯ, КОТОРЫЕ НУЖНО ИСПРАВИТЬ:\n"
             + (violations or result.summary)
-            + "\n\n[REJECTED CANDIDATE OMITTED]\n"
-            "Исходный отвергнутый текст намеренно не передаётся модели."
+            + "\n\n[REJECTED CANDIDATE — EDIT IN PLACE]\n"
+            + candidate
         )
 
 

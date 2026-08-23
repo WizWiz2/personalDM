@@ -8,40 +8,51 @@ from app.models.narration_validation import NarrationValidationResult, Narration
 
 _INSTALLED = False
 
-# Intentional protagonist actions/emotions Narrator may not add on its own. Broad stems are used
-# only when the same stem is absent from player_input, so inflection such as обхожу/обходит remains
-# one player-owned action instead of a false-positive agency violation.
-_PLAYER_ADDITION_STEMS = (
-    "обхо",
-    "оборач",
-    "шага",
-    "подход",
-    "отход",
-    "поворач",
-    "реш",
-    "чувств",
-    "дума",
-    "пыта",
-    "стара",
-    "улыб",
-    "кив",
-    "вздох",
-    "бер",
-    "взя",
-    "открыва",
-    "закрыва",
-    "идёт",
-    "идет",
-    "пош",
-    "walk",
-    "step",
-    "turn",
-    "decid",
-    "feel",
-    "think",
-    "try",
-    "smil",
-    "nod",
+# Deterministic ownership checks must stay high-confidence. Physical realization of an already
+# approved action is semantic territory owned by TurnAuthority/action_sequence, not by lexical
+# verb matching: "Вхожу" -> "вы делаете шаг внутрь" is a normal narration paraphrase.
+_INTERNAL_AGENCY_PATTERNS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (
+        re.compile(r"\b(?:реша\w*|решил\w*|решила\w*|решили\w*)\b", re.IGNORECASE),
+        ("реш",),
+    ),
+    (
+        re.compile(r"\b(?:дума\w*|подум\w*|понима\w*|понял\w*|поняла\w*|поняли\w*)\b", re.IGNORECASE),
+        ("дума", "подум", "понима", "понял", "поняла", "поняли"),
+    ),
+    (
+        re.compile(r"\b(?:чувству\w*|почувств\w*)\b", re.IGNORECASE),
+        ("чувств", "почувств"),
+    ),
+    (
+        re.compile(r"\b(?:намерева\w*|собира\w*\s+ся|хоч\w*)\b", re.IGNORECASE),
+        ("намер", "собира", "хоч"),
+    ),
+    (
+        re.compile(r"\b(?:соглаша\w*|согласил\w*|отказыва\w*|отказал\w*|обеща\w*)\b", re.IGNORECASE),
+        ("соглас", "отказ", "обещ"),
+    ),
+    (
+        re.compile(r"\b(?:пыта\w*|стара\w*)\b", re.IGNORECASE),
+        ("пыта", "стара"),
+    ),
+    (
+        re.compile(r"\b(?:боится|боишься|боитесь|испугал\w*|страшно|тревожит\w*ся|радует\w*ся|злит\w*ся)\b", re.IGNORECASE),
+        ("бо", "испуг", "страш", "тревож", "раду", "злит"),
+    ),
+    (
+        re.compile(r"\bсердц\w*\b.{0,48}\b(?:бь[её]т\w*|колот\w*|замира\w*)\b", re.IGNORECASE),
+        ("сердц",),
+    ),
+)
+
+_PLAYER_DIRECTIVE_PATTERN = re.compile(
+    r"^\s*(?:ты|вы)\s+(?:долж\w*|обязан\w*|нужно\b|следует\b)",
+    re.IGNORECASE,
+)
+_PLAYER_ADDRESSEE_PATTERN = re.compile(
+    r"\b(?:обраща\w*\s+к|спрашива\w*|спросил\w*|спросила\w*|говори\w*\s+(?:с|к)|адресу\w*)\b",
+    re.IGNORECASE,
 )
 
 
@@ -142,10 +153,12 @@ def player_direct_speech(player_input: str) -> list[str]:
         if match:
             values.append(match.group(1).strip())
     unique: list[str] = []
+    seen: set[str] = set()
     for value in values:
         key = _normalized(value)
-        if key and key not in {_normalized(item) for item in unique}:
+        if key and key not in seen:
             unique.append(value)
+            seen.add(key)
     return unique
 
 
@@ -175,8 +188,60 @@ def _player_subject_segment(segment: str, player_name: str | None) -> bool:
     return bool(re.search(rf"^\s*[—–-]*\s*{re.escape(name)}\b", folded))
 
 
+def _segments(text: str) -> list[str]:
+    return [
+        value.strip()
+        for value in re.split(r"(?<=[.!?…])\s+|[\r\n]+", text or "")
+        if value.strip()
+    ]
+
+
+def _segment_containing(text: str, phrase: str) -> str | None:
+    needle = _normalized(phrase)
+    if not needle:
+        return None
+    for segment in _segments(text):
+        if needle in _normalized(segment):
+            return segment
+    return None
+
+
+def _player_input_allows_internal(player_input: str, roots: tuple[str, ...]) -> bool:
+    folded = (player_input or "").casefold()
+    return any(root in folded for root in roots)
+
+
+def _invented_addressee_segment(authority, candidate_text: str) -> str | None:
+    """Catch narration that chooses who the player addressed when the input did not."""
+    player_input = (authority.player_input or "").casefold()
+    player_name = (authority.player_character_name or "").casefold()
+    present = [
+        name
+        for name in authority.present_character_names
+        if name and name.casefold() != player_name
+    ]
+    if not present:
+        return None
+    for segment in _segments(candidate_text):
+        if not _player_subject_segment(segment, authority.player_character_name):
+            continue
+        folded = segment.casefold()
+        if not _PLAYER_ADDRESSEE_PATTERN.search(folded):
+            continue
+        for name in present:
+            key = name.casefold()
+            if key in folded and key not in player_input:
+                return segment
+    return None
+
+
 def narrator_ownership_violations(authority, candidate_text: str) -> list[NarrationViolation]:
-    """Catch live player-speech inversion and added protagonist agency deterministically."""
+    """Catch only high-confidence player ownership violations deterministically.
+
+    Location/action equivalence is intentionally NOT inferred here. Typed authority and the
+    semantic validator own that question. This gate exists for things that are unambiguously human
+    owned: direct speech, selected addressee, thoughts, emotions, decisions and plans.
+    """
     if authority.acting_character_id is not None:
         return []
 
@@ -189,11 +254,12 @@ def narrator_ownership_violations(authority, candidate_text: str) -> list[Narrat
             and utterance_key in candidate_key
             and not _authority_explicitly_allows_echo(authority, utterance)
         ):
+            evidence = _segment_containing(candidate_text, utterance) or utterance
             violations.append(
                 NarrationViolation(
                     violation_type="player_agency",
                     severity="error",
-                    evidence=f"Нарратор повторил прямую реплику игрока: «{utterance}».",
+                    evidence=evidence[:500],
                     correction=(
                         "Не повторять и не переатрибутировать реплику игрока. Описать только "
                         "реакцию мира или NPC после уже произнесённых игроком слов."
@@ -202,30 +268,47 @@ def narrator_ownership_violations(authority, candidate_text: str) -> list[Narrat
             )
             break
 
-    input_folded = authority.player_input.casefold()
-    for segment in re.split(r"(?<=[.!?…])\s+|[\r\n]+", candidate_text or ""):
+    addressee = _invented_addressee_segment(authority, candidate_text)
+    if addressee:
+        violations.append(
+            NarrationViolation(
+                violation_type="player_agency",
+                severity="error",
+                evidence=addressee[:500],
+                correction=(
+                    "Не выбирать за игрока конкретного адресата общей реплики. Присутствующий NPC "
+                    "может сам откликнуться, если это разрешает TurnAuthority."
+                ),
+            )
+        )
+
+    input_folded = (authority.player_input or "").casefold()
+    for segment in _segments(candidate_text):
         clean = " ".join(segment.split()).strip()
         if not clean or not _player_subject_segment(clean, authority.player_character_name):
             continue
         folded = clean.casefold()
-        added = next(
+        internal = next(
             (
-                stem
-                for stem in _PLAYER_ADDITION_STEMS
-                if stem in folded and stem not in input_folded
+                roots
+                for pattern, roots in _INTERNAL_AGENCY_PATTERNS
+                if pattern.search(folded) and not _player_input_allows_internal(input_folded, roots)
             ),
             None,
         )
-        if added:
+        directive = _PLAYER_DIRECTIVE_PATTERN.search(folded) and not re.search(
+            r"\b(?:долж\w*|обязан\w*|нужно\b|следует\b)", input_folded
+        )
+        if internal or directive:
             violations.append(
                 NarrationViolation(
                     violation_type="player_agency",
                     severity="error",
                     evidence=clean[:500],
                     correction=(
-                        "Удалить добавленное действие, намерение или эмоцию героя. Игрок уже "
-                        "полностью задал действия и реплики этого хода; Narrator описывает только "
-                        "их результат и внешнюю реакцию мира."
+                        "Удалить придуманную мысль, эмоцию, решение, намерение или директиву герою. "
+                        "Физический результат уже заявленного действия можно описывать, но следующий "
+                        "выбор и внутреннее состояние принадлежат игроку."
                     ),
                 )
             )
@@ -251,7 +334,7 @@ def apply_narrator_ownership(
             existing.append(violation)
     return NarrationValidationResult(
         verdict="repair_required",
-        summary="Нарратор присвоил себе реплику или управление персонажем игрока.",
+        summary="Нарратор нарушил владение репликой, адресатом или внутренним состоянием героя.",
         violations=existing,
     )
 
@@ -333,11 +416,14 @@ def install() -> None:
             f"{payload}"
             f"{sequence_section}"
             "\nRender the immediate result as natural Russian fiction. Use 1–3 compact paragraphs when "
-            "the scene supports them. Concrete scene detail is welcome, but never invent a new fact, "
-            "NPC, route or outcome beyond this typed result. The human protagonist already performed "
-            "and said exactly player_input: never repeat it as another character's line, never add a "
-            "new voluntary action, thought or emotion, and never narrate the protagonist in third "
-            "person. Describe the world's response and stop before the protagonist's next choice."
+            "the scene supports them. Neutral sensory texture is welcome, but never invent a new "
+            "NPC, route, threat, clue, mechanically significant object or outcome beyond this typed "
+            "result. A present NPC may answer naturally from their own perspective. The human "
+            "protagonist already performed and said exactly player_input: never repeat it as another "
+            "character's line, never choose an addressee the player did not choose, and never add a "
+            "new thought, emotion, decision, plan or next voluntary action. You may naturally phrase "
+            "the physical realization of an action that authority already completed. Describe the "
+            "world's response and stop before the protagonist's next choice."
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),

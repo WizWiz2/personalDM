@@ -68,7 +68,7 @@ def test_legacy_no_result_stub_is_never_published_from_authority_projection():
     assert published == "Пока ничего заметно не меняется."
 
 
-def test_repair_prompt_regenerates_from_authority_without_rejected_candidate_anchor():
+def test_repair_prompt_preserves_rejected_candidate_for_minimal_edit():
     authority = _authority()
     rejected = "Элдон решает войти внутрь и улыбается. Потом он достаёт нож."
     evidence = "Элдон решает войти внутрь и улыбается."
@@ -84,14 +84,15 @@ def test_repair_prompt_regenerates_from_authority_without_rejected_candidate_anc
     prompt = TurnAuthorityValidator.repair_prompt(authority, rejected, validation)
 
     assert "[REPAIR REJECTED NARRATION]" in prompt
-    assert "[REPAIR AGAINST TURN AUTHORITY]" in prompt
-    assert "С НУЛЯ" in prompt
-    assert "REJECTED CANDIDATE OMITTED" in prompt
+    assert "[MINIMAL EDIT AGAINST TURN AUTHORITY]" in prompt
+    assert "EDIT IN PLACE" in prompt
+    assert "С НУЛЯ" not in prompt
     assert evidence in prompt
-    assert rejected not in prompt
-    assert "Потом он достаёт нож" not in prompt
+    assert rejected in prompt
+    assert "Потом он достаёт нож" in prompt
     assert "observable_consequences" in prompt
-    assert "Не пересказывай действие игрока" in prompt
+    assert "Отредактируй отвергнутый текст МИНИМАЛЬНО" in prompt
+    assert "не заменяй легальную реплику NPC на молчание" in prompt
 
 
 def test_narrator_payload_exposes_explicit_player_agency_contract():
