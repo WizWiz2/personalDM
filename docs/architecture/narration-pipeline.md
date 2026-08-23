@@ -1,92 +1,151 @@
-# Explicit Narration Pipeline
+# Narration Publication Pipeline
 
 ## Статус
 
-Это второй этап снятия runtime monkeypatch-слоёв. Он удаляет глобальные подмены:
-
-- `TurnRunner.run_turn_stream`;
-- `LLMProvider.generate_stream`.
-
-После этого PR обычный `LLMProvider` остаётся сырой инфраструктурой моделей, а проверка
-художественной прозы подключается только к narrative turn через явную зависимость.
+Текущий production contract. Narrator является renderer уже утверждённого `TurnAuthority`; он не владеет исходом хода.
 
 ## Композиция
 
 ```mermaid
 flowchart TD
-    App[GameApplication]
-    Turn[TurnRunner facade]
-    Base[BaseTurnRunner orchestration]
-    Pipe[NarrationPipelineProvider]
-    Raw[LLMProvider — raw narrator]
-    Gate[NarrationValidator]
-    Repair[Raw provider — repair prompt]
-    Publish[Accepted prose]
+    Input[Player input]
+    Planner[TurnAuthorityPlanner]
+    Exec[Deterministic execution]
+    Authority[TurnAuthority]
+    Context[Narrator context + compact authority]
+    Draft[Narrator draft]
+    Repeat[Repetition guard]
+    Validate[TurnAuthorityValidator]
+    Repair[Narrator targeted repair]
+    Publish[NarrationPublicationGuard]
+    Final[Published assistant turn]
 
-    App --> Turn
-    Turn --> Base
-    Turn --> Pipe
-    Base --> Pipe
-    Pipe --> Raw
-    Raw --> Gate
-    Gate -- pass --> Publish
-    Gate -- repair_required --> Repair
-    Repair --> Gate
+    Input --> Planner --> Exec --> Authority --> Context --> Draft --> Repeat
+    Repeat -- clean --> Validate
+    Repeat -- repeated once --> Draft
+    Validate -- pass --> Final
+    Validate -- repair_required --> Repair --> Validate
+    Validate -- repair still invalid --> Publish --> Final
 ```
+
+`AuthorityNarrationPipeline` полностью буферизует художественный кандидат до publication. Пользователь не должен видеть raw draft, который затем был признан нарушающим authority.
 
 ## Этапы
 
-1. `generate_draft` — сырой narrator output полностью буферизуется;
-2. `validate` — отдельная validator-role проверяет continuity, placement и agency;
-3. `repair` — при нарушениях сырой narrator получает точный repair prompt;
-4. `publish_accepted` — наружу отдаётся только принятый текст.
+### 1. `generate_draft`
 
-## Важные границы
+Campaign Narrator генерирует complete candidate prose. Genuine output truncation допускает одну continuation попытку с хвостом уже сгенерированного текста.
 
-- `NarrationPipelineProvider` создаётся внутри публичного `TurnRunner`;
-- контекст кампании и trigger turn хранится в экземпляре provider на время одного вызова;
-- нет `ContextVar`, глобального `_ORIGINAL_GENERATE_STREAM` или зависимости от import order;
-- Planner, Session Zero, Memory Scribe, Curator и `/DM` используют обычные model providers;
-- retry и truncated continuation остаются ответственностью базового turn orchestrator;
-- validation audit и repair attempts сохраняются в прежних таблицах.
+### 2. `guard_repetition`
 
-## Совместимость
+Candidate сравнивается с недавними published responses текущей сцены. Near-verbatim повтор вызывает одну regeneration попытку. Persisted repetition переводит turn в deterministic presentation fallback.
 
-Прежний большой turn orchestrator перенесён без изменения содержимого в
-`base_turn_runner.py`. Публичный импорт не меняется:
+### 3. deterministic player-agency check
 
-```python
-from app.services.turn_runner import TurnRunner
-```
+В Validator contract дополнительно встраивается deterministic check живых регрессий:
 
-Поэтому `GameApplication`, FastAPI, CLI и будущий frontend продолжают использовать один
-и тот же класс, но его composition теперь видна обычным Python-кодом.
+- direct player speech не может быть переатрибутирована NPC/миру;
+- Narrator не может добавлять новое добровольное действие, решение, мысль или эмоцию protagonist, если соответствующего действия нет в `player_input`.
 
-## Runtime manifest после этапа
+Это не заменяет semantic Validator, а закрывает ошибки, которые не следует оставлять на probabilistic judgement модели.
+
+### 4. `validate_authority`
+
+Control model (`NARRATION_VALIDATOR`, default Qwen) получает compact typed authority и candidate prose.
+
+Validator проверяет:
+
+- player agency;
+- physical presence characters/objects;
+- movement and exits;
+- world-time advance;
+- blocked/skipped sequence steps;
+- ungrounded complications;
+- explicit canon conflicts.
+
+Он **не переписывает state** и не выбирает другой исход.
+
+### 5. `repair_once`
+
+Если verdict `repair_required`, тот же Narrator получает targeted repair prompt с точными violations и rejected candidate. Repair затем проходит Validator повторно.
+
+### 6. deterministic presentation containment
+
+Если Narrator/Validator не смогли получить безопасный художественный текст, `NarrationPublicationGuard` строит player-facing projection уже выполненного authority.
+
+Это сознательный degraded mode: state сохраняется, но prose quality считается failed.
+
+После P0 Narrator recovery fallback не должен публиковать «Пока ничего заметно не меняется», если authority доказывает уже состоявшийся movement или completed observation.
+
+## Validation statuses
+
+В live diagnostics важно различать:
+
+- `passed` — raw draft принят без repair;
+- `repaired` — был repair или deterministic presentation recovery;
+- `failed_open` — Validator был недоступен/сломался, после чего publication guard применил свою policy;
+- `safe_fallback` — pipeline явно вернул deterministic authority projection;
+- `not_invoked` — validation path не был использован для данного типа turn.
+
+Название `failed_open` историческое и не означает «показать сырой draft любой ценой». Publication guard всё равно обязан защищать authority.
+
+## Persisted audit
+
+`NarrationValidator.start_run()` сохраняет `NarrationValidationRun` до проверки. В БД остаются:
+
+- original `draft_text`;
+- validator model;
+- каждый `candidate_text`;
+- verdict;
+- summary;
+- violations;
+- validator telemetry;
+- final text;
+- repair count;
+- failure reason.
+
+То есть raw-vs-repair evidence **уже существует durable**, даже если текущий debugger API показывает его не полностью.
+
+## Telemetry в assistant turn
+
+`turn.context_snapshot.provider_telemetry` содержит Narrator/provider telemetry и вложенный `narration_validation` audit summary. Playtest trace использует это для model name, validation status, repetition guard и latency diagnostics.
+
+## Что не должен делать Narrator pipeline
+
+- менять `Scene`, `Location`, participant set или player location;
+- материализовывать NPC, которого нет в `allowed_new_npcs`;
+- менять Planner resolution;
+- превращать failed repair в новый сюжетный исход;
+- исправлять memory post factum так, чтобы published turn выглядел истинным;
+- скрывать degraded publication под статусом normal model prose.
+
+## Runtime manifest
+
+Текущий `runtime_manifest()` описывает narration pipeline как:
 
 ```text
-guards:
-  - memory_scribe
-  - thesis_lifecycle
-
-narration_pipeline:
-  - generate_draft
-  - validate
-  - repair
-  - publish_accepted
+generate_draft
+→ guard_repetition
+→ validate_authority
+→ repair_once
+→ guard_repetition
+→ contain_presentation_failure
+→ publish_accepted
 ```
 
-`runtime_manifest()` отдельно доказывает, что:
+Оставшиеся compatibility guards перечисляются отдельно в `runtime_manifest().guards`; они не должны замалчиваться в архитектурной документации.
 
-- `LLMProvider.generate_stream` не заменён;
-- `BaseTurnRunner.run_turn_stream` не заменён;
-- публичный `TurnRunner` явно оборачивает базовый orchestrator;
-- CLI и FastAPI получают одинаковую композицию.
+## Quality acceptance
 
-## Следующий этап
+Authority correctness недостаточна для playable RPG. Live Narrator tests дополнительно оценивают:
 
-После живого CLI-прогона можно переходить к транзакционной границе:
+- локальную и глобальную связность;
+- continuity с предыдущими ходами;
+- художественную конкретность;
+- атмосферу без generic purple prose;
+- вариативность языка;
+- естественность русского текста;
+- драматургическую функцию;
+- количество `safe_fallback` и repairs.
 
-1. определить владельца commit/rollback игрового хода;
-2. отделить durable post-turn jobs от основной turn transaction;
-3. затем разделить `BaseTurnRunner` на явные стадии Turn Saga.
+Raw draft и published response следует оценивать отдельно, чтобы не обвинять Narrator в деградации, созданной Validator/repair/publication pipeline.
