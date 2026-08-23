@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -48,6 +49,11 @@ def _decision(message: str):
 
 def _passed() -> NarrationValidationResult:
     return NarrationValidationResult(verdict="pass", summary="ok", violations=[])
+
+
+def _snapshot(turn) -> dict:
+    value = turn.context_snapshot
+    return json.loads(value) if isinstance(value, str) else value
 
 
 async def _opening_stream(*args, **kwargs):
@@ -141,7 +147,7 @@ async def test_finalize_persists_one_system_owned_validated_opening_assistant_tu
     assert "Ночь легла на окраину Эшфорда" in opening.content
     assert len(opening.content) > 700
     assert "Что вы делаете дальше?" not in opening.content
-    telemetry = opening.context_snapshot["provider_telemetry"]
+    telemetry = _snapshot(opening)["provider_telemetry"]
     assert telemetry["opening_validation"]["status"] == "passed"
     assert telemetry["opening_raw_draft"] == opening.content
 
@@ -165,12 +171,17 @@ async def test_opening_surgically_removes_player_internal_state_before_persisten
 
     bad_sentence = "Вы понимаете, что отсюда нельзя уходить."
     raw = (
-        "Ночь на окраине Эшфорда холодна и тиха. Влажная земля темнеет под редкими огнями. "
-        "Шатёр директора выделяется среди временных строений. Изнутри пробивается тусклый свет. "
+        "Ночь на окраине Эшфорда холодна и тиха. Влажная земля темнеет под редкими огнями, "
+        "а между временными строениями остаются узкие полосы сырой травы. "
+        "Шатёр директора выделяется среди навесов плотной тёмной тканью; изнутри пробивается "
+        "ровный тусклый свет. У входа закреплены обычные растяжки, и ветер едва шевелит полотно. "
         f"{bad_sentence} "
         "Странные гости уже находятся внутри шатра, и именно их появление нарушило обычный порядок. "
-        "Никаких других людей поблизости не видно; внимание этой ночи собрано вокруг одного места."
+        "Дальше вдоль окраины видны только знакомые временные строения и редкие фонари; новых фигур "
+        "или движения между ними не заметно. Слышен сухой шорох ткани и равномерный ветер, но сама "
+        "стартовая ситуация остаётся сосредоточена на шатре директора."
     )
+    assert len(raw) > 600
 
     async def raw_stream(*args, **kwargs):
         yield raw
@@ -213,7 +224,7 @@ async def test_opening_surgically_removes_player_internal_state_before_persisten
     assert bad_sentence not in opening.content
     assert "Странные гости уже находятся внутри шатра" in opening.content
     assert len(opening.content) > len(raw) * 0.6
-    telemetry = opening.context_snapshot["provider_telemetry"]
+    telemetry = _snapshot(opening)["provider_telemetry"]
     assert telemetry["opening_validation"]["status"] == "repaired"
     assert telemetry["opening_validation"]["repair_strategy"] == "deterministic_span_removal"
     assert telemetry["opening_raw_draft"] == raw
