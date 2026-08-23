@@ -12,6 +12,17 @@ export interface VisualAsset {
   generated?: boolean
 }
 
+export interface GalleryAsset {
+  id: UUID
+  kind: string
+  url: string
+  prompt?: string | null
+  seed?: number | null
+  scene_id?: UUID | null
+  created_at: string
+  metadata: Record<string, unknown>
+}
+
 export interface VisualStatus {
   enabled: boolean
   connected: boolean
@@ -45,6 +56,13 @@ async function requestVisualStatus(): Promise<VisualStatus> {
   return response.json() as Promise<VisualStatus>
 }
 
+async function requestGallery(campaignId: UUID): Promise<GalleryAsset[]> {
+  const response = await fetch(`${API_BASE}/api/campaigns/${campaignId}/visuals/gallery`)
+  if (!response.ok) throw new Error(`Gallery request failed: HTTP ${response.status}`)
+  const result = await response.json() as GalleryAsset[]
+  return result.map((asset) => ({ ...asset, url: absoluteVisualUrl(asset.url) }))
+}
+
 export function absoluteVisualUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path
   return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
@@ -61,6 +79,9 @@ export const visualUrls = {
 
 export const visualApi = {
   status: requestVisualStatus,
+  gallery: requestGallery,
+  getCampaignCover: (campaignId: UUID) =>
+    requestVisual(`/api/campaigns/${campaignId}/visuals/cover`),
   generateCharacterPortrait: (characterId: UUID) =>
     requestVisual(`/api/characters/${characterId}/visuals/portrait?force=true`, {
       method: 'POST',
@@ -81,8 +102,12 @@ export const visualApi = {
         `ComfyUI не отвечает на ${status.base_url}. Перезапусти PersonalDM через play.bat и проверь image setup в окне запуска.`,
       )
     }
-    return requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {
+    const result = await requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {
       method: 'POST',
     })
+    window.dispatchEvent(new CustomEvent('personaldm:visual-generated', {
+      detail: { url: result.url, kind: result.kind },
+    }))
+    return result
   },
 }

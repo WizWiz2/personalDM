@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import type { Campaign } from '../api/types'
-import { visualUrls } from '../api/visuals'
+import { visualApi, visualUrls } from '../api/visuals'
 import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { Icons } from '../components/Icons'
 import { PixelScene } from '../components/PixelArt'
@@ -21,6 +21,7 @@ function relativeUpdated(value: string) {
 export function CampaignLibraryPage() {
   const navigate = useNavigate()
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [coverVersions, setCoverVersions] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [modal, setModal] = useState(false)
@@ -43,7 +44,54 @@ export function CampaignLibraryPage() {
 
   useEffect(() => { void load() }, [])
 
+  const campaignIds = campaigns.map((campaign) => campaign.id).join('|')
+  useEffect(() => {
+    if (!campaigns.length) return
+    let active = true
+    let timer: number | undefined
+    let attempt = 0
+
+    const checkCovers = async () => {
+      attempt += 1
+      const results = await Promise.all(campaigns.map(async (campaign) => {
+        try {
+          return [campaign.id, await visualApi.getCampaignCover(campaign.id)] as const
+        } catch {
+          return [campaign.id, null] as const
+        }
+      }))
+      if (!active) return
+
+      let waiting = false
+      const now = Date.now()
+      setCoverVersions((current) => {
+        const next = { ...current }
+        for (const [campaignId, cover] of results) {
+          if (cover?.available) next[campaignId] = now
+          else waiting = true
+        }
+        return next
+      })
+
+      // A cold local image runtime can need tens of seconds before the first cover is
+      // written. Keep a bounded, cheap status poll long enough to replace the fallback.
+      if (waiting && attempt < 45) {
+        timer = window.setTimeout(() => { void checkCovers() }, 2000)
+      }
+    }
+
+    void checkCovers()
+    return () => {
+      active = false
+      if (timer) window.clearTimeout(timer)
+    }
+  }, [campaignIds])
+
   const recent = useMemo(() => campaigns.slice(0, 2), [campaigns])
+  const coverSrc = (campaign: Campaign) => {
+    const version = coverVersions[campaign.id] ?? new Date(campaign.updated_at).getTime()
+    return `${visualUrls.campaignCover(campaign.id)}?v=${version}`
+  }
 
   const openCampaign = async (campaign: Campaign) => {
     try {
@@ -98,7 +146,7 @@ export function CampaignLibraryPage() {
                 {recent.map((campaign) => {
                   const fallback = <PixelScene seed={campaign.name} compact />
                   return <button key={campaign.id} className="recent-campaign" onClick={() => void openCampaign(campaign)}>
-                    <div className="recent-thumb"><GeneratedPixelArt src={visualUrls.campaignCover(campaign.id)} alt={`Обложка ${campaign.name}`} fallback={fallback} /></div>
+                    <div className="recent-thumb"><GeneratedPixelArt src={coverSrc(campaign)} alt={`Обложка ${campaign.name}`} fallback={fallback} /></div>
                     <div className="recent-copy">
                       <strong>{campaign.name}</strong>
                       <span>{campaign.description || (campaign.current_scene_id ? 'Кампания продолжается' : 'Подготовка кампании')}</span>
@@ -114,7 +162,7 @@ export function CampaignLibraryPage() {
               <div className="campaign-grid">
                 {campaigns.map((campaign) => (
                   <article className="campaign-card" key={campaign.id}>
-                    <div className="campaign-cover"><GeneratedPixelArt src={visualUrls.campaignCover(campaign.id)} alt={`Обложка ${campaign.name}`} fallback={<PixelScene seed={campaign.name} />} /></div>
+                    <div className="campaign-cover"><GeneratedPixelArt src={coverSrc(campaign)} alt={`Обложка ${campaign.name}`} fallback={<PixelScene seed={campaign.name} />} /></div>
                     <div className="campaign-card-body">
                       <span className="eyebrow">{campaign.current_scene_id ? 'Активная' : 'Подготовка'}</span>
                       <h3>{campaign.name}</h3>

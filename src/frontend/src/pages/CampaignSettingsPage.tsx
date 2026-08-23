@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { api, ApiError, readableError } from '../api/client'
 import type { ProviderConfig } from '../api/types'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
@@ -7,6 +8,7 @@ import { ErrorState } from '../components/States'
 
 export function CampaignSettingsPage() {
   const { campaign, refreshCampaign } = useCampaignWorkspace()
+  const navigate = useNavigate()
   const [name, setName] = useState(campaign.name)
   const [description, setDescription] = useState(campaign.description ?? '')
   const [style, setStyle] = useState(campaign.narrative_style ?? '')
@@ -55,7 +57,7 @@ export function CampaignSettingsPage() {
         <form className="settings-section" onSubmit={saveCampaign}><span className="eyebrow">Основное</span><h2>{campaign.name}</h2><label>Название<input value={name} onChange={(e) => setName(e.target.value)} /></label><label>Описание<textarea rows={4} value={description} onChange={(e) => setDescription(e.target.value)} /></label><label>Стиль повествования<textarea rows={3} value={style} onChange={(e) => setStyle(e.target.value)} /></label><button className="btn primary">Сохранить</button></form>
         <form className="settings-section" onSubmit={saveProvider}><span className="eyebrow">Мастер</span><h2>LLM Provider</h2><label>Base URL<input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} /></label><label>Модель<input value={model} onChange={(e) => setModel(e.target.value)} placeholder="qwen2.5:7b" /></label><label>Контекст<input type="number" min={1024} step={1024} value={contextWindow} onChange={(e) => setContextWindow(Number(e.target.value))} /></label><label>API key<input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={provider?.has_api_key ? '•••••••• (оставь пустым, чтобы не менять)' : 'необязательно'} /></label><div className="settings-actions"><button className="btn primary">Сохранить</button><button className="btn" type="button" onClick={() => void check()}><Icons.refresh />Проверить</button></div>{connected !== null && <div className={connected ? 'connection-ok' : 'connection-bad'}>{connected ? '● Подключено' : '● Нет соединения'}</div>}</form>
         <section className="settings-section"><span className="eyebrow">Состояние</span><h2>Campaign Truth Engine</h2><div className="settings-row"><span>Текущая сцена</span><strong>{campaign.current_scene_id ? 'есть' : 'не создана'}</strong></div><div className="settings-row"><span>Герой</span><strong>{campaign.player_character_id ? 'привязан' : 'не выбран'}</strong></div><div className="settings-row"><span>Обновлено</span><strong>{new Date(campaign.updated_at).toLocaleString('ru-RU')}</strong></div></section>
-        <section className="settings-section"><span className="eyebrow">Иллюстрации</span><h2>Scene Art</h2><p>Фронтенд уже резервирует место для обложек, портретов и иллюстраций сцен. ImageProvider будет отдельным следующим scope.</p><button className="btn" disabled>Настроить генератор</button></section>
+        <section className="settings-section"><span className="eyebrow">Иллюстрации</span><h2>Локальный арт</h2><p>Обложка кампании и портрет героя создаются после нулевой сессии. Сгенерированные вручную сцены сохраняются отдельными версиями и доступны в галерее.</p><button className="btn" type="button" onClick={() => navigate(`/campaign/${campaign.id}/gallery`)}><Icons.gallery />Открыть галерею</button></section>
       </div>
     </div>
   </div>
