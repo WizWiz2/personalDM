@@ -69,8 +69,20 @@ export const visualApi = {
     requestVisual(`/api/campaigns/${campaignId}/visuals/cover?force=true`, {
       method: 'POST',
     }),
-  generateScene: (campaignId: UUID, sceneId: UUID) =>
-    requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {
+  generateScene: async (campaignId: UUID, sceneId: UUID) => {
+    const status = await requestVisualStatus()
+    if (!status.enabled) {
+      throw new Error(
+        'Локальная генерация изображений выключена в запущенном backend. Перезапусти PersonalDM через play.bat.',
+      )
+    }
+    if (!status.connected) {
+      throw new Error(
+        `ComfyUI не отвечает на ${status.base_url}. Перезапусти PersonalDM через play.bat и проверь image setup в окне запуска.`,
+      )
+    }
+    return requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {
       method: 'POST',
-    }),
+    })
+  },
 }
