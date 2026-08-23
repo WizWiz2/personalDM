@@ -22,7 +22,7 @@
 ## Документация
 
 1. [`docs/product-foundation.md`](docs/product-foundation.md) — продуктовые принципы и границы.
-2. [`docs/MVP-SPEC.md`](docs/MVP-SPEC.md) — исходный MVP-контракт; исторические детали могут быть superseded принятыми ADR и текущим runtime.
+2. [`docs/MVP-SPEC.md`](docs/MVP-SPEC.md) — текущий проверяемый vertical slice и Definition of Playable.
 3. [`docs/runtime-transparency.md`](docs/runtime-transparency.md) — **как реально проходит ход сейчас, кто владеет каждым решением и где лежит доказательство**.
 4. [`docs/model-role-routing.md`](docs/model-role-routing.md) — какие модели обслуживают Narrator/control-plane роли.
 5. [`docs/architecture/interagent-turn-authority.md`](docs/architecture/interagent-turn-authority.md) — typed authority contract.
