@@ -1,18 +1,47 @@
 # personalDM
 
-Локальный AI-мастер для продолжительных кампаний в настольных ролевых играх.
+Локальный AI-мастер для продолжительных systemless narrative RPG-кампаний.
 
-Ядро продукта — **Campaign Truth Engine**, движок истины кампании. Он отделяет канон от сгенерированной прозы, ограничивает знания каждого NPC доступной ему информацией и позволяет просматривать и исправлять важные записи памяти.
+Ядро продукта — **Campaign Truth Engine**. LLM пишет прозу, но не является источником истины: структурный runtime хранит сцену, положение персонажей, канон, знания NPC, причинность хода и происхождение памяти отдельно от художественного текста.
+
+## Что уже работает
+
+- разговорная Session Zero вместо анкеты;
+- автоматический handoff Session Zero → первая активная сцена;
+- большой system-owned opening post без пользовательского «Начинаем»;
+- typed `TurnAuthority` между Planner, deterministic executors, Narrator и Validator;
+- fail-closed spatial/agency boundaries: Narrator не может сам перемещать героя, телепортировать NPC или материализовать неразрешённого персонажа;
+- actor-scoped контекст для NPC, чтобы не передавать им недоступные знания;
+- durable журнал ходов, undo, generation runs и фоновые post-turn jobs;
+- Campaign Debugger, causal playtest trace и memory operations;
+- локальная генерация портретов, обложки кампании и сцен через ComfyUI;
+- React/Vite GUI и CLI поверх одного `GameApplication` и одного runtime pipeline.
+
+Текущий продукт сознательно **не является CRPG rules engine**: характеристики, HP, уровни, броски и конкретные настольные системы не считаются частью core, пока отдельный rules layer не появится осознанно.
 
 ## Документация
 
-1. [`docs/product-foundation.md`](docs/product-foundation.md) — каноническое видение продукта и приоритеты.
-2. [`docs/MVP-SPEC.md`](docs/MVP-SPEC.md) — реализуемый первый вертикальный срез.
-3. [`docs/README.md`](docs/README.md) — карта документов и порядок их приоритета.
-4. [`docs/adr/`](docs/adr/) — принятые и предлагаемые архитектурные решения.
-5. [`docs/amendments/`](docs/amendments/) — исследовательские дополнения, которые не становятся нормативными автоматически.
+1. [`docs/product-foundation.md`](docs/product-foundation.md) — продуктовые принципы и границы.
+2. [`docs/MVP-SPEC.md`](docs/MVP-SPEC.md) — текущий проверяемый vertical slice и Definition of Playable.
+3. [`docs/runtime-transparency.md`](docs/runtime-transparency.md) — **как реально проходит ход сейчас, кто владеет каждым решением и где лежит доказательство**.
+4. [`docs/model-role-routing.md`](docs/model-role-routing.md) — какие модели обслуживают Narrator/control-plane роли.
+5. [`docs/architecture/interagent-turn-authority.md`](docs/architecture/interagent-turn-authority.md) — typed authority contract.
+6. [`docs/architecture/narration-pipeline.md`](docs/architecture/narration-pipeline.md) — текущий Narrator → Validator → repair/fallback pipeline.
+7. [`docs/README.md`](docs/README.md) — карта документов и их приоритет.
+8. [`docs/adr/`](docs/adr/) — принятые и предлагаемые архитектурные решения.
 
-**Принцип поставки:** сначала память и тезисы сцены; сразу после базового цикла памяти — минимальный слой изображений и музыки; сложная проверка непротиворечивости и продвинутая медиарежиссура появляются позже.
+Если документация и runtime расходятся, для диагностики текущей сборки приоритет имеют `runtime_manifest()`, persisted turn evidence и код `main`. Смысл этого правила — не скрывать дрейф документации за красивой схемой.
+
+## Модели по умолчанию
+
+Локальная конфигурация разделяет художественную и control-plane работу:
+
+- **Gemma `gemma4:e4b`** — Narrator, Session Zero, `/DM` / game-master dialogue и Character Builder без отдельного override;
+- **Qwen `qwen2.5:7b`** — Planner, Narration Validator, Entity Registrar, Memory Scribe, Curator, Evaluator, Scenario Builder и structured repair.
+
+Control-plane роли не должны молча переключаться на Narrator при schema/provider failure: лучше получить диагностируемый conservative fallback, чем изменить семантику хода другой моделью.
+
+Подробности: [`docs/model-role-routing.md`](docs/model-role-routing.md).
 
 ## Запуск
 
@@ -22,17 +51,15 @@
 play.bat
 ```
 
-Launcher сам готовит Python-окружение и LLM, а затем показывает интерактивное меню со стрелками:
+Launcher готовит Python-окружение, локальные LLM и при включённой графике ComfyUI assets, затем предлагает режим запуска:
 
-- **GUI** — поднимает FastAPI и React/Vite, ждёт готовности обоих сервисов и открывает `http://127.0.0.1:5173` в браузере;
-- **CLI** — запускает терминальную версию с выбором кампаний и служебных действий стрелками;
-- **Выход** — завершает launcher.
+- **GUI** — FastAPI + React/Vite, пользовательский основной путь;
+- **CLI** — терминальный клиент поверх того же application/runtime слоя;
+- **Выход**.
 
-В интерактивных меню используются `↑/↓` и `Enter`. Свободный текст — игровые действия, реплики, названия, URL и ключи API — по-прежнему вводится с клавиатуры. Старый `src/backend/cli.py` сохранён как совместимый low-level entry point; `play.bat` использует новый `cli_tui.py`.
+Для GUI нужен Node.js с npm. При первом запуске launcher выполняет установку frontend dependencies.
 
-Для GUI нужен установленный Node.js с npm. При первом GUI-запуске launcher сам выполнит `npm install`.
-
-Ручной запуск frontend/backend по-прежнему возможен:
+Ручной запуск:
 
 ```bash
 # backend
@@ -45,15 +72,75 @@ npm install
 npm run dev
 ```
 
-Vite запускается на `http://localhost:5173` и проксирует `/api` и `/health` на `http://127.0.0.1:8000`. Для прямого подключения (например, будущий Tauri shell) можно задать `VITE_API_BASE_URL`.
+Vite работает на `http://localhost:5173` и проксирует `/api` и `/health` на `http://127.0.0.1:8000`.
 
-## Frontend
+## Session Zero → игра
 
-Первый пользовательский интерфейс находится в `src/frontend` и следует двухуровневой навигации: глобальная библиотека кампаний и workspace выбранной кампании.
+GUI и CLI используют один `SessionZeroInterviewService`. Агент скрыто поддерживает структурированный draft мира и героя, но разговор остаётся свободным.
 
-Нулевая сессия в GUI использует тот же разговорный `SessionZeroInterviewService`, что и CLI: игрок свободно разговаривает с мастером, а структурированный черновик мира и героя обновляется скрыто и показывается только как живое превью. Старый `/api/session-zero-ui` остаётся служебным редактором и не используется в пользовательском потоке.
+Когда информации достаточно:
 
-Текущие сознательные ограничения frontend:
+1. Session Zero выдаёт terminal message **без нового вопроса**;
+2. backend материализует героя, стартовую Location и Scene;
+3. Narrator автоматически пишет первый большой opening post;
+4. opening сохраняется как обычный `assistant` turn стартовой Scene;
+5. игровой экран открывается уже с начавшейся сценой — писать «Начинаем» не требуется.
 
-- Player View мира показывает только безопасный минимум из текущей сцены, открытых выходов и фактов `visibility=player`;
-- генерация изображений обозначена в UI, но `ImageProvider` ещё не подключён.
+Повторный finalize idempotent и не должен создавать второй opening.
+
+## Narrator и authority
+
+Обычный narrative turn проходит через:
+
+```text
+user input
+→ ContextCompiler
+→ TurnAuthorityPlanner
+→ deterministic structured execution
+→ TurnAuthority
+→ Narrator draft
+→ repetition/agency guards
+→ Narration Validator
+→ optional Narrator repair
+→ publication guard / deterministic fallback
+→ materialization + commit
+→ background memory jobs
+```
+
+Главный принцип: **Planner/engine владеют исходом, Narrator владеет только формой**. Если проза противоречит уже выполненному structured outcome, исправляется проза, а не состояние мира.
+
+## Debugging и прозрачность
+
+Полный debugger snapshot:
+
+```text
+GET /api/campaigns/{campaign_id}/debugger
+```
+
+Causal trace одного опубликованного ответа:
+
+```text
+GET /api/campaigns/{campaign_id}/debugger/turns/{assistant_turn_id}
+```
+
+Flight recorder кампании:
+
+```text
+GET /api/campaigns/{campaign_id}/debugger/trace
+```
+
+Локальная HTML-панель:
+
+```text
+/api/debugger
+```
+
+Trace помогает отделить первый неправильный boundary от последующего каскада: routing → Planner → authority → transition/action sequence → Narrator/Validator → materialization → memory.
+
+Подробный список того, что уже прозрачно, а чего **ещё не хватает**, находится в [`docs/runtime-transparency.md`](docs/runtime-transparency.md).
+
+## Изображения
+
+ComfyUI integration уже подключена. При `IMAGE_ENABLED=true` после Session Zero best-effort/background генерация может создать портрет героя и обложку кампании; портреты новых NPC также могут планироваться фоново. Сцену пользователь может перегенерировать вручную из Play UI.
+
+Визуальная генерация не является authority: её ошибка не должна отменять или изменять игровой ход.

@@ -1,103 +1,132 @@
-# Explicit Context Pipeline
+# Context Pipeline
 
 ## Статус
 
-Это первый этап снятия runtime monkeypatch-слоёв. Он заменяет два глобальных guard:
+Текущий production overview. Исторические этапы снятия старых monkeypatch guards доступны в git history.
 
-- `scene_context_guard.py`;
-- `memory_context_guard.py`.
+`ContextCompiler` собирает ограниченный, auditable prompt для конкретной роли/хода. Он не меняет состояние мира.
 
-Остальные global guards пока сохраняются и будут разобраны отдельными PR.
-
-## Композиция
+## Основная композиция
 
 ```mermaid
 flowchart TD
-    Caller[TurnRunner / MetaCommandRunner]
-    Compiler[ContextCompiler facade]
-    Base[BaseContextCompiler]
-    Scene[SceneStateContextProvider]
-    Texture[NarrativeDetailsContextProvider]
-    Result[Messages + auditable metadata]
+    Caller[TurnSaga / MetaCommandRunner / actor path]
+    Compiler[ContextCompiler]
+    Base[base campaign + session-zero contract]
+    Scene[authoritative scene state]
+    Detail[recent narrative details]
+    Memory[facts / beliefs / theses / cards]
+    History[relevant turn history]
+    Budget[token budget]
+    Manifest[Messages + metadata manifest]
 
     Caller --> Compiler
-    Compiler --> Base
-    Base --> Scene
-    Scene --> Texture
-    Texture --> Result
+    Compiler --> Base --> Scene --> Detail --> Memory --> History --> Budget --> Manifest
 ```
 
-Порядок provider является обычным значением конструктора и проверяется тестом. Он больше
-не зависит от того, какой Python-модуль импортировали первым.
+`runtime_manifest().context_pipeline` является машинно-проверяемым списком ordered providers текущей сборки.
 
-## Ответственность компонентов
+## Authoritative scene state
 
-### `BaseContextCompiler`
+Scene provider добавляет данные, которые Narrator не должен угадывать из prose:
 
-Сохраняет прежнюю сборку:
-
-- system/session-zero contract;
-- текущую сцену и active theses;
-- карточки персонажей;
-- факты и beliefs;
-- историю;
-- token budget и manifest базовых слоёв.
-
-Файл перенесён из прежнего `context_compiler.py` без изменения содержимого.
-
-### `SceneStateContextProvider`
-
-Добавляет:
-
-- authoritative location и location path;
+- current Scene;
+- Scene → Location binding и location path;
 - world time;
-- participant/object IDs;
-- доступные exits и destinations;
+- physically present participant/object IDs;
+- available exits/destinations;
 - scene invariant errors;
-- Scene Bridge для целевой сцены.
+- scene bridge/negative placement, когда применимо.
 
-### `NarrativeDetailsContextProvider`
+Если prose прошлых ходов спорит с authoritative scene state, для нового turn приоритет имеет structured state.
 
-Добавляет краткоживущую фактуру сцены с прежними ограничениями token budget и visibility.
-Эти сведения явно помечаются как transient/non-canon.
+## Memory layers
 
-## Совместимость
+Контекст может включать:
 
-Публичный импорт не изменился:
+- active scene theses;
+- character cards/equipment;
+- facts;
+- actor-scoped beliefs;
+- relationships;
+- recent narrative details;
+- recent history.
 
-```python
-from app.services.context_compiler import ContextCompiler, count_tokens
-```
+Ключевой принцип actor-scoped context: private knowledge другого NPC не передаётся выбранному speaker просто потому, что оно существует в общей кампании.
 
-Поэтому `TurnRunner`, `/DM`, тесты и будущие адаптеры получают явный pipeline без массовой
-перепривязки импортов.
+## Narrative detail
 
-## Runtime manifest
+`narrative_detail` — transient scene texture. Она помогает continuity нескольких ближайших ходов, но не является вечным каноном.
 
-`runtime_manifest()` теперь разделяет:
+Это позволяет помнить, например, что свеча только что погасла или персонаж стоит у окна, не превращая каждую художественную деталь в permanent fact.
 
-- `guards`: оставшиеся глобальные monkeypatch guards;
-- `context_pipeline`: явные ordered providers.
+## Token budget
 
-Ожидаемое состояние после этого этапа:
+Context Compiler обязан оставлять completion reserve и safety margin.
+
+Для обычного Narrator turn после P0 recovery Planner reserve **не вычитается повторно**, потому что Planner уже завершил отдельный structured call.
+
+При default 4096 context window Narrator budget рассчитывается примерно как:
 
 ```text
-guards:
-  - narration_validation
-  - memory_scribe
-  - thesis_lifecycle
-
-context_pipeline:
-  - authoritative_scene_state
-  - recent_narrative_details
+4096
+- 1536 response reserve
+- 5% safety margin
+≈ 2356 context tokens
 ```
 
-## Следующий этап
+Metadata помечает этот режим:
 
-Следующим отдельным PR следует убрать глобальную подмену `LLMProvider.generate_stream` и
-`TurnRunner.run_turn_stream`, заменив её явным `NarrationGenerationPipeline` с этапами:
+```text
+planner_reserve_removed_from_narrator_budget=true
+final_narrator_context_budget=<value>
+```
 
-1. generate draft;
-2. validate;
-3. repair;
-4. publish accepted text.
+Actor/control paths могут иметь другой budget contract.
+
+## Typed authority injection
+
+После Planner/execution `TurnSaga` добавляет Narrator не полный audit state, а compact typed render contract.
+
+Compact payload содержит только необходимые для prose поля, например:
+
+- exact player input;
+- player/acting character;
+- source/target location;
+- present/known-absent characters;
+- allowed new NPCs;
+- resolution/observable consequences;
+- compact action steps;
+- narration guidance.
+
+Полный `TurnAuthority` остаётся persisted evidence, но маленькая creative model не должна тратить context на ненужные audit fields.
+
+## Manifest
+
+Context metadata нужен не только тестам. Он должен позволять ответить:
+
+- какая Scene была authoritative;
+- какой actor был выбран;
+- какие memory layers были включены/исключены;
+- какие IDs реально попали в prompt;
+- какой budget был доступен;
+- были ли invariant warnings.
+
+Именно manifest следует проверять при подозрении на «Narrator забыл факт», прежде чем считать проблему model hallucination.
+
+## `/DM`
+
+`MetaCommandRunner` также использует ContextCompiler, но meta channel read-only. Snapshot передаётся модели как данные, а не как разрешение менять мир.
+
+Важно: debug transparency не означает, что raw authoritative snapshot должен печататься игроку. Player-facing meta response нуждается в отдельной output boundary/sanitization policy.
+
+## Инварианты
+
+- compiler не выполняет `commit` world-state изменений;
+- provider order не зависит от случайного import order;
+- Scene state не выводится только из prose history;
+- actor-scoped private memory фильтруется до LLM;
+- current user message не должен случайно выпадать при budget trimming;
+- final manifest сохраняет достаточно evidence для диагностики.
+
+См. также [`../runtime-transparency.md`](../runtime-transparency.md).

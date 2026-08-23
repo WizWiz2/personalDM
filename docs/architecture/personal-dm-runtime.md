@@ -1,432 +1,358 @@
-# Personal DM: архитектура движка и взаимодействие процессов
+# Personal DM: текущая runtime-архитектура
 
-> Состояние документа: runtime-parity stabilization. CLI сейчас является основным
-> пользовательским клиентом. FastAPI сохраняется как полноценный адаптер для будущего
-> фронтенда. Оба используют один `GameApplication` и один runtime pipeline.
+**Статус:** current production overview  
+**Дата:** 24 августа 2026
 
-## 1. Главная идея системы
+Этот документ описывает текущий runtime крупными блоками. Детальная причинная карта и observability gaps находятся в [`../runtime-transparency.md`](../runtime-transparency.md).
 
-Personal DM состоит из трёх логических частей:
+## 1. Клиенты и application boundary
 
-1. **Клиенты** принимают команды пользователя и отображают результат.
-2. **Application layer** решает, какой единый сценарий приложения выполнить.
-3. **Domain/runtime layer** генерирует прозу, изменяет структурный мир и обслуживает память.
-
-Клиент не должен самостоятельно выбирать сервисы, менять таблицы или управлять
-транзакциями игрового хода.
+React/Vite GUI и CLI используют один `GameApplication` и один runtime. FastAPI — production adapter для GUI, а не отдельная версия движка.
 
 ```mermaid
 flowchart LR
     Player[Игрок]
+    GUI[React/Vite GUI]
+    CLI[CLI]
+    API[FastAPI]
+    App[GameApplication]
+    Runtime[install_runtime]
+    DB[(SQLite)]
 
-    subgraph Adapters[Клиентские адаптеры]
-        CLI[CLI — основной клиент сейчас]
-        API[FastAPI]
-        UI[Будущий web/Tauri frontend]
-    end
-
-    Runtime[install_runtime\nединая композиция guard-слоёв]
-    App[GameApplication\nединая application boundary]
-
-    subgraph Commands[Маршрутизация операций]
-        Narrative[Игровой ход]
-        Meta[/DM и /OOC]
-        Undo[Undo]
-        Admin[Сцены, NPC, участники]
-        Retry[Retry post-turn]
-    end
-
-    subgraph Engine[Движок]
-        Turn[Turn pipeline]
-        Context[Context compiler]
-        Scene[Scene lifecycle]
-        Memory[Memory pipeline]
-        Models[Role model router / LLM]
-    end
-
-    DB[(SQLite / SQLAlchemy)]
-
-    Player --> CLI
-    Player --> UI
-    UI --> API
-    CLI --> App
-    API --> App
+    Player --> GUI --> API --> App
+    Player --> CLI --> App
     App --> Runtime
-    App --> Narrative
-    App --> Meta
-    App --> Undo
-    App --> Admin
-    App --> Retry
-    Narrative --> Turn
-    Turn --> Context
-    Turn --> Scene
-    Turn --> Models
-    Turn --> Memory
-    Meta --> Context
-    Meta --> Models
-    Undo --> Scene
-    Admin --> Scene
-    Retry --> Memory
-    Turn --> DB
-    Scene --> DB
-    Memory --> DB
-    Context --> DB
+    App --> DB
 ```
 
-### Важный инвариант
+Клиент не должен сам менять Scene/Location/participants или обходить use-case boundary.
 
-Одинаковая команда с одинаковым состоянием кампании должна вызвать одинаковый pipeline
-через CLI, FastAPI и будущий frontend. Разница допускается только в форматировании ввода
-и вывода.
+## 2. Runtime bootstrap
 
-## 2. Единый runtime bootstrap
+`app.runtime.install_runtime()` устанавливает оставшиеся compatibility guards ровно один раз.
 
-`app.runtime.install_runtime()` устанавливает полный набор runtime-расширений ровно один
-раз независимо от entrypoint:
+Текущий список берётся из `runtime_manifest().guards` и на момент этой версии включает:
 
-```mermaid
-flowchart TD
-    Entry[CLI / FastAPI / test harness]
-    Bootstrap[install_runtime]
-    SceneGuard[Scene Context Guard\nscene state + bridge]
-    MemoryGuard[Memory Context Guard\ntransient narrative details]
-    ValidationGuard[Narration Validation Guard\nbuffer + validate + repair]
-    ScribeGuard[Memory Scribe Guard\nnormalization + canon gaps]
-    ThesisGuard[Thesis Lifecycle Guard\nreinforcement + expiry]
-    Ready[Runtime ready]
-
-    Entry --> Bootstrap
-    Bootstrap --> SceneGuard
-    SceneGuard --> MemoryGuard
-    MemoryGuard --> ValidationGuard
-    ValidationGuard --> ScribeGuard
-    ScribeGuard --> ThesisGuard
-    ThesisGuard --> Ready
+```text
+actor_turn_authority
+actor_memory_observability
+systemless_authority
+round33_identity
+round34_live
+mixed_actor_response
+memory_scribe
+narrator_quality_recovery
+narration_failure_containment
+session_zero_finalize
+thesis_lifecycle
 ```
 
-До стабилизации эти guard-слои включались побочным эффектом импорта `app.main`, поэтому
-CLI мог работать без части движка. Теперь bootstrap вызывается через общий application
-layer и напрямую каждым production entrypoint.
+Часть архитектуры уже является явной composition (`ContextCompiler`, `TurnSaga`, `AuthorityNarrationPipeline`), но guard proliferation остаётся техническим долгом. Документация не должна делать вид, что этих monkeypatch boundaries нет.
 
-## 3. Нулевая сессия
+## 3. Session Zero
 
-Нулевая сессия — отдельный setup-процесс. До её завершения narrative turn запрещён.
+Session Zero — свободный разговор с primary model, которая возвращает structured decision/patch через schema-constrained вызов.
 
 ```mermaid
 sequenceDiagram
-    actor P as Игрок
-    participant C as CLI / frontend
-    participant I as SessionZeroInterviewService
-    participant R as RoleModelRouter
-    participant L as Setup LLM
+    actor P as Player
+    participant UI as GUI/CLI
+    participant SZ as SessionZeroInterviewService
+    participant L as SESSION_ZERO model
     participant S as SessionZeroService
-    participant D as SQLite
+    participant O as Opening Narrator
+    participant DB as SQLite
 
-    P->>C: Свободный ответ о желаемой игре
-    C->>I: answer(campaign, text)
-    I->>D: Сохранить pending user message
-    I->>R: Выбрать SESSION_ZERO модель
-    R->>L: Структурированный запрос
-    L-->>I: Следующий вопрос + обновлённый draft
-    I->>D: Сохранить историю и draft
-    I-->>C: Реплика мастера / готовность
-    C-->>P: Показать следующий вопрос
-
-    P->>C: Подтвердить итог
-    C->>I: finalize()
-    I->>S: update + complete
-    S->>D: Герой, локация, сцена, контракт
-    S-->>C: SessionZeroCompletion
+    P->>UI: свободный ответ
+    UI->>SZ: answer()
+    SZ->>DB: persist pending/draft/history
+    SZ->>L: structured request
+    L-->>SZ: message + patch + optional finalize
+    SZ->>DB: persist decision
+    alt ready_to_finalize
+      SZ->>S: materialize hero/location/scene
+      S->>DB: commit playable start
+      SZ->>O: generate opening
+      O-->>SZ: opening prose or grounded fallback
+      SZ->>DB: persist system-owned assistant opening
+    end
 ```
 
-### Что хранится после завершения
+### Handoff invariants
 
-- договорённости о мире, жанре, тоне и границах;
-- карточка героя;
-- начальная локация;
-- первая активная сцена;
-- стартовый pinned thesis;
-- session-zero contract в system instructions.
+- final Session Zero reply не задаёт новый вопрос;
+- narrative turn запрещён до completed setup;
+- opening создаётся автоматически;
+- opening имеет `parent_turn_id=null` и привязан к первой Scene;
+- repeated finalize не создаёт duplicate opening;
+- visual generation после setup best-effort и не блокирует playable state.
 
-## 4. Маршрутизация пользовательского ввода
+## 4. Input routing
 
-`GameApplication.route_input()` первым делом отличает meta-команду от игрового хода.
+`GameApplication.route_input()` различает:
 
-```mermaid
-flowchart TD
-    Input[Текст пользователя]
-    Parse{Начинается с /DM или /OOC?}
-    Meta[MetaCommandRunner]
-    Setup{Session zero завершена?}
-    Scene{Есть валидная current scene?}
-    Turn[TurnRunner]
-    Error[Понятная application error]
+- narrative action/dialogue;
+- `/DM` / `/OOC` meta channel;
+- actor-scoped talk mode.
 
-    Input --> Parse
-    Parse -- Да --> Meta
-    Parse -- Нет --> Setup
-    Setup -- Нет --> Error
-    Setup -- Да --> Scene
-    Scene -- Нет --> Error
-    Scene -- Да --> Turn
-```
+Meta path read-only и не запускает normal Planner/scene transition/memory mutation pipeline.
 
-Meta-команда выполняется до session-zero gate и не запускает Planner, scene transition,
-Memory Scribe или Curator. Она читает состояние кампании, но не меняет канон.
-
-## 5. Narrative turn pipeline
-
-Игровой ход — наиболее сложный процесс системы.
+## 5. Narrative Turn Saga
 
 ```mermaid
 sequenceDiagram
-    actor P as Игрок
+    actor P as Player
     participant A as GameApplication
-    participant T as TurnRunner
+    participant T as TurnSaga
     participant C as ContextCompiler
-    participant Pl as TurnPlanner
-    participant S as SceneTransition / ActionSequence
-    participant N as Narrator LLM
-    participant V as NarrationValidator
+    participant Pl as TurnAuthorityPlanner
+    participant E as Deterministic Executors
+    participant N as Narrator
+    participant V as Authority Validator
+    participant M as Materializer
     participant DB as SQLite
-    participant PT as PostTurnProcessor
+    participant PT as PostTurn jobs
 
-    P->>A: Игровое действие
-    A->>A: Bind authoritative current scene
-    A->>T: run_turn_stream
-    T->>DB: Создать user turn + generation run
-    T->>C: Собрать контекст
-    C->>DB: Сцена, NPC, facts, beliefs, theses, history
-    C-->>T: Messages + context manifest
-    T->>Pl: План хода
-    Pl-->>T: Outcome, action sequence, transition, policy
-    T->>S: Prepare structured consequences
-    S->>DB: Prepared transition / sequence
-    T->>N: Генерация прозы
-    N-->>V: Буфер кандидата до публикации
-    V->>V: Проверка пространства, времени, agency и канона
-    alt Текст валиден
-        V-->>T: Accepted prose
-    else Нужен repair
-        V->>N: Repair prompt с точными violations
-        N-->>V: Исправленный текст
-        V-->>T: Accepted or rejected
+    P->>A: user input
+    A->>T: narrative turn
+    T->>DB: persist user turn/generation run
+    T->>C: compile context
+    C-->>T: messages + manifest
+    T->>Pl: structured plan
+    Pl-->>T: resolution/action sequence/transitions/NPC introductions
+    T->>E: execute structured boundaries
+    E-->>T: executed state
+    T->>T: build TurnAuthority
+    T->>N: context + compact authority
+    N-->>T: raw draft
+    T->>V: validate authority
+    alt pass
+      V-->>T: accepted
+    else repair
+      T->>N: targeted repair
+      N-->>T: repaired draft
+      T->>V: validate again
+    else presentation failure
+      T->>T: deterministic authority projection
     end
-    T-->>P: Только принятая проза
-    T->>DB: Assistant turn + finalize structured transition
-    T->>PT: Enqueue post-turn jobs
-    PT->>DB: Durable job records
+    T->>M: materialize allowed structured outcomes
+    T->>DB: persist assistant turn + commit
+    T->>PT: enqueue background memory jobs
 ```
 
-### Основные свойства
+## 6. TurnAuthority
 
-- пользовательский текст сохраняется до внешнего вызова модели;
-- narration validator буферизует ответ до проверки;
-- переход сцены сначала имеет состояние `prepared`;
-- при отказе генерации prepared-переход компенсируется;
-- ответ и generation audit сохраняются до фоновой памяти;
-- сбой Scribe не уничтожает уже показанный ход.
+Один typed `TurnAuthority` — handoff между semantic control plane и presentation layer.
 
-## 6. Сборка контекста
+Он содержит enough evidence для Narrator/Validator:
 
-Контекст модели собирается слоями с token budget и manifest.
+- exact player input;
+- player/acting character identity;
+- scene disposition;
+- source/target location;
+- present/known-absent characters;
+- allowed new NPC introductions;
+- action sequence;
+- resolution/observable consequences;
+- narration constraints/guidance.
 
-```mermaid
-flowchart TD
-    Base[System instructions\nSession-zero contract]
-    Scene[Authoritative scene state\nlocation, time, participants, exits]
-    Bridge[Scene bridge\ncarried goals and negative placement]
-    Texture[Recent narrative details\ntransient, non-canon]
-    Theses[Active scene theses]
-    Cards[Character cards and equipment]
-    Facts[World canon / entity state / scene state]
-    Beliefs[Private beliefs by visibility]
-    History[Recent relevant turns]
-    User[Current user message]
-    Budget{Влезает в token budget?}
-    Prompt[Final model messages + manifest]
+### Ownership
 
-    Base --> Budget
-    Scene --> Budget
-    Bridge --> Budget
-    Texture --> Budget
-    Theses --> Budget
-    Cards --> Budget
-    Facts --> Budget
-    Beliefs --> Budget
-    History --> Budget
-    User --> Budget
-    Budget --> Prompt
+| Concern | Owner |
+|---|---|
+| voluntary protagonist action/dialogue | human player |
+| intended resolution | Planner |
+| movement/Scene/Location | deterministic executors |
+| participant set | Scene state |
+| allowed new NPC | Planner + deterministic materializer |
+| prose/style | Narrator |
+| prose acceptance/repair | Validator + deterministic guards |
+| long-term memory extraction | post-turn pipeline |
+
+## 7. ContextCompiler
+
+Compiler собирает:
+
+- system/session-zero contract;
+- authoritative Scene/Location/time/participants/exits;
+- active theses;
+- actor-scoped cards/facts/beliefs/relationships;
+- transient narrative details;
+- relevant history;
+- current input;
+- auditable token-budget metadata.
+
+Narrator получает compact authority after planning; полный audit object остаётся persisted evidence.
+
+Подробности: [`context-pipeline.md`](context-pipeline.md).
+
+## 8. Narration pipeline
+
+```text
+generate draft
+→ repetition guard
+→ deterministic agency checks
+→ authority validator
+→ optional targeted repair
+→ second validation
+→ deterministic presentation containment if needed
+→ publish
 ```
 
-Manifest записывает, какие IDs и слои реально попали в prompt. Это позволяет объяснять
-ошибку не догадкой, а конкретным составом контекста.
+Narrator не должен:
 
-## 7. Scene lifecycle и перемещения
+- добавлять voluntary protagonist action/thought/emotion;
+- повторять direct player speech как чужую реплику;
+- перемещать персонажей вне structured transition;
+- создавать незапланированного физического NPC;
+- превращать blocked step в completed;
+- менять outcome после Validator reject.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Draft
-    Draft --> Prepared: Planner / action sequence
-    Prepared --> Active: Narration accepted
-    Prepared --> RolledBack: Generation failed
-    Active --> Completed: Другая сцена активирована
-    Active --> Undone: Undo transition
-    Undone --> Active: Исходная сцена восстановлена
-    Completed --> [*]
+`safe_fallback` является degraded presentation, а не успешной prose generation.
+
+Подробности: [`narration-pipeline.md`](narration-pipeline.md).
+
+## 9. Scene / Location
+
+Scene != Location.
+
+Scene хранит активный драматический контекст и participants. Location — физическое место/иерархия мест.
+
+Инварианты:
+
+- у campaign одна authoritative current Scene;
+- current Scene связана с Location;
+- player `current_location_id` совпадает с active Scene Location;
+- movement проходит через structured transition;
+- return/revisit разрешается по known/visited route identity;
+- реальная неоднозначность fail-closed;
+- NPC не телепортируется между Scene без authority.
+
+## 10. NPC и actor turns
+
+Actor-scoped turn использует выбранного physically-present NPC.
+
+Его контекст ограничен доступными ему знаниями. Объективный truth не должен выводиться из одной NPC speech только потому, что Scribe увидел предложение в тексте.
+
+New NPC protocol:
+
+1. Planner/normalizer создаёт typed introduction;
+2. authority разрешает introduction;
+3. Narrator может его отрендерить;
+4. deterministic materializer создаёт entity и participant state.
+
+Generic contact может закончиться либо typed responder, либо explicit no-contact. «Кто-то ответил в prose, но entity не существует» — invalid state.
+
+## 11. Post-turn memory
+
+После accepted/persisted narrative turn создаются durable background jobs.
+
+Типичный путь:
+
+```text
+assistant turn
+→ Entity Registrar (legacy/background extraction where applicable)
+→ Memory Scribe
+→ deterministic validation/taxonomy
+→ proposals / facts / beliefs / relationships / events
+→ Thesis Curator / lifecycle
 ```
 
-`SceneLifecycleService.activate()` является владельцем active-scene pointer:
+Memory failure не должен отменять уже опубликованный turn.
 
-- завершает предыдущую активную сцену;
-- активирует целевую;
-- обновляет `campaign.current_scene_id`;
-- синхронизирует локации участников;
-- не позволяет NPC молча телепортироваться;
-- гарантирует присутствие героя игрока.
+## 12. Undo
 
-## 8. Undo
+Undo должен работать по связанной user/assistant pair и восстанавливать structured consequences, а не только скрывать chat rows.
 
-Undo должен отменять не только текстовые turns, но и структурные последствия.
+Особенно важно восстанавливать:
 
-```mermaid
-flowchart TD
-    Undo[/undo]
-    App[GameApplication.undo_last_turn]
-    Service[TurnUndoService]
-    Pair[Пометить user + assistant undone]
-    Seq{Есть action sequence?}
-    Trans{Есть scene transition?}
-    Restore[Восстановить исходную сцену\nлокации и участников]
-    Bridge[Пометить bridge undone]
-    Commit[Одна application commit boundary]
+- active Scene;
+- player Location;
+- transition/bridge state;
+- action-sequence-owned effects.
 
-    Undo --> App --> Service --> Pair --> Seq
-    Seq -- Да --> Restore
-    Seq -- Нет --> Trans
-    Trans -- Да --> Restore
-    Trans -- Нет --> Commit
-    Restore --> Bridge --> Commit
+## 13. Models
+
+Default local split:
+
+```text
+campaign primary: gemma4:e4b
+control: qwen2.5:7b
 ```
 
-## 9. Post-turn memory pipeline
+Primary: Narrator, Session Zero, `/DM`, Character Builder without override.
 
-После сохранения художественного ответа запускаются durable jobs.
+Control: Planner, Narration Validator, Entity Registrar, Scribe, Curator, Evaluator, simulation Player, Scenario Builder, structured repair.
 
-```mermaid
-flowchart TD
-    Answer[Сохранённый assistant turn]
-    Enqueue[PostTurnJobRepository]
-    Jobs{Тип job}
-    Registrar[EntityRegistrar]
-    Scribe[Memory Scribe]
-    Taxonomy[Memory Taxonomy]
-    Texture[Extract narrative details]
-    Presence[Presence Resolver]
-    Continuity[Continuity Checker]
-    Proposals[(Proposed changes)]
-    Curator[Thesis Curator]
-    Lifecycle[Thesis lifecycle]
-    Failed[(Failed job + error)]
+Control roles strict: schema/provider failure не должен скрыто превращать Gemma в Planner/Validator.
 
-    Answer --> Enqueue --> Jobs
-    Jobs -- memory_scribe --> Registrar --> Scribe --> Taxonomy
-    Taxonomy --> Texture --> Presence --> Continuity --> Proposals
-    Jobs -- thesis_curator --> Curator --> Lifecycle
-    Registrar -. 429 / provider error .-> Failed
-    Scribe -. error .-> Failed
-    Curator -. error .-> Failed
+## 14. Visual runtime
+
+ComfyUI visual generation — отдельный best-effort layer.
+
+Поддерживаются:
+
+- character portrait;
+- campaign cover;
+- scene image.
+
+Session Zero может фоново запланировать portrait/cover. Scene generation доступна из Play UI. GPU/ComfyUI failure не меняет campaign truth.
+
+## 15. Debugging
+
+Основные endpoints:
+
+```text
+GET /api/campaigns/{id}/debugger
+GET /api/campaigns/{id}/debugger/turns/{assistant_turn_id}
+GET /api/campaigns/{id}/debugger/trace
+GET /api/debugger
 ```
 
-### Классы памяти
+Per-turn causal order:
 
-| Класс | Назначение | Срок жизни |
-|---|---|---|
-| `world_canon` | Устойчивые истины мира и завершённые события | Постоянно |
-| `entity_state` | Текущее состояние конкретной сущности | До замены |
-| `scene_state` | Факт, истинный только внутри сцены | До закрытия сцены |
-| `narrative_detail` | Жест, шум, поза, краткая атмосфера | Несколько ходов |
-| `scene_thesis` | Рабочая режиссёрская память сцены | До resolution / TTL |
-
-## 10. Обработка отказов
-
-```mermaid
-flowchart TD
-    Failure{Где произошёл сбой?}
-    Before[До сохранения assistant turn]
-    After[После сохранения assistant turn]
-    Setup[Во время session zero]
-    Before --> Retry[Retry generation]
-    Retry --> Exhausted{Попытки исчерпаны?}
-    Exhausted -- Да --> Compensate[Rollback prepared transition\nmark generation failed]
-    Exhausted -- Нет --> Continue[Продолжить генерацию]
-    After --> Durable[Job status = failed\nответ остаётся активным]
-    Durable --> Manual[/retry-memory или worker retry]
-    Setup --> Pending[Сохранить pending user message]
-    Pending --> Resume[Продолжить беседу позже]
+```text
+input
+→ route/actor
+→ Planner
+→ execution
+→ TurnAuthority
+→ raw Narrator
+→ validation/repair
+→ publication
+→ materialization
+→ Scene/Location state
+→ memory jobs
 ```
 
-## 11. Основные таблицы и связи
+При расследовании фиксируются отдельно:
 
-```mermaid
-erDiagram
-    CAMPAIGN ||--o| CAMPAIGN_SETUP : has
-    CAMPAIGN ||--o{ ENTITY : owns
-    ENTITY ||--o| CHARACTER : extends
-    CAMPAIGN ||--o{ SCENE : contains
-    SCENE ||--o{ SCENE_PARTICIPANT : has
-    ENTITY ||--o{ SCENE_PARTICIPANT : participates
-    SCENE ||--o{ TURN : scopes
-    CAMPAIGN ||--o{ TURN : records
-    TURN ||--o{ PROPOSED_CHANGE : extracts
-    TURN ||--o{ POST_TURN_JOB : schedules
-    SCENE ||--o{ SCENE_THESIS : directs
-    CAMPAIGN ||--o{ FACT : remembers
-    CHARACTER ||--o{ BELIEF : believes
-    SCENE ||--o{ NARRATIVE_DETAIL : textures
-    TURN ||--o{ GENERATION_RUN : audits
-    TURN ||--o{ NARRATION_VALIDATION_RUN : validates
-    TURN ||--o{ SCENE_TRANSITION : triggers
-    TURN ||--o{ ACTION_SEQUENCE : triggers
-    SCENE_TRANSITION ||--o| SCENE_BRIDGE : carries
-```
+- first wrong boundary;
+- cascade;
+- player-visible symptom.
 
-## 12. Ответственность компонентов
+## 16. Известный technical debt
 
-| Компонент | Что делает | Чего делать не должен |
-|---|---|---|
-| CLI / frontend | Ввод, меню, отображение stream | Вызывать repositories и доменные executors |
-| FastAPI | HTTP validation и transport | Содержать отдельную игровую бизнес-логику |
-| `GameApplication` | Маршрутизация use cases и application transactions | Формировать художественную прозу |
-| `TurnRunner` | Один narrative-turn workflow | Обслуживать UI-команды и ручное администрирование |
-| `ContextCompiler` | Формировать prompt и manifest | Менять состояние мира |
-| `SceneLifecycleService` | Владеть active scene | Генерировать сюжет |
-| `PostTurnProcessor` | Retryable memory jobs | Отменять уже опубликованный ответ |
-| Repositories | Persistence primitives и flush | Самостоятельно владеть use-case транзакцией |
-| Runtime guards | Временное подключение cross-cutting правил | Зависеть от случайного порядка import entrypoint |
+1. compatibility guards всё ещё меняют public extension points; их следует постепенно складывать обратно в явных owners;
+2. raw `NarrationValidationRun` audit не полностью представлен в playtest trace;
+3. `runtime_manifest()` пока неудобно читать из работающего GUI через API;
+4. per-turn token budget breakdown разнесён между context metadata и provider telemetry;
+5. `/DM` нуждается в отдельной player-facing sanitization boundary, чтобы debug snapshot никогда не становился prompt leakage;
+6. prose-quality benchmark пока является live-test дисциплиной, а не persisted runtime metric.
 
-## 13. Что ещё остаётся стабилизировать
+Эти gaps подробно перечислены в [`../runtime-transparency.md`](../runtime-transparency.md).
 
-Runtime parity — первый этап. Следующие безопасные итерации:
+## 17. Runtime parity
 
-1. Заменить monkeypatch guards явным `GameRuntime` dependency graph.
-2. Выделить Turn Saga из `TurnRunner` и дать ей одного владельца транзакций.
-3. Разделить `ContextCompiler` на независимые context providers.
-4. Разделить `ContinuityChecker` по типам proposed change.
-5. Запретить repositories и domain services вызывать `commit()` самостоятельно.
-6. При запуске проверять Alembic head вместо `Base.metadata.create_all()`.
-7. Подключить будущий frontend только через FastAPI methods, которые уже используют
-   `GameApplication`.
+CLI, FastAPI/GUI и test harness должны получать одинаковую production composition.
 
-## 14. Практический путь диагностики
+`runtime_manifest()` служит auditable fingerprint:
 
-При ошибке игрового хода проверять в таком порядке:
+- guards;
+- context pipeline;
+- turn pipeline;
+- narration pipeline;
+- implementation identities;
+- post-turn mode.
 
-1. `generation_runs` — была ли генерация и какой provider/model использовался;
-2. `turn.context_snapshot` — какие слои и IDs вошли в prompt;
-3. `narration_validation_runs` — был ли текст repaired или failed-open;
-4. `scene_transitions` / `action_sequences` — какие структурные действия prepared;
-5. `post_turn_jobs` — завершились ли Registrar, Scribe и Curator;
-6. `proposed_changes` — что извлечено из ответа;
-7. `facts`, `beliefs`, `scene_theses`, `narrative_details` — что реально попало в память;
-8. debugger и memory-ops — нет ли orphan, expired или misclassified записей.
+Parity tests должны падать, если один entrypoint случайно запускает другой pipeline.

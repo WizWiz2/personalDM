@@ -1,123 +1,343 @@
 # Спецификация MVP
-## Первый проверяемый вертикальный срез
+## Текущий проверяемый вертикальный срез
 
-**Статус:** канонический документ MVP  
-**Версия:** 0.2  
-**Дата:** 15 июля 2026
+**Статус:** канонический MVP contract  
+**Версия:** 0.3  
+**Дата:** 24 августа 2026
 
 ## Цель
 
-Проверить, что Campaign Truth Engine делает длинную AI-кампанию устойчивее обычного чата.
+Проверить, что Campaign Truth Engine делает длинную локальную AI-кампанию одновременно:
 
-MVP должен доказать три вещи:
+1. устойчивой к распаду причинности;
+2. прозрачной для диагностики;
+3. достаточно качественной по тексту, чтобы в неё хотелось играть.
 
-1. кампания переживает перезапуск приложения;
-2. пользователь управляет тезисами и каноном;
-3. NPC не получает недоступные ему сведения.
+MVP больше не считается успешным, если он только «правильно хранит state», но Narrator систематически публикует деревянные fallback-заглушки.
 
-## Основной сценарий
+## Основной пользовательский сценарий
 
-Пользователь создаёт кампанию, подключает LLM, создаёт сцену и персонажей, добавляет тезисы, играет, просматривает предлагаемые изменения, принимает или исправляет их, перезапускает приложение, продолжает игру, проверяет источник знания NPC, регенерирует плохой ответ, вручную рисует сцену и запускает локальный музыкальный фон.
+Пользователь:
 
-## Объём MVP
+1. создаёт кампанию;
+2. проходит разговорную Session Zero;
+3. сразу получает автоматический opening post;
+4. играет естественными действиями и репликами без обязательной командной грамматики;
+5. перемещается между Location/Scene;
+6. разговаривает с присутствующими NPC;
+7. продолжает игру после перезапуска;
+8. использует `/DM` для read-only вопроса мастеру;
+9. при проблеме открывает debugger/trace и видит причинную цепочку;
+10. при желании генерирует локальные портреты/обложку/scene art.
 
-### Кампания и провайдер
+## Product boundary
 
-Создание, чтение, изменение и удаление кампании; OpenAI-совместимый базовый URL; имя модели; необязательный API-ключ; проверка подключения; потоковая генерация; резервное ручное указание размера контекста.
+MVP — **systemless narrative RPG**.
 
-### Чат
+Не требуются:
 
-Ход пользователя, ответ ДМа, потоковая генерация, остановка ответа, регенерация, отмена последней пары сообщений, сырой журнал истории.
+- HP;
+- levels;
+- характеристики;
+- dice checks;
+- combat engine;
+- инвентарь с rules mechanics;
+- реализация конкретной настольной системы.
 
-### Сцена и тезис сцены
+Эти вещи допустимы только как отдельный будущий rules layer.
 
-Название, текстовое описание локации, участники, настроение, напряжение и активные тезисы. Тезис поддерживает создание, изменение, закрепление и завершение, а также область видимости и ссылку на исходный ход.
+## Session Zero
 
-### Персонаж, факт, убеждение, цель и утверждение об отношениях
+Session Zero должна быть обычным разговором, а не анкетой по полям.
 
-Ручное создание с указанием происхождения. Убеждение принадлежит конкретному персонажу. Отношение имеет повествовательный тип, описание, причину и необязательную интенсивность.
+Минимальный materialization contract:
 
-### Инспектор памяти
+- узнаваемый setting/genre/world anchor;
+- герой и его концепт;
+- практическая первая цель;
+- starting Location;
+- конкретная starting situation.
 
-Список фактов и убеждений, показ исходного хода, изменение или замена записи, показ активных тезисов сцены.
+Агент может безопасно достроить недостающие технические детали сам, если пользователь делегирует выбор или явно просит начинать.
 
-### Assisted Canon
+### Handoff acceptance
 
-После каждого ответа ДМа система предлагает не более пяти изменений: факт, событие, утверждение об отношениях, тезис сцены или перемещение. Каждое предложение можно принять, отклонить или изменить. Автоматическое принятие отключено.
+При завершении:
 
-### Минимальный слой изображений
+- final Session Zero message не содержит нового вопроса;
+- `ready_to_finalize=true`;
+- создаются герой, Location и первая active Scene;
+- создаётся ровно один system-owned opening assistant turn;
+- opening появляется в Play UI без пользовательского «Начинаем»;
+- retry finalize не дублирует opening.
 
-Подключение к ComfyUI, один утверждённый референс на персонажа, ручная команда «Нарисовать сцену», сохранение запроса, процесса генерации, начального значения и пути к результату. Автоматической генерации нет.
-
-### Минимальный музыкальный слой
-
-Локальная папка с музыкой, теги настроения, выбор для текущей сцены, защита от недавних повторов, ручные команды «Следующий трек» и «Стоп».
-
-## Конвейер обработки хода
+## Narrative turn contract
 
 ```text
-сохранить ввод пользователя
-→ собрать общий контекст сцены
-→ построить пакет контекста действующего персонажа
-→ потоково сгенерировать повествовательный ответ
-→ сохранить ответ
-→ извлечь предлагаемые изменения
-→ выполнить детерминированную проверку
-→ показать предложения пользователю
-→ применить принятые изменения
-→ поставить в очередь резюме и индексацию
+persist user input
+→ compile context
+→ structured TurnAuthorityPlanner
+→ deterministic action/transition execution
+→ build TurnAuthority
+→ generate Narrator draft
+→ repetition + deterministic agency checks
+→ Narration Validator
+→ optional targeted repair
+→ accepted prose OR deterministic presentation fallback
+→ materialize allowed structured outcome
+→ persist/commit
+→ enqueue post-turn memory jobs
 ```
 
-Пакет действующего персонажа содержит только публичное состояние сцены, видимые тезисы, профиль персонажа, его цели, убеждения, отношения к присутствующим сущностям и известные ему воспоминания.
+### Authority ownership
 
-## Семантика потоковой генерации
+- protagonist voluntary actions/dialogue — только human input;
+- resolution — Planner;
+- placement/movement — deterministic engine;
+- new NPC introduction — typed plan + deterministic materialization;
+- prose — Narrator;
+- prose correctness against authority — Validator/guards;
+- background long-term memory extraction — Scribe/Registrar/Curator pipeline.
 
-Повествовательный текст становится видимым до смысловой проверки непрерывности. Поздние смысловые проверки создают предупреждения. Изменения состояния остаются предложениями до проверки. Типизированные инструменты могут отвергнуть невозможные действия до применения.
+Narrator не может менять уже выполненный structured outcome.
 
-## Минимальная модель данных
+## Scene и Location
 
-`campaigns`, `provider_configs`, `turns`, `scenes`, `scene_participants`, `scene_theses`, `entities`, `characters`, `character_goals`, `facts`, `beliefs`, `relationship_assertions`, `events`, `proposed_changes`, `media_assets`, `tracks`, `playback_history`.
+Scene и Location — разные сущности.
 
-Ход имеет `parent_turn_id` и статус `active | alternative | undone`. Это позволяет реализовать регенерацию и отмену без полноценной системы веток.
+MVP обязан поддерживать:
 
-## Детерминированная проверка
+- одну authoritative current Scene у кампании;
+- Scene → Location binding;
+- `player.current_location_id` синхронно active Scene Location;
+- structured forward movement;
+- return/revisit по уже известной Location;
+- fail-closed при реальной неоднозначности destination;
+- отсутствие silent NPC teleport;
+- SceneTransition evidence для movement.
 
-MVP проверяет только явные структурированные данные: существование сущности, активный статус, участие в сцене для изменяющих состояние действий, единственное текущее положение предмета, правильного владельца убеждения, корректную ссылку на исходный ход и область видимости тезиса.
+Bootstrap/служебная Location не должна случайно считаться тем же visited destination только из-за похожего имени.
 
-Система не утверждает, что SQL способен проверять смысл произвольной прозы.
+## NPC identity и presence
 
-## Порядок контекста
+MVP обязан различать:
 
-1. системные инструкции и инструкции кампании;
-2. текущая сцена;
-3. активные тезисы сцены;
-4. пакет действующего персонажа;
-5. последние ходы;
-6. принятые факты и события;
-7. найденная старая память;
-8. зарезервированный бюджет ответа.
+- уже существующего физически присутствующего NPC;
+- known absent NPC;
+- явно planned new NPC;
+- generic temporary contact;
+- common-noun premise, который не является новым персонажем.
 
-Метаданные компилятора хранят включённые и исключённые блоки, оценку токенов, идентификаторы источников и действующего персонажа.
+Narrator не может самостоятельно создать speaker, которого нет в authority.
 
-## Хранилище
+Explicit generic contact имеет бинарный contract:
 
-Реализуется только SQLite. Используются WAL, Alembic, резервная копия перед миграцией и относительные пути к медиафайлам. FTS5 добавляется после появления резюме сцен; sqlite-vec остаётся необязательным. Сырой архив в SQLite является каноническим, JSONL и Markdown используются для экспорта.
+- affirmative responder → typed temporary NPC + materialization;
+- explicit no-contact → никакой сущности не создаётся.
 
-## Критерии приёмки
+Состояние «в prose кто-то ответил, но typed responder отсутствует» недопустимо.
 
-- Пятьдесят ходов сохраняются после перезапуска backend.
-- Если Сафира знает, что король жив, а Лиара считает его мёртвым, пакет Лиары не содержит истинный факт.
-- Убеждение ссылается на исходный ход.
-- Заменённые факты перестают попадать в будущий контекст.
-- Регенерация сохраняет старый ответ как альтернативный.
-- В будущий контекст попадают только принятые предложения.
-- Изображение сцены сохраняет метаданные процесса генерации.
-- Музыка не повторяет предыдущие три трека, когда есть альтернативы.
+## Player agency
 
-## Не является целью MVP
+Запрещено приписывать герою игрока без explicit input:
 
-Полное воспроизведение состояния из событий, именованные деревья веток, слияние веток, PostgreSQL, серверный режим, многопользовательская игра, автоматизация D&D, автоматическая генерация изображений, идеальная визуальная консистентность и интеграция с внешними музыкальными сервисами.
+- новое действие;
+- следующую реплику;
+- решение;
+- план;
+- belief;
+- consent/refusal;
+- страх/радость/влечение и другие эмоциональные conclusions.
 
-## Определение готовности
+Особый deterministic regression guard должен ловить direct-speech inversion: реплика игрока не может стать репликой мира/NPC в том же turn без явно разрешённого echo.
 
-MVP достаточно удобен, чтобы провести несколько игровых сессий одной реальной существующей кампании, и демонстрирует как минимум один предотвращённый перенос секретного знания и одну успешно исправленную ошибку памяти.
+## Narrator quality
+
+Narrator acceptance состоит из двух независимых частей.
+
+### Functional
+
+- authority preserved;
+- player agency preserved;
+- movement/result отражён;
+- нет technical leakage;
+- ordinary valid turns не падают в `safe_fallback`.
+
+### Prose
+
+Live smoke оценивает минимум:
+
+- local coherence;
+- global coherence;
+- continuity;
+- scene-specific detail;
+- atmosphere without generic filler;
+- language variation;
+- natural Russian prose;
+- dramatic utility.
+
+Opening должен быть крупнее обычного turn и реально погружать в стартовую ситуацию.
+
+Raw draft и published text оцениваются отдельно.
+
+## Narration failure semantics
+
+Semantic prose violation не должен откатывать уже корректный truth state.
+
+Pipeline пытается repair; если безопасной prose нет, публикуется deterministic authority projection.
+
+Такой режим маркируется degraded (`safe_fallback`/related validation status) и не считается художественным PASS.
+
+Successful movement fallback не имеет права утверждать «Пока ничего заметно не меняется».
+
+## Actor-scoped knowledge
+
+Для выбранного acting NPC context строится из доступных ему сведений.
+
+NPC не должен получать private facts/beliefs другого персонажа только потому, что они существуют в общей кампании.
+
+Objective canon не должен автоматически создаваться из субъективной NPC speech.
+
+## Memory
+
+После принятого assistant turn фоновые durable jobs обрабатывают память.
+
+MVP хранит минимум:
+
+- facts;
+- beliefs;
+- relationships;
+- events;
+- goals;
+- scene theses;
+- transient narrative details;
+- provenance/source turn.
+
+Failure post-turn job не отменяет опубликованный turn. Job можно диагностировать/retry отдельно.
+
+## `/DM` / meta channel
+
+Meta dialogue:
+
+- read-only;
+- не вызывает normal narrative Planner/execution/memory pipeline;
+- может объяснять state и ошибки;
+- не должен продолжать fiction как выполненное действие;
+- не должен публиковать внутренние system/control blocks пользователю.
+
+## Debugger и trace
+
+MVP обязан иметь causal evidence, а не только raw chat history.
+
+Текущие endpoints:
+
+```text
+GET /api/campaigns/{campaign_id}/debugger
+GET /api/campaigns/{campaign_id}/debugger/turns/{assistant_turn_id}
+GET /api/campaigns/{campaign_id}/debugger/trace
+GET /api/debugger
+```
+
+Per-turn investigation должна позволять пройти:
+
+```text
+input
+→ routing
+→ planner
+→ execution
+→ authority
+→ narrator
+→ validator/repair
+→ publication
+→ materialization
+→ memory
+```
+
+Known transparency gaps перечислены в `runtime-transparency.md` и сами являются частью MVP hardening backlog.
+
+## Модели
+
+Локальный default:
+
+```text
+Narrator / Session Zero / Game Master: gemma4:e4b
+Control roles: qwen2.5:7b
+```
+
+Фактическая модель конкретного turn определяется persisted campaign config/telemetry, а не только current default.
+
+Control roles strict и не должны молча fallback’иться на creative primary model при structured failure.
+
+## Изображения
+
+При `IMAGE_ENABLED=true` ComfyUI используется как best-effort локальный atmosphere layer.
+
+MVP поддерживает:
+
+- portrait character;
+- campaign cover;
+- scene generation;
+- фоновые visual tasks, не блокирующие truth state.
+
+Image generation failure не отменяет Session Zero или игровой turn.
+
+## Persistence
+
+SQLite — production storage локального MVP.
+
+Хранятся, среди прочего:
+
+- campaigns/provider config;
+- turns;
+- scenes/participants/locations;
+- generation runs;
+- action sequences/scene transitions;
+- narration validation audit;
+- entities/characters;
+- facts/beliefs/relationships/events;
+- theses/narrative detail;
+- proposed changes;
+- post-turn jobs;
+- visual assets/metadata.
+
+Undo должен отменять связанную narrative pair и структурные последствия, а не только скрывать текст.
+
+## Критерии приёмки вертикального среза
+
+Обязательные:
+
+- свежая campaign проходит Session Zero без questionnaire loop;
+- terminal handoff не оставляет вопроса;
+- automatic opening появляется без user turn;
+- герой не получает invented agency;
+- forward movement и return/revisit сохраняют correct Location/Scene;
+- существующий NPC не дублируется;
+- explicit new contact materialize только при разрешённом outcome;
+- NPC actor context не содержит недоступную память;
+- ordinary narration не систематически падает в safe fallback;
+- raw-vs-published evidence позволяет локализовать prose regression;
+- campaign переживает restart;
+- post-turn memory failure не ломает accepted turn;
+- debugger обнаруживает state invariant errors;
+- visual generation не влияет на truth correctness.
+
+## Не является целью текущего MVP
+
+- rules engine конкретной системы;
+- tactical combat;
+- multiplayer/server mode;
+- PostgreSQL;
+- полноценное branching/merge;
+- perfect semantic verification любого предложения;
+- абсолютная visual consistency;
+- автоматическая генерация scene art на каждом ходу;
+- скрытая магия, которую невозможно объяснить через persisted evidence.
+
+## Definition of playable
+
+MVP считается playable, когда несколько последовательных живых сессий можно провести без ручного «подталкивания» движка, при этом:
+
+- causality остаётся структурно верной;
+- Narrator пишет связно и атмосферно;
+- игрок сохраняет agency;
+- debugger позволяет объяснить любой серьёзный FAIL по первому неправильному boundary.
