@@ -50,6 +50,30 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
 
   useEffect(() => { void load() }, [campaignId])
 
+  const changeTextMode = (mode: 'local' | 'cloud') => {
+    setTextMode(mode)
+    if (mode === 'local') {
+      setTextBaseUrl('http://127.0.0.1:11434/v1')
+      setTextModel('gemma4:e4b')
+      setTextContext(4096)
+    } else {
+      setTextBaseUrl('https://api.openai.com/v1')
+      setTextModel('gpt-4.1-mini')
+      setTextContext(128000)
+    }
+  }
+
+  const changeImageMode = (mode: 'local' | 'cloud' | 'off') => {
+    setImageMode(mode)
+    if (mode === 'local') {
+      setImageBaseUrl('http://127.0.0.1:8188')
+      setImageModel('FLUX.2 Klein 4B FP8')
+    } else if (mode === 'cloud') {
+      setImageBaseUrl('https://api.openai.com/v1')
+      setImageModel('gpt-image-2')
+    }
+  }
+
   const saveText = async (event: FormEvent) => {
     event.preventDefault()
     setBusy('text-save'); onError(''); onMessage('')
@@ -129,9 +153,7 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
   }
 
   const status = (ready: boolean, message: string) => (
-    <div className={ready ? 'connection-ok' : 'connection-bad'}>
-      {ready ? '● ' : '● '}{message}
-    </div>
+    <div className={ready ? 'connection-ok' : 'connection-bad'}>● {message}</div>
   )
 
   if (!profile) return <section className="settings-section"><h2>Модели</h2><p>Загружаем конфигурацию…</p></section>
@@ -141,13 +163,13 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
       <span className="eyebrow">Текст</span>
       <h2>Модель мастера</h2>
       <label>Режим
-        <select value={textMode} onChange={(event) => setTextMode(event.target.value as 'local' | 'cloud')}>
+        <select value={textMode} onChange={(event) => changeTextMode(event.target.value as 'local' | 'cloud')}>
           <option value="local">Локально — Ollama</option>
           <option value="cloud">Облачно — OpenAI-compatible API</option>
         </select>
       </label>
       {textMode === 'cloud' && <label>Base URL<input value={textBaseUrl} onChange={(e) => setTextBaseUrl(e.target.value)} /></label>}
-      <label>Модель<input value={textModel} onChange={(e) => setTextModel(e.target.value)} placeholder={textMode === 'local' ? 'gemma4:e4b' : 'model name'} /></label>
+      <label>Модель<input value={textModel} onChange={(e) => setTextModel(e.target.value)} placeholder={textMode === 'local' ? 'gemma4:e4b' : 'gpt-4.1-mini'} /></label>
       <label>Контекст<input type="number" min={1024} step={1024} value={textContext} onChange={(e) => setTextContext(Number(e.target.value))} /></label>
       {textMode === 'cloud' && <label>API key<input type="password" value={textKey} onChange={(e) => setTextKey(e.target.value)} placeholder={profile.text.has_api_key ? '•••••••• (пусто — оставить текущий)' : 'обязательно'} /></label>}
       {status(profile.text.status.ready, profile.text.status.message)}
@@ -161,7 +183,7 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
       <span className="eyebrow">Иллюстрации</span>
       <h2>Графическая модель</h2>
       <label>Режим
-        <select value={imageMode} onChange={(event) => setImageMode(event.target.value as 'local' | 'cloud' | 'off')}>
+        <select value={imageMode} onChange={(event) => changeImageMode(event.target.value as 'local' | 'cloud' | 'off')}>
           <option value="local">Локально — ComfyUI + FLUX.2 Klein</option>
           <option value="cloud">Облачно — Images API</option>
           <option value="off">Не использовать генерацию</option>
