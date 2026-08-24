@@ -8,11 +8,12 @@ from app.application import GameApplication
 from app.cli_ui import confirm_menu, select_menu
 from app.db.engine import AsyncSessionLocal, Base, engine
 from app.models.campaign import CampaignCreate
+from app.models.provider_config import ProviderConfigCreate
 from app.services.campaign_service import CampaignService
+from app.services.runtime_provider_service import RuntimeProviderError, RuntimeProviderService
 from app.services.session_zero_service import SessionZeroService
 from cli import (
     clear_screen,
-    configure_llm_menu,
     create_character_menu,
     create_scene_menu,
     play_game_loop,
@@ -106,6 +107,139 @@ async def manage_participants_menu(
             await asyncio.sleep(1)
 
 
+async def _sync_campaign_text_provider(
+    campaign_id: UUID,
+    campaign_service: CampaignService,
+    runtime: RuntimeProviderService,
+) -> None:
+    profile = runtime.profile()["text"]
+    env = runtime.read_env()
+    await campaign_service.configure_provider(
+        campaign_id,
+        ProviderConfigCreate(
+            base_url=profile["base_url"],
+            model_name=profile["model"],
+            api_key=env.get("PDM_LLM_API_KEY") or None,
+            context_window=profile["context_window"],
+        ),
+    )
+
+
+async def runtime_provider_menu(
+    campaign_id: UUID,
+    campaign_service: CampaignService,
+    session,
+) -> None:
+    runtime = RuntimeProviderService()
+    while True:
+        profile = await asyncio.to_thread(runtime.profile)
+        text = profile["text"]
+        image = profile["image"]
+        clear_screen()
+        selected = select_menu(
+            "Модели и провайдеры",
+            [
+                (
+                    f"Текст: {text['mode']} / {text['model']} — {text['status']['message']}",
+                    "text",
+                ),
+                (
+                    f"Графика: {image['mode']} / {image['model']} — {image['status']['message']}",
+                    "image",
+                ),
+                ("Проверить всё", "check"),
+                ("← Назад", "back"),
+            ],
+        )
+        if selected in {None, "back"}:
+            return
+
+        if selected == "check":
+            text_status, image_status = await asyncio.gather(
+                asyncio.to_thread(runtime.check_text),
+                asyncio.to_thread(runtime.check_image),
+            )
+            print(f"\nТекст: {text_status['message']}")
+            print(f"Графика: {image_status['message']}")
+            input("\nEnter — продолжить")
+            continue
+
+        if selected == "text":
+            mode = select_menu(
+                "Текстовая модель",
+                [
+                    ("Локально — Ollama", "local"),
+                    ("Облачно — OpenAI-compatible API", "cloud"),
+                    ("← Назад", "back"),
+                ],
+            )
+            if mode in {None, "back"}:
+                continue
+            try:
+                if mode == "local":
+                    model = input(f"Модель [{text['model'] or 'gemma4:e4b'}]: ").strip()
+                    runtime.configure_text("local", model=model or None)
+                    status = await asyncio.to_thread(runtime.check_text)
+                    if not status["ready"] and confirm_menu(
+                        f"{status['message']}. Установить/починить локальный runtime?"
+                    ):
+                        print("[Setup] Подготавливаю Ollama и модель...")
+                        await asyncio.to_thread(runtime.ensure_local_text)
+                else:
+                    base_url = input(f"Base URL [{text['base_url'] or 'https://api.openai.com/v1'}]: ").strip() or text["base_url"] or "https://api.openai.com/v1"
+                    model = input(f"Модель [{text['model']}]: ").strip() or text["model"]
+                    key = input("API key [Enter — оставить текущий]: ").strip() or None
+                    context_raw = input(f"Контекст [{text['context_window']}]: ").strip()
+                    context = int(context_raw) if context_raw.isdigit() else text["context_window"]
+                    runtime.configure_text(
+                        "cloud",
+                        base_url=base_url,
+                        model=model,
+                        api_key=key,
+                        context_window=context,
+                    )
+                await _sync_campaign_text_provider(campaign_id, campaign_service, runtime)
+                await session.commit()
+                print(f"[Система] {runtime.check_text()['message']}")
+            except (ValueError, RuntimeProviderError) as exc:
+                print(f"[Ошибка] {exc}")
+            input("\nEnter — продолжить")
+            continue
+
+        if selected == "image":
+            mode = select_menu(
+                "Графическая модель",
+                [
+                    ("Локально — ComfyUI + FLUX.2 Klein", "local"),
+                    ("Облачно — Images API", "cloud"),
+                    ("Не использовать генерацию", "off"),
+                    ("← Назад", "back"),
+                ],
+            )
+            if mode in {None, "back"}:
+                continue
+            try:
+                if mode == "local":
+                    runtime.configure_image("local")
+                    status = await asyncio.to_thread(runtime.check_image)
+                    if not status["ready"] and confirm_menu(
+                        f"{status['message']}. Установить/починить локальный runtime?"
+                    ):
+                        print("[Setup] Подготавливаю ComfyUI и модели...")
+                        await asyncio.to_thread(runtime.ensure_local_image)
+                elif mode == "cloud":
+                    base_url = input(f"Images API Base URL [{image['base_url'] or 'https://api.openai.com/v1'}]: ").strip() or image["base_url"] or "https://api.openai.com/v1"
+                    model = input(f"Image model [{image['model'] or 'gpt-image-2'}]: ").strip() or image["model"] or "gpt-image-2"
+                    key = input("Image API key [Enter — оставить текущий]: ").strip() or None
+                    runtime.configure_image("cloud", base_url=base_url, model=model, api_key=key)
+                else:
+                    runtime.configure_image("off")
+                print(f"[Система] {runtime.check_image()['message']}")
+            except (ValueError, RuntimeProviderError) as exc:
+                print(f"[Ошибка] {exc}")
+            input("\nEnter — продолжить")
+
+
 async def campaign_menu(
     campaign_id: UUID,
     campaign_service: CampaignService,
@@ -133,7 +267,7 @@ async def campaign_menu(
                 ("Создать персонажа / NPC вручную", "npc"),
                 ("Создать сцену / локацию вручную", "scene"),
                 ("Управление участниками сцены", "participants"),
-                ("Настройка LLM", "llm"),
+                ("Модели и провайдеры", "providers"),
                 ("Удалить кампанию", "delete"),
                 ("← К списку кампаний", "back"),
             ],
@@ -153,8 +287,8 @@ async def campaign_menu(
             await create_scene_menu(campaign_id, application)
         elif selected == "participants":
             await manage_participants_menu(campaign_id, application)
-        elif selected == "llm":
-            await configure_llm_menu(campaign_id, campaign_service, session)
+        elif selected == "providers":
+            await runtime_provider_menu(campaign_id, campaign_service, session)
         elif selected == "delete":
             if confirm_menu(f"Удалить кампанию «{campaign.name}» безвозвратно?"):
                 await campaign_service.delete_campaign(campaign_id)

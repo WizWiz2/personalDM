@@ -94,12 +94,13 @@ export const visualApi = {
     const status = await requestVisualStatus()
     if (!status.enabled) {
       throw new Error(
-        'Локальная генерация изображений выключена в запущенном backend. Перезапусти PersonalDM через play.bat.',
+        'Генерация изображений отключена. Её можно включить в настройках кампании → Модели.',
       )
     }
     if (!status.connected) {
+      const label = status.provider === 'cloud' ? 'Облачный image provider' : 'Локальный image provider'
       throw new Error(
-        `ComfyUI не отвечает на ${status.base_url}. Перезапусти PersonalDM через play.bat и проверь image setup в окне запуска.`,
+        `${label} недоступен (${status.base_url}). Открой настройки кампании → Модели, проверь provider или запусти установку/ремонт.`,
       )
     }
     const result = await requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals?force=true`, {

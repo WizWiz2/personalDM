@@ -6,15 +6,20 @@ class Settings(BaseSettings):
     DATA_DIR: str = "./data"
 
     # LLM settings (OpenAI-compatible / native Ollama)
+    TEXT_PROVIDER: str = "local"
     LLM_BASE_URL: str = "http://localhost:11434/v1"
     LLM_MODEL: str = "gemma4:e4b"  # Gemma 4 (4B effective parameters)
     LLM_API_KEY: str | None = None
     LLM_CONTEXT_WINDOW: int = 4096
 
-    # Local visual generation. Disabled by default so tests/manual backend starts do not
-    # unexpectedly launch GPU work; play.bat enables it after provisioning ComfyUI.
+    # Visual generation can be local (ComfyUI), cloud (OpenAI-compatible images API)
+    # or off. IMAGE_ENABLED is retained as a backward-compatible runtime gate.
+    IMAGE_PROVIDER: str = "local"
     IMAGE_ENABLED: bool = False
     IMAGE_BASE_URL: str = "http://127.0.0.1:8188"
+    IMAGE_CLOUD_BASE_URL: str = "https://api.openai.com/v1"
+    IMAGE_CLOUD_MODEL: str = "gpt-image-2"
+    IMAGE_API_KEY: str | None = None
     IMAGE_GENERATED_SUBDIR: str = "generated"
     IMAGE_DIFFUSION_MODEL: str = "flux-2-klein-4b-fp8.safetensors"
     IMAGE_TEXT_ENCODER: str = "qwen_3_4b_fp4_flux2.safetensors"

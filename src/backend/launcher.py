@@ -11,6 +11,7 @@ import webbrowser
 from pathlib import Path
 
 from app.cli_ui import select_menu
+from app.services.runtime_provider_service import RuntimeProviderError, RuntimeProviderService
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -139,17 +140,14 @@ def _windows_process_command_line(pid: int) -> str:
 
 
 def _restart_existing_personaldm_backend() -> bool:
-    """Stop a stale launcher-owned PersonalDM backend without touching unrelated services."""
     if os.name != "nt" or not _url_ready(f"{BACKEND_URL}/health"):
         return False
-
     pid = _windows_listener_pid(8000)
     if not pid:
         return False
     command_line = _windows_process_command_line(pid).casefold()
     if "uvicorn" not in command_line or "app.main:app" not in command_line:
         return False
-
     print(f"[GUI] Перезапускаю предыдущий PersonalDM backend (PID {pid}) для применения текущего кода и .env...")
     result = subprocess.run(
         ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -178,16 +176,7 @@ def run_gui() -> int:
         if not _url_ready(f"{BACKEND_URL}/health"):
             print("[GUI] Запускаю FastAPI backend...")
             backend = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "uvicorn",
-                    "app.main:app",
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    "8000",
-                ],
+                [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
                 cwd=BACKEND_DIR,
             )
             if not _wait_ready(f"{BACKEND_URL}/health", backend):
@@ -232,16 +221,94 @@ def run_cli() -> int:
     return subprocess.call([sys.executable, "cli_tui.py"], cwd=BACKEND_DIR)
 
 
-def provider_choice() -> int:
+def _ask_text_provider(service: RuntimeProviderService) -> bool:
     selected = select_menu(
-        "LLM не настроена. Как продолжить?",
+        "Как запускать текстовую модель?",
         [
-            ("Локальный Ollama + Gemma 4", "local"),
-            ("Облачный OpenAI-compatible provider", "cloud"),
+            ("Локально — Ollama + Gemma 4", "local"),
+            ("Облачно — OpenAI-compatible API", "cloud"),
             ("Выйти", "exit"),
         ],
     )
-    return {"local": 10, "cloud": 20, "exit": 30, None: 30}[selected]
+    if selected in {None, "exit"}:
+        return False
+    if selected == "local":
+        service.configure_text("local")
+        return True
+
+    print("\nОблачные настройки сохраняются только в src/backend/.env (файл игнорируется Git).")
+    base_url = input("Base URL [https://api.openai.com/v1]: ").strip() or "https://api.openai.com/v1"
+    model = input("Модель [gpt-4.1-mini]: ").strip() or "gpt-4.1-mini"
+    api_key = input("API key: ").strip()
+    if not api_key:
+        print("[Ошибка] Для облачной текстовой модели нужен API key.")
+        return _ask_text_provider(service)
+    context_raw = input("Контекст [128000]: ").strip()
+    context_window = int(context_raw) if context_raw.isdigit() else 128000
+    service.configure_text(
+        "cloud",
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        context_window=context_window,
+    )
+    return True
+
+
+def _ask_image_provider(service: RuntimeProviderService) -> bool:
+    selected = select_menu(
+        "Как генерировать иллюстрации?",
+        [
+            ("Локально — ComfyUI + FLUX.2 Klein", "local"),
+            ("Облачно — Images API", "cloud"),
+            ("Не использовать генерацию изображений", "off"),
+            ("Выйти", "exit"),
+        ],
+    )
+    if selected in {None, "exit"}:
+        return False
+    if selected in {"local", "off"}:
+        service.configure_image(str(selected))
+        return True
+
+    print("\nКлюч графического API хранится отдельно от ключа текстовой модели.")
+    base_url = input("Images API Base URL [https://api.openai.com/v1]: ").strip() or "https://api.openai.com/v1"
+    model = input("Image model [gpt-image-2]: ").strip() or "gpt-image-2"
+    api_key = input("Image API key: ").strip()
+    if not api_key:
+        print("[Ошибка] Для облачной генерации изображений нужен API key.")
+        return _ask_image_provider(service)
+    service.configure_image("cloud", base_url=base_url, model=model, api_key=api_key)
+    return True
+
+
+def bootstrap_providers() -> int:
+    """First-run wizard plus cheap health/repair pass on every play.bat launch."""
+    service = RuntimeProviderService()
+    env = service.read_env()
+
+    if "PDM_TEXT_PROVIDER" not in env:
+        if not _ask_text_provider(service):
+            return 1
+    if "PDM_IMAGE_PROVIDER" not in service.read_env():
+        if not _ask_image_provider(service):
+            return 1
+
+    profile = service.profile()
+    for kind, item in (("text", profile["text"]), ("image", profile["image"])):
+        status = item["status"]
+        print(f"[Setup] {kind}: {item['mode']} — {status['message']}")
+        if item["mode"] != "local" or status["ready"]:
+            continue
+        print(f"[Setup] Доустанавливаю/запускаю локальный {kind} provider...")
+        try:
+            result = service.ensure_local_text() if kind == "text" else service.ensure_local_image()
+            print(f"[Setup] {kind}: {result['message']}")
+        except RuntimeProviderError as exc:
+            print(f"[WARNING] {kind} provider не удалось подготовить: {exc}")
+            if kind == "text":
+                print("[WARNING] GUI/CLI всё равно запустится — провайдер можно сменить в настройках.")
+    return 0
 
 
 def launcher_menu() -> int:
@@ -264,10 +331,10 @@ def launcher_menu() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--provider-choice", action="store_true")
+    parser.add_argument("--bootstrap-providers", action="store_true")
     args, _ = parser.parse_known_args()
-    if args.provider_choice:
-        return provider_choice()
+    if args.bootstrap_providers:
+        return bootstrap_providers()
     return launcher_menu()
 
 
