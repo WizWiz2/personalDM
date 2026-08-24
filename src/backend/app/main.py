@@ -12,6 +12,7 @@ from app.api.debugger import router as debugger_router
 from app.api.entities import router as entities_router
 from app.api.locations import router as locations_router
 from app.api.memory import router as memory_router
+from app.api.runtime_providers import router as runtime_providers_router
 from app.api.scene_state import router as scene_state_router
 from app.api.scenes import router as scenes_router
 from app.api.session_zero import router as session_zero_router
@@ -35,10 +36,21 @@ async def lifespan(app: FastAPI):
     )
     print("[personalDM] Starting backend server")
     print(f"[personalDM] Data dir: {settings.DATA_DIR}")
-    print(f"[personalDM] Default local LLM: {settings.LLM_MODEL}")
     print(
-        "[personalDM] Local visuals: "
-        + (f"enabled ({settings.IMAGE_BASE_URL})" if settings.IMAGE_ENABLED else "disabled")
+        f"[personalDM] Text provider: {settings.TEXT_PROVIDER} "
+        f"({settings.LLM_MODEL} @ {settings.LLM_BASE_URL})"
+    )
+    print(
+        f"[personalDM] Image provider: {settings.IMAGE_PROVIDER} "
+        + (
+            f"({settings.IMAGE_CLOUD_MODEL} @ {settings.IMAGE_CLOUD_BASE_URL})"
+            if settings.IMAGE_PROVIDER == "cloud"
+            else (
+                f"({settings.IMAGE_BASE_URL})"
+                if settings.IMAGE_PROVIDER == "local" and settings.IMAGE_ENABLED
+                else "(disabled)"
+            )
+        )
     )
     worker = None
     worker_task = None
@@ -96,6 +108,7 @@ app.include_router(world_state_router)
 app.include_router(debugger_router)
 app.include_router(archive_router)
 app.include_router(visuals_router)
+app.include_router(runtime_providers_router)
 
 
 @app.get("/health")
@@ -103,6 +116,8 @@ async def health():
     return {
         "status": "ok",
         "version": "0.1.0",
+        "text_provider": settings.TEXT_PROVIDER,
         "model": settings.LLM_MODEL,
+        "image_provider": settings.IMAGE_PROVIDER,
         "image_enabled": settings.IMAGE_ENABLED,
     }
