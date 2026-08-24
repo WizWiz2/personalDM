@@ -14,6 +14,7 @@ from app.config import settings
 from app.db.engine import get_session
 from app.db.tables import Campaign, MediaAsset
 from app.services.visual_generation import ComfyUIError, VisualGenerationService
+from app.services.visual_provider_factory import create_visual_generation_service
 
 router = APIRouter(tags=["visuals"])
 
@@ -39,12 +40,6 @@ async def _archive_generated_result(
     *,
     campaign_id: UUID | None = None,
 ) -> dict:
-    """Preserve each explicit generation while keeping stable latest/cover/portrait paths.
-
-    VisualGenerationService writes a stable path used by the live UI. Without this copy,
-    a second scene generation overwrites the first PNG and MediaAsset history points at
-    the same file. API-triggered generations therefore get an immutable gallery copy.
-    """
     payload = _generated_payload(result)
     if not result.generated or not result.seed:
         return payload
@@ -81,7 +76,7 @@ async def _archive_generated_result(
 
 @router.get("/api/visuals/status")
 async def visual_status(session: AsyncSession = Depends(get_session)):
-    return await VisualGenerationService(session).status()
+    return await create_visual_generation_service(session).status()
 
 
 @router.get("/api/characters/{character_id}/visuals/portrait")
@@ -89,7 +84,7 @@ async def get_character_portrait(
     character_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    service = VisualGenerationService(session)
+    service = create_visual_generation_service(session)
     return _asset_payload(
         service,
         service.character_portrait_path(character_id),
@@ -104,7 +99,7 @@ async def generate_character_portrait(
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        service = VisualGenerationService(session)
+        service = create_visual_generation_service(session)
         result = await service.generate_character_portrait(character_id, force=force)
         return await _archive_generated_result(session, service, result)
     except ComfyUIError as exc:
@@ -118,7 +113,7 @@ async def get_campaign_cover(
     campaign_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    service = VisualGenerationService(session)
+    service = create_visual_generation_service(session)
     return _asset_payload(
         service,
         service.campaign_cover_path(campaign_id),
@@ -133,7 +128,7 @@ async def generate_campaign_cover(
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        service = VisualGenerationService(session)
+        service = create_visual_generation_service(session)
         result = await service.generate_campaign_cover(campaign_id, force=force)
         return await _archive_generated_result(
             session,
@@ -155,7 +150,7 @@ async def get_campaign_gallery(
     if await session.get(Campaign, str(campaign_id)) is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    service = VisualGenerationService(session)
+    service = create_visual_generation_service(session)
     rows = (
         await session.execute(
             select(MediaAsset)
@@ -211,8 +206,7 @@ async def get_scene_visual(
     scene_id: UUID,
     session: AsyncSession = Depends(get_session),
 ):
-    service = VisualGenerationService(session)
-    # Validate ownership even when there is no generated file yet.
+    service = create_visual_generation_service(session)
     try:
         from app.services.scene_state_service import SceneStateService
 
@@ -230,7 +224,7 @@ async def generate_scene_visual(
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        service = VisualGenerationService(session)
+        service = create_visual_generation_service(session)
         result = await service.generate_scene(campaign_id, scene_id, force=force)
         return await _archive_generated_result(
             session,
