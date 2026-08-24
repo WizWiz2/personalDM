@@ -7,7 +7,7 @@ from uuid import UUID
 
 from app.config import settings
 from app.db.engine import AsyncSessionLocal
-from app.services.visual_generation import VisualGenerationService
+from app.services.visual_provider_factory import create_visual_generation_service
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class VisualGenerationDispatcher:
 
     @staticmethod
     def schedule_session_zero(campaign_id: UUID, character_id: UUID) -> None:
-        if not settings.IMAGE_ENABLED:
+        if not settings.IMAGE_ENABLED or settings.IMAGE_PROVIDER == "off":
             return
         VisualGenerationDispatcher._spawn(
             VisualGenerationDispatcher._session_zero(campaign_id, character_id),
@@ -28,7 +28,7 @@ class VisualGenerationDispatcher:
 
     @staticmethod
     def schedule_character_portraits(character_ids: Iterable[UUID]) -> None:
-        if not settings.IMAGE_ENABLED:
+        if not settings.IMAGE_ENABLED or settings.IMAGE_PROVIDER == "off":
             return
         ids = tuple(dict.fromkeys(character_ids))
         if not ids:
@@ -49,18 +49,15 @@ class VisualGenerationDispatcher:
                 completed.result()
             except asyncio.CancelledError:
                 pass
-            except Exception as exc:  # pragma: no cover - defensive background boundary
+            except Exception as exc:  # pragma: no cover
                 logger.info("Background visual generation deferred: %s", exc)
 
         task.add_done_callback(_done)
 
     @staticmethod
     async def _session_zero(campaign_id: UUID, character_id: UUID) -> None:
-        # The cover is the first campaign-facing visual after Session Zero, so generate
-        # it before the portrait on a single consumer GPU. This makes Campaign Library
-        # useful as soon as possible while keeping the jobs sequential for 8 GB cards.
         async with AsyncSessionLocal() as session:
-            service = VisualGenerationService(session)
+            service = create_visual_generation_service(session)
             try:
                 await service.generate_campaign_cover(campaign_id)
                 await session.commit()
@@ -69,7 +66,7 @@ class VisualGenerationDispatcher:
                 logger.info("Campaign cover generation skipped: %s", exc)
 
         async with AsyncSessionLocal() as session:
-            service = VisualGenerationService(session)
+            service = create_visual_generation_service(session)
             try:
                 await service.generate_character_portrait(character_id)
                 await session.commit()
@@ -79,10 +76,9 @@ class VisualGenerationDispatcher:
 
     @staticmethod
     async def _character_portraits(character_ids: tuple[UUID, ...]) -> None:
-        # Generate sequentially: an 8 GB GPU should not run several Klein jobs in parallel.
         for character_id in character_ids:
             async with AsyncSessionLocal() as session:
-                service = VisualGenerationService(session)
+                service = create_visual_generation_service(session)
                 try:
                     await service.generate_character_portrait(character_id)
                     await session.commit()
