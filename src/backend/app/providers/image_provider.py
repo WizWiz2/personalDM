@@ -7,8 +7,15 @@ import httpx
 from app.config import settings
 
 
-class CloudImageProviderError(RuntimeError):
-    pass
+def _visual_error(message: str, cause: Exception | None = None):
+    # Lazy import avoids a module cycle: visual_generation imports this client through
+    # visual_provider_factory, while the shared API already understands ComfyUIError.
+    from app.services.visual_generation import ComfyUIError
+
+    error = ComfyUIError(message)
+    if cause is None:
+        return error
+    return error.with_traceback(cause.__traceback__)
 
 
 class OpenAIImageClient:
@@ -48,7 +55,7 @@ class OpenAIImageClient:
 
     async def generate(self, workflow: dict[str, dict]) -> bytes:
         if not self.api_key:
-            raise CloudImageProviderError("Cloud image API key is not configured")
+            raise _visual_error("Cloud image API key is not configured")
         prompt = str((workflow.get("5") or {}).get("inputs", {}).get("text") or "")
         latent = (workflow.get("7") or {}).get("inputs", {})
         width = int(latent.get("width") or 1024)
@@ -62,11 +69,7 @@ class OpenAIImageClient:
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": self.model,
-                        "prompt": prompt,
-                        "size": size,
-                    },
+                    json={"model": self.model, "prompt": prompt, "size": size},
                 )
                 response.raise_for_status()
                 payload = response.json()
@@ -79,11 +82,15 @@ class OpenAIImageClient:
                     rendered = await client.get(url)
                     rendered.raise_for_status()
                     return rendered.content
-                raise CloudImageProviderError("Cloud image API returned no image data")
-        except CloudImageProviderError:
+                raise _visual_error("Cloud image API returned no image data")
+        except Exception as exc:
+            from app.services.visual_generation import ComfyUIError
+
+            if isinstance(exc, ComfyUIError):
+                raise
+            if isinstance(exc, (httpx.HTTPError, ValueError, TypeError, base64.binascii.Error)):
+                raise _visual_error(f"Cloud image generation failed: {exc}", exc) from exc
             raise
-        except (httpx.HTTPError, ValueError, TypeError, base64.binascii.Error) as exc:
-            raise CloudImageProviderError(f"Cloud image generation failed: {exc}") from exc
 
     @staticmethod
     def _size(width: int, height: int) -> str:
@@ -94,4 +101,4 @@ class OpenAIImageClient:
         return "1024x1024"
 
 
-__all__ = ["CloudImageProviderError", "OpenAIImageClient"]
+__all__ = ["OpenAIImageClient"]
