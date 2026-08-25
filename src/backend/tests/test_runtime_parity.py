@@ -22,6 +22,7 @@ from app.services.base_context_compiler import ContextCompiler as BaseContextCom
 from app.services.base_turn_runner import TurnRunner as BaseTurnRunner
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
+from app.services.memory_scribe import MemoryScribe
 from app.services.turn_authority_planner import TurnAuthorityPlanner
 from app.services.turn_runner import TurnRunner
 from app.services.turn_saga import TurnSaga
@@ -66,7 +67,6 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "systemless_authority",
         "round34_live",
         "mixed_actor_response",
-        "memory_scribe",
         "narrator_quality_recovery",
         "narration_failure_containment",
         "session_zero_finalize",
@@ -111,7 +111,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["context_compiler"].endswith(
         "ContextCompiler.compile_context"
     )
-    assert cli_manifest["memory_parser"].endswith("guarded_parse_data")
+    assert cli_manifest["memory_parser"].endswith("MemoryScribe._parse_data")
+    assert "memory_scribe" in cli_manifest["memory_parser"]
     assert cli_manifest["thesis_reconcile"].endswith(
         "_reconcile_with_lifecycle"
     )
@@ -137,11 +138,13 @@ def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     raw_provider_method = LLMProvider.generate_stream
     legacy_turn_method = BaseTurnRunner.run_turn_stream
     planner_method = TurnAuthorityPlanner.plan
+    memory_parser = MemoryScribe._parse_data
     install_runtime()
 
     assert LLMProvider.generate_stream is raw_provider_method
     assert BaseTurnRunner.run_turn_stream is legacy_turn_method
     assert TurnAuthorityPlanner.plan is planner_method
+    assert MemoryScribe._parse_data is memory_parser
     assert TurnRunner.__mro__[1] is TurnSaga
     assert TurnSaga.__mro__[1] is BaseTurnRunner
     assert TurnRunner.run_turn_stream.__module__ == "app.services.turn_runner"
