@@ -78,6 +78,11 @@ class PlayerDestinationAuthorizer:
         r"\b(?:there|inside|outside|back|туда|сюда|там|обратно|внутрь|наружу|домой)\b",
         re.IGNORECASE,
     )
+    EXIT_TRAVEL_RE = re.compile(
+        r"\b(?:(?:иду|пойду|выхожу|выходим|направляюсь)\s+"
+        r"(?:к\s+выходу|наружу|на\s+улицу)|к\s+выходу|выхожу\s+наружу)\b",
+        re.IGNORECASE,
+    )
     KNOWN_REFERENCE_NOUN_RE = re.compile(
         r"\b(?:address|place|location|destination|адрес\w*|мест\w*|локац\w*|точк\w*)\b",
         re.IGNORECASE,
@@ -275,6 +280,35 @@ class PlayerDestinationAuthorizer:
                 destination_exists=target_exists,
             )
 
+        if self.EXIT_TRAVEL_RE.search(input_text):
+            unique_exit = await self._unique_available_exit(turn)
+            if unique_exit is not None:
+                dest_fold = clean_destination.casefold()
+                dest_is_exit_word = bool(
+                    re.search(r"\b(?:выход\w*|наружу|улиц\w*|двер\w*)\b", dest_fold)
+                )
+                same_place = bool(
+                    target is not None
+                    and source_location_id is not None
+                    and target.id == source_location_id
+                )
+                named_elsewhere = bool(
+                    target_exists
+                    and target is not None
+                    and source_location_id is not None
+                    and target.id != source_location_id
+                    and not dest_is_exit_word
+                )
+                if not named_elsewhere and (
+                    dest_is_exit_word or same_place or not target_exists
+                ):
+                    return self._authorized(
+                        unique_exit.canonical_name,
+                        "unique available exit from travel clause",
+                        input_text,
+                        True,
+                    )
+
         if anaphoric_travel:
             return self._unresolved(
                 clean_destination,
@@ -286,6 +320,27 @@ class PlayerDestinationAuthorizer:
             "player input does not independently identify planner destination",
             destination_exists=target_exists,
         )
+
+    async def _unique_available_exit(self, turn: Turn):
+        source_id = await self._source_location_id(turn)
+        if source_id is None:
+            return None
+        campaign_id = UUID(turn.campaign_id)
+        exits = await self._state.list_exits(
+            campaign_id,
+            source_id,
+            include_hidden=False,
+        )
+        targets = {
+            row.to_location_id
+            for row in exits
+            if row.to_location_id and row.to_location_id != source_id
+        }
+        if len(targets) != 1:
+            return None
+        target_id = next(iter(targets))
+        locations = await self._locations.list_by_campaign(campaign_id)
+        return next((item for item in locations if item.id == target_id), None)
 
     async def _source_location_id(self, turn: Turn) -> UUID | None:
         if not turn.scene_id:

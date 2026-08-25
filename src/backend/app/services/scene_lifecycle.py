@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.scene_repo import SceneRepository
@@ -84,6 +84,12 @@ class SceneLifecycleService:
             ).scalars().all()
         )
         if campaign.player_character_id:
+            await self._session.execute(
+                delete(SceneParticipant).where(
+                    SceneParticipant.entity_id == campaign.player_character_id,
+                    SceneParticipant.scene_id != target.id,
+                )
+            )
             if campaign.player_character_id not in participant_ids:
                 self._session.add(
                     SceneParticipant(

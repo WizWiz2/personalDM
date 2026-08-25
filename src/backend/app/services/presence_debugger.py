@@ -102,6 +102,8 @@ class PresenceDebugger:
                     f"scene participant {entity.canonical_name} has no character-state row"
                 )
                 continue
+            if scene.status != "active":
+                continue
             scene_location = scene_locations.get(scene.id)
             if scene_location and character.current_location_id != scene_location:
                 presence_issues.append(

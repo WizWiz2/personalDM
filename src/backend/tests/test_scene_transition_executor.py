@@ -191,3 +191,119 @@ async def test_executor_does_not_persist_arrow_path_as_canonical_name(
     target = await scenes.get_by_id(result.target_scene_id)
     assert target is not None
     assert "->" not in target.title
+
+
+@pytest.mark.asyncio
+async def test_activate_removes_player_from_previous_scene(db_session: AsyncSession):
+    from app.db.tables import SceneParticipant
+    from sqlalchemy import select
+
+    campaign_id = uuid4()
+    campaigns = CampaignRepository(db_session)
+    entities = EntityRepository(db_session)
+    locations = LocationRepository(db_session)
+    scenes = SceneRepository(db_session)
+
+    await campaigns.create(campaign_id, CampaignCreate(name="Player occupancy"))
+    tavern = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Трактир"),
+    )
+    street = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Улица"),
+    )
+    hero = await entities.create_character(
+        campaign_id,
+        CharacterCreate(canonical_name="Вера", current_location_id=tavern.id),
+    )
+    await campaigns.update(campaign_id, CampaignUpdate(player_character_id=hero.id))
+    first = await scenes.create(
+        campaign_id,
+        SceneCreate(title="Трактир", location_id=tavern.id),
+    )
+    await scenes.add_participant(first.id, hero.id, allow_movement=True)
+    await SceneLifecycleService(db_session).activate(campaign_id, first.id)
+    second = await scenes.create(
+        campaign_id,
+        SceneCreate(title="Улица", location_id=street.id),
+    )
+    await SceneLifecycleService(db_session).activate(campaign_id, second.id)
+
+    leftover = (
+        await db_session.execute(
+            select(SceneParticipant).where(
+                SceneParticipant.scene_id == str(first.id),
+                SceneParticipant.entity_id == str(hero.id),
+            )
+        )
+    ).scalar_one_or_none()
+    current = (
+        await db_session.execute(
+            select(SceneParticipant).where(
+                SceneParticipant.scene_id == str(second.id),
+                SceneParticipant.entity_id == str(hero.id),
+            )
+        )
+    ).scalar_one_or_none()
+
+    assert leftover is None
+    assert current is not None
+
+
+@pytest.mark.asyncio
+async def test_exit_travel_authorizes_unique_available_exit(db_session: AsyncSession):
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.scene_state import LocationExitCreate
+    from app.models.turn import TurnCreate
+    from app.services.player_destination_authorization import PlayerDestinationAuthorizer
+    from app.services.scene_state_service import SceneStateService
+
+    campaign_id = uuid4()
+    campaigns = CampaignRepository(db_session)
+    entities = EntityRepository(db_session)
+    locations = LocationRepository(db_session)
+    scenes = SceneRepository(db_session)
+
+    await campaigns.create(campaign_id, CampaignCreate(name="Unique exit"))
+    tavern = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Трактир «Якорь»"),
+    )
+    street = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Окрестности — Трактир «Якорь»"),
+    )
+    hero = await entities.create_character(
+        campaign_id,
+        CharacterCreate(canonical_name="Вера", current_location_id=tavern.id),
+    )
+    await campaigns.update(campaign_id, CampaignUpdate(player_character_id=hero.id))
+    source = await scenes.create(
+        campaign_id,
+        SceneCreate(title="Утро", location_id=tavern.id),
+    )
+    await scenes.add_participant(source.id, hero.id, allow_movement=True)
+    await SceneLifecycleService(db_session).activate(campaign_id, source.id)
+    await SceneStateService(db_session).create_exit(
+        campaign_id,
+        tavern.id,
+        LocationExitCreate(to_location_id=street.id, label="наружу"),
+    )
+    user = await TurnRepository(db_session).create(
+        campaign_id,
+        TurnCreate(
+            role="user",
+            scene_id=source.id,
+            content="Киваю хозяину и иду к выходу, если он открыт.",
+        ),
+    )
+
+    authorization = await PlayerDestinationAuthorizer(db_session).authorize(
+        user.id,
+        tavern.canonical_name,
+    )
+
+    assert authorization.authorized is True
+    assert authorization.destination == street.canonical_name
+    assert "unique available exit" in authorization.reason

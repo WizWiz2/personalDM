@@ -7,7 +7,7 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Entity, SceneParticipant
+from app.db.tables import Entity, Scene, SceneParticipant
 from app.models.campaign import CampaignCreate
 from app.models.character import CharacterCreate, CharacterUpdate
 from app.models.location import LocationCreate
@@ -116,3 +116,50 @@ async def test_presence_debugger_flags_duplicate_active_membership(
 
     snapshot = await PresenceDebugger(db_session).snapshot(campaign_id)
     assert any("2 active scenes" in issue for issue in snapshot["presence_state_issues"])
+
+
+@pytest.mark.asyncio
+async def test_presence_debugger_ignores_completed_scene_membership(
+    db_session: AsyncSession,
+):
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id,
+        CampaignCreate(name="Completed leftover"),
+    )
+    locations = LocationRepository(db_session)
+    street = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Улица"),
+    )
+    tavern = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Таверна"),
+    )
+    hero = await EntityRepository(db_session).create_character(
+        campaign_id,
+        CharacterCreate(
+            canonical_name="Вера",
+            current_location_id=tavern.id,
+        ),
+    )
+    scenes = SceneRepository(db_session)
+    old = await scenes.create(
+        campaign_id,
+        SceneCreate(title="Улица у трактира", location_id=street.id),
+    )
+    current = await scenes.create(
+        campaign_id,
+        SceneCreate(title="Таверна", location_id=tavern.id),
+    )
+    old_row = await db_session.get(Scene, str(old.id))
+    old_row.status = "completed"
+    current_row = await db_session.get(Scene, str(current.id))
+    current_row.status = "active"
+    await scenes.add_participant(old.id, hero.id, allow_movement=True)
+    await scenes.add_participant(current.id, hero.id, allow_movement=True)
+
+    snapshot = await PresenceDebugger(db_session).snapshot(campaign_id)
+
+    assert snapshot["presence_state_issues"] == []
+    assert snapshot["health"]["presence_state_errors"] == 0

@@ -231,6 +231,95 @@ async def test_opening_surgically_removes_player_internal_state_before_persisten
 
 
 @pytest.mark.asyncio
+async def test_opening_keeps_surgical_remainder_when_second_validation_still_nags(
+    db_session: AsyncSession,
+):
+    campaign = await CampaignService(db_session).create_campaign(
+        CampaignCreate(name="Opening surgical publish")
+    )
+    await db_session.commit()
+    interview = SessionZeroInterviewService(db_session)
+
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
+        new_callable=AsyncMock,
+        return_value=_decision("Начинаем?"),
+    ):
+        await interview.answer(campaign.id, "Погнали")
+
+    extra = "В углу сидел незнакомый посетитель и ждал кого-то конкретного."
+    raw = (
+        "Ночь легла на окраину Эшфорда плотным тёмным слоем. За последними домами "
+        "город быстро растворяется в сырой земле, редких огнях и силуэтах временных строений. "
+        "Здесь тише, чем в центре, и каждый отдельный звук кажется ближе.\n\n"
+        "Шатёр директора стоит среди этой темноты как единственная точка, вокруг которой "
+        "собралось всё напряжение ночи. Ткань стен едва заметно шевелится, а изнутри пробивается "
+        "тусклый свет, слишком слабый, чтобы разобрать происходящее снаружи.\n\n"
+        f"{extra}\n\n"
+        "На окраине нет обычной городской суеты. Рядом только временные строения, влажная земля "
+        "и шатёр, из-за которого этой ночью возникли вопросы. За тонкой стеной шатра находятся "
+        "странные гости, о которых уже известно из стартовой ситуации."
+    )
+
+    async def raw_stream(*args, **kwargs):
+        yield raw
+
+    first = NarrationValidationResult(
+        verdict="repair_required",
+        summary="Лишняя фигура.",
+        violations=[
+            NarrationViolation(
+                violation_type="ungrounded_complication",
+                severity="error",
+                evidence=extra,
+                correction="Убрать посетителя.",
+            )
+        ],
+    )
+    second = NarrationValidationResult(
+        verdict="repair_required",
+        summary="Осталась фактура.",
+        violations=[
+            NarrationViolation(
+                violation_type="ungrounded_complication",
+                severity="error",
+                evidence="тусклый свет, слишком слабый",
+                correction="Укоротить свет.",
+            )
+        ],
+    )
+
+    with patch(
+        "app.providers.llm_provider.LLMProvider.generate_stream",
+        side_effect=raw_stream,
+    ), patch.object(
+        TurnAuthorityValidator,
+        "validate",
+        new_callable=AsyncMock,
+        side_effect=[first, second],
+    ):
+        await interview.finalize(campaign.id)
+
+    history = await TurnRepository(db_session).get_history(
+        campaign.id,
+        limit=20,
+        channel="narrative",
+    )
+    opening = next(
+        turn
+        for turn in history
+        if turn.role == "assistant"
+        and "session_zero_opening" in str(turn.context_snapshot)
+    )
+    assert extra not in opening.content
+    assert "Шатёр директора стоит" in opening.content
+    assert "Поблизости находятся" not in opening.content
+    telemetry = _snapshot(opening)["provider_telemetry"]
+    assert telemetry["opening_fallback"] is None
+    assert telemetry["opening_validation"]["repair_strategy"] == "deterministic_span_removal"
+
+
+@pytest.mark.asyncio
 async def test_opening_falls_back_to_persisted_scene_when_narrator_is_unavailable(
     db_session: AsyncSession,
 ):

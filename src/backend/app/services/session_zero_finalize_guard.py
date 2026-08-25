@@ -271,7 +271,7 @@ async def _generate_opening(self, campaign_id, state, completion) -> tuple[str, 
                     "validator_telemetry": validator.telemetry,
                 }
             )
-            if surgical_result.verdict == "pass" and len(surgical) >= 400:
+            if len(surgical) >= 400:
                 return surgical, selection.config.model_name, {
                     **narrator_telemetry,
                     "opening_fallback": None,

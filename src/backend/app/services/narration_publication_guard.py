@@ -54,6 +54,13 @@ class NarrationPublicationGuard:
             "canon_conflict",
         }
     )
+    PLAYER_CHOICE_HOOK = re.compile(
+        r"(?:\bреша\w*|\bприня\w+\s+вызов|\bотказа\w*|\bвыбор\b|"
+        r"игрок\s+(?:может|должен)|"
+        r"принять\s+вызов|"
+        r"отказаться)",
+        flags=re.IGNORECASE,
+    )
     META_PATTERN = re.compile(
         r"(?:ответ\s+заканчива(?:ется|ет)|"
         r"жд[её]т\s+дальнейших\s+(?:слов|действий)\s+игрока|"
@@ -82,9 +89,17 @@ class NarrationPublicationGuard:
             if item.severity == "error"
         ]
         if validation is None or errors:
-            if validation is not None and not any(
-                item.violation_type in cls.STATE_BREAKING_VIOLATIONS for item in errors
-            ):
+            breaking = [
+                item
+                for item in errors
+                if item.violation_type in cls.STATE_BREAKING_VIOLATIONS
+            ]
+            actor_agency_only = bool(
+                authority.scene_disposition == "actor_turn"
+                and breaking
+                and all(item.violation_type == "player_agency" for item in breaking)
+            )
+            if validation is not None and (not breaking or actor_agency_only):
                 surgical, surgery = cls.surgical_repair_candidate(candidate, validation)
                 if surgical:
                     return surgical, {
@@ -172,7 +187,7 @@ class NarrationPublicationGuard:
                 "error_count": len(errors),
                 "retained_ratio": retained_ratio,
             }
-        if len(cleaned) < 60 or retained_ratio < 0.30:
+        if len(cleaned) < 24 or retained_ratio < 0.20:
             return None, {
                 "strategy": "deterministic_span_removal",
                 "status": "skipped",
@@ -239,15 +254,19 @@ class NarrationPublicationGuard:
 
         if authority.scene_disposition == "actor_turn":
             actor = cls._player_facing_fragment(authority.acting_character_name or "Собеседник")
+            for beat in authority.character_beats:
+                safe = cls._player_facing_fragment(beat)
+                if safe and not cls._player_choice_hook(safe, authority.player_character_name):
+                    cls._append_unique(parts, safe)
             if not parts and authority.ending_hook:
                 hook = cls._player_facing_fragment(authority.ending_hook)
-                if hook:
+                if hook and not cls._player_choice_hook(hook, authority.player_character_name):
                     cls._append_unique(parts, hook)
             if not parts:
-                cls._append_unique(parts, f"{actor or 'Собеседник'} умолкает")
+                cls._append_unique(parts, f"{actor or 'Собеседник'} пока не отвечает")
         elif authority.ending_hook:
             hook = cls._player_facing_fragment(authority.ending_hook)
-            if hook:
+            if hook and not cls._player_choice_hook(hook, authority.player_character_name):
                 cls._append_unique(parts, hook)
 
         if not parts:
@@ -267,6 +286,15 @@ class NarrationPublicationGuard:
             reason = TurnAuthority._player_facing_blocking_reason(step.get("blocking_reason"))
             return reason or "Путь вперёд остаётся закрыт"
         return None
+
+    @classmethod
+    def _player_choice_hook(cls, text: str, player_name: str | None) -> bool:
+        if not cls.PLAYER_CHOICE_HOOK.search(text or ""):
+            return False
+        name = " ".join((player_name or "").split())
+        if name and name.casefold() in text.casefold():
+            return True
+        return bool(re.search(r"\b(?:герой|игрок|протагонист)\b", text, flags=re.IGNORECASE))
 
     @classmethod
     def _player_facing_fragment(cls, value: object) -> str | None:

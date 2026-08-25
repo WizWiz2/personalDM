@@ -37,7 +37,7 @@ def _error(kind: str, evidence: str) -> NarrationValidationResult:
     )
 
 
-def test_round26_actor_fallback_discards_entire_rejected_candidate():
+def test_round26_actor_fallback_keeps_npc_speech_after_player_agency_cut():
     authority = _authority(actor_turn=True)
     rejected = (
         "Ирина отвечает: «Его зовут Иван Петров». "
@@ -50,11 +50,28 @@ def test_round26_actor_fallback_discards_entire_rejected_candidate():
         _error("player_agency", "Виктор Соколов кивает и говорит"),
     )
 
-    assert "Иван Петров" not in published
+    assert "Иван Петров" in published
     assert "Хорошо" not in published
-    assert "Виктор" not in published
+    assert "кивает" not in published
+    assert audit["mode"] == "surgical_surface"
+    assert audit["candidate_discarded"] is False
+
+
+def test_actor_projection_does_not_publish_player_choice_hook():
+    authority = _authority(actor_turn=True).model_copy(
+        update={
+            "player_character_name": "Вера",
+            "acting_character_name": "Хозяин трактира",
+            "ending_hook": "Вера решает принять вызов или отказаться.",
+        }
+    )
+
+    published, audit = NarrationPublicationGuard.publish(authority, "", None)
+
+    assert "решает" not in published
+    assert "вызов" not in published
     assert audit["mode"] == "authority_projection"
-    assert audit["candidate_discarded"] is True
+    assert "не отвечает" in published or "Хозяин" in published
 
 
 def test_round26_unauthorized_npc_cannot_survive_safe_fallback():

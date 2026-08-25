@@ -86,6 +86,32 @@ async def test_agent_can_finalize_with_only_playable_critical_mass(
 
 
 @pytest.mark.asyncio
+async def test_imperative_start_now_finalizes_without_waiting_for_tool_call(
+    db_session: AsyncSession,
+):
+    campaign = await _campaign(db_session, "Start now")
+    interview = SessionZeroInterviewService(db_session)
+    response = _decision(
+        "Хочешь ещё что-то уточнить про хозяина трактира?",
+        patch_data=MINIMAL_START_PATCH,
+        finalize=False,
+    )
+
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
+        new_callable=AsyncMock,
+        return_value=response,
+    ):
+        decision = await interview.answer(
+            campaign.id,
+            "Начинай игру как можно скорее, недостающие детали дострой сам.",
+        )
+
+    assert decision.ready_to_finalize is True
+    assert "?" not in decision.assistant_message
+
+
+@pytest.mark.asyncio
 async def test_failed_finalize_is_repaired_by_agent_instead_of_more_questions(
     db_session: AsyncSession,
 ):

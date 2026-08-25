@@ -170,11 +170,18 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
     START_REQUEST_MARKERS = (
         "начинаем игру",
         "начать игру",
+        "начинай игру",
+        "начинай прямо",
+        "начинай сейчас",
+        "начинай как можно скорее",
+        "давай начинай",
         "давай играть",
         "можно начинать",
         "хочу начать",
         "погнали",
         "стартуем",
+        "запускай",
+        "без новых вопросов",
         "и что происходит",
     )
     START_CLAIM_MARKERS = (
@@ -720,6 +727,19 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         return len(clean) >= 3 and not cls._is_delegation(clean)
 
     @classmethod
+    def _terminal_start_message(cls, value: str) -> str:
+        """Ready Session Zero must not play the opening or ask another question."""
+        clean = cls._text(value)
+        if (
+            clean
+            and "?" not in clean
+            and not cls._assistant_claims_start(clean)
+            and len(clean) <= 280
+        ):
+            return clean
+        return "Основа готова. Начинаем с первой сцены."
+
+    @classmethod
     def _safe_assistant_message(
         cls,
         value: str,
@@ -728,10 +748,10 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         quality_failed: bool,
     ) -> str:
         clean = cls._text(value)
+        if ready:
+            return cls._terminal_start_message(clean)
         if clean and not quality_failed:
             return clean
-        if ready:
-            return "Основа готова. Начинаем с первой сцены."
         return cls.SAFE_FALLBACK_MESSAGE
 
     @staticmethod
