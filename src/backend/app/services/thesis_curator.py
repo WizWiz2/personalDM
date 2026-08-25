@@ -13,6 +13,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.memory_operations import MemoryOperationsService
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
 
@@ -53,6 +54,17 @@ class ThesisCurator:
         self._config_repo = ProviderConfigRepository(session)
         self._model_router = RoleModelRouter(self._config_repo)
         self._llm_provider = LLMProvider()
+
+    def _supports_lifecycle_audit(self) -> bool:
+        """Whether this session can persist thesis lifecycle audit records.
+
+        Lightweight fake sessions used by unit tests intentionally do not expose the
+        SQLAlchemy execute API. Production AsyncSession does, so lifecycle bookkeeping
+        stays an explicit responsibility of the curator instead of a runtime monkeypatch.
+        """
+        return callable(getattr(self._session, "execute", None)) and callable(
+            getattr(self._session, "flush", None)
+        )
 
     @staticmethod
     def scope_key(thesis_type: str, related_entity_ids: list[UUID]) -> str:
@@ -98,6 +110,8 @@ class ThesisCurator:
                 SceneThesisUpdate(status="resolved"),
             )
         await self._session.flush()
+        if self._supports_lifecycle_audit():
+            await MemoryOperationsService(self._session).record_closed_scene(scene_id)
         return len(active)
 
     async def curate_after_turn(
@@ -382,4 +396,10 @@ visual_state, music_mood
             result.created += 1
 
         await self._session.flush()
+        if self._supports_lifecycle_audit():
+            await MemoryOperationsService(self._session).record_reconcile(
+                scene_id,
+                source_turn_id,
+                desired,
+            )
         return result
