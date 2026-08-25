@@ -322,6 +322,17 @@ class PlayerDestinationAuthorizer:
                         True,
                     )
 
+        if self.RETURN_TRAVEL_RE.search(input_text):
+            unique = await self._unique_available_exit(turn)
+            if unique is not None:
+                unique_exit, _exit_row = unique
+                return self._authorized(
+                    unique_exit.canonical_name,
+                    "unique available exit from return clause",
+                    input_text,
+                    True,
+                )
+
         if anaphoric_travel:
             return self._unresolved(
                 clean_destination,
