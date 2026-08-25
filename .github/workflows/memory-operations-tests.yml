@@ -10,11 +10,12 @@ on:
       - "src/backend/app/db/thesis_lifecycle_table.py"
       - "src/backend/app/models/memory_ops.py"
       - "src/backend/app/services/memory_operations.py"
-      - "src/backend/app/services/thesis_lifecycle_guard.py"
+      - "src/backend/app/services/thesis_curator.py"
       - "src/backend/app/static/memory_ops.html"
       - "src/backend/app/main.py"
       - "src/backend/alembic/**"
       - "src/backend/tests/test_memory_operations.py"
+      - "src/backend/tests/test_thesis_curator_lifecycle.py"
       - "src/backend/tests/test_generative_simulation_overhaul.py"
       - ".github/workflows/memory-operations-tests.yml"
 
@@ -47,6 +48,7 @@ jobs:
             tests/test_memory_operations.py \
             tests/test_memory_taxonomy.py \
             tests/test_thesis_curator.py \
+            tests/test_thesis_curator_lifecycle.py \
             tests/test_generative_simulation_overhaul.py \
             --tb=short
       - name: Lint changed files
@@ -56,6 +58,7 @@ jobs:
             app/db/thesis_lifecycle_table.py \
             app/models/memory_ops.py \
             app/services/memory_operations.py \
-            app/services/thesis_lifecycle_guard.py \
+            app/services/thesis_curator.py \
             app/main.py \
-            tests/test_memory_operations.py
+            tests/test_memory_operations.py \
+            tests/test_thesis_curator_lifecycle.py
