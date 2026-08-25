@@ -12,7 +12,6 @@ _GUARDS = (
     "narrator_quality_recovery",
     "narration_failure_containment",
     "session_zero_finalize",
-    "thesis_lifecycle",
 )
 
 
@@ -41,7 +40,6 @@ def install_runtime() -> None:
     from app.services.round34_live_guard import install as install_round34_live
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.systemless_authority_guard import install as install_systemless_authority
-    from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle
 
     install_actor_turn_authority()
     install_systemless_authority()
@@ -51,7 +49,6 @@ def install_runtime() -> None:
     install_narrator_quality_recovery()
     install_narration_failure_containment()
     install_session_zero_finalize()
-    install_thesis_lifecycle()
     _INSTALLED = True
 
 
