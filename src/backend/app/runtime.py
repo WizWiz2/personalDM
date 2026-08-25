@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 _INSTALLED = False
-_GUARDS = (
+_COMPATIBILITY_GUARDS = (
     "actor_turn_authority",
     "actor_memory_observability",
     "systemless_authority",
@@ -14,15 +14,15 @@ _GUARDS = (
     "narrator_quality_recovery",
     "narration_failure_containment",
     "session_zero_finalize",
-    "thesis_lifecycle",
 )
 
 
 def install_runtime() -> None:
-    """Install the remaining global runtime guards exactly once.
+    """Install compatibility guards that have not yet been absorbed by their owners.
 
-    Turn orchestration, context and narration composition are explicit dependencies. Runtime
-    bootstrap installs the compatibility guards that still mutate public extension points.
+    New runtime invariants must be implemented by their owning service or by explicit
+    composition. This bootstrap exists only while the remaining historical guards are
+    migrated out of global class mutation.
     """
     global _INSTALLED
     if _INSTALLED:
@@ -44,7 +44,6 @@ def install_runtime() -> None:
     from app.services.round34_live_guard import install as install_round34_live
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.systemless_authority_guard import install as install_systemless_authority
-    from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle
 
     install_memory_scribe()
     install_actor_turn_authority()
@@ -56,7 +55,6 @@ def install_runtime() -> None:
     install_narrator_quality_recovery()
     install_narration_failure_containment()
     install_session_zero_finalize()
-    install_thesis_lifecycle()
     _INSTALLED = True
 
 
@@ -85,7 +83,10 @@ def runtime_manifest() -> dict[str, Any]:
 
     return {
         "installed": _INSTALLED,
-        "guards": list(_GUARDS),
+        "compatibility_guards": list(_COMPATIBILITY_GUARDS),
+        # Keep the legacy key while external debugger consumers migrate. It now means
+        # exactly the same thing and should monotonically shrink to an empty list.
+        "guards": list(_COMPATIBILITY_GUARDS),
         "context_pipeline": list(ContextCompiler.DEFAULT_PROVIDER_NAMES),
         "turn_pipeline": [
             "compile_context",
