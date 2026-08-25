@@ -22,6 +22,7 @@ from app.services.base_context_compiler import ContextCompiler as BaseContextCom
 from app.services.base_turn_runner import TurnRunner as BaseTurnRunner
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
+from app.services.thesis_curator import ThesisCurator
 from app.services.turn_runner import TurnRunner
 from app.services.turn_saga import TurnSaga
 
@@ -59,7 +60,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
 
     assert cli_manifest == api_manifest
     assert cli_manifest["installed"] is True
-    assert cli_manifest["guards"] == [
+    assert cli_manifest["compatibility_guards"] == cli_manifest["guards"]
+    assert cli_manifest["compatibility_guards"] == [
         "actor_turn_authority",
         "actor_memory_observability",
         "systemless_authority",
@@ -70,7 +72,6 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "narrator_quality_recovery",
         "narration_failure_containment",
         "session_zero_finalize",
-        "thesis_lifecycle",
     ]
     assert cli_manifest["context_pipeline"] == [
         "authoritative_scene_state",
@@ -110,8 +111,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "ContextCompiler.compile_context"
     )
     assert cli_manifest["memory_parser"].endswith("guarded_parse_data")
-    assert cli_manifest["thesis_reconcile"].endswith(
-        "_reconcile_with_lifecycle"
+    assert cli_manifest["thesis_reconcile"] == (
+        "app.services.thesis_curator.ThesisCurator.reconcile"
     )
     assert cli_manifest["post_turn_mode"] == "background"
 
@@ -144,6 +145,18 @@ def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     assert AuthorityNarrationPipeline.generate.__module__ == (
         "app.services.authority_narration_pipeline"
     )
+
+
+def test_thesis_lifecycle_is_owned_by_curator_not_runtime_patch() -> None:
+    reconcile = ThesisCurator.reconcile
+    close_scene = ThesisCurator.close_scene
+
+    install_runtime()
+
+    assert ThesisCurator.reconcile is reconcile
+    assert ThesisCurator.close_scene is close_scene
+    assert ThesisCurator.reconcile.__module__ == "app.services.thesis_curator"
+    assert ThesisCurator.close_scene.__module__ == "app.services.thesis_curator"
 
 
 def _imported_modules(path: Path) -> set[str]:
