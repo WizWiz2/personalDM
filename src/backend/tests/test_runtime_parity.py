@@ -132,6 +132,7 @@ def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
     )
 
 
+@pytest.mark.interagent_contract_enforced
 def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     raw_provider_method = LLMProvider.generate_stream
     legacy_turn_method = BaseTurnRunner.run_turn_stream
