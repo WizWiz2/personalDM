@@ -6,6 +6,7 @@ import unicodedata
 from app.services.entity_identity import identity_key
 
 _TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+_ROUTE_SPLIT_RE = re.compile(r"\s*(?:->|→|>)\s*")
 
 # Numbered places are common model-authored references ("Причал №7", "седьмой причал",
 # "причал номер семь"). Normalize grammatical spelling, not story-specific aliases.
@@ -100,4 +101,27 @@ def same_location_reference(left: object, right: object) -> bool:
     return bool(left_key and right_key and left_key == right_key)
 
 
-__all__ = ["location_reference_key", "same_location_reference"]
+def display_location_name(value: object) -> str:
+    """Strip planner route-path decoration so a destination can match an existing Location.
+
+    Planner sometimes emits ``наружу -> Окрестности — Трактир`` as if the arrow path were a
+    canonical name. The last segment is the place; earlier segments are exit labels.
+    """
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    parts = [part.strip(" ,—-") for part in _ROUTE_SPLIT_RE.split(text) if part.strip(" ,—-")]
+    return parts[-1] if parts else text
+
+
+def is_route_labeled_location_name(value: object) -> bool:
+    text = " ".join(str(value or "").split())
+    return bool(text) and text != display_location_name(text)
+
+
+__all__ = [
+    "display_location_name",
+    "is_route_labeled_location_name",
+    "location_reference_key",
+    "same_location_reference",
+]

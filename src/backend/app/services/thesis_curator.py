@@ -13,6 +13,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.memory_operations import MemoryOperationsService
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
 
@@ -53,6 +54,12 @@ class ThesisCurator:
         self._config_repo = ProviderConfigRepository(session)
         self._model_router = RoleModelRouter(self._config_repo)
         self._llm_provider = LLMProvider()
+
+    @staticmethod
+    def _supports_lifecycle(session) -> bool:
+        return callable(getattr(session, "execute", None)) and callable(
+            getattr(session, "flush", None)
+        )
 
     @staticmethod
     def scope_key(thesis_type: str, related_entity_ids: list[UUID]) -> str:
@@ -98,6 +105,8 @@ class ThesisCurator:
                 SceneThesisUpdate(status="resolved"),
             )
         await self._session.flush()
+        if self._supports_lifecycle(self._session):
+            await MemoryOperationsService(self._session).record_closed_scene(scene_id)
         return len(active)
 
     async def curate_after_turn(
@@ -198,17 +207,14 @@ visual_state, music_mood
 {{"desired_active":[{{"thesis_type":"tension","text":"...","priority":5,"visibility":"dm","related_entity_ids":[],"existing_thesis_id":null,"semantic_key":"короткий стабильный ключ"}}]}}
 """
 
-        try:
-            response_data = await self._model_router.generate_json(
-                self._llm_provider,
-                selection,
-                [ChatMessage(role="system", content=prompt)],
-                max_tokens=900,
-                temperature=0.1,
-                response_model=CuratorResponse,
-            )
-        except LLMProviderError:
-            raise
+        response_data = await self._model_router.generate_json(
+            self._llm_provider,
+            selection,
+            [ChatMessage(role="system", content=prompt)],
+            max_tokens=900,
+            temperature=0.1,
+            response_model=CuratorResponse,
+        )
 
         desired = self._validate_response(response_data, set(entity_names))
         if desired is None:
@@ -382,4 +388,10 @@ visual_state, music_mood
             result.created += 1
 
         await self._session.flush()
+        if self._supports_lifecycle(self._session):
+            await MemoryOperationsService(self._session).record_reconcile(
+                scene_id,
+                source_turn_id,
+                desired,
+            )
         return result

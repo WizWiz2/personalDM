@@ -5,13 +5,12 @@ from app.models.session_zero_interview import (
 )
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction
-from app.runtime import install_runtime
-from app.services.round33_identity_guard import (
+from app.services.session_zero_interview import SessionZeroInterviewService
+from app.services.starter_identity import (
     present_character_names,
     reconcile_starter_npcs,
     sanitize_existing_present_npc_introductions,
 )
-from app.services.session_zero_interview import SessionZeroInterviewService
 from app.services.systemless_authority_guard import systemless_contract_issues
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 
@@ -26,7 +25,7 @@ def _starter(*, role="Посетительница", name=None, description=None
     )
 
 
-def test_round33_alternating_role_and_name_starter_specs_collapse_to_one_identity():
+def test_alternating_role_and_name_starter_specs_collapse_to_one_identity():
     specs = [
         _starter(description="Взволнованная свидетельница ждёт разговора."),
         _starter(name="Анна", description="Свидетельница по текущему делу."),
@@ -43,8 +42,7 @@ def test_round33_alternating_role_and_name_starter_specs_collapse_to_one_identit
     assert reconciled[0].present_at_start is True
 
 
-def test_round33_session_zero_patch_accumulation_keeps_one_starter_identity():
-    install_runtime()
+def test_session_zero_patch_accumulation_keeps_one_starter_identity():
     draft = SessionZeroInterviewDraft()
 
     draft = SessionZeroInterviewService._apply_patch(
@@ -101,6 +99,26 @@ def test_round33_session_zero_patch_accumulation_keeps_one_starter_identity():
     assert draft.world.starter_npcs[0].name == "Анна"
     assert SessionZeroInterviewService.summary(draft).count("Анна") == 1
     assert "Посетительница; Анна" not in SessionZeroInterviewService.summary(draft)
+
+
+def test_role_name_and_specific_name_collapse_to_one_innkeeper():
+    reconciled = reconcile_starter_npcs(
+        [
+            _starter(role="трактирщик", name="Хозяин"),
+            _starter(role="трактирщик", name="Хозяин трактира"),
+        ]
+    )
+
+    assert len(reconciled) == 1
+    assert reconciled[0].name == "Хозяин трактира"
+
+
+def test_present_innkeeper_is_not_reintroduced_under_role_name():
+    plan = _conversation_plan("Хозяин", "трактирщик")
+
+    sanitize_existing_present_npc_introductions(plan, {"Вера", "Хозяин трактира"})
+
+    assert plan.npc_introductions == []
 
 
 def test_two_different_named_starters_with_same_role_never_merge():

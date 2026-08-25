@@ -37,9 +37,22 @@ class NarrationPublicationGuard:
         r"player destination is (?:unresolved|not authorized)|"
         r"existing route is required|destination route is currently inactive|"
         r"destination is not an available exit|"
+        r"resolved to the current physical location|"
+        r"use stay(?:/focus_transition)?|"
+        r"claiming physical travel|"
+        r"\blocation_transition\b|\bfocus_transition\b|\bscene_disposition\b|"
         r"\bBLOCKED\b|\bSKIPPED\b|\bCOMPLETED\b|"
         r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+){2,}\b)",
         flags=re.IGNORECASE,
+    )
+    STATE_BREAKING_VIOLATIONS = frozenset(
+        {
+            "player_agency",
+            "invalid_movement",
+            "invalid_time_advance",
+            "sequence_violation",
+            "canon_conflict",
+        }
     )
     META_PATTERN = re.compile(
         r"(?:ответ\s+заканчива(?:ется|ет)|"
@@ -69,7 +82,21 @@ class NarrationPublicationGuard:
             if item.severity == "error"
         ]
         if validation is None or errors:
-            fallback = cls.render_authority(authority)
+            if validation is not None and not any(
+                item.violation_type in cls.STATE_BREAKING_VIOLATIONS for item in errors
+            ):
+                surgical, surgery = cls.surgical_repair_candidate(candidate, validation)
+                if surgical:
+                    return surgical, {
+                        "mode": "surgical_surface",
+                        "candidate_characters": len(candidate),
+                        "published_characters": len(surgical),
+                        "error_count": len(errors),
+                        "candidate_discarded": False,
+                        "validated_surface": False,
+                        "surgical_repair": surgery,
+                    }
+            fallback = cls._safe_authority_projection(authority)
             return fallback, {
                 "mode": "authority_projection",
                 "candidate_characters": len(candidate),
@@ -92,7 +119,7 @@ class NarrationPublicationGuard:
                 "validated_surface": True,
             }
 
-        fallback = cls.render_authority(authority)
+        fallback = cls._safe_authority_projection(authority)
         return fallback, {
             "mode": "authority_projection",
             "candidate_characters": len(candidate),
@@ -101,6 +128,14 @@ class NarrationPublicationGuard:
             "candidate_discarded": True,
             "validated_surface": False,
         }
+
+    @classmethod
+    def _safe_authority_projection(cls, authority: TurnAuthority) -> str:
+        rendered = cls.render_authority(authority)
+        safe = cls._player_facing_fragment(rendered)
+        if safe:
+            return cls._as_sentence(safe)
+        return "Пока ничего заметно не меняется."
 
     @classmethod
     def surgical_repair_candidate(

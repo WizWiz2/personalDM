@@ -50,6 +50,7 @@ _NON_WORD = re.compile(r"[^a-z0-9]+")
 _ROLE_FAMILIES: dict[str, tuple[str, ...]] = {
     "innkeeper": (
         "traktirshchik",
+        "khozyain",
         "khozyain taverny",
         "khozyain traktira",
         "khozyain postoyalogo dvora",

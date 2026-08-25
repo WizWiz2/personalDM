@@ -10,7 +10,7 @@ on:
       - "src/backend/app/db/thesis_lifecycle_table.py"
       - "src/backend/app/models/memory_ops.py"
       - "src/backend/app/services/memory_operations.py"
-      - "src/backend/app/services/thesis_lifecycle_guard.py"
+      - "src/backend/app/services/thesis_curator.py"
       - "src/backend/app/static/memory_ops.html"
       - "src/backend/app/main.py"
       - "src/backend/alembic/**"
@@ -56,6 +56,6 @@ jobs:
             app/db/thesis_lifecycle_table.py \
             app/models/memory_ops.py \
             app/services/memory_operations.py \
-            app/services/thesis_lifecycle_guard.py \
+            app/services/thesis_curator.py \
             app/main.py \
             tests/test_memory_operations.py

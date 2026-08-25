@@ -15,6 +15,10 @@ from app.services.player_intent_contract import (
     intent_corresponds,
 )
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
+from app.services.starter_identity import (
+    present_character_names,
+    sanitize_existing_present_npc_introductions,
+)
 from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
 
 
@@ -357,8 +361,6 @@ choice for the protagonist.
                 )
 
         if not unresolved_choice and cls._matches_any(cls.CONTACT_INTENT_PATTERNS, text):
-            # For generic/unknown contact, an affirmative response must have typed identity.
-            # Empty introductions are valid only when the plan explicitly resolves NO contact.
             contact_resolved = bool(plan.npc_introductions) or cls._matches_any(
                 cls.NEGATIVE_CONTACT_OUTCOME_PATTERNS,
                 consequences,
@@ -425,8 +427,10 @@ choice for the protagonist.
     ) -> CoordinatedTurnPlan:
         base_messages = self.planning_messages(context_messages)
         player_input = self._latest_user_text(context_messages)
+        present_names = present_character_names(context_messages)
         try:
             plan = await self._generate_plan(selection, base_messages)
+            sanitize_existing_present_npc_introductions(plan, present_names)
             issues = self.contract_issues(plan, player_input)
             if not issues:
                 return plan
@@ -435,6 +439,7 @@ choice for the protagonist.
                 selection,
                 self._repair_messages(base_messages, player_input, issues, plan),
             )
+            sanitize_existing_present_npc_introductions(repaired, present_names)
             remaining = self.contract_issues(repaired, player_input)
             if remaining:
                 raise TurnPlanningError(

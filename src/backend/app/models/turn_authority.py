@@ -108,6 +108,22 @@ class TurnAuthority(BaseModel):
                 "Путь туда пока не обнаружен.",
             ),
             (
+                (
+                    "resolved to the current physical location",
+                    "use stay/focus_transition",
+                    "claiming physical travel",
+                ),
+                "Ты остаёшься там, где уже стоишь.",
+            ),
+            (
+                ("matches multiple existing routes",),
+                "Из текущего места туда ведёт больше одного пути; нужно уточнить направление.",
+            ),
+            (
+                ("destination location is empty",),
+                "Неясно, куда именно ведёт этот шаг; путь остаётся прежним.",
+            ),
+            (
                 ("requires a check",),
                 "Без проверки исход этого действия пока не определён.",
             ),
@@ -126,6 +142,10 @@ class TurnAuthority(BaseModel):
             "target_scene",
             "source_location_id",
             "target_location_id",
+            "location_transition",
+            "focus_transition",
+            "scene_disposition",
+            "action_sequence",
             "planner",
             "validator",
             "control-plane",

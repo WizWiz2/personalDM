@@ -7,22 +7,20 @@ _GUARDS = (
     "actor_turn_authority",
     "actor_memory_observability",
     "systemless_authority",
-    "round33_identity",
     "round34_live",
     "mixed_actor_response",
-    "memory_scribe",
     "narrator_quality_recovery",
     "narration_failure_containment",
     "session_zero_finalize",
-    "thesis_lifecycle",
 )
 
 
 def install_runtime() -> None:
-    """Install the remaining global runtime guards exactly once.
+    """Install the remaining compatibility guards exactly once.
 
     Turn orchestration, context and narration composition are explicit dependencies. Runtime
-    bootstrap installs the compatibility guards that still mutate public extension points.
+    bootstrap installs only compatibility guards whose invariants have not yet moved into their
+    owning services.
     """
     global _INSTALLED
     if _INSTALLED:
@@ -32,7 +30,6 @@ def install_runtime() -> None:
         install as install_actor_memory_observability,
     )
     from app.services.actor_turn_authority_guard import install as install_actor_turn_authority
-    from app.services.memory_scribe_guard import install as install_memory_scribe
     from app.services.mixed_actor_response_guard import install as install_mixed_actor_response
     from app.services.narration_failure_containment_guard import (
         install as install_narration_failure_containment,
@@ -40,23 +37,18 @@ def install_runtime() -> None:
     from app.services.narrator_quality_recovery_guard import (
         install as install_narrator_quality_recovery,
     )
-    from app.services.round33_identity_guard import install as install_round33_identity
     from app.services.round34_live_guard import install as install_round34_live
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.systemless_authority_guard import install as install_systemless_authority
-    from app.services.thesis_lifecycle_guard import install as install_thesis_lifecycle
 
-    install_memory_scribe()
     install_actor_turn_authority()
     install_systemless_authority()
-    install_round33_identity()
     install_round34_live()
     install_mixed_actor_response()
     install_actor_memory_observability()
     install_narrator_quality_recovery()
     install_narration_failure_containment()
     install_session_zero_finalize()
-    install_thesis_lifecycle()
     _INSTALLED = True
 
 

@@ -27,6 +27,7 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.session_zero_service import SessionZeroService
+from app.services.starter_identity import reconcile_starter_npcs
 
 
 class SessionZeroInterviewIncompleteError(ValueError):
@@ -452,6 +453,7 @@ class SessionZeroInterviewService:
                 ):
                     continue
                 setattr(target_section, field_name, new_value)
+        merged.world.starter_npcs = reconcile_starter_npcs(merged.world.starter_npcs)
         return merged
 
     @classmethod

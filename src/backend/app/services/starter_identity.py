@@ -1,19 +1,33 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from contextvars import ContextVar
 
 from app.models.session_zero_interview import SessionZeroStarterNPC
-
-_INSTALLED = False
-_PRESENT_CHARACTER_CONTEXT: ContextVar[frozenset[str]] = ContextVar(
-    "round33_present_character_context",
-    default=frozenset(),
-)
 
 
 def _key(value: object) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
+
+
+def names_are_same_identity(left: object, right: object) -> bool:
+    """Treat a role-name as the same person as a more specific name with that role as prefix.
+
+    ``Хозяин`` and ``Хозяин трактира`` are one starter. Two different explicit names are not.
+    """
+    left_key = _key(left)
+    right_key = _key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_tokens = left_key.split()
+    right_tokens = right_key.split()
+    shorter, longer = (
+        (left_tokens, right_tokens)
+        if len(left_tokens) <= len(right_tokens)
+        else (right_tokens, left_tokens)
+    )
+    return bool(shorter) and longer[: len(shorter)] == shorter
 
 
 def _merge_starter_spec(
@@ -22,7 +36,11 @@ def _merge_starter_spec(
 ) -> SessionZeroStarterNPC:
     """Refine one starter identity without silently rewriting established details."""
     payload = established.model_dump(mode="python")
-    if not _key(established.name) and _key(incoming.name):
+    established_name = _key(established.name)
+    incoming_name = _key(incoming.name)
+    if incoming_name and (
+        not established_name or len(incoming_name) > len(established_name)
+    ):
         payload["name"] = incoming.name
     for field in ("description", "reason"):
         if not _key(payload.get(field)) and _key(getattr(incoming, field)):
@@ -38,17 +56,9 @@ def reconcile_starter_npcs(
 ) -> list[SessionZeroStarterNPC]:
     """Collapse repeated role/name representations of one uniquely identified starter.
 
-    Session Zero tool calls are patches. Qwen may alternate `Посетительница` and `Анна` for the
-    same physically-present witness. Plain Pydantic equality treats changes in name/description/
-    reason as new list entries and bootstrap then materializes duplicate characters.
-
-    Reconciliation stays deterministic:
-    * the same explicit name is one identity;
-    * one explicit name plus otherwise-unnamed entries with the exact same role is one identity;
-    * one named entry may promote one unique earlier role placeholder;
-    * two different explicit names with the same role always stay distinct;
-    * when a role has multiple named identities, unnamed entries for that role stay separate rather
-      than being assigned arbitrarily.
+    Session Zero tool calls are patches. The control model may alternate a role placeholder and a
+    later explicit name for the same physically-present witness. Reconciliation keeps that identity
+    deterministic without merging two different explicitly named people.
     """
     source = [SessionZeroStarterNPC.model_validate(raw) for raw in specs]
     explicit_names_by_role: dict[str, set[str]] = {}
@@ -68,7 +78,7 @@ def reconcile_starter_npcs(
         same_name = [
             index
             for index, existing in enumerate(result)
-            if name_key and _key(existing.name) == name_key
+            if name_key and names_are_same_identity(existing.name, spec.name)
         ]
         if len(same_name) == 1:
             target = same_name[0]
@@ -81,8 +91,7 @@ def reconcile_starter_npcs(
             named_same_role = [
                 index
                 for index, existing in enumerate(result)
-                if _key(existing.role) == role_key
-                and _key(existing.name) == only_name
+                if _key(existing.role) == role_key and _key(existing.name) == only_name
             ]
             unnamed_same_role = [
                 index
@@ -121,86 +130,28 @@ def present_character_names(context_messages) -> frozenset[str]:
     return frozenset(names)
 
 
-def sanitize_existing_present_npc_introductions(
-    plan,
-    present_names: Iterable[str],
-):
-    """Drop only introductions that exactly name a character already physically present.
+def sanitize_existing_present_npc_introductions(plan, present_names: Iterable[str]):
+    """Drop introductions that exactly name a character already physically present.
 
-    This is not permission for a new NPC. Any genuinely new unsolicited character remains in the
-    plan and is still rejected by the existing systemless fail-closed contract. Explicit unknown
-    contacts such as a passer-by also remain untouched and keep using the existing contact rules.
+    This is not permission for a genuinely new NPC: unsolicited introductions remain in the plan
+    and are still rejected by the fail-closed authority contract.
     """
-    known = {_key(value) for value in present_names if _key(value)}
+    known = [value for value in present_names if _key(value)]
     if not known or not getattr(plan, "npc_introductions", None):
         return plan
     plan.npc_introductions[:] = [
         intro
         for intro in plan.npc_introductions
-        if _key(getattr(intro, "canonical_name", None)) not in known
+        if not any(
+            names_are_same_identity(getattr(intro, "canonical_name", None), present)
+            for present in known
+        )
     ]
     return plan
 
 
-def install() -> None:
-    """Install Round-33 identity reconciliation at existing deterministic boundaries."""
-    global _INSTALLED
-    if _INSTALLED:
-        return
-
-    from app.services.session_zero_agent import (
-        SessionZeroInterviewService as BaseSessionZeroInterviewService,
-    )
-    from app.services.turn_authority_planner import TurnAuthorityPlanner
-
-    original_apply_patch = BaseSessionZeroInterviewService._apply_patch
-    original_contract_issues = TurnAuthorityPlanner.contract_issues
-    original_plan = TurnAuthorityPlanner.plan
-
-    def reconciled_apply_patch(
-        cls,
-        previous,
-        patch,
-        *,
-        allowed_topics=None,
-        explicit_correction=False,
-    ):
-        merged = original_apply_patch(
-            previous,
-            patch,
-            allowed_topics=allowed_topics,
-            explicit_correction=explicit_correction,
-        )
-        merged.world.starter_npcs = reconcile_starter_npcs(
-            merged.world.starter_npcs
-        )
-        return merged
-
-    @classmethod
-    def present_aware_contract_issues(cls, plan, player_input):
-        sanitize_existing_present_npc_introductions(
-            plan,
-            _PRESENT_CHARACTER_CONTEXT.get(),
-        )
-        return list(original_contract_issues(plan, player_input))
-
-    async def present_aware_plan(self, selection, context_messages):
-        token = _PRESENT_CHARACTER_CONTEXT.set(
-            present_character_names(context_messages)
-        )
-        try:
-            return await original_plan(self, selection, context_messages)
-        finally:
-            _PRESENT_CHARACTER_CONTEXT.reset(token)
-
-    BaseSessionZeroInterviewService._apply_patch = classmethod(reconciled_apply_patch)
-    TurnAuthorityPlanner.contract_issues = present_aware_contract_issues
-    TurnAuthorityPlanner.plan = present_aware_plan
-    _INSTALLED = True
-
-
 __all__ = [
-    "install",
+    "names_are_same_identity",
     "present_character_names",
     "reconcile_starter_npcs",
     "sanitize_existing_present_npc_introductions",

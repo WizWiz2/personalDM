@@ -15,7 +15,11 @@ from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant
 from app.models.action_sequence import ActionSequenceExecution
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate, SceneRead
-from app.services.location_identity import same_location_reference
+from app.services.location_identity import (
+    display_location_name,
+    is_route_labeled_location_name,
+    same_location_reference,
+)
 from app.services.player_destination_authorization import (
     DestinationAuthorization,
     PlayerDestinationAuthorizer,
@@ -476,6 +480,7 @@ class SceneTransitionExecutor:
         clean_destination = " ".join(destination.split())
         if not clean_destination:
             return None
+        display_destination = display_location_name(clean_destination)
         locations = await self._locations.list_by_campaign(campaign_id)
         by_id = {location.id: location for location in locations}
 
@@ -486,30 +491,60 @@ class SceneTransitionExecutor:
                 include_hidden=True,
             )
             matched_ids: set[UUID] = set()
+            other_exit_ids: set[UUID] = set()
             for exit_row in exits:
                 target = by_id.get(exit_row.to_location_id)
                 if target is None:
                     continue
+                if target.id != source_location_id:
+                    other_exit_ids.add(target.id)
                 candidates = [
                     target.canonical_name,
                     *target.aliases,
                     exit_row.to_location_name,
                     exit_row.label,
+                    display_location_name(target.canonical_name),
                 ]
                 if any(
-                    same_location_reference(clean_destination, candidate)
+                    same_location_reference(needle, candidate)
+                    for needle in (clean_destination, display_destination)
                     for candidate in candidates
                     if candidate
                 ):
                     matched_ids.add(target.id)
             if len(matched_ids) == 1:
-                return by_id[next(iter(matched_ids))]
-            if len(matched_ids) > 1:
+                matched = by_id[next(iter(matched_ids))]
+                if matched.id != source_location_id:
+                    return matched
+            elif len(matched_ids) > 1:
                 raise ValueError(
                     "Player destination matches multiple existing routes"
                 )
+            # Planner often names the current place (or a "label -> current" path) when the
+            # player asked to return. One unique outbound exit is the only legal rewrite.
+            if (
+                len(other_exit_ids) == 1
+                and is_route_labeled_location_name(clean_destination)
+            ):
+                current = by_id.get(source_location_id)
+                current_names = [
+                    getattr(current, "canonical_name", None),
+                    display_location_name(getattr(current, "canonical_name", None)),
+                    *list(getattr(current, "aliases", None) or []),
+                ]
+                refers_to_current = any(
+                    same_location_reference(needle, candidate)
+                    for needle in (clean_destination, display_destination)
+                    for candidate in current_names
+                    if candidate
+                )
+                if refers_to_current:
+                    return by_id[next(iter(other_exit_ids))]
 
-        return self._match_location(locations, clean_destination)
+        return self._match_location(locations, display_destination) or self._match_location(
+            locations,
+            clean_destination,
+        )
 
     async def _resolve_or_create_location(
         self,
@@ -517,7 +552,7 @@ class SceneTransitionExecutor:
         destination: str,
         parent_name: str | None,
     ) -> tuple[UUID, bool]:
-        clean_destination = " ".join(destination.split())
+        clean_destination = display_location_name(" ".join(destination.split()))
         if not clean_destination:
             raise ValueError("Destination location is empty")
 
@@ -643,9 +678,9 @@ class SceneTransitionExecutor:
         plan: SceneTransitionPlan,
     ) -> str:
         if plan.scene_title:
-            return plan.scene_title
+            return display_location_name(plan.scene_title)
         if plan.transition_type == "location_transition":
-            return plan.destination_location or "Новая локация"
+            return display_location_name(plan.destination_location) or "Новая локация"
         source_title = source_scene.title if source_scene else "Сцена"
         if plan.transition_type == "time_transition":
             marker = plan.time_after or plan.elapsed_time or "позже"

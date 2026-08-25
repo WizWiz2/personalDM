@@ -22,6 +22,9 @@ from app.services.base_context_compiler import ContextCompiler as BaseContextCom
 from app.services.base_turn_runner import TurnRunner as BaseTurnRunner
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
+from app.services.memory_scribe import MemoryScribe
+from app.services.thesis_curator import ThesisCurator
+from app.services.turn_authority_planner import TurnAuthorityPlanner
 from app.services.turn_runner import TurnRunner
 from app.services.turn_saga import TurnSaga
 
@@ -63,14 +66,11 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "actor_turn_authority",
         "actor_memory_observability",
         "systemless_authority",
-        "round33_identity",
         "round34_live",
         "mixed_actor_response",
-        "memory_scribe",
         "narrator_quality_recovery",
         "narration_failure_containment",
         "session_zero_finalize",
-        "thesis_lifecycle",
     ]
     assert cli_manifest["context_pipeline"] == [
         "authoritative_scene_state",
@@ -102,17 +102,18 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["narration_pipeline_impl"].endswith(
         "AuthorityNarrationPipeline.generate"
     )
-    assert "round33_identity_guard" in cli_manifest["authority_planner"]
-    assert cli_manifest["authority_planner"].endswith("present_aware_plan")
+    assert "systemless_authority_guard" in cli_manifest["authority_planner"]
+    assert cli_manifest["authority_planner"].endswith("guarded_plan")
+    assert "round33_identity_guard" not in cli_manifest["authority_planner"]
     assert "narrator_quality_recovery_guard" in cli_manifest["authority_validator"]
     assert cli_manifest["authority_validator"].endswith("ownership_validating")
     assert cli_manifest["context_compiler"].endswith(
         "ContextCompiler.compile_context"
     )
-    assert cli_manifest["memory_parser"].endswith("guarded_parse_data")
-    assert cli_manifest["thesis_reconcile"].endswith(
-        "_reconcile_with_lifecycle"
-    )
+    assert cli_manifest["memory_parser"].endswith("MemoryScribe._parse_data")
+    assert "memory_scribe_guard" not in cli_manifest["memory_parser"]
+    assert cli_manifest["thesis_reconcile"].endswith("ThesisCurator.reconcile")
+    assert "thesis_lifecycle_guard" not in cli_manifest["thesis_reconcile"]
     assert cli_manifest["post_turn_mode"] == "background"
 
 
@@ -131,13 +132,19 @@ def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
     )
 
 
+@pytest.mark.interagent_contract_enforced
 def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     raw_provider_method = LLMProvider.generate_stream
     legacy_turn_method = BaseTurnRunner.run_turn_stream
+    memory_parser = MemoryScribe._parse_data
+    thesis_reconcile = ThesisCurator.reconcile
     install_runtime()
 
     assert LLMProvider.generate_stream is raw_provider_method
     assert BaseTurnRunner.run_turn_stream is legacy_turn_method
+    assert TurnAuthorityPlanner.plan.__module__ == "app.services.systemless_authority_guard"
+    assert MemoryScribe._parse_data is memory_parser
+    assert ThesisCurator.reconcile is thesis_reconcile
     assert TurnRunner.__mro__[1] is TurnSaga
     assert TurnSaga.__mro__[1] is BaseTurnRunner
     assert TurnRunner.run_turn_stream.__module__ == "app.services.turn_runner"
