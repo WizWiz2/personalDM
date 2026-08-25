@@ -212,17 +212,14 @@ visual_state, music_mood
 {{"desired_active":[{{"thesis_type":"tension","text":"...","priority":5,"visibility":"dm","related_entity_ids":[],"existing_thesis_id":null,"semantic_key":"короткий стабильный ключ"}}]}}
 """
 
-        try:
-            response_data = await self._model_router.generate_json(
-                self._llm_provider,
-                selection,
-                [ChatMessage(role="system", content=prompt)],
-                max_tokens=900,
-                temperature=0.1,
-                response_model=CuratorResponse,
-            )
-        except LLMProviderError:
-            raise
+        response_data = await self._model_router.generate_json(
+            self._llm_provider,
+            selection,
+            [ChatMessage(role="system", content=prompt)],
+            max_tokens=900,
+            temperature=0.1,
+            response_model=CuratorResponse,
+        )
 
         desired = self._validate_response(response_data, set(entity_names))
         if desired is None:
