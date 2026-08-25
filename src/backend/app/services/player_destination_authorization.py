@@ -83,6 +83,14 @@ class PlayerDestinationAuthorizer:
         r"(?:к\s+выходу|наружу|на\s+улицу)|к\s+выходу|выхожу\s+наружу)\b",
         re.IGNORECASE,
     )
+    OUTWARD_INTENT_RE = re.compile(
+        r"\b(?:наружу|на\s+улицу|к\s+выходу)\b",
+        re.IGNORECASE,
+    )
+    RETURN_EXIT_LABEL_RE = re.compile(
+        r"\b(?:обратно|назад|внутрь|return|back)\b",
+        re.IGNORECASE,
+    )
     KNOWN_REFERENCE_NOUN_RE = re.compile(
         r"\b(?:address|place|location|destination|адрес\w*|мест\w*|локац\w*|точк\w*)\b",
         re.IGNORECASE,
@@ -281,8 +289,13 @@ class PlayerDestinationAuthorizer:
             )
 
         if self.EXIT_TRAVEL_RE.search(input_text):
-            unique_exit = await self._unique_available_exit(turn)
-            if unique_exit is not None:
+            unique = await self._unique_available_exit(turn)
+            if unique is not None:
+                unique_exit, exit_row = unique
+                if self.OUTWARD_INTENT_RE.search(input_text) and self._is_return_exit(
+                    exit_row
+                ):
+                    unique_exit = None
                 dest_fold = clean_destination.casefold()
                 dest_is_exit_word = bool(
                     re.search(r"\b(?:выход\w*|наружу|улиц\w*|двер\w*)\b", dest_fold)
@@ -299,7 +312,7 @@ class PlayerDestinationAuthorizer:
                     and target.id != source_location_id
                     and not dest_is_exit_word
                 )
-                if not named_elsewhere and (
+                if unique_exit is not None and not named_elsewhere and (
                     dest_is_exit_word or same_place or not target_exists
                 ):
                     return self._authorized(
@@ -321,6 +334,15 @@ class PlayerDestinationAuthorizer:
             destination_exists=target_exists,
         )
 
+    @classmethod
+    def _is_return_exit(cls, exit_row) -> bool:
+        label = " ".join(str(getattr(exit_row, "label", "") or "").split())
+        direction = " ".join(str(getattr(exit_row, "direction", "") or "").split())
+        return bool(
+            cls.RETURN_EXIT_LABEL_RE.search(label)
+            or cls.RETURN_EXIT_LABEL_RE.search(direction)
+        )
+
     async def _unique_available_exit(self, turn: Turn):
         source_id = await self._source_location_id(turn)
         if source_id is None:
@@ -331,16 +353,21 @@ class PlayerDestinationAuthorizer:
             source_id,
             include_hidden=False,
         )
-        targets = {
-            row.to_location_id
+        outward = [
+            row
             for row in exits
             if row.to_location_id and row.to_location_id != source_id
-        }
+        ]
+        targets = {row.to_location_id for row in outward}
         if len(targets) != 1:
             return None
         target_id = next(iter(targets))
         locations = await self._locations.list_by_campaign(campaign_id)
-        return next((item for item in locations if item.id == target_id), None)
+        location = next((item for item in locations if item.id == target_id), None)
+        if location is None:
+            return None
+        exit_row = next(row for row in outward if row.to_location_id == target_id)
+        return location, exit_row
 
     async def _source_location_id(self, turn: Turn) -> UUID | None:
         if not turn.scene_id:

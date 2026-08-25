@@ -307,3 +307,62 @@ async def test_exit_travel_authorizes_unique_available_exit(db_session: AsyncSes
     assert authorization.authorized is True
     assert authorization.destination == street.canonical_name
     assert "unique available exit" in authorization.reason
+
+
+@pytest.mark.asyncio
+async def test_outward_phrase_does_not_take_unique_reverse_exit(
+    db_session: AsyncSession,
+):
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.scene_state import LocationExitCreate
+    from app.models.turn import TurnCreate
+    from app.services.player_destination_authorization import PlayerDestinationAuthorizer
+    from app.services.scene_state_service import SceneStateService
+
+    campaign_id = uuid4()
+    campaigns = CampaignRepository(db_session)
+    entities = EntityRepository(db_session)
+    locations = LocationRepository(db_session)
+    scenes = SceneRepository(db_session)
+
+    await campaigns.create(campaign_id, CampaignCreate(name="No reverse outside"))
+    tavern = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Трактир «Якорь»"),
+    )
+    street = await locations.create(
+        campaign_id,
+        LocationCreate(canonical_name="Окрестности — Трактир «Якорь»"),
+    )
+    hero = await entities.create_character(
+        campaign_id,
+        CharacterCreate(canonical_name="Вера", current_location_id=street.id),
+    )
+    await campaigns.update(campaign_id, CampaignUpdate(player_character_id=hero.id))
+    source = await scenes.create(
+        campaign_id,
+        SceneCreate(title="Улица", location_id=street.id),
+    )
+    await scenes.add_participant(source.id, hero.id, allow_movement=True)
+    await SceneLifecycleService(db_session).activate(campaign_id, source.id)
+    await SceneStateService(db_session).create_exit(
+        campaign_id,
+        street.id,
+        LocationExitCreate(to_location_id=tavern.id, label="обратно"),
+    )
+    user = await TurnRepository(db_session).create(
+        campaign_id,
+        TurnCreate(
+            role="user",
+            scene_id=source.id,
+            content="Выхожу наружу.",
+        ),
+    )
+
+    authorization = await PlayerDestinationAuthorizer(db_session).authorize(
+        user.id,
+        street.canonical_name,
+    )
+
+    assert authorization.destination != tavern.canonical_name
+    assert authorization.authorized is False or authorization.destination == street.canonical_name

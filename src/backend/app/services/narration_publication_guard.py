@@ -215,6 +215,55 @@ class NarrationPublicationGuard:
             "removed_characters": max(0, original_len - len(cleaned)),
         }
 
+    OPENING_TEXTURE_VIOLATIONS = frozenset(
+        {
+            "ungrounded_complication",
+            "absent_object",
+            "other",
+        }
+    )
+
+    @classmethod
+    def keep_substantial_opening(
+        cls,
+        draft: str,
+        validation: NarrationValidationResult | None,
+    ) -> tuple[str | None, dict]:
+        """Keep a long narrator opening when leftover complaints are unmatched texture.
+
+        The skeleton card is worse than unmatched object/atmosphere nits. Agency, movement,
+        sequence and canon errors still refuse this path.
+        """
+        cleaned = cls._clean(draft)
+        if len(cleaned) < 400 or cls._player_facing_fragment(cleaned) is None:
+            return None, {"strategy": "keep_raw_texture", "status": "skipped", "reason": "too_short"}
+        errors = [
+            item
+            for item in (validation.violations if validation else [])
+            if item.severity == "error"
+        ]
+        if not errors:
+            return cleaned, {"strategy": "keep_raw_texture", "status": "no_errors"}
+        if any(item.violation_type in cls.STATE_BREAKING_VIOLATIONS for item in errors):
+            return None, {
+                "strategy": "keep_raw_texture",
+                "status": "skipped",
+                "reason": "state_breaking",
+            }
+        if not all(
+            item.violation_type in cls.OPENING_TEXTURE_VIOLATIONS for item in errors
+        ):
+            return None, {
+                "strategy": "keep_raw_texture",
+                "status": "skipped",
+                "reason": "non_texture_violation",
+            }
+        return cleaned, {
+            "strategy": "keep_raw_texture",
+            "status": "kept",
+            "error_count": len(errors),
+        }
+
     @classmethod
     def render_authority(cls, authority: TurnAuthority) -> str:
         """Render a minimal in-world result without exposing control-plane language."""

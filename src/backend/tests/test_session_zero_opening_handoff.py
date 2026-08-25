@@ -320,6 +320,83 @@ async def test_opening_keeps_surgical_remainder_when_second_validation_still_nag
 
 
 @pytest.mark.asyncio
+async def test_opening_keeps_raw_draft_when_texture_evidence_does_not_match(
+    db_session: AsyncSession,
+):
+    campaign = await CampaignService(db_session).create_campaign(
+        CampaignCreate(name="Opening unmatched texture")
+    )
+    await db_session.commit()
+    interview = SessionZeroInterviewService(db_session)
+
+    with patch(
+        "app.services.session_zero_interview.RoleModelRouter.generate_json",
+        new_callable=AsyncMock,
+        return_value=_decision("Начинаем?"),
+    ):
+        await interview.answer(campaign.id, "Погнали")
+
+    raw = (
+        "Утренний свет проникал в «Якорь» через грязные, мутные окна, окрашивая пыльные "
+        "деревянные поверхности в желтоватый оттенок. Воздух внутри пах вчерашним пивом "
+        "и сырой соломой из угла, где стояли бочки. На столешницах виднелись кольца от кружек.\n\n"
+        "Вдоль дальней стены висела потрепанная доска объявлений. Среди обрывков бумаги "
+        "смешались пожелтевшие листки, и карандашом был нарисован едва различимый контур женщины.\n\n"
+        "У стойки стоял хозяин трактира. Его крепкая фигура казалась частью дерева заведения; "
+        "он вытер стакан с размеренной неторопливостью и смотрел на зал так, будто оценивал "
+        "редких утренних гостей. Сквозь ставни доносилось гудение порта и скрежет тросов."
+    )
+    assert len(raw) > 400
+    assert "Поблизости находятся" not in raw
+
+    async def raw_stream(*args, **kwargs):
+        yield raw
+
+    unmatched = NarrationValidationResult(
+        verdict="repair_required",
+        summary="Новые объекты и угрозы.",
+        violations=[
+            NarrationViolation(
+                violation_type="ungrounded_complication",
+                severity="error",
+                evidence="бухгалтерская книга и паровой механизм",
+                correction="Убрать неподтверждённые предметы.",
+            )
+        ],
+    )
+
+    with patch(
+        "app.providers.llm_provider.LLMProvider.generate_stream",
+        side_effect=raw_stream,
+    ), patch.object(
+        TurnAuthorityValidator,
+        "validate",
+        new_callable=AsyncMock,
+        return_value=unmatched,
+    ):
+        await interview.finalize(campaign.id)
+
+    history = await TurnRepository(db_session).get_history(
+        campaign.id,
+        limit=20,
+        channel="narrative",
+    )
+    opening = next(
+        turn
+        for turn in history
+        if turn.role == "assistant"
+        and "session_zero_opening" in str(turn.context_snapshot)
+    )
+    assert "Поблизости находятся" not in opening.content
+    assert "Обстановка уже сложилась" not in opening.content
+    assert "хозяин трактира" in opening.content.casefold()
+    assert "доска объявлений" in opening.content
+    telemetry = _snapshot(opening)["provider_telemetry"]
+    assert telemetry["opening_fallback"] is None
+    assert telemetry["opening_validation"]["repair_strategy"] == "keep_raw_texture"
+
+
+@pytest.mark.asyncio
 async def test_opening_falls_back_to_persisted_scene_when_narrator_is_unavailable(
     db_session: AsyncSession,
 ):

@@ -283,6 +283,20 @@ async def _generate_opening(self, campaign_id, state, completion) -> tuple[str, 
                     },
                 }
 
+        kept, keep_meta = NarrationPublicationGuard.keep_substantial_opening(text, initial)
+        if kept is not None:
+            return kept, selection.config.model_name, {
+                **narrator_telemetry,
+                "opening_fallback": None,
+                "opening_raw_draft": text,
+                "opening_validation": {
+                    "status": "repaired",
+                    "repair_strategy": keep_meta.get("strategy", "keep_raw_texture"),
+                    "attempts": attempts,
+                    "keep": keep_meta,
+                },
+            }
+
         repair_messages = [
             *messages,
             ChatMessage(
@@ -320,6 +334,23 @@ async def _generate_opening(self, campaign_id, state, completion) -> tuple[str, 
                     "status": "repaired",
                     "repair_strategy": "preserve_first_model_edit",
                     "attempts": attempts,
+                },
+            }
+
+        kept, keep_meta = NarrationPublicationGuard.keep_substantial_opening(
+            text,
+            initial,
+        )
+        if kept is not None:
+            return kept, selection.config.model_name, {
+                **narrator_telemetry,
+                "opening_fallback": None,
+                "opening_raw_draft": text,
+                "opening_validation": {
+                    "status": "repaired",
+                    "repair_strategy": keep_meta.get("strategy", "keep_raw_texture"),
+                    "attempts": attempts,
+                    "keep": keep_meta,
                 },
             }
 
