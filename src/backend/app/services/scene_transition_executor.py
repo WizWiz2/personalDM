@@ -161,11 +161,7 @@ class SceneTransitionExecutor:
         target_location_id = source_location_id
         destination_created = False
         if plan.transition_type == "location_transition":
-            existing_target = await self._resolve_existing_location(
-                campaign_id,
-                source_location_id,
-                plan.destination_location or "",
-            )
+            destination = plan.destination_location or ""
             authorization = None
             if trigger_turn_id:
                 authorization = await self.authorize_destination(
@@ -177,13 +173,24 @@ class SceneTransitionExecutor:
                         "Player destination is not authorized: "
                         f"{authorization.reason}"
                     )
-                if not authorization.applicable:
-                    if existing_target is None:
-                        raise ValueError(
-                            "Player destination is unresolved; "
-                            "a new location cannot be created"
-                        )
-                    require_existing_route = True
+                if authorization.authorized:
+                    destination = authorization.destination
+            existing_target = await self._resolve_existing_location(
+                campaign_id,
+                source_location_id,
+                destination,
+            )
+            if (
+                trigger_turn_id
+                and authorization is not None
+                and not authorization.applicable
+            ):
+                if existing_target is None:
+                    raise ValueError(
+                        "Player destination is unresolved; "
+                        "a new location cannot be created"
+                    )
+                require_existing_route = True
 
             if existing_target is not None:
                 target_location_id = existing_target.id
@@ -192,7 +199,7 @@ class SceneTransitionExecutor:
                 target_location_id, destination_created = (
                     await self._resolve_or_create_location(
                         campaign_id,
-                        plan.destination_location or "",
+                        destination,
                         plan.destination_parent_location,
                     )
                 )
@@ -215,10 +222,20 @@ class SceneTransitionExecutor:
                 allow_discovery=destination_created or bool(allow_route_discovery),
             )
 
+        resolved_location = None
+        campaign_locations = None
+        if plan.transition_type == "location_transition" and target_location_id:
+            resolved_location = await self._locations.get_by_id(target_location_id)
+            campaign_locations = await self._locations.list_by_campaign(campaign_id)
         target_scene = await self._scenes.create(
             campaign_id,
             SceneCreate(
-                title=self._scene_title(source_scene, plan),
+                title=self._scene_title(
+                    source_scene,
+                    plan,
+                    resolved_location,
+                    campaign_locations,
+                ),
                 location_id=target_location_id,
                 location_description=None,
             ),
@@ -676,11 +693,32 @@ class SceneTransitionExecutor:
     def _scene_title(
         source_scene: Scene | None,
         plan: SceneTransitionPlan,
+        resolved_location=None,
+        campaign_locations=None,
     ) -> str:
+        if plan.transition_type == "location_transition":
+            resolved_name = ""
+            if resolved_location is not None:
+                resolved_name = (
+                    display_location_name(resolved_location.canonical_name)
+                    or resolved_location.canonical_name
+                )
+            if plan.scene_title:
+                titled = display_location_name(plan.scene_title)
+                if titled and resolved_location is not None and campaign_locations:
+                    conflict = SceneTransitionExecutor._match_location(
+                        campaign_locations,
+                        titled,
+                    )
+                    if (
+                        conflict is not None
+                        and conflict.id != resolved_location.id
+                    ):
+                        return resolved_name or titled
+                return titled
+            return resolved_name or "Новая локация"
         if plan.scene_title:
             return display_location_name(plan.scene_title)
-        if plan.transition_type == "location_transition":
-            return display_location_name(plan.destination_location) or "Новая локация"
         source_title = source_scene.title if source_scene else "Сцена"
         if plan.transition_type == "time_transition":
             marker = plan.time_after or plan.elapsed_time or "позже"

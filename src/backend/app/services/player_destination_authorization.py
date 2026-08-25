@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.db.scene_location_table import SceneLocationLink
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Turn
+from app.db.tables import Campaign, Character, Entity, SceneParticipant, Turn
 from app.services.scene_state_service import SceneStateService
 
 
@@ -35,9 +36,12 @@ class PlayerDestinationAuthorizer:
 
     Human intent and the structural location graph are both authority. A return/back reference may
     use one unique direct route or one uniquely matching previously visited physical location before
-    falling back to campaign-global text matching. Ordinary generic travel remains fail-closed when
-    multiple campaign locations match. References such as "the address you named" are resolved only
-    against recently published assistant text.
+    falling back to campaign-global text matching. Anaphoric return without a named destination
+    walks reverse location_transitions until a previously presented resident (not the player)
+    occupies the source place — a unique 1-hop reverse is not enough after nested extra-outside
+    travel. Ordinary generic travel remains fail-closed when multiple campaign locations match.
+    References such as "the address you named" are resolved only against recently published
+    assistant text.
     """
 
     TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
@@ -323,6 +327,14 @@ class PlayerDestinationAuthorizer:
                     )
 
         if self.RETURN_TRAVEL_RE.search(input_text):
+            walked = await self._walkback_to_presented_residents(turn)
+            if walked is not None:
+                return self._authorized(
+                    walked.canonical_name,
+                    "return walk-back to last presented-resident location",
+                    input_text,
+                    True,
+                )
             unique = await self._unique_available_exit(turn)
             if unique is not None:
                 unique_exit, _exit_row = unique
@@ -353,6 +365,89 @@ class PlayerDestinationAuthorizer:
             cls.RETURN_EXIT_LABEL_RE.search(label)
             or cls.RETURN_EXIT_LABEL_RE.search(direction)
         )
+
+    async def _walkback_to_presented_residents(self, turn: Turn):
+        """Follow reverse location_transitions until a place still holds presented residents.
+
+        Nested extra-outside travel leaves a unique reverse edge to the previous empty street.
+        Anaphoric «возвращаюсь» means the last inhabited place on the path the player actually
+        took, not that 1-hop reverse.
+        """
+        source_id = await self._source_location_id(turn)
+        if source_id is None:
+            return None
+        campaign_id = UUID(turn.campaign_id)
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        player_id = campaign.player_character_id if campaign else None
+        rows = (
+            await self._session.execute(
+                select(SceneTransition)
+                .where(
+                    SceneTransition.campaign_id == str(campaign_id),
+                    SceneTransition.transition_type == "location_transition",
+                    SceneTransition.status.in_(("prepared", "applied")),
+                    SceneTransition.undone_at.is_(None),
+                )
+                .order_by(SceneTransition.created_at.desc())
+            )
+        ).scalars().all()
+        if not rows:
+            return None
+
+        locations = await self._locations.list_by_campaign(campaign_id)
+        by_id = {location.id: location for location in locations}
+        current = source_id
+        seen: set[UUID] = {current}
+        while True:
+            previous_id = None
+            for row in rows:
+                if not row.target_location_id or not row.source_location_id:
+                    continue
+                try:
+                    target_id = UUID(str(row.target_location_id))
+                    origin_id = UUID(str(row.source_location_id))
+                except (TypeError, ValueError):
+                    continue
+                if target_id == current and origin_id not in seen:
+                    previous_id = origin_id
+                    break
+            if previous_id is None:
+                return None
+            if await self._has_presented_residents(
+                campaign_id,
+                previous_id,
+                player_id,
+            ):
+                return by_id.get(previous_id)
+            seen.add(previous_id)
+            current = previous_id
+
+    async def _has_presented_residents(
+        self,
+        campaign_id: UUID,
+        location_id: UUID,
+        player_character_id: str | None,
+    ) -> bool:
+        query = (
+            select(Entity.id)
+            .join(Character, Character.entity_id == Entity.id)
+            .join(SceneParticipant, SceneParticipant.entity_id == Entity.id)
+            .join(
+                SceneLocationLink,
+                SceneLocationLink.scene_id == SceneParticipant.scene_id,
+            )
+            .where(
+                Entity.campaign_id == str(campaign_id),
+                Entity.entity_type == "character",
+                Character.current_location_id == str(location_id),
+                SceneLocationLink.location_id == str(location_id),
+            )
+        )
+        if player_character_id:
+            query = query.where(Entity.id != str(player_character_id))
+        return (
+            await self._session.execute(query.limit(1))
+        ).scalar_one_or_none() is not None
 
     async def _unique_available_exit(self, turn: Turn):
         source_id = await self._source_location_id(turn)
