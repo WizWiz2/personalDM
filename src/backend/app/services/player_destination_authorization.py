@@ -337,7 +337,7 @@ class PlayerDestinationAuthorizer:
                     SceneTransition.transition_type == "location_transition",
                     SceneTransition.status.in_(("prepared", "applied")),
                     SceneTransition.undone_at.is_(None),
-                    SceneTransition.created_at < before,
+                    SceneTransition.created_at <= before,
                 )
                 .order_by(SceneTransition.created_at.desc())
             )
@@ -380,7 +380,7 @@ class PlayerDestinationAuthorizer:
                     Turn.campaign_id == turn.campaign_id,
                     Turn.role == "assistant",
                     Turn.status == "active",
-                    Turn.created_at < turn.created_at,
+                    Turn.created_at <= turn.created_at,
                 )
                 .order_by(Turn.created_at.desc())
                 .limit(12)

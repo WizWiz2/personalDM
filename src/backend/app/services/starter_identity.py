@@ -9,13 +9,38 @@ def _key(value: object) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
 
 
+def names_are_same_identity(left: object, right: object) -> bool:
+    """Treat a role-name as the same person as a more specific name with that role as prefix.
+
+    ``Хозяин`` and ``Хозяин трактира`` are one starter. Two different explicit names are not.
+    """
+    left_key = _key(left)
+    right_key = _key(right)
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_tokens = left_key.split()
+    right_tokens = right_key.split()
+    shorter, longer = (
+        (left_tokens, right_tokens)
+        if len(left_tokens) <= len(right_tokens)
+        else (right_tokens, left_tokens)
+    )
+    return bool(shorter) and longer[: len(shorter)] == shorter
+
+
 def _merge_starter_spec(
     established: SessionZeroStarterNPC,
     incoming: SessionZeroStarterNPC,
 ) -> SessionZeroStarterNPC:
     """Refine one starter identity without silently rewriting established details."""
     payload = established.model_dump(mode="python")
-    if not _key(established.name) and _key(incoming.name):
+    established_name = _key(established.name)
+    incoming_name = _key(incoming.name)
+    if incoming_name and (
+        not established_name or len(incoming_name) > len(established_name)
+    ):
         payload["name"] = incoming.name
     for field in ("description", "reason"):
         if not _key(payload.get(field)) and _key(getattr(incoming, field)):
@@ -53,7 +78,7 @@ def reconcile_starter_npcs(
         same_name = [
             index
             for index, existing in enumerate(result)
-            if name_key and _key(existing.name) == name_key
+            if name_key and names_are_same_identity(existing.name, spec.name)
         ]
         if len(same_name) == 1:
             target = same_name[0]
@@ -111,18 +136,22 @@ def sanitize_existing_present_npc_introductions(plan, present_names: Iterable[st
     This is not permission for a genuinely new NPC: unsolicited introductions remain in the plan
     and are still rejected by the fail-closed authority contract.
     """
-    known = {_key(value) for value in present_names if _key(value)}
+    known = [value for value in present_names if _key(value)]
     if not known or not getattr(plan, "npc_introductions", None):
         return plan
     plan.npc_introductions[:] = [
         intro
         for intro in plan.npc_introductions
-        if _key(getattr(intro, "canonical_name", None)) not in known
+        if not any(
+            names_are_same_identity(getattr(intro, "canonical_name", None), present)
+            for present in known
+        )
     ]
     return plan
 
 
 __all__ = [
+    "names_are_same_identity",
     "present_character_names",
     "reconcile_starter_npcs",
     "sanitize_existing_present_npc_introductions",

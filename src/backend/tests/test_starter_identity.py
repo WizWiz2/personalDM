@@ -101,6 +101,26 @@ def test_session_zero_patch_accumulation_keeps_one_starter_identity():
     assert "Посетительница; Анна" not in SessionZeroInterviewService.summary(draft)
 
 
+def test_role_name_and_specific_name_collapse_to_one_innkeeper():
+    reconciled = reconcile_starter_npcs(
+        [
+            _starter(role="трактирщик", name="Хозяин"),
+            _starter(role="трактирщик", name="Хозяин трактира"),
+        ]
+    )
+
+    assert len(reconciled) == 1
+    assert reconciled[0].name == "Хозяин трактира"
+
+
+def test_present_innkeeper_is_not_reintroduced_under_role_name():
+    plan = _conversation_plan("Хозяин", "трактирщик")
+
+    sanitize_existing_present_npc_introductions(plan, {"Вера", "Хозяин трактира"})
+
+    assert plan.npc_introductions == []
+
+
 def test_two_different_named_starters_with_same_role_never_merge():
     reconciled = reconcile_starter_npcs(
         [
