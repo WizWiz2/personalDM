@@ -23,6 +23,7 @@ from app.services.base_turn_runner import TurnRunner as BaseTurnRunner
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
 from app.services.memory_scribe import MemoryScribe
+from app.services.thesis_curator import ThesisCurator
 from app.services.turn_authority_planner import TurnAuthorityPlanner
 from app.services.turn_runner import TurnRunner
 from app.services.turn_saga import TurnSaga
@@ -70,7 +71,6 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "narrator_quality_recovery",
         "narration_failure_containment",
         "session_zero_finalize",
-        "thesis_lifecycle",
     ]
     assert cli_manifest["context_pipeline"] == [
         "authoritative_scene_state",
@@ -113,9 +113,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     )
     assert cli_manifest["memory_parser"].endswith("MemoryScribe._parse_data")
     assert "memory_scribe" in cli_manifest["memory_parser"]
-    assert cli_manifest["thesis_reconcile"].endswith(
-        "_reconcile_with_lifecycle"
-    )
+    assert cli_manifest["thesis_reconcile"].endswith("ThesisCurator.reconcile")
+    assert "thesis_curator" in cli_manifest["thesis_reconcile"]
     assert cli_manifest["post_turn_mode"] == "background"
 
 
@@ -139,12 +138,14 @@ def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     legacy_turn_method = BaseTurnRunner.run_turn_stream
     planner_method = TurnAuthorityPlanner.plan
     memory_parser = MemoryScribe._parse_data
+    thesis_reconcile = ThesisCurator.reconcile
     install_runtime()
 
     assert LLMProvider.generate_stream is raw_provider_method
     assert BaseTurnRunner.run_turn_stream is legacy_turn_method
     assert TurnAuthorityPlanner.plan is planner_method
     assert MemoryScribe._parse_data is memory_parser
+    assert ThesisCurator.reconcile is thesis_reconcile
     assert TurnRunner.__mro__[1] is TurnSaga
     assert TurnSaga.__mro__[1] is BaseTurnRunner
     assert TurnRunner.run_turn_stream.__module__ == "app.services.turn_runner"
