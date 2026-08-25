@@ -102,19 +102,18 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["narration_pipeline_impl"].endswith(
         "AuthorityNarrationPipeline.generate"
     )
-    assert cli_manifest["authority_planner"].endswith(
-        "TurnAuthorityPlanner.plan"
-    )
-    assert "turn_authority_planner" in cli_manifest["authority_planner"]
+    assert "systemless_authority_guard" in cli_manifest["authority_planner"]
+    assert cli_manifest["authority_planner"].endswith("guarded_plan")
+    assert "round33_identity_guard" not in cli_manifest["authority_planner"]
     assert "narrator_quality_recovery_guard" in cli_manifest["authority_validator"]
     assert cli_manifest["authority_validator"].endswith("ownership_validating")
     assert cli_manifest["context_compiler"].endswith(
         "ContextCompiler.compile_context"
     )
     assert cli_manifest["memory_parser"].endswith("MemoryScribe._parse_data")
-    assert "memory_scribe" in cli_manifest["memory_parser"]
+    assert "memory_scribe_guard" not in cli_manifest["memory_parser"]
     assert cli_manifest["thesis_reconcile"].endswith("ThesisCurator.reconcile")
-    assert "thesis_curator" in cli_manifest["thesis_reconcile"]
+    assert "thesis_lifecycle_guard" not in cli_manifest["thesis_reconcile"]
     assert cli_manifest["post_turn_mode"] == "background"
 
 
@@ -136,14 +135,13 @@ def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
 def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     raw_provider_method = LLMProvider.generate_stream
     legacy_turn_method = BaseTurnRunner.run_turn_stream
-    planner_method = TurnAuthorityPlanner.plan
     memory_parser = MemoryScribe._parse_data
     thesis_reconcile = ThesisCurator.reconcile
     install_runtime()
 
     assert LLMProvider.generate_stream is raw_provider_method
     assert BaseTurnRunner.run_turn_stream is legacy_turn_method
-    assert TurnAuthorityPlanner.plan is planner_method
+    assert TurnAuthorityPlanner.plan.__module__ == "app.services.systemless_authority_guard"
     assert MemoryScribe._parse_data is memory_parser
     assert ThesisCurator.reconcile is thesis_reconcile
     assert TurnRunner.__mro__[1] is TurnSaga
