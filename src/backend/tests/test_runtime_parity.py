@@ -22,6 +22,7 @@ from app.services.base_context_compiler import ContextCompiler as BaseContextCom
 from app.services.base_turn_runner import TurnRunner as BaseTurnRunner
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
+from app.services.turn_authority_planner import TurnAuthorityPlanner
 from app.services.turn_runner import TurnRunner
 from app.services.turn_saga import TurnSaga
 
@@ -63,7 +64,6 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "actor_turn_authority",
         "actor_memory_observability",
         "systemless_authority",
-        "round33_identity",
         "round34_live",
         "mixed_actor_response",
         "memory_scribe",
@@ -102,8 +102,10 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["narration_pipeline_impl"].endswith(
         "AuthorityNarrationPipeline.generate"
     )
-    assert "round33_identity_guard" in cli_manifest["authority_planner"]
-    assert cli_manifest["authority_planner"].endswith("present_aware_plan")
+    assert cli_manifest["authority_planner"].endswith(
+        "TurnAuthorityPlanner.plan"
+    )
+    assert "turn_authority_planner" in cli_manifest["authority_planner"]
     assert "narrator_quality_recovery_guard" in cli_manifest["authority_validator"]
     assert cli_manifest["authority_validator"].endswith("ownership_validating")
     assert cli_manifest["context_compiler"].endswith(
@@ -134,10 +136,12 @@ def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
 def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     raw_provider_method = LLMProvider.generate_stream
     legacy_turn_method = BaseTurnRunner.run_turn_stream
+    planner_method = TurnAuthorityPlanner.plan
     install_runtime()
 
     assert LLMProvider.generate_stream is raw_provider_method
     assert BaseTurnRunner.run_turn_stream is legacy_turn_method
+    assert TurnAuthorityPlanner.plan is planner_method
     assert TurnRunner.__mro__[1] is TurnSaga
     assert TurnSaga.__mro__[1] is BaseTurnRunner
     assert TurnRunner.run_turn_stream.__module__ == "app.services.turn_runner"
