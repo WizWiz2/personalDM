@@ -54,6 +54,14 @@ class CoordinatedTurnPlan(TurnPlan):
     @model_validator(mode="after")
     def validate_interagent_authority(self):
         for step in self.action_sequence.steps:
+            if (
+                step.resolution == "auto_success"
+                and not step.observable_outcome
+                and not step.transition.required
+            ):
+                raise ValueError(
+                    "auto-success steps require a concrete observable_outcome or structured transition"
+                )
             if step.action_type != "movement" or step.resolution != "auto_success":
                 continue
             if (
@@ -122,6 +130,9 @@ SYSTEMLESS RESOLUTION IS ABSOLUTE:
 - Ordinary speech to an addressed present NPC is response ownership, not an action_sequence step.
   For mixed input, place only real world actions in action_sequence and set
   addressed_response_requested=true when the selected NPC should answer.
+- Every auto_success world-action step must leave the renderer something concrete and typed to show:
+  set observable_outcome, or use the structured transition itself when that transition is the whole
+  observable result. Never emit a completed meaningful step with a null outcome.
 
 PLAYER AGENCY:
 - Interpret the latest human input semantically. The player controls voluntary speech, choices,
@@ -174,6 +185,10 @@ Return repair_required only when the proposed typed plan semantically violates o
 - PLAYER AGENCY: if the human left alternatives genuinely unresolved, the plan must preserve that
   choice and must not execute one branch, move the protagonist, spawn a contact from an unchosen
   branch, or author a new voluntary decision.
+- RENDERABLE OUTCOME: a resolved meaningful observation/interaction/world action must leave a
+  concrete typed current result for Narrator. For action_sequence, every completed auto_success step
+  needs observable_outcome unless its structured transition is itself the complete visible result.
+  Do not approve an "empty success" that can only render as a generic no-change fallback.
 - MOVEMENT/TIME: if the human actually commits to changing physical location/time and the world does
   not establish a blocker, the plan must use the corresponding structured transition. A focus change
   or prose consequence cannot substitute for physical travel.
@@ -190,7 +205,8 @@ Return repair_required only when the proposed typed plan semantically violates o
 - CANON/COMPLICATION: new physical NPCs, routes, threats, clues and significant world outcomes require
   the typed permissions/established source appropriate to them.
 
-A semantically valid quiet/no-contact/failure outcome is acceptable. Do not demand drama.
+A semantically valid quiet/no-contact/failure outcome is acceptable. Do not demand drama. A quiet
+outcome still needs an explicit current-world result rather than an empty authority payload.
 Return exactly:
 {
   "verdict": "pass|repair_required",
