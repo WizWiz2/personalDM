@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-import re
-
 from pydantic import Field, computed_field, model_validator
 
 from app.config import settings
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services.player_intent_contract import (
-    contains_cjk,
-    expects_russian,
-    has_unresolved_choice,
-    intent_corresponds,
-)
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import (
     present_character_names,
@@ -22,38 +14,15 @@ from app.services.starter_identity import (
 from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
 
 
-_GENERIC_CONTACTS: tuple[tuple[re.Pattern[str], str, str], ...] = (
-    (re.compile(r"\bинформатор\w*\b", re.IGNORECASE), "Информатор", "информатор"),
-    (re.compile(r"\bсвидетел\w*\b", re.IGNORECASE), "Свидетель", "свидетель"),
-    (re.compile(r"\bпродавц\w*\b", re.IGNORECASE), "Продавец", "продавец"),
-    (re.compile(r"\bбармен\w*\b", re.IGNORECASE), "Бармен", "бармен"),
-    (re.compile(r"\bтрактирщ\w*\b", re.IGNORECASE), "Трактирщик", "трактирщик"),
-    (re.compile(r"\bхозя\w*\b", re.IGNORECASE), "Хозяин", "хозяин"),
-    (re.compile(r"\bохран\w*\b", re.IGNORECASE), "Охранник", "охранник"),
-    (re.compile(r"\bдежур\w*\b", re.IGNORECASE), "Дежурный", "дежурный"),
-    (re.compile(r"\bжил\w*\b", re.IGNORECASE), "Жилец", "жилец"),
-    (re.compile(r"\bслужащ\w*\b", re.IGNORECASE), "Служащий", "служащий"),
-    (re.compile(r"\bклерк\w*\b", re.IGNORECASE), "Клерк", "клерк"),
-    (re.compile(r"\bпрохож\w*\b", re.IGNORECASE), "Прохожий", "прохожий"),
-    (re.compile(r"\binformant\b", re.IGNORECASE), "Informant", "informant"),
-    (re.compile(r"\bwitness\b", re.IGNORECASE), "Witness", "witness"),
-    (re.compile(r"\bclerk\b", re.IGNORECASE), "Clerk", "clerk"),
-    (re.compile(r"\bbartender\b", re.IGNORECASE), "Bartender", "bartender"),
-    (re.compile(r"\binnkeeper\b", re.IGNORECASE), "Innkeeper", "innkeeper"),
-    (re.compile(r"\bguard\b", re.IGNORECASE), "Guard", "guard"),
-    (re.compile(r"\bresident\b", re.IGNORECASE), "Resident", "resident"),
-    (re.compile(r"\bseller\b", re.IGNORECASE), "Seller", "seller"),
-    (re.compile(r"\bpasser[- ]?by\b", re.IGNORECASE), "Passer-by", "passer-by"),
-)
-
-
 class CoordinatedTurnPlan(TurnPlan):
-    """TurnPlan with an explicit cross-agent scene/NPC hand-off."""
+    """Typed semantic hand-off from Planner to deterministic execution."""
 
     npc_introductions: list[PlannedNpcIntroduction] = Field(
         default_factory=list,
         max_length=4,
     )
+    addressed_response_requested: bool = False
+    response_ownership_reason: str | None = Field(default=None, max_length=500)
 
     @computed_field(return_type=str)
     @property
@@ -73,6 +42,10 @@ class CoordinatedTurnPlan(TurnPlan):
     @model_validator(mode="after")
     def validate_interagent_authority(self):
         for step in self.action_sequence.steps:
+            if step.resolution == "requires_check":
+                raise ValueError(
+                    "systemless runtime has no check resolver: requires_check is invalid"
+                )
             if step.action_type != "movement" or step.resolution != "auto_success":
                 continue
             if (
@@ -98,6 +71,8 @@ class CoordinatedTurnPlan(TurnPlan):
             player_intent=(player_input.strip() or "Продолжить текущую сцену")[:500],
             resolution="uncertain",
             npc_introductions=[],
+            addressed_response_requested=False,
+            response_ownership_reason="Planner недоступен; response ownership не подтверждён.",
             observable_consequences=[],
             character_beats=[],
             canon_constraints=[
@@ -114,125 +89,70 @@ class CoordinatedTurnPlan(TurnPlan):
 
 
 class TurnAuthorityPlanner:
-    """One control-agent decision with deterministic validation of the hand-off contract."""
-
-    GENERIC_CONTACT_ROLE_RU = (
-        r"(?:информатор\w*|свидетел\w*|продавц\w*|бармен\w*|трактирщ\w*|"
-        r"хозя\w*|охран\w*|дежур\w*|жил\w*|служащ\w*|клерк\w*|прохож\w*)"
-    )
-    GENERIC_CONTACT_ROLE_EN = (
-        r"(?:informant|witness|clerk|bartender|innkeeper|guard|resident|seller|passer-by)"
-    )
-    CONTACT_INTENT_PATTERNS = (
-        r"\b(?:по)?стуч\w*\b",
-        rf"\b(?:расспраш\w*|расспрос\w*|спрашива\w*|спросить)\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
-        rf"\bищу\s+(?:[^.!?]{{0,16}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
-        rf"\bпоговор\w*\s+(?:с\s+)?(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
-        rf"\bобращ\w*\s+(?:к\s+)?(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
-        rf"\b(?:по)?зов\w*\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
-        rf"\bоклик\w*\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
-        r"\bknock(?:ing|ed)?\b",
-        rf"\b(?:ask(?:ing|ed)?|question(?:ing|ed)?)\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
-        rf"\blook(?:ing)?\s+for\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
-        rf"\b(?:talk|speak)(?:ing)?\s+(?:to|with)\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
-        rf"\b(?:call|calling|hail|hailing)\s+(?:an?\s+|the\s+)?{GENERIC_CONTACT_ROLE_EN}\b",
-    )
-    NEGATIVE_CONTACT_OUTCOME_PATTERNS = (
-        r"\bникто\b",
-        r"\bне\s+ответ\w*\b",
-        r"\bне\s+наш\w*\b",
-        r"\bне\s+оказыва\w*\b",
-        r"\bнет\s+(?:никого|подходящ\w*|ответа)\b",
-        r"\bпуст\w*\b",
-        r"\bnobody\b",
-        r"\bno\s+one\b",
-        r"\bno\s+answer\b",
-        r"\bnot\s+found\b",
-        r"\bnone\s+available\b",
-    )
-    EXPLICIT_MOVEMENT_PATTERNS = (
-        r"\b(?:иду|пойду|отправляюсь|направляюсь|возвращаюсь|вхожу|захожу|выхожу)\s+(?:обратно\s+)?(?:в|во|на|к|до)\b",
-        r"\b(?:go|going|return|returning|enter|entering|leave|leaving|head|heading)\s+(?:back\s+)?(?:to|into|for)\b",
-    )
-    MOVEMENT_BLOCKER_PATTERNS = (
-        r"\bне\s+(?:уда\w*|мож\w*|получ\w*|проход\w*)\b",
-        r"\b(?:преград\w*|заперт\w*|закрыт\w*|останов\w*|меша\w*|непроходим\w*)\b",
-        r"\b(?:blocked|cannot|can't|locked|stopped|prevented)\b",
-    )
+    """Control agent that owns semantic interpretation and returns typed authority proposals."""
 
     AUTHORITY_ADDENDUM = """
 
-[INTER-AGENT AUTHORITY CONTRACT]
-Your JSON is not advisory prose. It is the machine-readable decision the deterministic engine will
-canonicalize before narrator and validator see it.
+[INTER-AGENT SEMANTIC AUTHORITY CONTRACT]
+Your JSON is the semantic decision the deterministic engine will canonicalize before Narrator and
+Validator see it. Runtime deliberately does NOT guess meaning from verb lists, word stems, question
+marks, capitalization, emotion dictionaries, sensory dictionaries or other lexical heuristics.
 
 You MUST additionally return:
-- npc_introductions: a list of genuinely NEW characters whose first physical appearance is an
-  approved consequence of this turn. Each item contains canonical_name, role, description,
-  appearance, voice, temporary_name and reason.
+- npc_introductions: genuinely NEW characters whose first physical appearance is an approved world
+  consequence of this turn. Each item contains canonical_name, role, description, appearance, voice,
+  temporary_name and reason.
+- addressed_response_requested: true only when the latest human input actually addresses, asks,
+  tells, or otherwise expects a response from the selected addressed character. This may be true on
+  a mixed world-action + dialogue turn. A sticky selected listener alone is not sufficient.
+- response_ownership_reason: one concise semantic reason for addressed_response_requested.
 
-Do NOT return scene_disposition. The engine derives it deterministically:
-- non-empty action_sequence.steps => sequence;
-- otherwise required scene_transition => that transition_type;
-- otherwise => stay.
-This removes duplicated state from your responsibility. Express boundaries only through
-``action_sequence`` and ``scene_transition``.
+SYSTEMLESS RESOLUTION IS ABSOLUTE:
+- There is no dice/check/rules resolver. `requires_check` is NOT a legal output and will be rejected
+  by the schema. Resolve uncertainty directly into fiction as success, partial success, failure, or
+  an uncertain observable consequence that exists now.
+- Ordinary speech to an addressed present NPC is response ownership, not an action_sequence step.
+  For mixed input, place only real world actions in action_sequence and set
+  addressed_response_requested=true when the selected NPC should answer.
 
-Rules for structured boundaries:
-- Every auto-success movement step in a sequence MUST contain its own required
-  location_transition with a concrete destination_location.
-- Never hide a location change only in observable_consequences, narration_guidance or prose.
-- If the player explicitly says they go/return/enter/leave for another concrete place and nothing
-  blocks that movement, emit a required location_transition (or a sequence containing it). Do NOT
-  leave the player in the old scene merely because narration could describe the trip.
-- A non-empty sequence or a focus_transition does NOT satisfy an explicit destination movement by
-  itself. At least one actually executed boundary must be a concrete location_transition.
-- If explicit movement cannot complete, leave scene_transition unrequired ONLY when
-  observable_consequences clearly state the concrete obstacle that prevents the move.
+PLAYER AGENCY:
+- Interpret the latest human input semantically. The player controls voluntary speech, choices,
+  beliefs, emotions, plans, consent and next actions.
+- Preserve an unresolved choice in narration_policy.pending_player_choice and
+  protected_player_decisions. Do not choose one branch because a keyword resembles an action.
+- A physical realization of an action the player actually committed to may be executed; an unstated
+  continuation may not.
 
-Rules for unresolved player choices:
-- If the latest player input explicitly leaves alternatives open (for example "войти или постучать",
-  "может жду, может иду", or "колеблюсь"), DO NOT choose one branch for the protagonist.
-- Preserve the unresolved choice in narration_policy.pending_player_choice and
-  protected_player_decisions. Do not create a location transition, auto-success movement/interaction,
-  protagonist dialogue, or new NPC merely because one possible branch would have caused it.
-- Resolve only consequences of voluntary actions the player actually committed to before the choice.
+STRUCTURED WORLD BOUNDARIES:
+- Do NOT return scene_disposition. Engine derives it from action_sequence/scene_transition.
+- Every auto-success movement step must carry its own required location_transition with a concrete
+  destination_location. A simple single movement may use top-level scene_transition.
+- If the player semantically commits to moving to another place and the world does not block it,
+  represent that movement structurally. Never hide it only in prose fields.
+- If movement cannot complete, describe the concrete current-world obstacle instead of inventing a
+  transition.
+- Time transitions are structured too; atmosphere alone never advances time.
 
-Language and current-turn rules:
-- The latest human input is the current turn. player_intent must describe that input, not a previous
-  turn from history.
-- When the latest player input is Russian, write ALL model-authored human-readable JSON strings in
-  Russian. Preserve exact established canonical names from context, but never translate or rename
-  them into Chinese/another language.
+NPC / ENTITY AUTHORITY:
+- Decide from meaning and campaign context whether a PERSON physically appears. Do not infer person
+  vs object from capitalization, morphology, a noun list or any other lexical shortcut.
+- If a previously unknown person physically appears, include them in npc_introductions. Narrator is
+  not allowed to materialize an untyped person later.
+- A new person may appear when justified by the player's actual attempt to contact someone or by an
+  established complication source. Do not create strangers merely to add drama.
+- If a known absent character should arrive, do not recreate them as a new NPC; their arrival needs
+  existing-identity authority from campaign state.
+- If direct contact with an unspecified person resolves positively, type the responder. If no one
+  answers/is found, state that outcome explicitly instead of leaving identity for Narrator to invent.
 
-Rules for npc_introductions:
-- Use it only for a person who does not yet exist in campaign context.
-- It is appropriate when the player's action directly seeks contact with an unspecified ordinary
-  person who can plausibly be here: knocking on an inhabited door, asking a clerk, guard, witness,
-  bartender, passer-by, resident, informant, and similar direct contact.
-- DIRECT CONTACT REQUIRES A BINARY STRUCTURED DECISION. If an unknown ordinary person answers or is
-  encountered this turn, npc_introductions MUST contain that person. If nobody answers / no suitable
-  person is found, npc_introductions stays empty AND observable_consequences MUST explicitly say so.
-  A positive consequence such as "someone answers" with empty npc_introductions is INVALID. Never
-  leave responder identity for Narrator prose.
-- Example: player says "Подхожу к двери и стучу". Valid plan A: introduce "Жилец дома" or another
-  plausible responder and include opening the door in observable_consequences. Valid plan B: no
-  introduction and observable_consequences says nobody answers. Invalid: empty introductions while
-  narration_guidance or consequences imply that somebody answers.
-- Example: player says "Иду в таверну расспросить информатора". If no known suitable contact is in
-  current context and the plan resolves contact, introduce a plausible bartender/patron/informant.
-  Otherwise explicitly resolve that no suitable contact is available yet.
-- Do not put an already known but absent character here. Known absent characters need an explicit
-  structured arrival already justified by campaign state; otherwise they remain absent.
-- Give the new NPC a stable canonical_name. A descriptive temporary name such as
-  "дежурный фабрики" is valid when a personal name is not established; set temporary_name=true.
-- If npc_introductions is non-empty, make the introduction part of observable_consequences so the
-  narrator must actually render it.
+CURRENT TURN / LANGUAGE:
+- player_intent must describe the latest human input, not an earlier turn.
+- For Russian input, all model-authored human-readable plan strings are Russian. Preserve exact
+  established canonical names.
 
-The human player's exact latest input is the entire authorized voluntary action/dialogue for the
-protagonist. Do not silently extend it. Every observable consequence should describe WORLD/NPC
-response or the result of an action the player already explicitly supplied, never a new voluntary
-choice for the protagonist.
+Return the complete CoordinatedTurnPlan schema. The human player's exact latest input is the entire
+authorized voluntary contribution from the protagonist. Every world consequence must be a response
+to that contribution, never an invented next player choice.
 """
 
     def __init__(self, router: RoleModelRouter):
@@ -267,120 +187,13 @@ choice for the protagonist.
         return ""
 
     @classmethod
-    def _matches_any(cls, patterns: tuple[str, ...], text: str) -> bool:
-        return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
-
-    @staticmethod
-    def _has_location_transition(plan: CoordinatedTurnPlan) -> bool:
-        top_level = plan.scene_transition
-        if (
-            top_level.required
-            and top_level.transition_type == "location_transition"
-            and bool(top_level.destination_location)
-        ):
-            return True
-        return any(
-            step.transition.required
-            and step.transition.transition_type == "location_transition"
-            and bool(step.transition.destination_location)
-            for step in plan.action_sequence.steps
-        )
-
-    @staticmethod
-    def _human_readable_plan_values(plan: CoordinatedTurnPlan) -> list[object]:
-        values: list[object] = [
-            plan.player_intent,
-            *plan.observable_consequences,
-            *plan.character_beats,
-            *plan.narration_guidance,
-            plan.ending_hook,
-            plan.scene_transition.destination_location,
-            plan.scene_transition.scene_title,
-            plan.scene_transition.reason,
-            plan.scene_transition.bridge_summary,
-        ]
-        for step in plan.action_sequence.steps:
-            values.extend(
-                [
-                    step.intent,
-                    step.observable_outcome,
-                    step.blocking_reason,
-                    step.transition.destination_location,
-                    step.transition.scene_title,
-                    step.transition.reason,
-                    step.transition.bridge_summary,
-                ]
-            )
-        for npc in plan.npc_introductions:
-            values.extend(
-                [
-                    npc.canonical_name,
-                    npc.role,
-                    npc.description,
-                    npc.appearance,
-                    npc.voice,
-                    npc.reason,
-                ]
-            )
-        return values
-
-    @classmethod
-    def _contact_role(cls, player_input: str) -> tuple[str, str] | None:
-        text = " ".join((player_input or "").split())
-        for pattern, canonical_name, role in _GENERIC_CONTACTS:
-            if pattern.search(text):
-                return canonical_name, role
-        return None
-
-    @classmethod
     def normalize_affirmative_direct_contact(
         cls,
         plan: CoordinatedTurnPlan,
         player_input: str,
     ) -> CoordinatedTurnPlan:
-        """Bind an already-positive generic contact outcome to typed NPC authority.
-
-        This does not force contact success. It only repairs the internally affirmative state where
-        Planner already auto-completed an interaction and emitted a positive observable consequence
-        but omitted the responder identity.
-        """
-        if plan.npc_introductions:
-            return plan
-        text = " ".join((player_input or "").split()).casefold()
-        if not cls._matches_any(cls.CONTACT_INTENT_PATTERNS, text):
-            return plan
-        consequences = " ".join(plan.observable_consequences).casefold()
-        if cls._matches_any(cls.NEGATIVE_CONTACT_OUTCOME_PATTERNS, consequences):
-            return plan
-        if not plan.observable_consequences:
-            return plan
-        role = cls._contact_role(player_input)
-        if role is None:
-            return plan
-        contact_steps = [
-            step
-            for step in plan.action_sequence.steps
-            if step.resolution == "auto_success"
-            and step.action_type in {"interaction", "service"}
-            and cls._contact_role(step.intent or player_input) is not None
-        ]
-        if not contact_steps:
-            return plan
-
-        canonical_name, role_name = role
-        plan.npc_introductions.append(
-            PlannedNpcIntroduction(
-                canonical_name=canonical_name,
-                role=role_name,
-                temporary_name=True,
-                reason=(
-                    "Игрок прямо инициировал контакт с неизвестным персонажем, а Planner уже "
-                    "разрешил взаимодействие как auto_success и описал ответ."
-                ),
-            )
-        )
-        if not contact_steps[0].observable_outcome:
-            contact_steps[0].observable_outcome = plan.observable_consequences[0]
+        """Compatibility entrypoint: Planner already owns contact semantics."""
+        del cls, player_input
         return plan
 
     @classmethod
@@ -389,76 +202,12 @@ choice for the protagonist.
         plan: CoordinatedTurnPlan,
         player_input: str,
     ) -> list[str]:
-        """Catch ambiguous planner hand-offs before Narrator gets a chance to improvise them."""
-        text = " ".join((player_input or "").split()).casefold()
-        consequences = " ".join(plan.observable_consequences).casefold()
+        """Return only machine-provable hand-off errors; semantic judgment stays with Planner."""
+        del cls, player_input
         issues: list[str] = []
-        unresolved_choice = has_unresolved_choice(text)
-
-        if not intent_corresponds(player_input, plan.player_intent):
+        if any(step.resolution == "requires_check" for step in plan.action_sequence.steps):
             issues.append(
-                "player_intent does not correspond to the latest player input; do not answer or "
-                "continue a previous turn from history"
-            )
-
-        if expects_russian(player_input) and any(
-            contains_cjk(value) for value in cls._human_readable_plan_values(plan)
-        ):
-            issues.append(
-                "Russian player input requires Russian model-authored plan text; do not translate "
-                "canonical names, NPCs or scene titles into Chinese"
-            )
-
-        if unresolved_choice:
-            if not plan.narration_policy.pending_player_choice:
-                issues.append(
-                    "the player left an explicit choice unresolved; preserve it in "
-                    "narration_policy.pending_player_choice"
-                )
-            if cls._has_location_transition(plan):
-                issues.append(
-                    "an unresolved player choice cannot complete a location transition"
-                )
-            auto_choice_steps = [
-                step
-                for step in plan.action_sequence.steps
-                if step.resolution == "auto_success"
-                and step.action_type in {"movement", "interaction", "service", "inventory"}
-            ]
-            if auto_choice_steps:
-                issues.append(
-                    "an unresolved player choice cannot auto-execute movement/interaction/service/"
-                    "inventory branches the player did not choose"
-                )
-            if plan.npc_introductions:
-                issues.append(
-                    "an unresolved player choice cannot introduce a new NPC from an unchosen "
-                    "contact branch"
-                )
-
-        if not unresolved_choice and cls._matches_any(cls.CONTACT_INTENT_PATTERNS, text):
-            contact_resolved = bool(plan.npc_introductions) or cls._matches_any(
-                cls.NEGATIVE_CONTACT_OUTCOME_PATTERNS,
-                consequences,
-            )
-            if not contact_resolved:
-                issues.append(
-                    "direct contact is unresolved: a positive responder requires npc_introductions; "
-                    "otherwise explicitly state that nobody answers / no suitable contact is found"
-                )
-
-        explicit_movement = cls._matches_any(cls.EXPLICIT_MOVEMENT_PATTERNS, text)
-        movement_blocked = cls._matches_any(cls.MOVEMENT_BLOCKER_PATTERNS, consequences)
-        if (
-            explicit_movement
-            and not unresolved_choice
-            and not movement_blocked
-            and not cls._has_location_transition(plan)
-        ):
-            issues.append(
-                "explicit destination movement requires an actual required location_transition; "
-                "a sequence, focus_transition, observable consequence or narration guidance alone "
-                "cannot move the player"
+                "systemless runtime has no check resolver: requires_check is structurally invalid"
             )
         return issues
 
@@ -495,7 +244,7 @@ choice for the protagonist.
             self._provider,
             selection,
             messages,
-            max_tokens=max(settings.PLANNER_MAX_TOKENS, 1150),
+            max_tokens=max(settings.PLANNER_MAX_TOKENS, 1250),
             temperature=settings.PLANNER_TEMPERATURE,
             response_model=CoordinatedTurnPlan,
         )
@@ -512,7 +261,6 @@ choice for the protagonist.
         try:
             plan = await self._generate_plan(selection, base_messages)
             sanitize_existing_present_npc_introductions(plan, present_names)
-            self.normalize_affirmative_direct_contact(plan, player_input)
             issues = self.contract_issues(plan, player_input)
             if not issues:
                 return plan
@@ -522,11 +270,10 @@ choice for the protagonist.
                 self._repair_messages(base_messages, player_input, issues, plan),
             )
             sanitize_existing_present_npc_introductions(repaired, present_names)
-            self.normalize_affirmative_direct_contact(repaired, player_input)
             remaining = self.contract_issues(repaired, player_input)
             if remaining:
                 raise TurnPlanningError(
-                    "planner hand-off remained ambiguous after repair: "
+                    "planner hand-off remained invalid after repair: "
                     + "; ".join(remaining)
                 )
             return repaired
