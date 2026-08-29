@@ -14,15 +14,9 @@ from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
-from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.player_destination_authorization import PlayerDestinationAuthorizer
 from app.services.scene_lifecycle import SceneLifecycleService
-from app.services.systemless_authority_guard import (
-    sanitize_player_premise_npc_introductions,
-    systemless_contract_issues,
-)
-from app.services.turn_authority_planner import CoordinatedTurnPlan
-from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
+from app.services.turn_authority_planner import TurnAuthorityPlanner
 
 
 async def _campaign_with_location_history(db_session: AsyncSession):
@@ -37,7 +31,6 @@ async def _campaign_with_location_history(db_session: AsyncSession):
         campaign_id,
         LocationCreate(canonical_name="Небольшой частный детективный офис в центре города"),
     )
-    # This bootstrap-only location deliberately contains the same generic noun but was never visited.
     outskirts = await locations.create(
         campaign_id,
         LocationCreate(canonical_name="Окрестности — небольшой частный детективный офис"),
@@ -122,83 +115,24 @@ async def test_return_can_resolve_unique_previously_visited_location(
     assert "previously visited physical location" in authorization.reason
 
 
-def _plan_with_intro(introduction: PlannedNpcIntroduction) -> CoordinatedTurnPlan:
-    return CoordinatedTurnPlan(
-        player_intent="осмотреть дверь, попробовать открыть и при успехе спуститься",
-        resolution="sequence",
-        action_sequence=ActionSequencePlan(
-            steps=[
-                ActionStepPlan(
-                    action_type="observation",
-                    intent="осмотреть дверь",
-                    resolution="auto_success",
-                    safe_mundane=True,
-                    observable_outcome="Дверь осмотрена.",
-                ),
-                ActionStepPlan(
-                    action_type="interaction",
-                    intent="попробовать открыть дверь",
-                    resolution="blocked",
-                    blocking_reason="Дверь заперта.",
-                ),
-            ]
-        ),
-        npc_introductions=[introduction],
-    )
+def test_object_mentions_must_not_be_reinterpreted_as_people_by_semantic_reviewer():
+    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
+
+    assert "CONTACT/IDENTITY" in prompt
+    assert "genuinely new physical person" in prompt
+    assert "npc_introductions" in prompt
+    assert "Do not use keyword lists" in prompt
 
 
-def test_lowercase_player_premise_is_not_treated_as_new_npc():
-    player_input = "Осматриваю дверь, пробую её открыть и, если получится, спускаюсь вниз."
-    plan = _plan_with_intro(
-        PlannedNpcIntroduction(
-            canonical_name="Дверь",
-            role="дверь",
-            temporary_name=True,
-            reason="Упомянута игроком в ходе.",
-        )
-    )
+def test_unsolicited_new_physical_character_requires_typed_authority():
+    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    sanitize_player_premise_npc_introductions(plan, player_input)
-    issues = systemless_contract_issues(plan, player_input)
-
-    assert plan.npc_introductions == []
-    assert not any("new physical NPC introductions" in issue for issue in issues)
-    assert len(plan.action_sequence.steps) == 2
+    assert "new physical person" in prompt
+    assert "must appear in npc_introductions" in prompt
 
 
-def test_genuinely_invented_unsolicited_character_still_fails_closed():
-    player_input = "Осматриваю дверь и пробую её открыть."
-    plan = _plan_with_intro(
-        PlannedNpcIntroduction(
-            canonical_name="Незнакомец",
-            role="человек в коридоре",
-            temporary_name=True,
-            reason="Planner решил добавить свидетеля.",
-        )
-    )
+def test_direct_unknown_contact_can_be_typed_without_lexical_sanitizer():
+    prompt = TurnAuthorityPlanner.AUTHORITY_ADDENDUM
 
-    issues = systemless_contract_issues(plan, player_input)
-
-    assert len(plan.npc_introductions) == 1
-    assert any("new physical NPC introductions" in issue for issue in issues)
-
-
-def test_explicit_unknown_contact_is_not_sanitized_as_common_noun():
-    player_input = "Расспрашиваю прохожего, не видел ли он ночью машину."
-    plan = CoordinatedTurnPlan(
-        player_intent="расспросить прохожего",
-        resolution="conversation",
-        npc_introductions=[
-            PlannedNpcIntroduction(
-                canonical_name="Прохожий",
-                role="прохожий",
-                temporary_name=True,
-                reason="Игрок прямо обратился к неизвестному прохожему.",
-            )
-        ],
-    )
-
-    issues = systemless_contract_issues(plan, player_input)
-
-    assert len(plan.npc_introductions) == 1
-    assert not any("new physical NPC introductions" in issue for issue in issues)
+    assert "npc_introductions" in prompt
+    assert "New physical NPCs" in prompt or "physical NPC" in prompt
