@@ -59,7 +59,7 @@ async def test_presence_service_rejects_teleport_without_structured_movement(
 
 
 @pytest.mark.asyncio
-async def test_structured_presence_move_clears_stale_other_location(
+async def test_structured_presence_move_updates_current_location_and_preserves_history(
     db_session: AsyncSession,
 ):
     campaign_id = uuid4()
@@ -94,14 +94,16 @@ async def test_structured_presence_move_clears_stale_other_location(
     await presence.add_participant(first_scene.id, character.id)
     await presence.move_to_scene(second_scene.id, character.id)
 
-    memberships = (
-        await db_session.execute(
-            select(SceneParticipant.scene_id).where(
-                SceneParticipant.entity_id == str(character.id)
+    memberships = set(
+        (
+            await db_session.execute(
+                select(SceneParticipant.scene_id).where(
+                    SceneParticipant.entity_id == str(character.id)
+                )
             )
-        )
-    ).scalars().all()
+        ).scalars().all()
+    )
     state = await db_session.get(Character, str(character.id))
 
-    assert memberships == [str(second_scene.id)]
+    assert memberships == {str(first_scene.id), str(second_scene.id)}
     assert state.current_location_id == str(second_location.id)
