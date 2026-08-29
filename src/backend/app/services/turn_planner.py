@@ -310,7 +310,7 @@ Player agency is a hard boundary:
 - Respect pending_player_choice and protected_player_decisions.
 
 Dramatic escalation is evidence-bound:
-- Calm/routine scenes may remain calm and end without a threat or forced hook.
+- Calm and routine scenes may remain calm and end without a threat or forced hook.
 - If allow_new_complication=false, introduce no new complication.
 - If true, use only the named complication_source and approved consequences.
 
