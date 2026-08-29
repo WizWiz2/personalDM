@@ -10,9 +10,9 @@ class NarrationPublicationGuard:
     """Publish only a validated narrative surface or a deterministic Authority projection.
 
     The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    Rejected prose is never published merely because some fragments look safe. Round 37 adds a
-    surgical *repair candidate* helper, but that candidate must be independently revalidated before
-    publication; if it remains invalid, the existing fail-closed authority projection still wins.
+    Rejected prose is never published merely because some fragments look safe. Surgical repair is
+    only an untrusted candidate source: callers must independently revalidate the result before it
+    can reach this publication boundary.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -89,28 +89,9 @@ class NarrationPublicationGuard:
             if item.severity == "error"
         ]
         if validation is None or errors:
-            breaking = [
-                item
-                for item in errors
-                if item.violation_type in cls.STATE_BREAKING_VIOLATIONS
-            ]
-            actor_agency_only = bool(
-                authority.scene_disposition == "actor_turn"
-                and breaking
-                and all(item.violation_type == "player_agency" for item in breaking)
-            )
-            if validation is not None and (not breaking or actor_agency_only):
-                surgical, surgery = cls.surgical_repair_candidate(candidate, validation)
-                if surgical:
-                    return surgical, {
-                        "mode": "surgical_surface",
-                        "candidate_characters": len(candidate),
-                        "published_characters": len(surgical),
-                        "error_count": len(errors),
-                        "candidate_discarded": False,
-                        "validated_surface": False,
-                        "surgical_repair": surgery,
-                    }
+            # Publication is the final trust boundary. A surgical repair candidate may be generated
+            # upstream, but it is publishable only after an independent validator pass. Never turn a
+            # rejected draft into trusted prose here just because the flagged spans were removable.
             fallback = cls._safe_authority_projection(authority)
             return fallback, {
                 "mode": "authority_projection",
