@@ -72,4 +72,4 @@ response, before the human protagonist's next choice.
 )
 
 
-__all__ = ["PromptPolicy", "CURRENT_PROMPT_POLICY"]
+__all__ = ["CURRENT_PROMPT_POLICY", "PromptPolicy"]
