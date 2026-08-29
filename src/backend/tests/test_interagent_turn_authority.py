@@ -21,7 +21,11 @@ from app.providers.llm_provider import LLMProviderTruncatedError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.context_compiler import ContextCompiler
 from app.services.role_model_router import ModelRole, RoleModelSelection
-from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
+from app.services.turn_authority_planner import (
+    CoordinatedTurnPlan,
+    SemanticPlanReview,
+    TurnAuthorityPlanner,
+)
 from app.services.turn_authority_service import TurnAuthorityService
 from app.services.turn_authority_validator import TurnAuthorityValidator
 from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
@@ -44,6 +48,8 @@ class FakeControlRouter:
     ):
         if response_model is CoordinatedTurnPlan:
             return self.plan.model_dump(mode="json")
+        if response_model is SemanticPlanReview:
+            return {"verdict": "pass", "summary": "План согласован.", "issues": []}
         if response_model is NarrationValidationResult:
             npc_name = self.plan.npc_introductions[0].canonical_name
             return {
@@ -77,10 +83,7 @@ async def _world(db_session: AsyncSession):
         campaign_id,
         CharacterCreate(canonical_name="Шептун"),
     )
-    await campaigns.update(
-        campaign_id,
-        CampaignUpdate(player_character_id=player.id),
-    )
+    await campaigns.update(campaign_id, CampaignUpdate(player_character_id=player.id))
     scene = await scenes.create(
         campaign_id,
         SceneCreate(title="У фабрики", location_id=alley.id),
@@ -94,7 +97,6 @@ def _planned_doorman() -> CoordinatedTurnPlan:
     return CoordinatedTurnPlan(
         player_intent="Постучать в дверь и поговорить с тем, кто откроет.",
         resolution="conversation",
-        scene_disposition="stay",
         npc_introductions=[
             PlannedNpcIntroduction(
                 canonical_name="Дежурный фабрики",
@@ -109,43 +111,43 @@ def _planned_doorman() -> CoordinatedTurnPlan:
     )
 
 
+def _selection(campaign_id):
+    config = ProviderConfigRead(
+        id=uuid4(),
+        campaign_id=campaign_id,
+        base_url="http://localhost:11434/v1",
+        model_name="fake-control",
+        has_api_key=False,
+        context_window=4096,
+        created_at=datetime.utcnow(),
+    )
+    return RoleModelSelection(
+        role=ModelRole.PLANNER,
+        config=config,
+        api_key=None,
+        fallback_config=config,
+        fallback_api_key=None,
+        source="test",
+    )
+
+
 @pytest.mark.interagent_contract_enforced
 @pytest.mark.asyncio
 async def test_planner_authority_validator_and_materializer_share_one_new_npc_contract(
     db_session: AsyncSession,
 ):
-    campaign_id, player, known_absent, scene = await _world(db_session)
+    campaign_id, _player, known_absent, scene = await _world(db_session)
     expected = _planned_doorman()
     router = FakeControlRouter(expected)
-    selection = RoleModelSelection(
-        role=ModelRole.PLANNER,
-        config=ProviderConfigRead(
-            id=uuid4(),
-            campaign_id=campaign_id,
-            base_url="http://localhost:11434/v1",
-            model_name="fake-control",
-            has_api_key=False,
-            context_window=4096,
-            created_at=datetime.utcnow(),
-        ),
-        api_key=None,
-        fallback_config=ProviderConfigRead(
-            id=uuid4(),
-            campaign_id=campaign_id,
-            base_url="http://localhost:11434/v1",
-            model_name="fake-control",
-            has_api_key=False,
-            context_window=4096,
-            created_at=datetime.utcnow(),
-        ),
-        fallback_api_key=None,
-        source="test",
-    )
+    selection = _selection(campaign_id)
 
     planner = TurnAuthorityPlanner(router)
     plan = await planner.plan(
         selection,
-        [ChatMessage(role="system", content="Current scene: alley"), ChatMessage(role="user", content="Стучу в фабрику")],
+        [
+            ChatMessage(role="system", content="Current scene: alley"),
+            ChatMessage(role="user", content="Стучу в фабрику"),
+        ],
     )
     authority = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,
@@ -160,8 +162,6 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
     assert authority.allowed_new_npc_names == ["Дежурный фабрики"]
     assert "Шептун" in authority.known_absent_character_names
 
-    # Deliberately make the fake control model repeat the old PR #66 mistake. Typed
-    # authority must overrule only the false absence claim about the explicitly planned NPC.
     validator_selection = RoleModelSelection(
         role=ModelRole.NARRATION_VALIDATOR,
         config=selection.config,
@@ -190,9 +190,7 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
 @pytest.mark.interagent_contract_enforced
 def test_typed_authority_never_filters_player_agency_violation():
     plan = _planned_doorman()
-    authority = __import__(
-        "app.models.turn_authority", fromlist=["TurnAuthority"]
-    ).TurnAuthority(
+    authority = __import__("app.models.turn_authority", fromlist=["TurnAuthority"]).TurnAuthority(
         campaign_id=uuid4(),
         trigger_turn_id=uuid4(),
         player_character_name="Рэт",
@@ -221,7 +219,6 @@ def test_auto_success_movement_without_structured_boundary_is_invalid():
         CoordinatedTurnPlan(
             player_intent="Выйти из переулка в таверну.",
             resolution="sequence",
-            scene_disposition="sequence",
             action_sequence=ActionSequencePlan(
                 steps=[
                     ActionStepPlan(
@@ -242,11 +239,15 @@ async def test_actor_context_never_lists_player_under_other_present_npcs(
     db_session: AsyncSession,
 ):
     campaign_id, player, _known_absent, scene = await _world(db_session)
+    scene_repo = SceneRepository(db_session)
     npc = await EntityRepository(db_session).create_character(
         campaign_id,
-        CharacterCreate(canonical_name="Грета", current_location_id=(await SceneRepository(db_session).get_location_id(scene.id))),
+        CharacterCreate(
+            canonical_name="Грета",
+            current_location_id=await scene_repo.get_location_id(scene.id),
+        ),
     )
-    await SceneRepository(db_session).add_participant(scene.id, npc.id, allow_movement=True)
+    await scene_repo.add_participant(scene.id, npc.id, allow_movement=True)
 
     messages, metadata = await ContextCompiler(db_session, context_providers=[]).compile_context(
         campaign_id,
@@ -266,10 +267,7 @@ class StopWithoutPunctuationProvider:
         self.last_telemetry = {}
 
     async def generate_stream(self, *args, **kwargs):
-        self.last_telemetry = {
-            "finish_reason": "stop",
-            "status": "truncated",
-        }
+        self.last_telemetry = {"finish_reason": "stop", "status": "truncated"}
         raise LLMProviderTruncatedError(
             "LLM produced unfinished response",
             partial_text="Ответ заканчивается именем Рэт",
