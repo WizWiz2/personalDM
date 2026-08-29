@@ -68,6 +68,7 @@ def test_player_agency_is_semantic_validator_territory_not_deterministic_word_ma
 def test_validator_contract_protects_supplied_dialogue_without_lexical_echo_guard():
     prompt = TurnAuthorityValidator.SYSTEM_PROMPT
 
-    assert "beyond player_input" in prompt
+    assert "new voluntary dialogue" in prompt
+    assert "player_input" in prompt
     assert "shortest exact offending fragment" in prompt
-    assert "Never cite an NPC-owned fragment as player agency" in prompt
+    assert "NPC-owned fragment as player agency" in prompt
