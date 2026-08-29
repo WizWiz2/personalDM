@@ -42,9 +42,9 @@ def test_mixed_sequence_actor_claim_is_authorized_by_typed_semantic_contract() -
 
     assert contract is not None
     assert "state_personal_memories_observations_and_claims" in contract["authorized"]
-    assert "ACTOR TURN RIGHTS" in prompt
-    assert "character_claim" in prompt
-    assert "not objective world canon" in prompt
+    assert "PRESENT NPC DIALOGUE" in prompt
+    assert "epistemic character claims" in prompt
+    assert "not objective" in prompt
 
 
 def test_legacy_post_filter_is_noop_and_world_mutation_remains_for_semantic_validator() -> None:
