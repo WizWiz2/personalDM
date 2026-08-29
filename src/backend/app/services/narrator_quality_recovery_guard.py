@@ -371,17 +371,18 @@ def literary_surgical_repair_candidate(
     candidate: str,
     validation: NarrationValidationResult | None,
 ) -> tuple[str | None, dict]:
-    """Remove exact bad spans while preserving a substantial multi-paragraph literary surface."""
+    """Remove exact bad spans without letting repair flatten an already literary scene."""
     errors = [
         item
         for item in (validation.violations if validation else [])
         if item.severity == "error"
     ]
     if not errors:
-        return None, {"strategy": "literary_span_removal", "reason": "no_error_violations"}
+        return None, {"strategy": "deterministic_span_removal", "reason": "no_error_violations"}
 
     evidence = [guard_cls._key(item.evidence) for item in errors]
     original_paragraphs = _paragraphs(candidate)
+    literary_surface = len(original_paragraphs) >= 2
     matched: set[int] = set()
     repaired_paragraphs: list[str] = []
 
@@ -408,7 +409,8 @@ def literary_surgical_repair_candidate(
     retained_ratio = round(len(repaired_compact) / original_len, 4) if repaired_compact else 0.0
 
     metadata = {
-        "strategy": "literary_span_removal",
+        "strategy": "deterministic_span_removal",
+        "preservation_policy": "literary" if literary_surface else "compact_compatibility",
         "matched_errors": len(matched),
         "error_count": len(errors),
         "retained_ratio": retained_ratio,
@@ -422,17 +424,24 @@ def literary_surgical_repair_candidate(
             "status": "skipped",
             "reason": "not_all_error_evidence_matched",
         }
-    if len(repaired_compact) < 120 or retained_ratio < 0.70:
+    if literary_surface:
+        if len(repaired_compact) < 120 or retained_ratio < 0.70:
+            return None, {
+                **metadata,
+                "status": "skipped",
+                "reason": "literary_surface_degraded",
+            }
+        if len(repaired_paragraphs) < 2:
+            return None, {
+                **metadata,
+                "status": "skipped",
+                "reason": "literary_paragraph_structure_lost",
+            }
+    elif len(repaired_compact) < 24 or retained_ratio < 0.20:
         return None, {
             **metadata,
             "status": "skipped",
-            "reason": "literary_surface_degraded",
-        }
-    if len(original_paragraphs) >= 2 and len(repaired_paragraphs) < 2:
-        return None, {
-            **metadata,
-            "status": "skipped",
-            "reason": "literary_paragraph_structure_lost",
+            "reason": "too_little_safe_surface_remained",
         }
     if guard_cls._player_facing_fragment(repaired) is None:
         return None, {
