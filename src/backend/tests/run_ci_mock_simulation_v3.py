@@ -353,6 +353,18 @@ def _turn_authority_plan(prompt: str) -> str:
     )
 
 
+def _semantic_plan_review() -> str:
+    CALLS["planner_review"] += 1
+    return json.dumps(
+        {
+            "verdict": "pass",
+            "summary": "Typed mock plan matches the current input.",
+            "issues": [],
+        },
+        ensure_ascii=False,
+    )
+
+
 def _authority_verdict() -> str:
     CALLS["authority_validator"] += 1
     return json.dumps(
@@ -366,7 +378,12 @@ def _authority_verdict() -> str:
 
 
 def _dispatch_json(prompt: str) -> str:
-    if "[INTER-AGENT AUTHORITY CONTRACT]" in prompt and "[TURN PLANNER]" in prompt:
+    if "[TURN PLAN SEMANTIC REVIEWER]" in prompt:
+        return _semantic_plan_review()
+    if (
+        "[INTER-AGENT SEMANTIC AUTHORITY CONTRACT]" in prompt
+        and "[TURN PLANNER]" in prompt
+    ):
         return _turn_authority_plan(prompt)
     if "[TURN AUTHORITY VALIDATOR]" in prompt:
         return _authority_verdict()
