@@ -127,12 +127,15 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["post_turn_mode"] == "background"
 
 
-def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
+def test_context_pipeline_is_explicit_composition_and_not_runtime_patched() -> None:
     base_method = BaseContextCompiler.compile_context
+    production_method = ContextCompiler.compile_context
     install_runtime()
 
     assert BaseContextCompiler.compile_context is base_method
-    assert ContextCompiler.__mro__[1] is BaseContextCompiler
+    assert ContextCompiler.compile_context is production_method
+    assert BaseContextCompiler not in ContextCompiler.__mro__
+    assert ContextCompiler.__bases__ == (object,)
     assert ContextCompiler.DEFAULT_PROVIDER_NAMES == (
         "authoritative_scene_state",
         "recent_narrative_details",
