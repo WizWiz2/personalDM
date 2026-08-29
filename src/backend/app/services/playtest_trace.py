@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import re
 from collections import Counter
 from datetime import datetime
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.narration_validation_table import NarrationValidationRun
 from app.services.debugger_service import DebuggerService
 
 
@@ -46,6 +49,15 @@ def _elapsed_seconds(start: str | None, end: str | None) -> float | None:
         return None
 
 
+def _json(value: str | None, fallback):
+    if not value:
+        return fallback
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return fallback
+
+
 class PlaytestTraceService:
     """Read-only causal flight recorder assembled from durable turn evidence.
 
@@ -57,20 +69,80 @@ class PlaytestTraceService:
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    async def _validation_audits(
+        self,
+        campaign_id: UUID,
+        trigger_turn_ids: set[str],
+    ) -> list[dict]:
+        if not trigger_turn_ids:
+            return []
+        rows = (
+            await self._session.execute(
+                select(NarrationValidationRun)
+                .where(
+                    NarrationValidationRun.campaign_id == str(campaign_id),
+                    NarrationValidationRun.trigger_turn_id.in_(sorted(trigger_turn_ids)),
+                )
+                .order_by(NarrationValidationRun.created_at)
+            )
+        ).scalars().all()
+        return [
+            {
+                "id": row.id,
+                "campaign_id": row.campaign_id,
+                "trigger_turn_id": row.trigger_turn_id,
+                "assistant_turn_id": row.assistant_turn_id,
+                "scene_id": row.scene_id,
+                "status": row.status,
+                "draft_text": row.draft_text,
+                "final_text": row.final_text,
+                "attempts": _json(row.attempts_json, []),
+                "violation_count": row.violation_count,
+                "repair_attempts": row.repair_attempts,
+                "validator_model_name": row.validator_model_name,
+                "failure_reason": row.failure_reason,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            }
+            for row in rows
+        ]
+
     async def turn_trace(self, campaign_id: UUID, assistant_turn_id: UUID) -> dict:
         snapshot = await DebuggerService(self._session).snapshot(campaign_id, turn_limit=1000)
-        trace = self._trace_from_snapshot(snapshot, str(assistant_turn_id))
+        trigger_turn_ids = {
+            str(turn.get("id"))
+            for turn in snapshot.get("turns", [])
+            if turn.get("role") == "user" and turn.get("id")
+        }
+        validation_audits = await self._validation_audits(campaign_id, trigger_turn_ids)
+        trace = self._trace_from_snapshot(
+            snapshot,
+            str(assistant_turn_id),
+            validation_audits=validation_audits,
+        )
         if trace is None:
             raise ValueError("Assistant turn not found in campaign")
         return trace
 
     async def campaign_trace(self, campaign_id: UUID, turn_limit: int = 100) -> dict:
         snapshot = await DebuggerService(self._session).snapshot(campaign_id, turn_limit=turn_limit)
+        trigger_turn_ids = {
+            str(turn.get("id"))
+            for turn in snapshot.get("turns", [])
+            if turn.get("role") == "user" and turn.get("id")
+        }
+        validation_audits = await self._validation_audits(campaign_id, trigger_turn_ids)
         traces = [
             trace
             for turn in snapshot.get("turns", [])
             if turn.get("role") == "assistant"
-            for trace in [self._trace_from_snapshot(snapshot, turn["id"])]
+            for trace in [
+                self._trace_from_snapshot(
+                    snapshot,
+                    turn["id"],
+                    validation_audits=validation_audits,
+                )
+            ]
             if trace is not None
         ]
         flags = Counter(
@@ -87,6 +159,9 @@ class PlaytestTraceService:
         validator_statuses = Counter(
             str(trace.get("validator", {}).get("status") or "unknown") for trace in traces
         )
+        publication_modes = Counter(
+            str(trace.get("publication", {}).get("mode") or "unknown") for trace in traces
+        )
         return {
             "campaign": snapshot.get("campaign"),
             "health": snapshot.get("health", {}),
@@ -94,6 +169,7 @@ class PlaytestTraceService:
                 "assistant_turns": len(traces),
                 "diagnostic_flags": dict(sorted(flags.items())),
                 "validator_statuses": dict(sorted(validator_statuses.items())),
+                "publication_modes": dict(sorted(publication_modes.items())),
                 "interactive_seconds": {
                     "min": min(latencies) if latencies else None,
                     "max": max(latencies) if latencies else None,
@@ -106,7 +182,12 @@ class PlaytestTraceService:
         }
 
     @staticmethod
-    def _trace_from_snapshot(snapshot: dict, assistant_turn_id: str) -> dict | None:
+    def _trace_from_snapshot(
+        snapshot: dict,
+        assistant_turn_id: str,
+        *,
+        validation_audits: list[dict] | None = None,
+    ) -> dict | None:
         turns = snapshot.get("turns", [])
         by_id = {turn.get("id"): turn for turn in turns}
         assistant = by_id.get(assistant_turn_id)
@@ -267,6 +348,41 @@ class PlaytestTraceService:
 
         narration_validation = provider.get("narration_validation") or {}
         repetition = provider.get("repetition_guard") or {}
+        persisted_run_id = str(narration_validation.get("validation_run_id") or "")
+        user_turn_id = str((user or {}).get("id") or "")
+        audit_runs = [
+            item
+            for item in (validation_audits or [])
+            if (
+                (persisted_run_id and str(item.get("id") or "") == persisted_run_id)
+                or str(item.get("assistant_turn_id") or "") == assistant_turn_id
+                or (user_turn_id and str(item.get("trigger_turn_id") or "") == user_turn_id)
+            )
+        ]
+        validation_audit = None
+        if persisted_run_id:
+            validation_audit = next(
+                (
+                    item
+                    for item in reversed(audit_runs)
+                    if str(item.get("id") or "") == persisted_run_id
+                ),
+                None,
+            )
+        if validation_audit is None and audit_runs:
+            validation_audit = audit_runs[-1]
+
+        publication_mode = (
+            protocol.get("validator_status")
+            or narration_validation.get("publication_mode")
+            or narration_validation.get("status")
+            or "unknown"
+        )
+        durable_validator_status = (
+            (validation_audit or {}).get("status")
+            or narration_validation.get("status")
+            or "unknown"
+        )
         return {
             "assistant_turn_id": assistant_turn_id,
             "scene": {
@@ -298,10 +414,24 @@ class PlaytestTraceService:
                 "repetition_guard": repetition,
             },
             "validator": {
-                "status": protocol.get("validator_status")
-                or narration_validation.get("status"),
-                "validation_run_id": narration_validation.get("validation_run_id"),
+                "status": durable_validator_status,
+                "runtime_status": protocol.get("validator_status"),
+                "validation_run_id": (
+                    (validation_audit or {}).get("id")
+                    or narration_validation.get("validation_run_id")
+                ),
                 "telemetry": narration_validation,
+                "audit": validation_audit,
+                "runs_for_turn": audit_runs,
+            },
+            "publication": {
+                "mode": publication_mode,
+                "degraded": bool(
+                    provider.get("narration_degraded")
+                    or publication_mode in {"safe_fallback", "presentation_fallback"}
+                ),
+                "guard": narration_validation.get("publication_guard"),
+                "published_text": assistant_text,
             },
             "memory": {
                 "job": memory_job,
