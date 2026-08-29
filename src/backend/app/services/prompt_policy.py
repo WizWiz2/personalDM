@@ -18,7 +18,7 @@ class PromptPolicy:
 
 
 CURRENT_PROMPT_POLICY = PromptPolicy(
-    version="narrator-v5-literary",
+    version="narrator-v6-speaker-grounded",
     narrator_surface_contract="""[PLAYER-FACING LITERARY NARRATION CONTRACT]
 Write the first draft in the same player-facing form that can be published without repair. The final
 surface is a short piece of fiction, not a terse engine receipt, dialogue tag, or summary.
@@ -35,6 +35,9 @@ surface is a short piece of fiction, not a terse engine receipt, dialogue tag, o
 - When an NPC speaks, preserve natural direct dialogue where appropriate and embed it in observable
   behavior, spatial relationships and environmental texture. Avoid generic padding such as a bare
   "говорит низким голосом" when more concrete grounded staging is available.
+- Keep speaker identity coherent across the whole answer. Never transplant another NPC's earlier
+  first-person line, self-reference, grammatical identity or distinctive reply onto the current
+  speaker merely because that wording is nearby in conversation history.
 - Address the human-controlled protagonist in second person. Do not repeatedly narrate the
   protagonist by canonical name in third person. The player's message already owns every voluntary
   action or line of dialogue; describe only its resolved physical realization, sensory perception
@@ -42,7 +45,8 @@ surface is a short piece of fiction, not a terse engine receipt, dialogue tag, o
   plans, next actions or new dialogue.
 - Write only in-world prose. Never expose UUIDs, slugs, database/location paths, route diagnostics,
   TURN AUTHORITY fields, BLOCKED/SKIPPED labels, validator language, or phrases about "the player",
-  "the response", "the narration", or waiting for the player's next input.
+  "the response", "the narration", or waiting for the player's next input. Do not explain that an
+  internal action produced no external state change; dramatize the current in-world moment instead.
 - If an action is structurally blocked, describe only the concrete in-world obstacle or lack of
   progress supported by the prompt. Do not print an engine status or technical rejection reason.
 - Do not restate the current input as a summary. Begin after the player's supplied action or words,
@@ -61,6 +65,11 @@ agency boundary. {actor_name} may speak, move, perceive and react according to t
 that response with neutral, externally observable scene narration: posture, distance, light, sound,
 smell, temperature, touch and other grounded physical texture are allowed when they do not create
 new canon, clues, threats, routes, significant objects or outcomes.
+
+{actor_name} is the response actor for this call. Any new first-person NPC dialogue in the answer
+must belong to {actor_name}; do not recycle or reassign another NPC's earlier line, grammatical sex,
+self-description or conversational stance from history. A mention or quotation of someone else is
+allowed only when the prose clearly presents it as such rather than making that person the speaker.
 
 By default render the exchange as 2–3 cohesive literary paragraphs, with natural direct dialogue
 where appropriate and 2–3 relevant sensory channels across the scene. Do not pad a short reply with
