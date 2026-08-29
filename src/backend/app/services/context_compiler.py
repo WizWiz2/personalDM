@@ -17,50 +17,30 @@ from app.services.context_pipeline import (
     NarrativeDetailsContextProvider,
     SceneStateContextProvider,
 )
+from app.services.prompt_policy import CURRENT_PROMPT_POLICY, PromptPolicy
 
 
 class ContextCompiler(BaseContextCompiler):
-    """Compile base context, then apply explicit ordered context providers."""
+    """Compile context data, then layer a versioned prompt policy and ordered providers."""
 
     DEFAULT_PROVIDER_NAMES = (
         SceneStateContextProvider.name,
         NarrativeDetailsContextProvider.name,
     )
 
-    NARRATOR_SURFACE_CONTRACT = """[PLAYER-FACING NARRATION CONTRACT]
-Write the first draft in the same player-facing form that can be published without repair.
-- If the latest player message is Russian, write the entire in-game response in Russian. Keep only
-  established proper names unchanged; never switch to Chinese or English explanatory prose.
-- Address the human-controlled protagonist in second person. Do not repeatedly narrate the
-  protagonist by canonical name in third person. The player's message already owns every voluntary
-  action or line of dialogue; describe only its resolved effect and the world's response.
-- Write only in-world prose. Never expose UUIDs, slugs, database/location paths, route diagnostics,
-  TURN AUTHORITY fields, BLOCKED/SKIPPED labels, validator language, or phrases about "the player",
-  "the response", "the narration", or waiting for the player's next input.
-- If an action is structurally blocked, describe only the concrete in-world obstacle or lack of
-  progress supported by the prompt. Do not print an engine status or technical rejection reason.
-- Do not restate the current input as a summary. Advance from it to the smallest concrete,
-  authority-supported consequence and stop before inventing the protagonist's next choice.
-"""
-
-    PLAYER_CONTROL_CONTRACT = """[PLAYER-CONTROLLED PROTAGONIST: {player_name}]
-{player_name} is controlled exclusively by the human player. The latest user message is the complete
-speech/action the human supplied for this turn. You may perceive it, answer it, react to it, or ask a
-question back, but never add new dialogue, voluntary movement, gestures, choices, plans, beliefs,
-emotions, promises, attacks, consent, or other intentional actions for {player_name}.
-
-[ACTOR OUTPUT CONTRACT: {actor_name}]
-Write only {actor_name}'s own speech, actions, perceptions and immediate reactions. Never narrate
-{player_name} as the subject of a new action and never write a new quoted line for {player_name}.
-End immediately after {actor_name}'s response; the human supplies what {player_name} does next.
-"""
+    # Compatibility aliases for callers/tests that inspect these contracts directly. Their source
+    # of truth is PromptPolicy, not ContextCompiler.
+    NARRATOR_SURFACE_CONTRACT = CURRENT_PROMPT_POLICY.narrator_surface_contract
+    PLAYER_CONTROL_CONTRACT = CURRENT_PROMPT_POLICY.player_control_contract
 
     def __init__(
         self,
         session: AsyncSession,
         context_providers: Sequence[ContextProvider] | None = None,
+        prompt_policy: PromptPolicy = CURRENT_PROMPT_POLICY,
     ):
         super().__init__(session)
+        self._prompt_policy = prompt_policy
         providers = (
             tuple(context_providers)
             if context_providers is not None
@@ -74,6 +54,10 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
     @property
     def context_provider_names(self) -> tuple[str, ...]:
         return self._context_pipeline.provider_names
+
+    @property
+    def prompt_policy_version(self) -> str:
+        return self._prompt_policy.version
 
     @staticmethod
     def _remove_player_from_other_npcs(content: str, player_name: str) -> str:
@@ -108,16 +92,21 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
 
         return "\n".join(result)
 
+    def _audit_prompt_policy(self, metadata: dict) -> dict:
+        audited = dict(metadata)
+        audited["prompt_policy_version"] = self._prompt_policy.version
+        return audited
+
     async def _apply_narrator_surface_contract(
         self,
         messages: list[ChatMessage],
         metadata: dict,
         acting_character_id: UUID | None,
     ) -> tuple[list[ChatMessage], dict]:
+        audited = self._audit_prompt_policy(metadata)
         if acting_character_id is not None or not messages:
-            return messages, metadata
+            return messages, audited
         first, *rest = messages
-        audited = dict(metadata)
         layers = list(audited.get("included_layers") or [])
         if "layer_0a_narrator_surface" not in layers:
             layers.append("layer_0a_narrator_surface")
@@ -125,7 +114,10 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
         return [
             ChatMessage(
                 role=first.role,
-                content=f"{first.content}\n\n{self.NARRATOR_SURFACE_CONTRACT}",
+                content=(
+                    f"{first.content}\n\n"
+                    f"{self._prompt_policy.narrator_surface_contract}"
+                ),
             ),
             *rest,
         ], audited
@@ -137,17 +129,18 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
         messages: list[ChatMessage],
         metadata: dict,
     ) -> tuple[list[ChatMessage], dict]:
+        audited = self._audit_prompt_policy(metadata)
         if not acting_character_id or not messages:
-            return messages, metadata
+            return messages, audited
 
         campaign = await self._campaign_repo.get_by_id(campaign_id)
         player_id = campaign.player_character_id if campaign else None
         if not player_id or player_id == acting_character_id:
-            return messages, metadata
+            return messages, audited
         player = await self._entity_repo.get_character(player_id)
         actor = await self._entity_repo.get_character(acting_character_id)
         if not player or not actor:
-            return messages, metadata
+            return messages, audited
 
         first, *rest = messages
         cleaned = self._remove_player_from_other_npcs(
@@ -156,12 +149,11 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
         )
         cleaned = (
             f"{cleaned}\n\n"
-            + self.PLAYER_CONTROL_CONTRACT.format(
+            + self._prompt_policy.player_control_contract.format(
                 player_name=player.canonical_name,
                 actor_name=actor.canonical_name,
             )
         )
-        audited = dict(metadata)
         audited["player_controlled_protagonist_id"] = str(player.id)
         audited["player_controlled_protagonist_name"] = player.canonical_name
         audited["actor_output_character_id"] = str(actor.id)
@@ -205,7 +197,7 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
             messages,
             metadata,
         )
-        return await self._context_pipeline.enrich(
+        messages, metadata = await self._context_pipeline.enrich(
             ContextRequest(
                 campaign_id=campaign_id,
                 acting_character_id=acting_character_id,
@@ -216,6 +208,7 @@ End immediately after {actor_name}'s response; the human supplies what {player_n
             messages,
             metadata,
         )
+        return messages, self._audit_prompt_policy(metadata)
 
 
 __all__ = ["ContextCompiler", "count_tokens"]
