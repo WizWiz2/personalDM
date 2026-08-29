@@ -12,7 +12,6 @@ from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.scene import SceneCreate
-from app.models.turn import ChatMessage
 from app.services.context_compiler import ContextCompiler
 from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
@@ -37,19 +36,17 @@ async def test_narrator_context_no_longer_grants_generic_npc_invention(
     )
 
     system = messages[0].content
-    # PR #68 used a prose-only exception here. That was contradictory with the
-    # downstream validator. New introductions now exist only in typed Planner output.
     assert "[ENGINE NPC INTRODUCTION CAPABILITY]" not in system
     assert "new_npc_introduction_contract" not in metadata
     planner_system = TurnAuthorityPlanner.planning_messages(messages)[0].content
-    assert "[INTER-AGENT AUTHORITY CONTRACT]" in planner_system
+    assert "[INTER-AGENT SEMANTIC AUTHORITY CONTRACT]" in planner_system
     assert "npc_introductions" in planner_system
-    assert "already known but absent character" in planner_system
+    assert "known absent character" in planner_system
+    assert "Do not infer person" in planner_system
 
     plan = CoordinatedTurnPlan(
         player_intent="Поговорить с неизвестным жильцом.",
         resolution="conversation",
-        scene_disposition="stay",
         observable_consequences=["На стук отвечает ранее неизвестный жилец."],
         ending_hook="Жилец ждёт следующего вопроса.",
     )
@@ -123,25 +120,13 @@ async def _movement_world(db_session: AsyncSession):
     scenes = SceneRepository(db_session)
 
     await campaigns.create(campaign_id, CampaignCreate(name="Movement authority"))
-    alley = await locations.create(
-        campaign_id,
-        LocationCreate(canonical_name="Переулок"),
-    )
-    tavern = await locations.create(
-        campaign_id,
-        LocationCreate(canonical_name="Таверна"),
-    )
+    alley = await locations.create(campaign_id, LocationCreate(canonical_name="Переулок"))
+    tavern = await locations.create(campaign_id, LocationCreate(canonical_name="Таверна"))
     player = await entities.create_character(
         campaign_id,
-        CharacterCreate(
-            canonical_name="Рэт",
-            current_location_id=tavern.id,
-        ),
+        CharacterCreate(canonical_name="Рэт", current_location_id=tavern.id),
     )
-    await campaigns.update(
-        campaign_id,
-        CampaignUpdate(player_character_id=player.id),
-    )
+    await campaigns.update(campaign_id, CampaignUpdate(player_character_id=player.id))
     scene = await scenes.create(
         campaign_id,
         SceneCreate(title="Разговор в таверне", location_id=tavern.id),
