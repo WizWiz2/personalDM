@@ -205,12 +205,12 @@ generate draft
 → deterministic agency checks
 → authority validator
 → optional surgical/model repair candidate
-→ mandatory second validation
-→ deterministic presentation containment if needed
-→ publication trust boundary
+→ second validation when a repair is generated upstream
+→ bounded deterministic containment
+→ publication boundary
 ```
 
-`NarrationPublicationGuard` не доверяет rejected prose. Surgical repair helper может только создать untrusted candidate; прямой publish возможен лишь после отдельного validator pass. Иначе публикуется deterministic projection из `TurnAuthority`.
+`NarrationPublicationGuard` не принимает rejected prose целиком. Нормальный pipeline повторно валидирует surgical/model repair candidate. На самом publication boundary разрешено одно дополнительное узкое исключение: если после validation осталась ровно **одна** точно локализованная ошибка типа actor `player_agency` или безопасной texture-категории, guard может детерминированно удалить совпавший сегмент и оставить только существенный player-facing remainder. При нескольких ошибках, movement/time/sequence/canon violations, несовпавшем evidence или слишком маленьком остатке публикация fail-closed переходит на deterministic projection из `TurnAuthority`.
 
 Narrator не может менять outcome, перемещать персонажей вне structured transition, создавать незапланированного физического NPC или добавлять voluntary protagonist action/thought/emotion.
 
