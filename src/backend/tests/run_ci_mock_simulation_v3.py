@@ -323,12 +323,21 @@ def _turn_authority_plan(prompt: str) -> str:
     """Exercise the real TurnAuthorityPlanner schema instead of silently falling back."""
     CALLS["planner"] += 1
     latest = prompt.rsplit("\n", 1)[-1].strip()
+    addressed = (
+        "[INPUT ROUTING — authoritative]" in prompt
+        and "Addressed character:" in prompt
+    )
     return json.dumps(
         {
             "player_intent": (latest or "Проверить текущую сцену")[:500],
-            "resolution": "observation",
-            "scene_disposition": "stay",
+            "resolution": "conversation" if addressed else "observation",
             "npc_introductions": [],
+            "addressed_response_requested": addressed,
+            "response_ownership_reason": (
+                "Игрок явно обратился к выбранному присутствующему персонажу."
+                if addressed
+                else "Текущий ход адресован миру, а не выбранному NPC."
+            ),
             "observable_consequences": [
                 "Попытка даёт одно конкретное наблюдаемое следствие в текущей сцене."
             ],
