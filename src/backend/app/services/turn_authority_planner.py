@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import Field, computed_field, model_validator
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from app.config import settings
 from app.models.turn import ChatMessage
@@ -12,6 +14,16 @@ from app.services.starter_identity import (
     sanitize_existing_present_npc_introductions,
 )
 from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
+
+
+class SemanticPlanReview(BaseModel):
+    """Independent agent verdict over Planner meaning, never a lexical parser."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    verdict: Literal["pass", "repair_required"]
+    summary: str = Field(default="", max_length=1000)
+    issues: list[str] = Field(default_factory=list, max_length=10)
 
 
 class CoordinatedTurnPlan(TurnPlan):
@@ -42,10 +54,6 @@ class CoordinatedTurnPlan(TurnPlan):
     @model_validator(mode="after")
     def validate_interagent_authority(self):
         for step in self.action_sequence.steps:
-            if step.resolution == "requires_check":
-                raise ValueError(
-                    "systemless runtime has no check resolver: requires_check is invalid"
-                )
             if step.action_type != "movement" or step.resolution != "auto_success":
                 continue
             if (
@@ -89,7 +97,7 @@ class CoordinatedTurnPlan(TurnPlan):
 
 
 class TurnAuthorityPlanner:
-    """Control agent that owns semantic interpretation and returns typed authority proposals."""
+    """Control agent whose semantic output is independently reviewed before execution."""
 
     AUTHORITY_ADDENDUM = """
 
@@ -108,9 +116,9 @@ You MUST additionally return:
 - response_ownership_reason: one concise semantic reason for addressed_response_requested.
 
 SYSTEMLESS RESOLUTION IS ABSOLUTE:
-- There is no dice/check/rules resolver. `requires_check` is NOT a legal output and will be rejected
-  by the schema. Resolve uncertainty directly into fiction as success, partial success, failure, or
-  an uncertain observable consequence that exists now.
+- There is no dice/check/rules resolver. `requires_check` is NOT a legal output and is absent from
+  the schema. Resolve uncertainty directly into fiction as success, partial success, failure, or an
+  uncertain observable consequence that exists now.
 - Ordinary speech to an addressed present NPC is response ownership, not an action_sequence step.
   For mixed input, place only real world actions in action_sequence and set
   addressed_response_requested=true when the selected NPC should answer.
@@ -155,6 +163,42 @@ authorized voluntary contribution from the protagonist. Every world consequence 
 to that contribution, never an invented next player choice.
 """
 
+    SEMANTIC_REVIEW_PROMPT = """[TURN PLAN SEMANTIC REVIEWER]
+You are an independent control agent. Do not write fiction and do not replace the plan. Compare the
+latest human input, full campaign context and PROPOSED PLAN by meaning. Do not use keyword lists,
+regular expressions, capitalization tricks or vocabulary heuristics.
+
+Return repair_required only when the proposed typed plan semantically violates one of these rules:
+- CURRENT INPUT: player_intent and outcomes must answer the latest human turn, never a stale previous
+  turn.
+- PLAYER AGENCY: if the human left alternatives genuinely unresolved, the plan must preserve that
+  choice and must not execute one branch, move the protagonist, spawn a contact from an unchosen
+  branch, or author a new voluntary decision.
+- MOVEMENT/TIME: if the human actually commits to changing physical location/time and the world does
+  not establish a blocker, the plan must use the corresponding structured transition. A focus change
+  or prose consequence cannot substitute for physical travel.
+- CONTACT/IDENTITY: when contact with an unspecified person is resolved positively, a previously
+  unknown physical responder must be typed in npc_introductions. If nobody answers/is found, the
+  negative outcome must be explicit. A known present addressed character needs response ownership,
+  not recreation as a new NPC.
+- ENTITY TYPE: objects, symbols, clues, doors, smells, lights, documents and locations are not people.
+  Do not accept an npc_introduction caused by a category mistake.
+- SYSTEMLESS: no result may depend on a future dice/check/rules resolver. Uncertainty must be resolved
+  into current fiction or left as an actual human choice/world blocker.
+- LANGUAGE: model-authored plan strings should follow the human's language while canonical names stay
+  exact.
+- CANON/COMPLICATION: new physical NPCs, routes, threats, clues and significant world outcomes require
+  the typed permissions/established source appropriate to them.
+
+A semantically valid quiet/no-contact/failure outcome is acceptable. Do not demand drama.
+Return exactly:
+{
+  "verdict": "pass|repair_required",
+  "summary": "short Russian summary",
+  "issues": ["specific semantic issue in Russian"]
+}
+"""
+
     def __init__(self, router: RoleModelRouter):
         self._router = router
         self._provider = LLMProvider()
@@ -192,7 +236,6 @@ to that contribution, never an invented next player choice.
         plan: CoordinatedTurnPlan,
         player_input: str,
     ) -> CoordinatedTurnPlan:
-        """Compatibility entrypoint: Planner already owns contact semantics."""
         del cls, player_input
         return plan
 
@@ -202,14 +245,9 @@ to that contribution, never an invented next player choice.
         plan: CoordinatedTurnPlan,
         player_input: str,
     ) -> list[str]:
-        """Return only machine-provable hand-off errors; semantic judgment stays with Planner."""
-        del cls, player_input
-        issues: list[str] = []
-        if any(step.resolution == "requires_check" for step in plan.action_sequence.steps):
-            issues.append(
-                "systemless runtime has no check resolver: requires_check is structurally invalid"
-            )
-        return issues
+        """Machine-provable hand-off errors only; semantic judgment belongs to reviewer agent."""
+        del cls, plan, player_input
+        return []
 
     @staticmethod
     def _repair_messages(
@@ -223,10 +261,11 @@ to that contribution, never an invented next player choice.
             ChatMessage(
                 role="user",
                 content=(
-                    "[PLAN CONTRACT REPAIR]\n"
-                    "The previous structured plan cannot be handed to the engine. Fix ONLY the "
-                    "listed typed-contract problems and return one complete replacement JSON.\n"
-                    f"Player input: {player_input}\n"
+                    "[PLAN SEMANTIC REPAIR]\n"
+                    "An independent reviewer found semantic problems in the previous typed plan. "
+                    "Fix ONLY the listed problems and return one complete replacement JSON. Do not "
+                    "introduce new story content merely to satisfy the reviewer.\n"
+                    f"Latest player input: {player_input}\n"
                     "Problems:\n- "
                     + "\n- ".join(issues)
                     + "\nRejected plan:\n"
@@ -250,6 +289,37 @@ to that contribution, never an invented next player choice.
         )
         return CoordinatedTurnPlan.model_validate(data)
 
+    async def _semantic_review(
+        self,
+        selection: RoleModelSelection,
+        context_messages: list[ChatMessage],
+        player_input: str,
+        plan: CoordinatedTurnPlan,
+    ) -> SemanticPlanReview:
+        context = "\n\n".join(
+            f"[{message.role.upper()}]\n{message.content}" for message in context_messages
+        )
+        data = await self._router.generate_json(
+            self._provider,
+            selection,
+            [
+                ChatMessage(role="system", content=self.SEMANTIC_REVIEW_PROMPT),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        f"[LATEST HUMAN INPUT]\n{player_input}\n\n"
+                        f"[CAMPAIGN CONTEXT]\n{context}\n\n"
+                        "[PROPOSED PLAN]\n"
+                        + plan.model_dump_json()
+                    ),
+                ),
+            ],
+            max_tokens=600,
+            temperature=0.0,
+            response_model=SemanticPlanReview,
+        )
+        return SemanticPlanReview.model_validate(data)
+
     async def plan(
         self,
         selection: RoleModelSelection,
@@ -261,19 +331,34 @@ to that contribution, never an invented next player choice.
         try:
             plan = await self._generate_plan(selection, base_messages)
             sanitize_existing_present_npc_introductions(plan, present_names)
-            issues = self.contract_issues(plan, player_input)
-            if not issues:
+
+            review = await self._semantic_review(
+                selection,
+                context_messages,
+                player_input,
+                plan,
+            )
+            if review.verdict == "pass":
                 return plan
 
+            issues = review.issues or [review.summary or "Семантический план требует исправления."]
             repaired = await self._generate_plan(
                 selection,
                 self._repair_messages(base_messages, player_input, issues, plan),
             )
             sanitize_existing_present_npc_introductions(repaired, present_names)
-            remaining = self.contract_issues(repaired, player_input)
-            if remaining:
+            final_review = await self._semantic_review(
+                selection,
+                context_messages,
+                player_input,
+                repaired,
+            )
+            if final_review.verdict != "pass":
+                remaining = final_review.issues or [
+                    final_review.summary or "Семантический план остался неоднозначным."
+                ]
                 raise TurnPlanningError(
-                    "planner hand-off remained invalid after repair: "
+                    "planner hand-off remained semantically invalid after repair: "
                     + "; ".join(remaining)
                 )
             return repaired
@@ -283,4 +368,4 @@ to that contribution, never an invented next player choice.
             raise TurnPlanningError(str(exc)) from exc
 
 
-__all__ = ["CoordinatedTurnPlan", "TurnAuthorityPlanner"]
+__all__ = ["CoordinatedTurnPlan", "SemanticPlanReview", "TurnAuthorityPlanner"]
