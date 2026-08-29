@@ -7,6 +7,7 @@ import {
   type SessionZeroInterviewSnapshot,
 } from '../api/client'
 import type { Campaign, SessionZero } from '../api/types'
+import { BrandLogo } from '../components/BrandLogo'
 import { Icons } from '../components/Icons'
 import { ErrorState, LoadingState } from '../components/States'
 
@@ -177,9 +178,13 @@ export function SessionZeroPage() {
 
   return <div className="global-page session-zero-page">
     <header className="global-topbar session-zero-topbar">
-      <div>
-        <h1>Нулевая сессия</h1>
-        <p>{campaign?.name || 'Новая кампания'} · разговор с мастером</p>
+      <div className="global-brand-heading">
+        <BrandLogo compact />
+        <span className="brand-divider" aria-hidden="true" />
+        <div>
+          <h1>Нулевая сессия</h1>
+          <p>{campaign?.name || 'Новая кампания'} · разговор с мастером</p>
+        </div>
       </div>
       <div className="session-zero-top-actions">
         {!completed && <span className="session-zero-save-state">Сохраняется автоматически</span>}

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import type { Campaign } from '../api/types'
 import { visualApi, visualUrls } from '../api/visuals'
+import { BrandLogo } from '../components/BrandLogo'
 import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { Icons } from '../components/Icons'
 import { PixelScene } from '../components/PixelArt'
@@ -124,9 +125,13 @@ export function CampaignLibraryPage() {
   return (
     <div className="global-page">
       <header className="global-topbar">
-        <div>
-          <h1>Кампании</h1>
-          <p>Твои истории</p>
+        <div className="global-brand-heading">
+          <BrandLogo />
+          <span className="brand-divider" aria-hidden="true" />
+          <div>
+            <h1>Кампании</h1>
+            <p>Твои истории</p>
+          </div>
         </div>
         <button className="btn primary" onClick={() => setModal(true)}><Icons.plus />Новая кампания</button>
       </header>
