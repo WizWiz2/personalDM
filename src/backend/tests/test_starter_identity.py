@@ -187,9 +187,9 @@ def test_existing_physically_present_npc_is_not_a_new_introduction():
 def test_genuinely_new_unsolicited_npc_is_a_semantic_planner_failure():
     prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    assert "new physical person" in prompt
-    assert "npc_introductions" in prompt
+    assert "CONTACT/IDENTITY" in prompt
     assert "unknown physical responder" in prompt
+    assert "npc_introductions" in prompt
 
 
 def test_explicit_unknown_contact_remains_supported_by_typed_npc_introduction():
