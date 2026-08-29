@@ -6,10 +6,9 @@ from uuid import UUID
 from app.config import settings
 from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn import ChatMessage, TurnCreate
-from app.services.base_turn_runner import active_tasks
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
 from app.services.post_turn_dispatcher import PostTurnDispatcher
-from app.services.turn_saga import TurnSaga
+from app.services.turn_saga import TurnSaga, active_tasks
 
 
 class TurnRunner(TurnSaga):
@@ -115,9 +114,6 @@ class TurnRunner(TurnSaga):
             - settings.PLANNER_CONTEXT_RESERVE_TOKENS,
         )
         compiler = ContextCompiler(self._session)
-        # Critical invariant: addressed NPC context must never activate ACTOR OUTPUT CONTRACT for
-        # Planner. That contract means "write as this NPC" and caused Round 26 to invert speaker and
-        # addressee. Planner receives ordinary player context plus a narrow routing note instead.
         messages, metadata = await compiler.compile_context(
             campaign_id=campaign_id,
             acting_character_id=None,
