@@ -16,6 +16,7 @@ from app.db.engine import Base
 import app.db.tables  # Important: import all core tables so Base.metadata is populated
 import app.db.action_sequence_table  # Ordered compound action records
 import app.db.campaign_setup_table  # Session-zero contract table
+import app.db.generation_lifecycle_table  # Persisted narrative turn saga checkpoints
 import app.db.memory_taxonomy_table  # Fact profiles and transient narrative details
 import app.db.narration_validation_table  # Post-generation validation audit
 import app.db.scene_bridge_table  # Persistent scene hand-off records
@@ -29,7 +30,6 @@ import app.db.thesis_lifecycle_table  # Thesis TTL and reinforcement metadata
 config = context.config
 
 # Interpret the config file for Python logging.
-# This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
