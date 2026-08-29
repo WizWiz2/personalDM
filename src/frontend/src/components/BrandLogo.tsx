@@ -36,7 +36,7 @@ export function BrandMark({ className, ...props }: MarkProps) {
 
 export function BrandLogo({ compact = false, className = '' }: BrandLogoProps) {
   return (
-    <div className={`brand-logo ${compact ? 'compact' : ''} ${className}`.trim()} aria-label="PersonalDM">
+    <div className={`brand-logo ${compact ? 'compact' : ''} ${className}`.trim()} role="img" aria-label="PersonalDM">
       <BrandMark className="brand-logo-mark" />
       {!compact && <span className="brand-logo-wordmark">Personal<span>DM</span></span>}
     </div>
