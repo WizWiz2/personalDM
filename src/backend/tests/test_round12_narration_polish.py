@@ -99,18 +99,19 @@ def test_safe_projection_drops_technical_consequences_and_route_ids():
     assert text == "Пока ничего заметно не меняется."
 
 
-def test_deterministic_surface_gate_rejects_technical_or_meta_text():
+def test_deterministic_surface_gate_handles_only_machine_provable_leaks():
     turn_id = str(uuid4())
     technical = TurnAuthorityValidator.apply_deterministic_surface_quality(
         passed(),
         f"Маршрут готов: target_scene_id={turn_id}.",
     )
-    meta = TurnAuthorityValidator.apply_deterministic_surface_quality(
+    semantic_meta = TurnAuthorityValidator.apply_deterministic_surface_quality(
         passed(),
         "Лиза заканчивает ответ и ждёт дальнейших слов игрока.",
     )
 
     assert technical.verdict == "repair_required"
-    assert meta.verdict == "repair_required"
     assert any(item.severity == "error" for item in technical.violations)
-    assert any(item.severity == "error" for item in meta.violations)
+    assert semantic_meta.verdict == "pass"
+    assert "META LANGUAGE" in TurnAuthorityValidator.SYSTEM_PROMPT
+    assert "waiting for" in TurnAuthorityValidator.SYSTEM_PROMPT
