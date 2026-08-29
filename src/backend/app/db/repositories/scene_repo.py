@@ -5,7 +5,7 @@ from sqlalchemy import delete, select
 
 from app.db.repositories.base import BaseRepository
 from app.db.scene_location_table import SceneLocationLink
-from app.db.tables import Character, Entity, Scene, SceneParticipant, SceneThesis
+from app.db.tables import Entity, Scene, SceneParticipant, SceneThesis
 from app.models.scene import SceneCreate, SceneRead, SceneUpdate
 from app.models.scene_thesis import (
     SceneThesisCreate,
@@ -107,62 +107,20 @@ class SceneRepository(BaseRepository):
         *,
         allow_movement: bool = False,
     ) -> bool:
-        scene_result = await self._session.execute(
-            select(Scene).where(Scene.id == str(scene_id))
-        )
-        scene = scene_result.scalar_one_or_none()
-        if not scene:
-            raise ValueError("Scene not found")
+        """Compatibility facade; PresenceService is the only write implementation."""
+        from app.services.presence_service import PresenceService
 
-        entity_result = await self._session.execute(
-            select(Entity).where(Entity.id == str(entity_id))
+        return await PresenceService(self._session).add_participant(
+            scene_id,
+            entity_id,
+            allow_movement=allow_movement,
         )
-        entity = entity_result.scalar_one_or_none()
-        if not entity or entity.campaign_id != scene.campaign_id:
-            raise ValueError("Participant must belong to the same campaign as the scene")
-        if entity.entity_type != "character":
-            raise ValueError("Only character entities may participate in a scene")
-
-        character = await self._session.get(Character, str(entity_id))
-        if not character:
-            raise ValueError("Character participant has no character-state row")
-        scene_location_id = await self.get_location_id(scene_id)
-        if scene_location_id:
-            target = str(scene_location_id)
-            current = character.current_location_id
-            if current and current != target and not allow_movement:
-                raise ValueError(
-                    f"Character is at location {current} and cannot appear at {target} "
-                    "without an explicit structured movement"
-                )
-            if current != target:
-                character.current_location_id = target
-
-        result = await self._session.execute(
-            select(SceneParticipant).where(
-                SceneParticipant.scene_id == str(scene_id),
-                SceneParticipant.entity_id == str(entity_id),
-            )
-        )
-        if result.scalar_one_or_none():
-            await self._session.flush()
-            return True
-
-        self._session.add(
-            SceneParticipant(scene_id=str(scene_id), entity_id=str(entity_id))
-        )
-        await self._session.flush()
-        return True
 
     async def remove_participant(self, scene_id: UUID, entity_id: UUID) -> bool:
-        result = await self._session.execute(
-            delete(SceneParticipant).where(
-                SceneParticipant.scene_id == str(scene_id),
-                SceneParticipant.entity_id == str(entity_id),
-            )
-        )
-        await self._session.flush()
-        return result.rowcount > 0
+        """Compatibility facade; PresenceService is the only write implementation."""
+        from app.services.presence_service import PresenceService
+
+        return await PresenceService(self._session).remove_participant(scene_id, entity_id)
 
     async def get_participants(self, scene_id: UUID) -> list[UUID]:
         result = await self._session.execute(
