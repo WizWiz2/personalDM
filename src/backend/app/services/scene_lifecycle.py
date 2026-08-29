@@ -5,7 +5,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.scene_location_table import SceneLocationLink
 from app.db.scene_state_table import SceneRuntimeState
 from app.db.tables import Campaign, Scene, SceneParticipant
 from app.models.scene import SceneRead
@@ -24,11 +23,13 @@ class SceneLifecycleService:
 
     Activation is atomic inside the caller's transaction: the target scene becomes active,
     every other active scene is completed and the campaign pointer is updated. Physical
-    participation/location mutations are delegated to PresenceService so Scene lifecycle does not
+    participation/location mutations are delegated to PresenceService so scene lifecycle does not
     become a second writer for Character.current_location_id or SceneParticipant.
 
     SceneParticipant rows on completed scenes are historical provenance and are intentionally kept.
     ``Character.current_location_id`` plus the active scene identify where a character is now.
+    Scenes without a structured location remain supported for compatibility; in that case presence
+    membership is updated without inventing a physical location.
     """
 
     def __init__(self, session: AsyncSession):
@@ -95,18 +96,6 @@ class SceneLifecycleService:
                 scene_id,
                 UUID(campaign.player_character_id),
             )
-
-        # Active scenes require a structured location. PresenceService owns location agreement;
-        # reading the link here keeps the old fail-fast activation contract explicit.
-        location_id = (
-            await self._session.execute(
-                select(SceneLocationLink.location_id).where(
-                    SceneLocationLink.scene_id == target.id
-                )
-            )
-        ).scalar_one_or_none()
-        if location_id is None:
-            raise ValueError("Cannot activate scene without a structured location")
 
         runtime = await self._session.get(SceneRuntimeState, target.id)
         if runtime is None:
