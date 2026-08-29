@@ -12,9 +12,10 @@ from app.db.tables import Character, Entity, Scene, SceneParticipant
 class PresenceService:
     """Single mutation owner for physical scene participation and character location.
 
-    SceneStateService remains the authoritative read/invariant checker. Repository and application
-    compatibility methods may delegate here, but no caller needs to know how SceneParticipant and
-    Character.current_location_id are kept coherent.
+    ``Character.current_location_id`` is authoritative for where a character is now. Historical
+    ``SceneParticipant`` rows are intentionally retained because completed scenes and scene bridges
+    use them as provenance. SceneStateService remains the authoritative read/invariant checker for
+    the active scene.
     """
 
     def __init__(self, session: AsyncSession):
@@ -58,8 +59,6 @@ class PresenceService:
                     "without an explicit structured movement"
                 )
             if current != target:
-                if allow_movement:
-                    await self._remove_from_other_locations(entity_id, target)
                 character.current_location_id = target
 
         existing = (
@@ -93,33 +92,6 @@ class PresenceService:
         )
         await self._session.flush()
         return result.rowcount > 0
-
-    async def _remove_from_other_locations(
-        self,
-        entity_id: UUID,
-        target_location_id: str,
-    ) -> None:
-        """A physical move cannot leave stale participation at another location."""
-        stale_scene_ids = (
-            await self._session.execute(
-                select(SceneParticipant.scene_id)
-                .join(
-                    SceneLocationLink,
-                    SceneLocationLink.scene_id == SceneParticipant.scene_id,
-                )
-                .where(
-                    SceneParticipant.entity_id == str(entity_id),
-                    SceneLocationLink.location_id != target_location_id,
-                )
-            )
-        ).scalars().all()
-        if stale_scene_ids:
-            await self._session.execute(
-                delete(SceneParticipant).where(
-                    SceneParticipant.entity_id == str(entity_id),
-                    SceneParticipant.scene_id.in_(stale_scene_ids),
-                )
-            )
 
 
 __all__ = ["PresenceService"]
