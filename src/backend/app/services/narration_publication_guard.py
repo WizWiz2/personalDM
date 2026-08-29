@@ -7,26 +7,14 @@ from app.models.turn_authority import TurnAuthority
 
 
 class NarrationPublicationGuard:
-    """Publish a validated surface, a narrowly excised remainder, or Authority projection.
+    """Publish validated prose or a deterministic projection of typed authority.
 
-    TurnAuthority is the game outcome; narrator prose is presentation only. Rejected prose is not
-    broadly trusted. A single precisely evidenced agency/texture defect may be deterministically
-    removed when the remainder is substantial and player-facing. Multiple errors, state-breaking
-    errors other than isolated actor agency, ambiguous evidence, or an unvalidated draft fail closed
-    to deterministic Authority projection.
+    This boundary deliberately performs no semantic classification. Planner/Validator own meaning;
+    publication only sanitizes unambiguously technical surface, applies exact validator evidence for
+    upstream surgical-repair candidates, and renders already-typed authority when prose cannot be
+    trusted.
     """
 
-    PLAYER_SPEECH_TAGS = (
-        "сказал", "сказала", "ответил", "ответила", "спросил", "спросила",
-        "произнёс", "произнес", "произнесла", "добавил", "добавила",
-        "said", "asked", "answered", "replied",
-    )
-    PLAYER_ACTION_STEMS = (
-        "кив", "улыб", "вздох", "реш", "запис", "благодар", "обещ", "соглаш",
-        "отказ", "бер", "взя", "дела", "идёт", "идет", "пош", "подход", "поворач",
-        "протяг", "дума", "чувств", "nod", "smil", "decid", "write", "thank",
-        "promise", "agree", "refus", "take", "walk", "turn", "feel",
-    )
     UUID_PATTERN = re.compile(
         r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
         r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b"
@@ -39,11 +27,21 @@ class NarrationPublicationGuard:
         r"existing route is required|destination route is currently inactive|"
         r"destination is not an available exit|"
         r"resolved to the current physical location|"
-        r"use stay(?:/focus_transition)?|"
-        r"claiming physical travel|"
+        r"use stay(?:/focus_transition)?|claiming physical travel|"
         r"\blocation_transition\b|\bfocus_transition\b|\bscene_disposition\b|"
         r"\bBLOCKED\b|\bSKIPPED\b|\bCOMPLETED\b|"
         r"\b[a-z][a-z0-9]+(?:_[a-z0-9]+){2,}\b)",
+        flags=re.IGNORECASE,
+    )
+    META_PATTERN = re.compile(
+        r"(?:candidate\s+narration|engine\s+state|turn\s+authority|"
+        r"validator\s+(?:status|result)|narration\s+validation)",
+        flags=re.IGNORECASE,
+    )
+    LEGACY_STUB_PATTERN = re.compile(
+        r"(?:действие\s+не\s+выполнено\s*:|"
+        r"попытка\s+пока\s+не\s+приводит\s+к\s+подтвержд[её]нному\s+результату|"
+        r"продвинуться\s+дальше\s+пока\s+не\s+уда[её]тся)",
         flags=re.IGNORECASE,
     )
     STATE_BREAKING_VIOLATIONS = frozenset(
@@ -55,32 +53,12 @@ class NarrationPublicationGuard:
             "canon_conflict",
         }
     )
-    SURGICAL_TEXTURE_VIOLATIONS = frozenset(
+    OPENING_TEXTURE_VIOLATIONS = frozenset(
         {
             "ungrounded_complication",
             "absent_object",
+            "other",
         }
-    )
-    PLAYER_CHOICE_HOOK = re.compile(
-        r"(?:\bреша\w*|\bприня\w+\s+вызов|\bотказа\w*|\bвыбор\b|"
-        r"игрок\s+(?:может|должен)|"
-        r"принять\s+вызов|"
-        r"отказаться)",
-        flags=re.IGNORECASE,
-    )
-    META_PATTERN = re.compile(
-        r"(?:ответ\s+заканчива(?:ется|ет)|"
-        r"жд[её]т\s+дальнейших\s+(?:слов|действий)\s+игрока|"
-        r"игрок\s+(?:должен|может|теперь)|"
-        r"player\s+(?:must|should|can|input)|"
-        r"waits?\s+for\s+(?:the\s+)?player)",
-        flags=re.IGNORECASE,
-    )
-    LEGACY_STUB_PATTERN = re.compile(
-        r"(?:действие\s+не\s+выполнено\s*:|"
-        r"попытка\s+пока\s+не\s+приводит\s+к\s+подтвержд[её]нному\s+результату|"
-        r"продвинуться\s+дальше\s+пока\s+не\s+уда[её]тся)",
-        flags=re.IGNORECASE,
     )
 
     @classmethod
@@ -95,40 +73,7 @@ class NarrationPublicationGuard:
             for item in (validation.violations if validation else [])
             if item.severity == "error"
         ]
-        if validation is None:
-            fallback = cls._safe_authority_projection(authority)
-            return fallback, {
-                "mode": "authority_projection",
-                "candidate_characters": len(candidate),
-                "published_characters": len(fallback),
-                "error_count": 0,
-                "candidate_discarded": True,
-                "validated_surface": False,
-            }
-
-        if errors:
-            error = errors[0] if len(errors) == 1 else None
-            isolated_actor_agency = bool(
-                error
-                and authority.scene_disposition == "actor_turn"
-                and error.violation_type == "player_agency"
-            )
-            isolated_texture = bool(
-                error and error.violation_type in cls.SURGICAL_TEXTURE_VIOLATIONS
-            )
-            if isolated_actor_agency or isolated_texture:
-                surgical, surgery = cls.surgical_repair_candidate(candidate, validation)
-                if surgical:
-                    return surgical, {
-                        "mode": "surgical_surface",
-                        "candidate_characters": len(candidate),
-                        "published_characters": len(surgical),
-                        "error_count": 1,
-                        "candidate_discarded": False,
-                        "validated_surface": False,
-                        "surgical_repair": surgery,
-                    }
-
+        if validation is None or errors:
             fallback = cls._safe_authority_projection(authority)
             return fallback, {
                 "mode": "authority_projection",
@@ -176,12 +121,7 @@ class NarrationPublicationGuard:
         candidate: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str | None, dict]:
-        """Remove exactly evidenced bad segments and return a deterministic repair candidate.
-
-        The normal narration pipeline revalidates this candidate before accepted publication. The
-        publication boundary itself may use it only for one isolated actor-agency or texture defect,
-        where every error span matched and a substantial player-facing remainder survives.
-        """
+        """Remove only exact spans selected by semantic Validator; never infer meaning locally."""
         errors = [
             item
             for item in (validation.violations if validation else [])
@@ -232,28 +172,20 @@ class NarrationPublicationGuard:
             "removed_characters": max(0, original_len - len(cleaned)),
         }
 
-    OPENING_TEXTURE_VIOLATIONS = frozenset(
-        {
-            "ungrounded_complication",
-            "absent_object",
-            "other",
-        }
-    )
-
     @classmethod
     def keep_substantial_opening(
         cls,
         draft: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str | None, dict]:
-        """Keep a long narrator opening when leftover complaints are unmatched texture.
-
-        The skeleton card is worse than unmatched object/atmosphere nits. Agency, movement,
-        sequence and canon errors still refuse this path.
-        """
+        """Keep a substantial opening only when Validator classifies leftovers as texture."""
         cleaned = cls._clean(draft)
         if len(cleaned) < 400 or cls._player_facing_fragment(cleaned) is None:
-            return None, {"strategy": "keep_raw_texture", "status": "skipped", "reason": "too_short"}
+            return None, {
+                "strategy": "keep_raw_texture",
+                "status": "skipped",
+                "reason": "too_short",
+            }
         errors = [
             item
             for item in (validation.violations if validation else [])
@@ -267,9 +199,7 @@ class NarrationPublicationGuard:
                 "status": "skipped",
                 "reason": "state_breaking",
             }
-        if not all(
-            item.violation_type in cls.OPENING_TEXTURE_VIOLATIONS for item in errors
-        ):
+        if not all(item.violation_type in cls.OPENING_TEXTURE_VIOLATIONS for item in errors):
             return None, {
                 "strategy": "keep_raw_texture",
                 "status": "skipped",
@@ -283,9 +213,7 @@ class NarrationPublicationGuard:
 
     @classmethod
     def render_authority(cls, authority: TurnAuthority) -> str:
-        """Render a minimal in-world result without exposing control-plane language."""
-        # A blocked sequence is a hard execution boundary. Never append Planner ending_hook or
-        # guidance after it: those fields were authored before execution knew the step had failed.
+        """Render already-typed world/actor results without re-interpreting their meaning."""
         blocked = cls._blocked_in_world_fallback(authority)
         if blocked is not None:
             parts: list[str] = []
@@ -318,21 +246,21 @@ class NarrationPublicationGuard:
                 if destination:
                     cls._append_unique(parts, f"Путь приводит к {destination}")
 
-        if authority.scene_disposition == "actor_turn":
-            actor = cls._player_facing_fragment(authority.acting_character_name or "Собеседник")
+        if authority.acting_character_id:
             for beat in authority.character_beats:
                 safe = cls._player_facing_fragment(beat)
-                if safe and not cls._player_choice_hook(safe, authority.player_character_name):
+                if safe:
                     cls._append_unique(parts, safe)
             if not parts and authority.ending_hook:
                 hook = cls._player_facing_fragment(authority.ending_hook)
-                if hook and not cls._player_choice_hook(hook, authority.player_character_name):
+                if hook:
                     cls._append_unique(parts, hook)
             if not parts:
+                actor = cls._player_facing_fragment(authority.acting_character_name or "Собеседник")
                 cls._append_unique(parts, f"{actor or 'Собеседник'} умолкает")
         elif authority.ending_hook:
             hook = cls._player_facing_fragment(authority.ending_hook)
-            if hook and not cls._player_choice_hook(hook, authority.player_character_name):
+            if hook:
                 cls._append_unique(parts, hook)
 
         if not parts:
@@ -352,15 +280,6 @@ class NarrationPublicationGuard:
             reason = TurnAuthority._player_facing_blocking_reason(step.get("blocking_reason"))
             return reason or "Путь вперёд остаётся закрыт"
         return None
-
-    @classmethod
-    def _player_choice_hook(cls, text: str, player_name: str | None) -> bool:
-        if not cls.PLAYER_CHOICE_HOOK.search(text or ""):
-            return False
-        name = " ".join((player_name or "").split())
-        if name and name.casefold() in text.casefold():
-            return True
-        return bool(re.search(r"\b(?:герой|игрок|протагонист)\b", text, flags=re.IGNORECASE))
 
     @classmethod
     def _player_facing_fragment(cls, value: object) -> str | None:
@@ -408,33 +327,9 @@ class NarrationPublicationGuard:
 
     @classmethod
     def _drop_player_owned_segments(cls, candidate: str, player_name: str | None) -> str:
-        name = " ".join((player_name or "").split()).strip()
-        if not name:
-            return candidate
-        name_key = name.casefold()
-        kept: list[str] = []
-        for segment in cls._segments(candidate):
-            key = segment.casefold().strip()
-            if not key:
-                continue
-            quoted_direct_address = bool(
-                re.match(rf"^[\s]*[\"'«]{re.escape(name_key)}\b", key)
-            )
-            begins_with_player = bool(
-                re.match(rf"^[\s—–-]*{re.escape(name_key)}\b", key)
-            )
-            speech_by_player = any(
-                re.search(rf"\b{re.escape(tag)}\w*\s+{re.escape(name_key)}\b", key)
-                for tag in cls.PLAYER_SPEECH_TAGS
-            )
-            player_then_action = False
-            if name_key in key and not quoted_direct_address:
-                tail = key.split(name_key, 1)[1][:100]
-                player_then_action = any(stem in tail for stem in cls.PLAYER_ACTION_STEMS)
-            if begins_with_player or speech_by_player or player_then_action:
-                continue
-            kept.append(segment)
-        return " ".join(kept)
+        """Deprecated compatibility no-op; player ownership is semantic Validator territory."""
+        del cls, player_name
+        return candidate
 
     @staticmethod
     def _segments(text: str) -> list[str]:
