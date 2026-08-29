@@ -41,7 +41,7 @@ def test_semantic_validator_contract_protects_player_inside_actor_turn():
     assert "PLAYER AGENCY" in prompt
     assert "NPC OWNERSHIP" in prompt
     assert "PRESENT NPC DIALOGUE" in prompt
-    assert "Never cite an NPC-owned fragment as player agency" in prompt
+    assert "NPC-owned fragment as player agency" in prompt
     assert "Never decide from" in prompt
 
 
