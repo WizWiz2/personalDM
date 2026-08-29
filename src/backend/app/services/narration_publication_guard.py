@@ -244,7 +244,9 @@ class NarrationPublicationGuard:
             if authority.target_location_path:
                 destination = cls._player_facing_fragment(authority.target_location_path[-1])
                 if destination:
-                    cls._append_unique(parts, f"Путь приводит к {destination}")
+                    # Canonical names are stored in nominative form. Keep them untouched instead of
+                    # attempting Russian inflection in deterministic code.
+                    cls._append_unique(parts, f"Вы приходите туда, куда направлялись: {destination}")
 
         actor_scoped = authority.scene_disposition == "actor_turn" or bool(
             authority.acting_character_id
