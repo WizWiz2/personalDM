@@ -163,13 +163,7 @@ class TurnAuthority(BaseModel):
 
     @model_validator(mode="after")
     def executed_sequence_owns_outcomes(self):
-        """Executed steps, never Planner prose, own the observable surface of a sequence.
-
-        This is the spatial/canon boundary for compound turns. A completed step may contribute only
-        its persisted observable_outcome. A blocked step contributes only its player-facing blocker.
-        Top-level Planner consequences, hooks and guidance cannot resurrect skipped movement or invent
-        remote findings after execution kept the player in the current physical Location.
-        """
+        """Executed steps, never Planner prose, own the observable surface of a sequence."""
         sequence = self.action_sequence or {}
         steps = sequence.get("steps")
         if not isinstance(steps, list) or not steps:
@@ -196,8 +190,6 @@ class TurnAuthority(BaseModel):
         self.observable_consequences = executed
 
         if blocked:
-            # Nothing authored for the blocked/skipped future may leak back through softer prose
-            # fields. The publication guard can now project only completed outcomes + blocker.
             self.character_beats = []
             self.canon_constraints = []
             self.ending_hook = ""
@@ -210,9 +202,6 @@ class TurnAuthority(BaseModel):
             return self
 
         if not executed and self.acting_character_id is None:
-            # A local action without a structured observable result authorizes the action itself,
-            # not new physical findings at some place inferred from history. This closes the Round-31
-            # remote-observation leak while still allowing actor-owned replies in mixed turns.
             self.character_beats = []
             self.canon_constraints = []
             self.ending_hook = ""
@@ -235,7 +224,7 @@ class TurnAuthority(BaseModel):
 
     def validator_payload(self) -> dict:
         """Compact authority for continuity judging, without competing prompt prose."""
-        return {
+        payload = {
             "player_character": self.player_character_name,
             "acting_character": self.acting_character_name,
             "player_input": self.player_input,
@@ -272,6 +261,13 @@ class TurnAuthority(BaseModel):
             "complication_source": self.complication_source,
             "action_sequence": self.action_sequence,
         }
+        if self.acting_character_id and self.acting_character_name:
+            from app.services.mixed_actor_response_guard import actor_response_contract
+
+            contract = actor_response_contract(self)
+            if contract:
+                payload["actor_turn_contract"] = contract
+        return payload
 
     def narrator_payload(self) -> dict:
         """Complete prose rendering contract derived from the same authority object."""

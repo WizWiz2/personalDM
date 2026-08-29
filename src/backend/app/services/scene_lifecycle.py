@@ -1,14 +1,14 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.scene_location_table import SceneLocationLink
 from app.db.scene_state_table import SceneRuntimeState
-from app.db.tables import Campaign, Character, Scene, SceneParticipant
+from app.db.tables import Campaign, Scene, SceneParticipant
 from app.models.scene import SceneRead
+from app.services.presence_service import PresenceService
 
 
 @dataclass(frozen=True)
@@ -21,16 +21,21 @@ class SceneActivationResult:
 class SceneLifecycleService:
     """Own the authoritative active-scene pointer for a campaign.
 
-    Activation is atomic inside the caller's transaction: the target scene becomes
-    active, every other active scene is completed, the campaign pointer is updated,
-    and every physical participant must agree with the scene location. The player is
-    inserted automatically; an NPC already located elsewhere is rejected rather than
-    silently teleported.
+    Activation is atomic inside the caller's transaction: the target scene becomes active,
+    every other active scene is completed and the campaign pointer is updated. Physical
+    participation/location mutations are delegated to PresenceService so scene lifecycle does not
+    become a second writer for Character.current_location_id or SceneParticipant.
+
+    SceneParticipant rows on completed scenes are historical provenance and are intentionally kept.
+    ``Character.current_location_id`` plus the active scene identify where a character is now.
+    Scenes without a structured location remain supported for compatibility; in that case presence
+    membership is updated without inventing a physical location.
     """
 
     def __init__(self, session: AsyncSession):
         self._session = session
         self._scene_repo = SceneRepository(session)
+        self._presence = PresenceService(session)
 
     async def activate(
         self,
@@ -67,14 +72,10 @@ class SceneLifecycleService:
         target.status = "active"
         campaign.current_scene_id = target.id
 
-        location_result = await self._session.execute(
-            select(SceneLocationLink.location_id).where(
-                SceneLocationLink.scene_id == target.id
-            )
-        )
-        location_id = location_result.scalar_one_or_none()
-
-        participant_ids = set(
+        # Validate every already-declared target participant through the single physical writer.
+        # NPCs may not be teleported by scene activation. The human player's movement is allowed
+        # because activating a structured target scene is itself the authoritative movement edge.
+        participant_ids = list(
             (
                 await self._session.execute(
                     select(SceneParticipant.entity_id).where(
@@ -83,39 +84,18 @@ class SceneLifecycleService:
                 )
             ).scalars().all()
         )
-        if campaign.player_character_id:
-            await self._session.execute(
-                delete(SceneParticipant).where(
-                    SceneParticipant.entity_id == campaign.player_character_id,
-                    SceneParticipant.scene_id != target.id,
-                )
+        for participant_id in participant_ids:
+            await self._presence.add_participant(
+                scene_id,
+                UUID(participant_id),
+                allow_movement=(participant_id == campaign.player_character_id),
             )
-            if campaign.player_character_id not in participant_ids:
-                self._session.add(
-                    SceneParticipant(
-                        scene_id=target.id,
-                        entity_id=campaign.player_character_id,
-                    )
-                )
-                participant_ids.add(campaign.player_character_id)
 
-        if location_id:
-            for participant_id in participant_ids:
-                character = await self._session.get(Character, participant_id)
-                if not character:
-                    raise ValueError(
-                        f"Scene participant {participant_id} has no character state"
-                    )
-                if participant_id == campaign.player_character_id:
-                    character.current_location_id = location_id
-                    continue
-                if character.current_location_id is None:
-                    character.current_location_id = location_id
-                elif character.current_location_id != location_id:
-                    raise ValueError(
-                        "Cannot activate scene: participant is physically located "
-                        f"elsewhere ({participant_id}: {character.current_location_id})"
-                    )
+        if campaign.player_character_id and campaign.player_character_id not in participant_ids:
+            await self._presence.move_to_scene(
+                scene_id,
+                UUID(campaign.player_character_id),
+            )
 
         runtime = await self._session.get(SceneRuntimeState, target.id)
         if runtime is None:

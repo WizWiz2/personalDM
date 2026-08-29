@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application import GameApplication
 from app.db.tables import Campaign, Scene
 from app.models.campaign import CampaignCreate
+from app.models.jobs import GenerationPhase
 from app.models.turn import TurnCreate
 from app.providers.llm_provider import LLMProvider
 from app.runtime import install_runtime
@@ -66,7 +67,6 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "actor_turn_authority",
         "actor_memory_observability",
         "systemless_authority",
-        "round34_live",
         "mixed_actor_response",
         "narrator_quality_recovery",
         "narration_failure_containment",
@@ -77,16 +77,26 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "recent_narrative_details",
     ]
     assert cli_manifest["turn_pipeline"] == [
-        "compile_context",
+        "reserve_user_turn",
+        "compile_planner_context",
         "plan_authority",
         "execute_structured_boundary",
         "build_turn_authority",
+        "materialize_structured_outcome",
+        "compile_narrator_context",
         "render_narration",
         "validate_authority",
-        "materialize_structured_outcome",
-        "commit",
+        "publish_assistant_turn",
         "enqueue_post_turn",
     ]
+    assert cli_manifest["generation_phases"] == [
+        phase.value for phase in GenerationPhase
+    ]
+    assert cli_manifest["failure_semantics"] == {
+        "before_prepare": "fail_without_world_compensation",
+        "after_prepare_before_publish": "compensate_then_fail",
+        "after_publish": "post_turn_is_independent_and_retriable",
+    }
     assert cli_manifest["narration_pipeline"] == [
         "generate_draft",
         "guard_repetition",
@@ -104,7 +114,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     )
     assert "systemless_authority_guard" in cli_manifest["authority_planner"]
     assert cli_manifest["authority_planner"].endswith("guarded_plan")
-    assert "round33_identity_guard" not in cli_manifest["authority_planner"]
+    assert "round34" not in cli_manifest["authority_planner"]
     assert "narrator_quality_recovery_guard" in cli_manifest["authority_validator"]
     assert cli_manifest["authority_validator"].endswith("ownership_validating")
     assert cli_manifest["context_compiler"].endswith(
@@ -117,12 +127,15 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["post_turn_mode"] == "background"
 
 
-def test_context_pipeline_is_explicit_and_not_runtime_patched() -> None:
+def test_context_pipeline_is_explicit_composition_and_not_runtime_patched() -> None:
     base_method = BaseContextCompiler.compile_context
+    production_method = ContextCompiler.compile_context
     install_runtime()
 
     assert BaseContextCompiler.compile_context is base_method
-    assert ContextCompiler.__mro__[1] is BaseContextCompiler
+    assert ContextCompiler.compile_context is production_method
+    assert BaseContextCompiler not in ContextCompiler.__mro__
+    assert ContextCompiler.__bases__ == (object,)
     assert ContextCompiler.DEFAULT_PROVIDER_NAMES == (
         "authoritative_scene_state",
         "recent_narrative_details",
@@ -146,7 +159,7 @@ def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     assert MemoryScribe._parse_data is memory_parser
     assert ThesisCurator.reconcile is thesis_reconcile
     assert TurnRunner.__mro__[1] is TurnSaga
-    assert TurnSaga.__mro__[1] is BaseTurnRunner
+    assert BaseTurnRunner not in TurnSaga.__mro__
     assert TurnRunner.run_turn_stream.__module__ == "app.services.turn_runner"
     assert AuthorityNarrationPipeline.generate.__module__ == (
         "app.services.authority_narration_pipeline"

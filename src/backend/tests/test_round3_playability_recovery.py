@@ -90,9 +90,8 @@ def test_actor_publication_guard_discards_rejected_actor_candidate():
         validation,
     )
 
-    # Round 26 changed this contract deliberately: once a candidate has validation errors, even
-    # apparently useful unflagged fragments are not trusted. The one repair attempt happens before
-    # this boundary; an exhausted actor response falls back to Authority rather than partial scrub.
+    # Multiple rejected agency spans make the whole draft untrusted. A single isolated span may be
+    # surgically excised, but this response must fail closed to deterministic Authority.
     assert "Тень свернула" not in published
     assert "кивнул" not in published
     assert "Спасибо, Грета" not in published

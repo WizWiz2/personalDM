@@ -6,11 +6,14 @@ from collections.abc import AsyncIterator
 from uuid import UUID
 
 from app.config import settings
+from app.db.repositories.generation_lifecycle_repo import GenerationLifecycleRepository
+from app.db.repositories.job_repo import GenerationRunRepository
+from app.db.repositories.provider_config_repo import ProviderConfigRepository
+from app.db.repositories.turn_repo import TurnRepository
+from app.models.jobs import GenerationPhase
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProviderError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
-from app.services.base_turn_runner import TurnRunner as LegacyTurnRunner
-from app.services.base_turn_runner import active_tasks
 from app.services.post_turn_dispatcher import PostTurnDispatcher
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -30,13 +33,83 @@ from app.services.turn_outcome_materializer import (
 from app.services.turn_planner import TurnPlanningError
 
 
-class TurnSaga(LegacyTurnRunner):
-    """Single owner of the interactive turn transaction and inter-agent hand-offs.
+active_tasks: dict[str, asyncio.Task] = {}
 
-    Structured game outcomes are prepared before prose. Narrator/validator can affect only the
-    published rendering, never whether an already-valid game outcome happened. Post-turn memory is
-    still outside interactive latency.
+
+class TurnSaga:
+    """Single production owner of the interactive narrative turn saga.
+
+    The transaction is intentionally not one long SQL transaction around LLM calls. Planner runs
+    before a structured prepare transaction. Transition/materialization changes and the PREPARED
+    lifecycle checkpoint are then committed together. Only after that durable boundary do we call
+    Narrator/Validator. A failed prepared turn is explicitly compensated.
     """
+
+    def __init__(self, session):
+        self._session = session
+        self._turn_repo = TurnRepository(session)
+        self._config_repo = ProviderConfigRepository(session)
+        self._generation_runs = GenerationRunRepository(session)
+        self._generation_lifecycle = GenerationLifecycleRepository(session)
+
+    async def _set_phase(self, run_id: UUID, phase: GenerationPhase) -> None:
+        await self._generation_lifecycle.set_phase(run_id, phase)
+        await self._session.commit()
+
+    async def _fail_user_turn(self, user_turn_id: UUID, owned: bool) -> None:
+        if owned:
+            await self._turn_repo.mark_failed(user_turn_id)
+        await self._session.commit()
+
+    async def _rollback_prepared_transition(
+        self,
+        executor: SceneTransitionExecutor | None,
+        transition: AppliedSceneTransition | None,
+    ) -> bool:
+        if not executor or not transition or transition.status != "prepared":
+            return False
+        await self._session.rollback()
+        rolled_back = await executor.rollback_transition(transition.transition_id)
+        await self._session.commit()
+        return rolled_back
+
+    @staticmethod
+    def _reserve_current_user(
+        messages: list[ChatMessage],
+        metadata: dict,
+        content: str,
+    ) -> tuple[list[ChatMessage], dict]:
+        """Keep the addressed player's current message even when history fills the budget."""
+        if any(
+            message.role == "user" and message.content == content
+            for message in messages
+        ):
+            snapshot = dict(metadata)
+            snapshot["current_user_reserved"] = True
+            return messages, snapshot
+
+        from app.services.context_compiler import count_tokens
+
+        result = list(messages)
+        maximum = int(metadata.get("token_budget_max") or 0)
+        used = sum(count_tokens(message.content) for message in result)
+        required = count_tokens(content)
+        removed = 0
+        while len(result) > 1 and maximum and used + required >= maximum:
+            removed_message = result.pop(1)
+            used -= count_tokens(removed_message.content)
+            removed += 1
+
+        result.append(ChatMessage(role="user", content=content))
+        snapshot = dict(metadata)
+        snapshot["current_user_reserved"] = True
+        snapshot["history_messages_removed_for_current_user"] = removed
+        snapshot["token_budget_used"] = used + required
+        layers = list(snapshot.get("included_layers") or [])
+        if "layer_6_current_user" not in layers:
+            layers.append("layer_6_current_user")
+        snapshot["included_layers"] = layers
+        return result, snapshot
 
     def _inject_authority(
         self,
@@ -168,11 +241,26 @@ class TurnSaga(LegacyTurnRunner):
     ) -> None:
         if not materializer or not outcome or not outcome.has_changes:
             return
-        # Audit helpers may have committed while prose was being checked. Treat prepared entity
-        # changes like prepared scene transitions: compensate them explicitly on a real abort.
         await self._session.rollback()
         await materializer.rollback(outcome)
         await self._session.commit()
+
+    async def _compensate(
+        self,
+        run_id: UUID,
+        transition_executor: SceneTransitionExecutor | None,
+        applied_transition: AppliedSceneTransition | None,
+        materializer: TurnOutcomeMaterializer | None,
+        materialized_outcome: MaterializedTurnOutcome | None,
+        prepared: bool,
+    ) -> None:
+        if not prepared:
+            # Before PREPARED all structured writes belong to one still-uncommitted transaction.
+            await self._session.rollback()
+            return
+        await self._rollback_materialization(materializer, materialized_outcome)
+        await self._rollback_prepared_transition(transition_executor, applied_transition)
+        await self._set_phase(run_id, GenerationPhase.COMPENSATED)
 
     async def run_turn_stream(
         self,
@@ -190,6 +278,7 @@ class TurnSaga(LegacyTurnRunner):
             user_turn = await self._turn_repo.create(campaign_id, turn_create)
 
         generation_run = await self._generation_runs.start_or_resume(campaign_id, user_turn.id)
+        await self._generation_lifecycle.start_attempt(generation_run.id)
         await self._session.commit()
 
         source_scene_id = user_turn.scene_id
@@ -198,6 +287,7 @@ class TurnSaga(LegacyTurnRunner):
         applied_transition: AppliedSceneTransition | None = None
         materializer: TurnOutcomeMaterializer | None = None
         materialized_outcome: MaterializedTurnOutcome | None = None
+        prepared = False
         campaign_key = str(campaign_id)
         current_task = asyncio.current_task()
 
@@ -227,7 +317,6 @@ class TurnSaga(LegacyTurnRunner):
                 primary_config,
             )
             messages, context_metadata = compiled
-            narrator_messages = messages
             plan: CoordinatedTurnPlan | None = None
             planner_metadata: dict = {
                 "status": "skipped",
@@ -246,25 +335,27 @@ class TurnSaga(LegacyTurnRunner):
                     role_router=role_router,
                     primary_config=primary_config,
                 )
+
+            # Planner output is durable before any structured world mutation begins.
+            await self._set_phase(generation_run.id, GenerationPhase.PLANNED)
+
+            if turn_create.acting_character_id is None:
                 transition_executor = SceneTransitionExecutor(self._session)
                 existing_transition = await transition_executor.existing_for_turn(
                     campaign_id,
                     user_turn.id,
                 )
                 applied_transition = existing_transition
-                if not existing_transition and plan.scene_transition.required:
+                if not existing_transition and plan and plan.scene_transition.required:
                     try:
+                        # Deliberately do not commit here. Transition + materialization + PREPARED
+                        # checkpoint form one prepare transaction below.
                         applied_transition = await transition_executor.apply(
                             campaign_id,
                             source_scene_id,
                             user_turn.id,
                             plan.scene_transition,
                         )
-                        if applied_transition:
-                            # Keep the long-standing prepare/commit seam used by resume, debugger and
-                            # transition compensation. Authority rejection below explicitly rolls a
-                            # prepared boundary back instead of leaving a Round-5 half-turn.
-                            await self._session.commit()
                     except ValueError as exc:
                         await self._session.rollback()
                         failed_plan = plan.model_dump(mode="json")
@@ -312,13 +403,6 @@ class TurnSaga(LegacyTurnRunner):
                             else None
                         ),
                     }
-                    narrator_messages, context_metadata = await self._recompile_narrator_context(
-                        compiler=compiler,
-                        campaign_id=campaign_id,
-                        turn_create=turn_create,
-                        scene_id=effective_scene_id,
-                        max_budget_override=max_budget_override,
-                    )
 
             authority_service = TurnAuthorityService(self._session)
             try:
@@ -336,15 +420,10 @@ class TurnSaga(LegacyTurnRunner):
                     raise
 
                 if applied_transition and applied_transition.status == "prepared":
-                    # This boundary belongs to the current unfinished turn. Compensate it before
-                    # fallback publication so the active scene/player location are restored.
-                    if not await self._rollback_prepared_transition(
-                        transition_executor,
-                        applied_transition,
-                    ):
-                        raise RuntimeError(
-                            "Authority rejection could not roll back its prepared scene transition"
-                        ) from exc
+                    # This attempt has not crossed PREPARED yet, so its transition is still part of
+                    # the local prepare transaction. Roll it back atomically instead of invoking
+                    # durable compensation for a state that was never published as prepared.
+                    await self._session.rollback()
                     applied_transition = None
                     effective_scene_id = source_scene_id
                     transition_metadata = {
@@ -355,9 +434,6 @@ class TurnSaga(LegacyTurnRunner):
                         "error": str(exc)[:2000],
                     }
                 elif applied_transition:
-                    # Regeneration/resume may reuse a transition that was already accepted by a
-                    # previous assistant turn. Do not rewrite established world state because a new
-                    # planner response has bad entity classification; fallback stays at the target.
                     transition_metadata = {
                         **transition_metadata,
                         "status": "reused_after_authority_rejection",
@@ -389,33 +465,37 @@ class TurnSaga(LegacyTurnRunner):
                     plan=plan,
                     acting_character_id=None,
                 )
-                narrator_messages, context_metadata = await self._recompile_narrator_context(
-                    compiler=compiler,
-                    campaign_id=campaign_id,
-                    turn_create=turn_create,
-                    scene_id=effective_scene_id,
-                    max_budget_override=max_budget_override,
-                )
 
-            # Authority is coherent. New NPCs are created; known same-location identities are
-            # attached to the scene without duplication or implicit movement.
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(
                 authority,
                 source_turn_id=user_turn.id,
             )
-            if materialized_outcome.has_changes:
-                await self._session.commit()
-                narrator_messages, context_metadata = await self._recompile_narrator_context(
-                    compiler=compiler,
-                    campaign_id=campaign_id,
-                    turn_create=turn_create,
-                    scene_id=effective_scene_id,
-                    max_budget_override=max_budget_override,
-                )
+
+            # The PREPARED checkpoint is committed in the same transaction as every structured
+            # mutation produced for this attempt. There is no crash window where world state is
+            # durable but lifecycle still claims only PLANNED.
+            await self._generation_lifecycle.set_phase(
+                generation_run.id,
+                GenerationPhase.PREPARED,
+            )
+            await self._session.commit()
+            prepared = True
+
+            # Narrator always gets a fresh snapshot from the now-durable prepared world. This also
+            # removes the old split where transition and NPC materialization could recompile at
+            # different moments.
+            narrator_messages, context_metadata = await self._recompile_narrator_context(
+                compiler=compiler,
+                campaign_id=campaign_id,
+                turn_create=turn_create,
+                scene_id=effective_scene_id,
+                max_budget_override=max_budget_override,
+            )
 
             narrator_messages = self._inject_authority(narrator_messages, authority)
             context_metadata = dict(context_metadata)
+            lifecycle = await self._generation_lifecycle.get(generation_run.id)
             context_metadata.update(
                 {
                     "planner_context_scene_id": (
@@ -442,6 +522,10 @@ class TurnSaga(LegacyTurnRunner):
                             for value in materialized_outcome.arrived_existing_character_ids
                         ],
                     },
+                    "generation_lifecycle": {
+                        "attempt": lifecycle.attempt if lifecycle else 1,
+                        "phase_at_narration": GenerationPhase.PREPARED.value,
+                    },
                 }
             )
 
@@ -454,6 +538,7 @@ class TurnSaga(LegacyTurnRunner):
                 narrator_selection=narrator_selection,
                 authority=authority,
             )
+            await self._set_phase(generation_run.id, GenerationPhase.NARRATED)
 
             context_metadata["provider_telemetry"] = narration.telemetry
             context_metadata["interagent_protocol"] = {
@@ -463,9 +548,7 @@ class TurnSaga(LegacyTurnRunner):
                 "post_turn_mode": "background",
                 "structured_outcome_before_prose": True,
             }
-            token_count = (
-                narration.telemetry.get("usage") or {}
-            ).get("completion_tokens")
+            token_count = (narration.telemetry.get("usage") or {}).get("completion_tokens")
             saved_assistant = await self._turn_repo.create(
                 campaign_id,
                 TurnCreate(
@@ -497,16 +580,22 @@ class TurnSaga(LegacyTurnRunner):
                     saved_assistant.id
                 )
 
-            # Persist the final snapshot including deterministic materialization evidence.
             from app.db.tables import Turn
 
             assistant_row = await self._session.get(Turn, str(saved_assistant.id))
             if assistant_row:
+                context_metadata["generation_lifecycle"]["phase_at_publication"] = (
+                    GenerationPhase.PUBLISHED.value
+                )
                 assistant_row.context_snapshot = json.dumps(
                     context_metadata,
                     ensure_ascii=False,
                 )
 
+            await self._generation_lifecycle.set_phase(
+                generation_run.id,
+                GenerationPhase.PUBLISHED,
+            )
             await self._generation_runs.set_status(
                 generation_run.id,
                 "completed",
@@ -516,15 +605,17 @@ class TurnSaga(LegacyTurnRunner):
             await processor.enqueue(campaign_id, saved_assistant.id)
             await self._session.commit()
 
-            # Memory agents are explicitly outside interactive latency.
             PostTurnDispatcher.schedule(self._session.bind, saved_assistant.id)
             yield narration.text
 
         except asyncio.CancelledError:
-            await self._rollback_materialization(materializer, materialized_outcome)
-            await self._rollback_prepared_transition(
+            await self._compensate(
+                generation_run.id,
                 transition_executor,
                 applied_transition,
+                materializer,
+                materialized_outcome,
+                prepared,
             )
             await self._generation_runs.set_status(
                 generation_run.id,
@@ -534,10 +625,13 @@ class TurnSaga(LegacyTurnRunner):
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
         except Exception as exc:
-            await self._rollback_materialization(materializer, materialized_outcome)
-            await self._rollback_prepared_transition(
+            await self._compensate(
+                generation_run.id,
                 transition_executor,
                 applied_transition,
+                materializer,
+                materialized_outcome,
+                prepared,
             )
             await self._generation_runs.set_status(
                 generation_run.id,

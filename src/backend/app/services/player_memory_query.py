@@ -3,13 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from app.application.game_application import GameApplication as BaseGameApplication
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.repositories.belief_repo import BeliefRepository
+from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.fact_repo import FactRepository
+from app.models.fact import FactRead
 
 
 @dataclass(frozen=True)
 class PlayerMemoryView:
-    """Minimal common shape consumed by the current CLI /facts renderer."""
+    """Player-facing memory projection used by /facts and equivalent UI surfaces."""
 
     memory_kind: str
     subject: str
@@ -18,18 +23,31 @@ class PlayerMemoryView:
     confidence: float = 1.0
 
 
-class GameApplication(BaseGameApplication):
-    """Player-facing application boundary with a truthful combined memory view."""
+class PlayerMemoryQuery:
+    """Combine durable public facts with the protagonist's active beliefs.
 
-    async def list_active_facts(self, campaign_id: UUID) -> list:
+    This is a read model, not a second GameApplication. It keeps player-specific projection logic
+    out of the application boundary and makes additional player views composable instead of
+    encouraging application-subclass proliferation.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self._session = session
+        self._campaigns = CampaignRepository(session)
+        self._entities = EntityRepository(session)
+        self._facts = FactRepository(session)
+        self._beliefs = BeliefRepository(session)
+
+    async def list_active(self, campaign_id: UUID) -> list[FactRead | PlayerMemoryView]:
         facts = await self._facts.list_active(campaign_id)
-        result: list = list(facts)
+        result: list[FactRead | PlayerMemoryView] = list(facts)
 
         campaign = await self._campaigns.get_by_id(campaign_id)
         if not campaign or not campaign.player_character_id:
             return result
+
         player = await self._entities.get_character(campaign.player_character_id)
-        beliefs = await BeliefRepository(self._session).get_for_character(
+        beliefs = await self._beliefs.get_for_character(
             campaign.player_character_id,
             active_only=True,
         )
@@ -56,4 +74,4 @@ class GameApplication(BaseGameApplication):
         return result
 
 
-__all__ = ["GameApplication", "PlayerMemoryView"]
+__all__ = ["PlayerMemoryQuery", "PlayerMemoryView"]

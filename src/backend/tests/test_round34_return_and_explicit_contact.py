@@ -15,10 +15,6 @@ from app.models.location import LocationCreate
 from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.services.player_destination_authorization import PlayerDestinationAuthorizer
-from app.services.round34_live_guard import (
-    install as install_round34,
-    normalize_affirmative_direct_contact,
-)
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
@@ -28,7 +24,6 @@ from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
 async def test_live_return_ignores_trailing_punctuation_in_visited_location_identity(
     db_session: AsyncSession,
 ):
-    install_round34()
     campaign_id = uuid4()
     campaigns = CampaignRepository(db_session)
     entities = EntityRepository(db_session)
@@ -42,7 +37,6 @@ async def test_live_return_ignores_trailing_punctuation_in_visited_location_iden
             canonical_name="Небольшой частный детективный офис в центре города."
         ),
     )
-    # Bootstrap-only generic sibling: it must not make the real visited office ambiguous.
     await locations.create(
         campaign_id,
         LocationCreate(
@@ -108,7 +102,6 @@ async def test_live_return_ignores_trailing_punctuation_in_visited_location_iden
     )
     authorization = await PlayerDestinationAuthorizer(db_session).authorize(
         user.id,
-        # Exact Round-34 mismatch: Planner omitted persisted trailing punctuation.
         "Небольшой частный детективный офис в центре города",
     )
 
@@ -145,7 +138,6 @@ def _contact_plan(*, consequence: str | None, resolution: str = "auto_success"):
 
 
 def test_affirmative_auto_success_contact_gets_typed_temporary_identity():
-    install_round34()
     player_input = (
         "На улице расспрашиваю прохожего, не видел ли он кого-нибудь подозрительного."
     )
@@ -154,24 +146,22 @@ def test_affirmative_auto_success_contact_gets_typed_temporary_identity():
     )
     plan = _contact_plan(consequence=consequence)
 
-    normalize_affirmative_direct_contact(plan, player_input, TurnAuthorityPlanner)
+    TurnAuthorityPlanner.normalize_affirmative_direct_contact(plan, player_input)
 
     assert len(plan.npc_introductions) == 1
     intro = plan.npc_introductions[0]
     assert intro.canonical_name == "Прохожий"
     assert intro.role == "прохожий"
     assert intro.temporary_name is True
-    # Sequence projection must retain the already-approved NPC/world response.
     assert plan.action_sequence.steps[0].observable_outcome == consequence
     assert TurnAuthorityPlanner.contract_issues(plan, player_input) == []
 
 
 def test_explicit_negative_contact_does_not_force_materialization():
-    install_round34()
     player_input = "Расспрашиваю прохожего, не видел ли он машину."
     plan = _contact_plan(consequence="Никто из прохожих не останавливается.")
 
-    normalize_affirmative_direct_contact(plan, player_input, TurnAuthorityPlanner)
+    TurnAuthorityPlanner.normalize_affirmative_direct_contact(plan, player_input)
 
     assert plan.npc_introductions == []
     assert plan.action_sequence.steps[0].observable_outcome is None
@@ -179,15 +169,13 @@ def test_explicit_negative_contact_does_not_force_materialization():
 
 
 def test_unresolved_contact_without_positive_outcome_is_not_forced_to_succeed():
-    install_round34()
     player_input = "Расспрашиваю прохожего, не видел ли он машину."
     plan = _contact_plan(consequence=None)
 
-    normalize_affirmative_direct_contact(plan, player_input, TurnAuthorityPlanner)
+    TurnAuthorityPlanner.normalize_affirmative_direct_contact(plan, player_input)
 
     assert plan.npc_introductions == []
     assert plan.action_sequence.steps[0].observable_outcome is None
-    # But the binary contract must now notice this natural Russian phrasing and request repair.
     assert any(
         "direct contact" in issue.casefold()
         for issue in TurnAuthorityPlanner.contract_issues(plan, player_input)
@@ -195,13 +183,12 @@ def test_unresolved_contact_without_positive_outcome_is_not_forced_to_succeed():
 
 
 def test_blocked_contact_is_not_promoted_even_with_stale_positive_prose():
-    install_round34()
     player_input = "Расспрашиваю прохожего, не видел ли он машину."
     plan = _contact_plan(
         consequence="Прохожий отвечает на вопрос.",
         resolution="blocked",
     )
 
-    normalize_affirmative_direct_contact(plan, player_input, TurnAuthorityPlanner)
+    TurnAuthorityPlanner.normalize_affirmative_direct_contact(plan, player_input)
 
     assert plan.npc_introductions == []

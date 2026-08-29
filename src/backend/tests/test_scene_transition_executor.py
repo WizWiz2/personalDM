@@ -194,9 +194,12 @@ async def test_executor_does_not_persist_arrow_path_as_canonical_name(
 
 
 @pytest.mark.asyncio
-async def test_activate_removes_player_from_previous_scene(db_session: AsyncSession):
-    from app.db.tables import SceneParticipant
+async def test_activation_preserves_historical_roster_and_moves_player_physically(
+    db_session: AsyncSession,
+):
     from sqlalchemy import select
+
+    from app.db.tables import Character, SceneParticipant
 
     campaign_id = uuid4()
     campaigns = CampaignRepository(db_session)
@@ -230,7 +233,7 @@ async def test_activate_removes_player_from_previous_scene(db_session: AsyncSess
     )
     await SceneLifecycleService(db_session).activate(campaign_id, second.id)
 
-    leftover = (
+    historical = (
         await db_session.execute(
             select(SceneParticipant).where(
                 SceneParticipant.scene_id == str(first.id),
@@ -246,9 +249,11 @@ async def test_activate_removes_player_from_previous_scene(db_session: AsyncSess
             )
         )
     ).scalar_one_or_none()
+    character = await db_session.get(Character, str(hero.id))
 
-    assert leftover is None
+    assert historical is not None
     assert current is not None
+    assert character.current_location_id == str(street.id)
 
 
 @pytest.mark.asyncio

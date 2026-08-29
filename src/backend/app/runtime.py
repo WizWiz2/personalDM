@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.models.jobs import GenerationPhase
+
 _INSTALLED = False
 _GUARDS = (
     "actor_turn_authority",
     "actor_memory_observability",
     "systemless_authority",
-    "round34_live",
     "mixed_actor_response",
     "narrator_quality_recovery",
     "narration_failure_containment",
@@ -16,12 +17,7 @@ _GUARDS = (
 
 
 def install_runtime() -> None:
-    """Install the remaining compatibility guards exactly once.
-
-    Turn orchestration, context and narration composition are explicit dependencies. Runtime
-    bootstrap installs only compatibility guards whose invariants have not yet moved into their
-    owning services.
-    """
+    """Install only compatibility guards whose invariants do not yet have explicit owners."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -37,13 +33,11 @@ def install_runtime() -> None:
     from app.services.narrator_quality_recovery_guard import (
         install as install_narrator_quality_recovery,
     )
-    from app.services.round34_live_guard import install as install_round34_live
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.systemless_authority_guard import install as install_systemless_authority
 
     install_actor_turn_authority()
     install_systemless_authority()
-    install_round34_live()
     install_mixed_actor_response()
     install_actor_memory_observability()
     install_narrator_quality_recovery()
@@ -53,7 +47,7 @@ def install_runtime() -> None:
 
 
 def runtime_manifest() -> dict[str, Any]:
-    """Return an auditable description of the active runtime composition."""
+    """Return the auditable causal order used by the production runtime."""
     install_runtime()
 
     from app.providers.llm_provider import LLMProvider
@@ -80,16 +74,24 @@ def runtime_manifest() -> dict[str, Any]:
         "guards": list(_GUARDS),
         "context_pipeline": list(ContextCompiler.DEFAULT_PROVIDER_NAMES),
         "turn_pipeline": [
-            "compile_context",
+            "reserve_user_turn",
+            "compile_planner_context",
             "plan_authority",
             "execute_structured_boundary",
             "build_turn_authority",
+            "materialize_structured_outcome",
+            "compile_narrator_context",
             "render_narration",
             "validate_authority",
-            "materialize_structured_outcome",
-            "commit",
+            "publish_assistant_turn",
             "enqueue_post_turn",
         ],
+        "generation_phases": [phase.value for phase in GenerationPhase],
+        "failure_semantics": {
+            "before_prepare": "fail_without_world_compensation",
+            "after_prepare_before_publish": "compensate_then_fail",
+            "after_publish": "post_turn_is_independent_and_retriable",
+        },
         "narration_pipeline": [
             "generate_draft",
             "guard_repetition",

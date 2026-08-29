@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.generation_lifecycle_table import GenerationLifecycle
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import (
     Belief,
@@ -31,6 +32,10 @@ def _json(value, fallback):
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return fallback
+
+
+def _iso(value):
+    return value.isoformat() if value else None
 
 
 class DebuggerService:
@@ -242,6 +247,17 @@ class DebuggerService:
                 .limit(100)
             )
         ).scalars().all()
+        run_ids = [row.id for row in runs]
+        lifecycle_rows = []
+        if run_ids:
+            lifecycle_rows = (
+                await self._session.execute(
+                    select(GenerationLifecycle).where(
+                        GenerationLifecycle.generation_run_id.in_(run_ids)
+                    )
+                )
+            ).scalars().all()
+        lifecycle_map = {row.generation_run_id: row for row in lifecycle_rows}
 
         turn_map = {row.id: row for row in turns}
 
@@ -434,6 +450,25 @@ class DebuggerService:
                     "user_turn_id": row.user_turn_id,
                     "assistant_turn_id": row.assistant_turn_id,
                     "status": row.status,
+                    "phase": (
+                        lifecycle_map[row.id].phase if row.id in lifecycle_map else None
+                    ),
+                    "attempt": (
+                        lifecycle_map[row.id].attempt if row.id in lifecycle_map else None
+                    ),
+                    "phase_timestamps": (
+                        {
+                            "received": _iso(lifecycle_map[row.id].received_at),
+                            "planned": _iso(lifecycle_map[row.id].planned_at),
+                            "prepared": _iso(lifecycle_map[row.id].prepared_at),
+                            "narrated": _iso(lifecycle_map[row.id].narrated_at),
+                            "published": _iso(lifecycle_map[row.id].published_at),
+                            "post_turn_done": _iso(lifecycle_map[row.id].post_turn_done_at),
+                            "compensated": _iso(lifecycle_map[row.id].compensated_at),
+                        }
+                        if row.id in lifecycle_map
+                        else {}
+                    ),
                     "cancel_requested": row.cancel_requested,
                     "error": row.error,
                     "updated_at": row.updated_at.isoformat(),
@@ -451,5 +486,10 @@ class DebuggerService:
                 "failed_jobs": sum(1 for row in jobs if row.status == "failed"),
                 "pending_jobs": sum(1 for row in jobs if row.status == "pending"),
                 "running_generations": sum(1 for row in runs if row.status == "running"),
+                "dangerous_incomplete_generations": sum(
+                    1
+                    for row in lifecycle_rows
+                    if row.phase in {"prepared", "narrated"}
+                ),
             },
         }

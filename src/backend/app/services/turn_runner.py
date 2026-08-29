@@ -3,13 +3,15 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.job_repo import GenerationRunRepository
 from app.models.turn import ChatMessage, TurnCreate
-from app.services.base_turn_runner import active_tasks
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
 from app.services.post_turn_dispatcher import PostTurnDispatcher
-from app.services.turn_saga import TurnSaga
+from app.services.turn_saga import TurnSaga, active_tasks
 
 
 class TurnRunner(TurnSaga):
@@ -30,6 +32,10 @@ class TurnRunner(TurnSaga):
 
     @staticmethod
     def _addressed_character_id(turn_create: TurnCreate) -> UUID | None:
+        from app.services.systemless_authority_guard import input_uses_addressed_character
+
+        if not input_uses_addressed_character(str(turn_create.content or "")):
+            return None
         snapshot = turn_create.context_snapshot
         if not isinstance(snapshot, dict):
             return None
@@ -115,9 +121,6 @@ class TurnRunner(TurnSaga):
             - settings.PLANNER_CONTEXT_RESERVE_TOKENS,
         )
         compiler = ContextCompiler(self._session)
-        # Critical invariant: addressed NPC context must never activate ACTOR OUTPUT CONTRACT for
-        # Planner. That contract means "write as this NPC" and caused Round 26 to invert speaker and
-        # addressee. Planner receives ordinary player context plus a narrow routing note instead.
         messages, metadata = await compiler.compile_context(
             campaign_id=campaign_id,
             acting_character_id=None,
@@ -145,10 +148,11 @@ class TurnRunner(TurnSaga):
         scene_id,
         max_budget_override,
     ):
-        addressed_id = self._addressed_character_id(turn_create)
+        # Sticky `/talk` is input routing only. Response ownership is carried by typed TurnAuthority,
+        # so narrator context stays actor-neutral after structured execution.
         messages, metadata = await compiler.compile_context(
             campaign_id=campaign_id,
-            acting_character_id=addressed_id,
+            acting_character_id=None,
             scene_id=scene_id,
             current_user_content=turn_create.content,
             max_budget_override=max_budget_override,
@@ -192,6 +196,20 @@ class TurnRunner(TurnSaga):
             or self._requires_fresh_post_turn_memory(routed_turn)
         ):
             await PostTurnDispatcher.wait_for_idle()
+
+    @staticmethod
+    async def stop_generation(
+        campaign_id: UUID,
+        session: AsyncSession,
+    ) -> bool:
+        """Request durable cancellation and cancel the in-process Saga task when present."""
+        requested = await GenerationRunRepository(session).request_cancel(campaign_id)
+        await session.commit()
+
+        task = active_tasks.get(str(campaign_id))
+        if task:
+            task.cancel()
+        return bool(requested or task)
 
 
 __all__ = ["TurnRunner", "active_tasks"]

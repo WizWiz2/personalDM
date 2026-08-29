@@ -12,6 +12,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Entity, SceneParticipant, Turn
+from app.services.location_identity import same_location_reference
 from app.services.scene_state_service import SceneStateService
 
 
@@ -169,9 +170,6 @@ class PlayerDestinationAuthorizer:
                     target_exists,
                 )
             if generic_matches:
-                # Return semantics can use physical history before global name matching. A reverse
-                # edge resolves the immediate previous place; older visited locations remain valid
-                # return targets without inventing a fake direct edge in the location graph.
                 if self.RETURN_TRAVEL_RE.search(clause.text):
                     direct = await self._compatible_direct_routes(
                         UUID(turn.campaign_id),
@@ -220,10 +218,6 @@ class PlayerDestinationAuthorizer:
             if self.ANAPHORIC_TRAVEL_RE.search(clause.text):
                 anaphoric_travel = True
 
-        # Relative clauses are deliberately allowed to span clause-parser boundaries. For example,
-        # "еду по адресу, который вы назвали" is split at the comma, but the human commitment and
-        # attribution belong to one input. It still authorizes only a destination grounded by at
-        # least two specific tokens in previously published active assistant text.
         if published_reference and any(clause.travel for clause in clauses):
             if await self._recently_published_destination(turn, clean_destination):
                 return self._authorized(
@@ -367,12 +361,6 @@ class PlayerDestinationAuthorizer:
         )
 
     async def _walkback_to_presented_residents(self, turn: Turn):
-        """Follow reverse location_transitions until a place still holds presented residents.
-
-        Nested extra-outside travel leaves a unique reverse edge to the previous empty street.
-        Anaphoric «возвращаюсь» means the last inhabited place on the path the player actually
-        took, not that 1-hop reverse.
-        """
         source_id = await self._source_location_id(turn)
         if source_id is None:
             return None
@@ -514,7 +502,6 @@ class PlayerDestinationAuthorizer:
         *,
         before,
     ):
-        """Return generic-matching locations proven to have been physically visited before this turn."""
         if not generic_matches:
             return []
         rows = (
@@ -696,14 +683,28 @@ class PlayerDestinationAuthorizer:
         return len(left) >= 4 and len(right) >= 4 and left[:4] == right[:4]
 
     @staticmethod
-    def _match_location(locations, name: str):
+    def _exact_location_match(location, name: str) -> bool:
         needle = name.casefold()
+        if location.canonical_name.casefold() == needle:
+            return True
+        return any(alias.casefold() == needle for alias in location.aliases)
+
+    @classmethod
+    def _match_location(cls, locations, name: str):
+        """Resolve exact identity first, then one unique punctuation/format equivalent.
+
+        The unique-only fallback is fail-closed: two equivalent known locations remain ambiguous.
+        """
         for location in locations:
-            if location.canonical_name.casefold() == needle:
+            if cls._exact_location_match(location, name):
                 return location
-            if any(alias.casefold() == needle for alias in location.aliases):
-                return location
-        return None
+        equivalent = [
+            location
+            for location in locations
+            if same_location_reference(location.canonical_name, name)
+            or any(same_location_reference(alias, name) for alias in location.aliases)
+        ]
+        return equivalent[0] if len(equivalent) == 1 else None
 
     @staticmethod
     def _authorized(
