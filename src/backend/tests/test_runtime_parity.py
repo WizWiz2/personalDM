@@ -71,6 +71,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "narrator_quality_recovery",
         "narration_failure_containment",
         "session_zero_finalize",
+        "semantic_authority",
     ]
     assert cli_manifest["context_pipeline"] == [
         "authoritative_scene_state",
@@ -101,11 +102,20 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "generate_draft",
         "guard_repetition",
         "validate_authority",
+        "semantic_re_adjudication_on_failure",
         "repair_once",
         "guard_repetition",
         "contain_presentation_failure",
         "publish_accepted",
     ]
+    assert cli_manifest["semantic_policy"] == {
+        "ownership": "model",
+        "sensory_vs_internal_state": "model",
+        "addressed_response": "typed_planner_field",
+        "npc_introduction_semantics": "model",
+        "movement_intent_semantics": "model",
+        "requires_check": "structurally_forbidden",
+    }
     assert cli_manifest["turn_stream"].endswith("TurnRunner.run_turn_stream")
     assert cli_manifest["turn_saga"].endswith("TurnSaga.run_turn_stream")
     assert cli_manifest["provider_stream"].endswith("LLMProvider.generate_stream")
@@ -115,8 +125,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert "systemless_authority_guard" in cli_manifest["authority_planner"]
     assert cli_manifest["authority_planner"].endswith("guarded_plan")
     assert "round34" not in cli_manifest["authority_planner"]
-    assert "narrator_quality_recovery_guard" in cli_manifest["authority_validator"]
-    assert cli_manifest["authority_validator"].endswith("ownership_validating")
+    assert "semantic_authority_guard" in cli_manifest["authority_validator"]
+    assert cli_manifest["authority_validator"].endswith("semantically_adjudicated_validate")
     assert cli_manifest["context_compiler"].endswith(
         "ContextCompiler.compile_context"
     )
