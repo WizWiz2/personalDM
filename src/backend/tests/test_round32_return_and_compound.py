@@ -118,21 +118,23 @@ async def test_return_can_resolve_unique_previously_visited_location(
 def test_object_mentions_must_not_be_reinterpreted_as_people_by_semantic_reviewer():
     prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    assert "CONTACT/IDENTITY" in prompt
-    assert "genuinely new physical person" in prompt
-    assert "npc_introductions" in prompt
+    assert "ENTITY TYPE" in prompt
+    assert "objects, symbols, clues, doors" in prompt
+    assert "npc_introduction" in prompt
     assert "Do not use keyword lists" in prompt
 
 
 def test_unsolicited_new_physical_character_requires_typed_authority():
     prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    assert "new physical person" in prompt
-    assert "must appear in npc_introductions" in prompt
+    assert "CONTACT/IDENTITY" in prompt
+    assert "unknown physical responder" in prompt
+    assert "npc_introductions" in prompt
 
 
 def test_direct_unknown_contact_can_be_typed_without_lexical_sanitizer():
     prompt = TurnAuthorityPlanner.AUTHORITY_ADDENDUM
 
+    assert "NPC / ENTITY AUTHORITY" in prompt
+    assert "previously unknown person physically appears" in prompt
     assert "npc_introductions" in prompt
-    assert "New physical NPCs" in prompt or "physical NPC" in prompt
