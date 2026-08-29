@@ -22,14 +22,33 @@ from app.services.starter_identity import (
 from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
 
 
-class CoordinatedTurnPlan(TurnPlan):
-    """TurnPlan with an explicit cross-agent scene/NPC hand-off.
+_GENERIC_CONTACTS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(r"\bинформатор\w*\b", re.IGNORECASE), "Информатор", "информатор"),
+    (re.compile(r"\bсвидетел\w*\b", re.IGNORECASE), "Свидетель", "свидетель"),
+    (re.compile(r"\bпродавц\w*\b", re.IGNORECASE), "Продавец", "продавец"),
+    (re.compile(r"\bбармен\w*\b", re.IGNORECASE), "Бармен", "бармен"),
+    (re.compile(r"\bтрактирщ\w*\b", re.IGNORECASE), "Трактирщик", "трактирщик"),
+    (re.compile(r"\bхозя\w*\b", re.IGNORECASE), "Хозяин", "хозяин"),
+    (re.compile(r"\bохран\w*\b", re.IGNORECASE), "Охранник", "охранник"),
+    (re.compile(r"\bдежур\w*\b", re.IGNORECASE), "Дежурный", "дежурный"),
+    (re.compile(r"\bжил\w*\b", re.IGNORECASE), "Жилец", "жилец"),
+    (re.compile(r"\bслужащ\w*\b", re.IGNORECASE), "Служащий", "служащий"),
+    (re.compile(r"\bклерк\w*\b", re.IGNORECASE), "Клерк", "клерк"),
+    (re.compile(r"\bпрохож\w*\b", re.IGNORECASE), "Прохожий", "прохожий"),
+    (re.compile(r"\binformant\b", re.IGNORECASE), "Informant", "informant"),
+    (re.compile(r"\bwitness\b", re.IGNORECASE), "Witness", "witness"),
+    (re.compile(r"\bclerk\b", re.IGNORECASE), "Clerk", "clerk"),
+    (re.compile(r"\bbartender\b", re.IGNORECASE), "Bartender", "bartender"),
+    (re.compile(r"\binnkeeper\b", re.IGNORECASE), "Innkeeper", "innkeeper"),
+    (re.compile(r"\bguard\b", re.IGNORECASE), "Guard", "guard"),
+    (re.compile(r"\bresident\b", re.IGNORECASE), "Resident", "resident"),
+    (re.compile(r"\bseller\b", re.IGNORECASE), "Seller", "seller"),
+    (re.compile(r"\bpasser[- ]?by\b", re.IGNORECASE), "Passer-by", "passer-by"),
+)
 
-    ``scene_disposition`` is deliberately derived by code instead of supplied by the
-    control model. The old schema asked the LLM to describe the same boundary twice
-    (action_sequence/scene_transition plus scene_disposition), which allowed internally
-    contradictory JSON such as ``action_sequence.steps + scene_disposition=stay``.
-    """
+
+class CoordinatedTurnPlan(TurnPlan):
+    """TurnPlan with an explicit cross-agent scene/NPC hand-off."""
 
     npc_introductions: list[PlannedNpcIntroduction] = Field(
         default_factory=list,
@@ -39,7 +58,6 @@ class CoordinatedTurnPlan(TurnPlan):
     @computed_field(return_type=str)
     @property
     def scene_disposition(self) -> str:
-        """Canonical boundary derived from the structured fields the engine actually executes."""
         if self.action_sequence.steps:
             return "sequence"
         if self.scene_transition.required:
@@ -76,7 +94,6 @@ class CoordinatedTurnPlan(TurnPlan):
 
     @classmethod
     def conservative_fallback(cls, player_input: str) -> "CoordinatedTurnPlan":
-        """Typed fail-safe used when the planner itself is unavailable."""
         return cls(
             player_intent=(player_input.strip() or "Продолжить текущую сцену")[:500],
             resolution="uncertain",
@@ -108,7 +125,7 @@ class TurnAuthorityPlanner:
     )
     CONTACT_INTENT_PATTERNS = (
         r"\b(?:по)?стуч\w*\b",
-        rf"\b(?:расспрос\w*|спрашива\w*|спросить)\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
+        rf"\b(?:расспраш\w*|расспрос\w*|спрашива\w*|спросить)\s+(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
         rf"\bищу\s+(?:[^.!?]{{0,16}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
         rf"\bпоговор\w*\s+(?:с\s+)?(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
         rf"\bобращ\w*\s+(?:к\s+)?(?:[^.!?]{{0,24}}\s)?{GENERIC_CONTACT_ROLE_RU}\b",
@@ -308,6 +325,65 @@ choice for the protagonist.
         return values
 
     @classmethod
+    def _contact_role(cls, player_input: str) -> tuple[str, str] | None:
+        text = " ".join((player_input or "").split())
+        for pattern, canonical_name, role in _GENERIC_CONTACTS:
+            if pattern.search(text):
+                return canonical_name, role
+        return None
+
+    @classmethod
+    def normalize_affirmative_direct_contact(
+        cls,
+        plan: CoordinatedTurnPlan,
+        player_input: str,
+    ) -> CoordinatedTurnPlan:
+        """Bind an already-positive generic contact outcome to typed NPC authority.
+
+        This does not force contact success. It only repairs the internally affirmative state where
+        Planner already auto-completed an interaction and emitted a positive observable consequence
+        but omitted the responder identity.
+        """
+        if plan.npc_introductions:
+            return plan
+        text = " ".join((player_input or "").split()).casefold()
+        if not cls._matches_any(cls.CONTACT_INTENT_PATTERNS, text):
+            return plan
+        consequences = " ".join(plan.observable_consequences).casefold()
+        if cls._matches_any(cls.NEGATIVE_CONTACT_OUTCOME_PATTERNS, consequences):
+            return plan
+        if not plan.observable_consequences:
+            return plan
+        role = cls._contact_role(player_input)
+        if role is None:
+            return plan
+        contact_steps = [
+            step
+            for step in plan.action_sequence.steps
+            if step.resolution == "auto_success"
+            and step.action_type in {"interaction", "service"}
+            and cls._contact_role(step.intent or player_input) is not None
+        ]
+        if not contact_steps:
+            return plan
+
+        canonical_name, role_name = role
+        plan.npc_introductions.append(
+            PlannedNpcIntroduction(
+                canonical_name=canonical_name,
+                role=role_name,
+                temporary_name=True,
+                reason=(
+                    "Игрок прямо инициировал контакт с неизвестным персонажем, а Planner уже "
+                    "разрешил взаимодействие как auto_success и описал ответ."
+                ),
+            )
+        )
+        if not contact_steps[0].observable_outcome:
+            contact_steps[0].observable_outcome = plan.observable_consequences[0]
+        return plan
+
+    @classmethod
     def contract_issues(
         cls,
         plan: CoordinatedTurnPlan,
@@ -373,7 +449,12 @@ choice for the protagonist.
 
         explicit_movement = cls._matches_any(cls.EXPLICIT_MOVEMENT_PATTERNS, text)
         movement_blocked = cls._matches_any(cls.MOVEMENT_BLOCKER_PATTERNS, consequences)
-        if explicit_movement and not unresolved_choice and not movement_blocked and not cls._has_location_transition(plan):
+        if (
+            explicit_movement
+            and not unresolved_choice
+            and not movement_blocked
+            and not cls._has_location_transition(plan)
+        ):
             issues.append(
                 "explicit destination movement requires an actual required location_transition; "
                 "a sequence, focus_transition, observable consequence or narration guidance alone "
@@ -431,6 +512,7 @@ choice for the protagonist.
         try:
             plan = await self._generate_plan(selection, base_messages)
             sanitize_existing_present_npc_introductions(plan, present_names)
+            self.normalize_affirmative_direct_contact(plan, player_input)
             issues = self.contract_issues(plan, player_input)
             if not issues:
                 return plan
@@ -440,6 +522,7 @@ choice for the protagonist.
                 self._repair_messages(base_messages, player_input, issues, plan),
             )
             sanitize_existing_present_npc_introductions(repaired, present_names)
+            self.normalize_affirmative_direct_contact(repaired, player_input)
             remaining = self.contract_issues(repaired, player_input)
             if remaining:
                 raise TurnPlanningError(
