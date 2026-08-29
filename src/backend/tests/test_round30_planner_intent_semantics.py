@@ -14,8 +14,9 @@ def test_semantic_reviewer_owns_current_turn_alignment_and_movement_boundaries()
 
     assert "CURRENT INPUT" in prompt
     assert "MOVEMENT/TIME" in prompt
-    assert "actual committed physical travel" in prompt
+    assert "changing physical location/time" in prompt
     assert "structured transition" in prompt
+    assert "focus change" in prompt
     assert "Do not use keyword lists" in prompt
 
 
@@ -60,4 +61,6 @@ def test_missing_structured_movement_is_a_semantic_review_failure_not_regex_cont
     # Machine-only contract does not reinterpret Russian prose. The model reviewer receives both
     # latest player input and structured plan and must reject the mismatch before execution.
     assert TurnAuthorityPlanner.contract_issues(plan, player_input) == []
-    assert "actual committed physical travel" in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
+    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
+    assert "MOVEMENT/TIME" in prompt
+    assert "structured transition" in prompt
