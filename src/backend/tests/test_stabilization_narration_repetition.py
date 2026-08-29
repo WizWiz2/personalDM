@@ -215,7 +215,8 @@ async def test_persistent_repeat_publishes_authority_instead_of_looping(
 
     assert calls == 2
     assert result.validation_status == "safe_fallback"
-    assert result.text == "Бармен сохраняет прежнюю позицию."
+    assert result.text == "Бармен умолкает."
+    assert "сохраняет прежнюю позицию" not in result.text
     assert result.text != PREVIOUS_REPLY
     assert result.telemetry["repetition_guard"]["exhausted"] is True
     assert (
