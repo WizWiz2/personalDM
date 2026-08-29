@@ -30,6 +30,11 @@ def _key(value: object) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
 
 
+def _word_key(value: object) -> str:
+    """Normalize immutable evidence for duplicate detection, not semantic classification."""
+    return " ".join(_WORD_RE.findall(_key(value)))
+
+
 def actor_turn_contract(authority) -> dict | None:
     if authority.scene_disposition != "actor_turn" or not authority.acting_character_id:
         return None
@@ -109,6 +114,48 @@ def segment_actor_response(assistant_content: str, *, max_segments: int = 20) ->
     return candidates
 
 
+def _deduplicate_selected_segments(
+    segments: list[str],
+    selected_segment_ids: list[int],
+) -> list[int]:
+    """Collapse nested immutable evidence spans while preserving distinct selected claims.
+
+    Quote extraction intentionally produces both the exact quoted claim and, later, the enclosing
+    sentence. If the semantic selector chooses both, persisting both creates duplicate beliefs such
+    as `Это мой груз` and `«Это мой груз», — говорит он...`. This function does not decide meaning:
+    it only notices that one already-published selected span is textually contained in another and
+    keeps the more precise (shorter) evidence span.
+    """
+    valid: list[int] = []
+    seen: set[int] = set()
+    for raw_id in selected_segment_ids[:8]:
+        try:
+            segment_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if segment_id in seen or not (1 <= segment_id <= len(segments)):
+            continue
+        seen.add(segment_id)
+        valid.append(segment_id)
+
+    keep = set(valid)
+    for left in valid:
+        left_text = _word_key(segments[left - 1])
+        if not left_text:
+            continue
+        for right in valid:
+            if left == right:
+                continue
+            right_text = _word_key(segments[right - 1])
+            if not right_text or left_text == right_text:
+                if left_text == right_text and left > right:
+                    keep.discard(left)
+                continue
+            if left_text in right_text and len(left_text) < len(right_text):
+                keep.discard(right)
+    return [segment_id for segment_id in valid if segment_id in keep]
+
+
 def build_actor_segment_proposals(
     segments: list[str],
     selected_segment_ids: list[int],
@@ -117,15 +164,7 @@ def build_actor_segment_proposals(
     player_character_id: UUID,
 ) -> list[ProposedChangeCreate]:
     proposals: list[ProposedChangeCreate] = []
-    seen_ids: set[int] = set()
-    for raw_id in selected_segment_ids[:8]:
-        try:
-            segment_id = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if segment_id in seen_ids or not (1 <= segment_id <= len(segments)):
-            continue
-        seen_ids.add(segment_id)
+    for segment_id in _deduplicate_selected_segments(segments, selected_segment_ids):
         evidence = segments[segment_id - 1]
         proposals.append(
             ProposedChangeCreate(

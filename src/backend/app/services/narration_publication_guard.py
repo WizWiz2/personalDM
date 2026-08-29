@@ -213,7 +213,7 @@ class NarrationPublicationGuard:
 
     @classmethod
     def render_authority(cls, authority: TurnAuthority) -> str:
-        """Render already-typed world/actor results without re-interpreting their meaning."""
+        """Render only executed/typed outcomes; never promote guidance hooks into world truth."""
         blocked = cls._blocked_in_world_fallback(authority)
         if blocked is not None:
             parts: list[str] = []
@@ -244,7 +244,9 @@ class NarrationPublicationGuard:
             if authority.target_location_path:
                 destination = cls._player_facing_fragment(authority.target_location_path[-1])
                 if destination:
-                    cls._append_unique(parts, f"Путь приводит к {destination}")
+                    # Canonical names are stored in nominative form. Keep them untouched instead of
+                    # attempting Russian inflection in deterministic code.
+                    cls._append_unique(parts, f"Вы приходите туда, куда направлялись: {destination}")
 
         actor_scoped = authority.scene_disposition == "actor_turn" or bool(
             authority.acting_character_id
@@ -254,17 +256,12 @@ class NarrationPublicationGuard:
                 safe = cls._player_facing_fragment(beat)
                 if safe:
                     cls._append_unique(parts, safe)
-            if not parts and authority.ending_hook:
-                hook = cls._player_facing_fragment(authority.ending_hook)
-                if hook:
-                    cls._append_unique(parts, hook)
+            # ending_hook is narrator guidance, not an executed fact. It can contain an unresolved
+            # player choice (for example, "Вера решает принять вызов или отказаться"), so the
+            # fail-closed deterministic projection must never publish it as if it happened.
             if not parts:
                 actor = cls._player_facing_fragment(authority.acting_character_name or "Собеседник")
                 cls._append_unique(parts, f"{actor or 'Собеседник'} умолкает")
-        elif authority.ending_hook:
-            hook = cls._player_facing_fragment(authority.ending_hook)
-            if hook:
-                cls._append_unique(parts, hook)
 
         if not parts:
             cls._append_unique(parts, "Пока ничего заметно не меняется")

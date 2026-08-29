@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import settings
 from app.models.provider_config import ProviderConfigRead
@@ -14,7 +15,6 @@ from app.services.systemless_authority_guard import (
     detect_self_repetition,
     input_uses_addressed_character,
     normalize_addressed_response,
-    systemless_contract_issues,
 )
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
@@ -35,26 +35,35 @@ def _base_plan(**updates) -> CoordinatedTurnPlan:
     return CoordinatedTurnPlan.model_validate(payload)
 
 
-def test_sticky_listener_does_not_own_pure_action_response() -> None:
-    assert input_uses_addressed_character("Выхожу из офиса и направляюсь к месту происшествия.") is False
-    assert input_uses_addressed_character("Осматриваю место происшествия: что здесь видно?") is False
-
+def test_sticky_listener_is_only_input_provenance_not_response_ownership() -> None:
+    # The UI-selected listener is deliberately preserved without lexical interpretation. Planner
+    # later decides whether that listener actually owns a response on this turn.
+    assert input_uses_addressed_character("Выхожу из офиса и направляюсь к месту происшествия.") is True
     assert input_uses_addressed_character("Во сколько это произошло?") is True
-    assert input_uses_addressed_character(
-        "Осматриваю фотографии. Марина, это вы их сделали?"
-    ) is True
-    assert input_uses_addressed_character(
-        "Я выхожу. Останетесь здесь?"
-    ) is True
+
+    pure_action = _base_plan(addressed_response_requested=False)
+    question = _base_plan(
+        addressed_response_requested=True,
+        response_ownership_reason="Игрок задаёт выбранному NPC прямой вопрос.",
+    )
+    assert addressed_response_requested("Выхожу из офиса.", pure_action) is False
+    assert addressed_response_requested("Во сколько это произошло?", question) is True
 
 
-def test_conversation_plan_keeps_addressed_response_even_without_name() -> None:
-    plan = _base_plan(resolution="conversation")
+def test_conversation_plan_keeps_addressed_response_only_when_planner_requests_it() -> None:
+    plan = _base_plan(
+        resolution="conversation",
+        addressed_response_requested=True,
+        response_ownership_reason="Продолжение разговора с выбранным NPC.",
+    )
     assert addressed_response_requested("Да, продолжайте.", plan) is True
 
 
-def test_mixed_action_and_dialogue_removes_only_dialogue_step() -> None:
+def test_mixed_action_and_dialogue_is_already_separated_by_typed_plan() -> None:
     plan = _base_plan(
+        resolution="sequence",
+        addressed_response_requested=True,
+        response_ownership_reason="Игрок осматривает фотографии и задаёт вопрос Марине.",
         action_sequence=ActionSequencePlan(
             steps=[
                 ActionStepPlan(
@@ -63,12 +72,7 @@ def test_mixed_action_and_dialogue_removes_only_dialogue_step() -> None:
                     resolution="auto_success",
                     safe_mundane=True,
                     observable_outcome="Фотографии осмотрены.",
-                ),
-                ActionStepPlan(
-                    action_type="interaction",
-                    intent="спросить у Марины о фотографиях",
-                    resolution="requires_choice",
-                ),
+                )
             ]
         ),
         observable_consequences=["Фотографии осмотрены."],
@@ -79,55 +83,20 @@ def test_mixed_action_and_dialogue_removes_only_dialogue_step() -> None:
         "Осматриваю лежащие на столе фотографии. Марина, это вы их сделали?",
     )
 
+    assert normalized is plan
     assert normalized.resolution == "sequence"
     assert len(normalized.action_sequence.steps) == 1
-    assert normalized.action_sequence.steps[0].intent == "осмотреть лежащие на столе фотографии"
     assert normalized.action_sequence.steps[0].resolution == "auto_success"
-    assert normalized.scene_transition.required is True
-    assert normalized.scene_transition.transition_type == "focus_transition"
-    assert normalized.observable_consequences == ["Фотографии осмотрены."]
+    assert normalized.addressed_response_requested is True
 
 
-def test_addressed_dialogue_requires_check_is_not_a_systemless_blocker() -> None:
-    dialogue = _base_plan(
-        action_sequence=ActionSequencePlan(
-            steps=[
-                ActionStepPlan(
-                    action_type="interaction",
-                    intent="спросить Марину, когда это произошло",
-                    resolution="requires_check",
-                )
-            ]
+def test_requires_check_is_invalid_even_for_addressed_dialogue() -> None:
+    with pytest.raises(ValidationError):
+        ActionStepPlan(
+            action_type="interaction",
+            intent="спросить Марину, когда это произошло",
+            resolution="requires_check",
         )
-    )
-    action = _base_plan(
-        action_sequence=ActionSequencePlan(
-            steps=[
-                ActionStepPlan(
-                    action_type="observation",
-                    intent="вскрыть сложный сейф",
-                    resolution="requires_check",
-                )
-            ]
-        )
-    )
-
-    assert not any(
-        "no check resolver" in issue
-        for issue in systemless_contract_issues(
-            dialogue,
-            "Марина, когда это произошло?",
-            addressed_character=True,
-        )
-    )
-    assert any(
-        "no check resolver" in issue
-        for issue in systemless_contract_issues(
-            action,
-            "Пытаюсь вскрыть сложный сейф.",
-            addressed_character=True,
-        )
-    )
 
 
 def test_repetition_guard_detects_duplicate_inside_same_response() -> None:

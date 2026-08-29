@@ -46,6 +46,10 @@ Return repair_required only for concrete violations:
   sentences do not need to be prewritten in observable_consequences. Personal memories,
   observations, opinions, uncertainty, claims and lies are epistemic character claims, not objective
   canon merely because they contain new information. Never turn a legal answer into silence.
+- SPEAKER CONSISTENCY: when acting_character is set, new first-person NPC dialogue and its immediate
+  attribution must belong to that actor. Reject a response that accidentally assigns another NPC's
+  earlier line, self-reference, grammatical identity/sex or conversational stance to the current
+  actor. A deliberate quoted mention of another person is fine when attribution is explicit.
 - CHARACTER PRESENCE: a known_absent_character physically acts/speaks/appears. Characters in
   present_characters, allowed_new_npcs and allowed_existing_npc_arrivals are authorized physically.
 - UNPLANNED NPC: a genuinely new physical person appears without typed NPC authority.
@@ -57,6 +61,10 @@ Return repair_required only for concrete violations:
 - OUTCOME: prose contradicts observable_consequences or completed structured execution.
 - CURRENT TURN: prose answers/repeats a previous turn instead of current player_input/current result.
 - COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
+- META LANGUAGE: player-facing prose talks about game/engine causality instead of the fictional
+  moment, e.g. explains that an internal action caused no external changes, says information was
+  mechanically received, refers to the response/narration/player/next turn, or describes waiting for
+  the human's next move. Judge this by meaning, not by matching a phrase list.
 - LANGUAGE/SURFACE: final player-facing text must use the player's language and must not expose UUIDs,
   slugs, route/debug paths, TURN AUTHORITY, engine statuses or validator/meta commentary.
 
@@ -73,7 +81,7 @@ Return exactly:
   "summary": "short reason in Russian",
   "violations": [
     {
-      "violation_type": "absent_character|absent_object|invalid_movement|invalid_time_advance|player_agency|ungrounded_complication|sequence_violation|canon_conflict|other",
+      "violation_type": "absent_character|absent_object|invalid_movement|invalid_time_advance|player_agency|ungrounded_complication|sequence_violation|canon_conflict|speaker_consistency|meta_language|other",
       "severity": "warning|error",
       "evidence": "shortest exact candidate fragment",
       "correction": "specific prose-only correction in Russian"
@@ -267,7 +275,7 @@ Return exactly:
         return cls._append_error(
             result,
             NarrationViolation(
-                violation_type="other",
+                violation_type="meta_language",
                 severity="error",
                 evidence=evidence,
                 correction="Удалить служебный текст и оставить только внутриигровую прозу.",
@@ -327,6 +335,10 @@ Return exactly:
             "служебной заглушки. Удали или перепиши только конкретные offending spans.\n\n"
             "Критически важно:\n"
             "- не заменяй легальную реплику NPC на молчание;\n"
+            "- если указан acting_character, сохраняй именно его как говорящего и не переноси ему "
+            "чужую прежнюю реплику, самореференс или грамматическую идентичность;\n"
+            "- удали мета-комментарии о механике, отсутствии внешних изменений, получении "
+            "информации или ожидании следующего хода; оставь сцену внутри мира;\n"
             "- естественная формулировка уже выполненного действия допустима, но не добавляй "
             "следующий шаг или новый результат;\n"
             "- не добавляй мысли, эмоции, решения, планы, согласие или новые реплики героя;\n"

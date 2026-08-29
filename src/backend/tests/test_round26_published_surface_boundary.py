@@ -37,24 +37,23 @@ def _error(kind: str, evidence: str) -> NarrationValidationResult:
     )
 
 
-def test_round26_actor_fallback_keeps_npc_speech_after_player_agency_cut():
-    authority = _authority(actor_turn=True)
+def test_actor_surgical_repair_keeps_npc_speech_after_player_agency_cut():
     rejected = (
         "Ирина отвечает: «Его зовут Иван Петров». "
         "Виктор Соколов кивает и говорит: «Хорошо, это только начало»."
     )
 
-    published, audit = NarrationPublicationGuard.publish(
-        authority,
+    repaired, audit = NarrationPublicationGuard.surgical_repair_candidate(
         rejected,
-        _error("player_agency", "Виктор Соколов кивает и говорит"),
+        _error("player_agency", "Виктор Соколов кивает и говорит: «Хорошо, это только начало»."),
     )
 
-    assert "Иван Петров" in published
-    assert "Хорошо" not in published
-    assert "кивает" not in published
-    assert audit["mode"] == "surgical_surface"
-    assert audit["candidate_discarded"] is False
+    assert repaired is not None
+    assert "Иван Петров" in repaired
+    assert "Хорошо" not in repaired
+    assert "кивает" not in repaired
+    assert audit["strategy"] == "deterministic_span_removal"
+    assert audit["status"] == "candidate"
 
 
 def test_actor_projection_does_not_publish_player_choice_hook():
@@ -71,7 +70,7 @@ def test_actor_projection_does_not_publish_player_choice_hook():
     assert "решает" not in published
     assert "вызов" not in published
     assert audit["mode"] == "authority_projection"
-    assert "не отвечает" in published or "Хозяин" in published
+    assert "Хозяин" in published
 
 
 def test_round26_unauthorized_npc_cannot_survive_safe_fallback():
@@ -113,8 +112,7 @@ def test_validated_candidate_remains_publishable():
     assert audit["validated_surface"] is True
 
 
-def test_texture_violation_publishes_surgical_remainder_instead_of_planner_skeleton():
-    authority = _authority(actor_turn=False)
+def test_texture_violation_produces_surgical_repair_candidate():
     extra = "В углу сидел один из редких посетителей и ждал чего-то конкретного."
     draft = (
         "Сырой воздух просачивался сквозь щели в досках «Якоря». "
@@ -123,17 +121,16 @@ def test_texture_violation_publishes_surgical_remainder_instead_of_planner_skele
         "На стене висело объявление о работе."
     )
 
-    published, audit = NarrationPublicationGuard.publish(
-        authority,
+    repaired, audit = NarrationPublicationGuard.surgical_repair_candidate(
         draft,
         _error("ungrounded_complication", extra),
     )
 
-    assert extra not in published
-    assert "хозяин трактира" in published
-    assert "объявление о работе" in published
-    assert audit["mode"] == "surgical_surface"
-    assert audit["candidate_discarded"] is False
+    assert repaired is not None
+    assert extra not in repaired
+    assert "хозяин трактира" in repaired
+    assert "объявление о работе" in repaired
+    assert audit["status"] == "candidate"
 
 
 def test_engine_exception_is_not_a_player_facing_reply():

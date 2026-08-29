@@ -90,8 +90,6 @@ def test_actor_publication_guard_discards_rejected_actor_candidate():
         validation,
     )
 
-    # Multiple rejected agency spans make the whole draft untrusted. A single isolated span may be
-    # surgically excised, but this response must fail closed to deterministic Authority.
     assert "Тень свернула" not in published
     assert "кивнул" not in published
     assert "Спасибо, Грета" not in published
@@ -100,7 +98,7 @@ def test_actor_publication_guard_discards_rejected_actor_candidate():
     assert diagnostics["candidate_discarded"] is True
 
 
-def test_unresolved_semantic_violation_projects_authority_instead_of_bad_prose():
+def test_unresolved_semantic_violation_projects_only_executed_authority():
     authority = TurnAuthority(
         campaign_id=uuid4(),
         trigger_turn_id=uuid4(),
@@ -140,7 +138,8 @@ def test_unresolved_semantic_violation_projects_authority_instead_of_bad_prose()
         validation,
     )
 
-    assert published == "Дверь открывает Дежурный фабрики. Дежурный ждёт вопроса."
+    assert published == "Дверь открывает Дежурный фабрики."
+    assert "ждёт вопроса" not in published
     assert "Незнакомец" not in published
     assert "решает" not in published
     assert diagnostics["mode"] == "authority_projection"
@@ -252,7 +251,8 @@ async def test_second_semantic_reject_publishes_authority_instead_of_failing_tur
     )
 
     assert result.validation_status == "safe_fallback"
-    assert result.text == "На стук дверь открывает дежурный. Дежурный ждёт вопроса."
+    assert result.text == "На стук дверь открывает дежурный."
+    assert "ждёт вопроса" not in result.text
     assert result.telemetry["narration_validation"]["semantic_failure_recovered"] is True
 
 

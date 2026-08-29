@@ -75,7 +75,6 @@ async def test_round26_planner_context_never_turns_addressee_into_speaker(monkey
     )
     messages, metadata = compiled
 
-    # Round 26 regression: Planner must never receive actor-output context for the listener.
     assert seen["acting_character_id"] is None
     assert "Addressed character: Ирина" in messages[0].content
     assert "listener/target" in messages[0].content
@@ -191,7 +190,9 @@ async def test_addressed_present_npc_becomes_actor_after_stay_plan():
     )
     plan = CoordinatedTurnPlan(
         player_intent="Спросить Анну о рукописи",
-        resolution="success",
+        resolution="conversation",
+        addressed_response_requested=True,
+        response_ownership_reason="Игрок задаёт прямой вопрос выбранной Анне.",
     )
 
     authority = await service.build(
@@ -216,7 +217,8 @@ async def test_addressed_npc_loses_actor_authority_after_player_moves_away():
     )
     plan = CoordinatedTurnPlan(
         player_intent="Выйти из кабинета и пойти в библиотеку",
-        resolution="success",
+        resolution="transition",
+        addressed_response_requested=False,
         scene_transition=SceneTransitionPlan(
             required=True,
             transition_type="location_transition",

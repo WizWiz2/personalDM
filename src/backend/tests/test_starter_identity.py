@@ -11,8 +11,7 @@ from app.services.starter_identity import (
     reconcile_starter_npcs,
     sanitize_existing_present_npc_introductions,
 )
-from app.services.systemless_authority_guard import systemless_contract_issues
-from app.services.turn_authority_planner import CoordinatedTurnPlan
+from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 
 
 def _starter(*, role="Посетительница", name=None, description=None, reason=None):
@@ -181,30 +180,23 @@ def test_existing_physically_present_npc_is_not_a_new_introduction():
     plan = _conversation_plan("Анна", "посетительница")
 
     sanitize_existing_present_npc_introductions(plan, {"Марк", "Анна"})
-    issues = systemless_contract_issues(plan, "Расскажите, что случилось.")
 
     assert plan.npc_introductions == []
-    assert not any("new physical NPC introductions" in issue for issue in issues)
 
 
-def test_genuinely_new_unsolicited_npc_still_fails_closed():
-    plan = _conversation_plan("Незнакомец", "человек в коридоре")
+def test_genuinely_new_unsolicited_npc_is_a_semantic_planner_failure():
+    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    sanitize_existing_present_npc_introductions(plan, {"Марк", "Анна"})
-    issues = systemless_contract_issues(plan, "Осматриваю фотографию на столе.")
-
-    assert len(plan.npc_introductions) == 1
-    assert any("new physical NPC introductions" in issue for issue in issues)
+    assert "CONTACT/IDENTITY" in prompt
+    assert "unknown physical responder" in prompt
+    assert "npc_introductions" in prompt
 
 
-def test_explicit_unknown_contact_is_not_removed_by_present_npc_sanitizer():
+def test_explicit_unknown_contact_remains_supported_by_typed_npc_introduction():
     plan = _conversation_plan("Прохожий", "прохожий")
 
     sanitize_existing_present_npc_introductions(plan, {"Марк", "Анна"})
-    issues = systemless_contract_issues(
-        plan,
-        "Расспрашиваю прохожего, не видел ли он ночью машину.",
-    )
 
     assert len(plan.npc_introductions) == 1
-    assert not any("new physical NPC introductions" in issue for issue in issues)
+    assert plan.npc_introductions[0].canonical_name == "Прохожий"
+    assert "CONTACT/IDENTITY" in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT

@@ -303,8 +303,8 @@ approved resolution and structured campaign context. Do not add durable facts, a
 movement, private knowledge or outcomes absent from typed authority.
 
 Player agency is a hard boundary:
-- Never write unprovided protagonist dialogue, choice, plan, belief, consent, emotional conclusion,
-  promise, refusal, attack or voluntary next action.
+- Never write the protagonist's unprovided dialogue, choice, plan, belief, consent, emotional
+  conclusion, promise, refusal, attack or voluntary next action.
 - You may describe grounded immediate perception and externally caused involuntary effects; stop
   before deciding what those perceptions mean for the protagonist.
 - Respect pending_player_choice and protected_player_decisions.

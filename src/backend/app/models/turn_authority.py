@@ -124,10 +124,6 @@ class TurnAuthority(BaseModel):
                 "Неясно, куда именно ведёт этот шаг; путь остаётся прежним.",
             ),
             (
-                ("requires a check",),
-                "Без проверки исход этого действия пока не определён.",
-            ),
-            (
                 ("requires player input",),
                 "Нужно уточнить, что именно ты пытаешься сделать.",
             ),
@@ -137,6 +133,7 @@ class TurnAuthority(BaseModel):
                 return text
 
         technical = (
+            "requires a check",
             "route discovery",
             "source_scene",
             "target_scene",

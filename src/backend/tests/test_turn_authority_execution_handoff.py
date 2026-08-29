@@ -45,17 +45,15 @@ async def test_scene_transition_execution_report_is_the_sequence_authority(
                 ),
                 ActionStepPlan(
                     action_type="observation",
-                    intent="Осмотреть зал",
-                    resolution="requires_check",
+                    intent="Осмотреть зал выбранным способом",
+                    resolution="requires_choice",
                     safe_mundane=False,
                 ),
             ],
         ),
-        ending_hook="Проверка осмотра ещё не разрешена.",
+        ending_hook="Способ дальнейшего осмотра остаётся за игроком.",
     )
 
-    # CoordinatedTurnPlan converts sequences to a top-level focus transition. The
-    # executor writes the real execution result onto this exact boundary object.
     report = {
         "status": "blocked",
         "completed_steps": 1,
@@ -69,9 +67,9 @@ async def test_scene_transition_execution_report_is_the_sequence_authority(
             },
             {
                 "step_index": 1,
-                "intent": "Осмотреть зал",
+                "intent": "Осмотреть зал выбранным способом",
                 "status": "blocked",
-                "blocking_reason": "Требуется проверка.",
+                "blocking_reason": "Нужен выбор способа осмотра.",
             },
         ],
     }
@@ -80,7 +78,7 @@ async def test_scene_transition_execution_report_is_the_sequence_authority(
     authority = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,
         trigger_turn_id=uuid4(),
-        player_input="Вхожу и осматриваюсь.",
+        player_input="Вхожу и выбираю, как осмотреться.",
         source_scene_id=None,
         target_scene_id=None,
         plan=plan,

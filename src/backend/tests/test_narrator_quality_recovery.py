@@ -40,7 +40,7 @@ def test_player_ownership_is_a_semantic_validator_responsibility():
 
 
 def test_sensory_perception_and_internal_state_are_not_classified_by_word_stems():
-    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
+    prompt = " ".join(TurnAuthorityValidator.SYSTEM_PROMPT.split())
 
     assert "PERCEPTION IS NOT INTERNAL AGENCY" in prompt
     assert 'verb such as "чувствовать"' in prompt

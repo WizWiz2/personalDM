@@ -323,12 +323,21 @@ def _turn_authority_plan(prompt: str) -> str:
     """Exercise the real TurnAuthorityPlanner schema instead of silently falling back."""
     CALLS["planner"] += 1
     latest = prompt.rsplit("\n", 1)[-1].strip()
+    addressed = (
+        "[INPUT ROUTING — authoritative]" in prompt
+        and "Addressed character:" in prompt
+    )
     return json.dumps(
         {
             "player_intent": (latest or "Проверить текущую сцену")[:500],
-            "resolution": "observation",
-            "scene_disposition": "stay",
+            "resolution": "conversation" if addressed else "observation",
             "npc_introductions": [],
+            "addressed_response_requested": addressed,
+            "response_ownership_reason": (
+                "Игрок явно обратился к выбранному присутствующему персонажу."
+                if addressed
+                else "Текущий ход адресован миру, а не выбранному NPC."
+            ),
             "observable_consequences": [
                 "Попытка даёт одно конкретное наблюдаемое следствие в текущей сцене."
             ],
@@ -339,6 +348,18 @@ def _turn_authority_plan(prompt: str) -> str:
             "new_fact_candidates": [],
             "narration_guidance": ["Кратко показать результат заявленной попытки."],
             "ending_hook": "Игрок видит результат и может выбрать следующий шаг.",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _semantic_plan_review() -> str:
+    CALLS["planner_review"] += 1
+    return json.dumps(
+        {
+            "verdict": "pass",
+            "summary": "Typed mock plan matches the current input.",
+            "issues": [],
         },
         ensure_ascii=False,
     )
@@ -357,7 +378,12 @@ def _authority_verdict() -> str:
 
 
 def _dispatch_json(prompt: str) -> str:
-    if "[INTER-AGENT AUTHORITY CONTRACT]" in prompt and "[TURN PLANNER]" in prompt:
+    if "[TURN PLAN SEMANTIC REVIEWER]" in prompt:
+        return _semantic_plan_review()
+    if (
+        "[INTER-AGENT SEMANTIC AUTHORITY CONTRACT]" in prompt
+        and "[TURN PLANNER]" in prompt
+    ):
         return _turn_authority_plan(prompt)
     if "[TURN AUTHORITY VALIDATOR]" in prompt:
         return _authority_verdict()
