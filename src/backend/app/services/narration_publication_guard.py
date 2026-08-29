@@ -7,12 +7,13 @@ from app.models.turn_authority import TurnAuthority
 
 
 class NarrationPublicationGuard:
-    """Publish only a validated narrative surface or a deterministic Authority projection.
+    """Publish a validated surface, a narrowly excised remainder, or Authority projection.
 
-    The turn authority is already the game outcome. Narrator/validator are presentation layers.
-    Rejected prose is never published merely because some fragments look safe. Surgical repair is
-    only an untrusted candidate source: callers must independently revalidate the result before it
-    can reach this publication boundary.
+    TurnAuthority is the game outcome; narrator prose is presentation only. Rejected prose is not
+    broadly trusted. A single precisely evidenced agency/texture defect may be deterministically
+    removed when the remainder is substantial and player-facing. Multiple errors, state-breaking
+    errors other than isolated actor agency, ambiguous evidence, or an unvalidated draft fail closed
+    to deterministic Authority projection.
     """
 
     PLAYER_SPEECH_TAGS = (
@@ -54,6 +55,12 @@ class NarrationPublicationGuard:
             "canon_conflict",
         }
     )
+    SURGICAL_TEXTURE_VIOLATIONS = frozenset(
+        {
+            "ungrounded_complication",
+            "absent_object",
+        }
+    )
     PLAYER_CHOICE_HOOK = re.compile(
         r"(?:\bреша\w*|\bприня\w+\s+вызов|\bотказа\w*|\bвыбор\b|"
         r"игрок\s+(?:может|должен)|"
@@ -88,10 +95,40 @@ class NarrationPublicationGuard:
             for item in (validation.violations if validation else [])
             if item.severity == "error"
         ]
-        if validation is None or errors:
-            # Publication is the final trust boundary. A surgical repair candidate may be generated
-            # upstream, but it is publishable only after an independent validator pass. Never turn a
-            # rejected draft into trusted prose here just because the flagged spans were removable.
+        if validation is None:
+            fallback = cls._safe_authority_projection(authority)
+            return fallback, {
+                "mode": "authority_projection",
+                "candidate_characters": len(candidate),
+                "published_characters": len(fallback),
+                "error_count": 0,
+                "candidate_discarded": True,
+                "validated_surface": False,
+            }
+
+        if errors:
+            error = errors[0] if len(errors) == 1 else None
+            isolated_actor_agency = bool(
+                error
+                and authority.scene_disposition == "actor_turn"
+                and error.violation_type == "player_agency"
+            )
+            isolated_texture = bool(
+                error and error.violation_type in cls.SURGICAL_TEXTURE_VIOLATIONS
+            )
+            if isolated_actor_agency or isolated_texture:
+                surgical, surgery = cls.surgical_repair_candidate(candidate, validation)
+                if surgical:
+                    return surgical, {
+                        "mode": "surgical_surface",
+                        "candidate_characters": len(candidate),
+                        "published_characters": len(surgical),
+                        "error_count": 1,
+                        "candidate_discarded": False,
+                        "validated_surface": False,
+                        "surgical_repair": surgery,
+                    }
+
             fallback = cls._safe_authority_projection(authority)
             return fallback, {
                 "mode": "authority_projection",
@@ -139,12 +176,11 @@ class NarrationPublicationGuard:
         candidate: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str | None, dict]:
-        """Remove only exactly evidenced bad segments and return an UNTRUSTED repair candidate.
+        """Remove exactly evidenced bad segments and return a deterministic repair candidate.
 
-        This helper never authorizes publication. Callers must run the returned text through the
-        same TurnAuthorityValidator again. We only attempt surgery when every error has a concrete
-        evidence span that matches a sentence/line in the rejected draft. Otherwise model repair is
-        safer than guessing which prose a fuzzy diagnostic referred to.
+        The normal narration pipeline revalidates this candidate before accepted publication. The
+        publication boundary itself may use it only for one isolated actor-agency or texture defect,
+        where every error span matched and a substantial player-facing remainder survives.
         """
         errors = [
             item
@@ -293,7 +329,7 @@ class NarrationPublicationGuard:
                 if hook and not cls._player_choice_hook(hook, authority.player_character_name):
                     cls._append_unique(parts, hook)
             if not parts:
-                cls._append_unique(parts, f"{actor or 'Собеседник'} пока не отвечает")
+                cls._append_unique(parts, f"{actor or 'Собеседник'} умолкает")
         elif authority.ending_hook:
             hook = cls._player_facing_fragment(authority.ending_hook)
             if hook and not cls._player_choice_hook(hook, authority.player_character_name):
