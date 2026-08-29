@@ -13,11 +13,12 @@ _GUARDS = (
     "narrator_quality_recovery",
     "narration_failure_containment",
     "session_zero_finalize",
+    "semantic_authority",
 )
 
 
 def install_runtime() -> None:
-    """Install only compatibility guards whose invariants do not yet have explicit owners."""
+    """Install compatibility guards, then replace lexical semantics with agent-owned policy."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -33,6 +34,7 @@ def install_runtime() -> None:
     from app.services.narrator_quality_recovery_guard import (
         install as install_narrator_quality_recovery,
     )
+    from app.services.semantic_authority_guard import install as install_semantic_authority
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.systemless_authority_guard import install as install_systemless_authority
 
@@ -43,6 +45,9 @@ def install_runtime() -> None:
     install_narrator_quality_recovery()
     install_narration_failure_containment()
     install_session_zero_finalize()
+    # This policy intentionally installs last: legacy guards may still expose compatibility helpers,
+    # but no lexical/regex semantic decision is allowed to remain authoritative in production.
+    install_semantic_authority()
     _INSTALLED = True
 
 
@@ -96,11 +101,20 @@ def runtime_manifest() -> dict[str, Any]:
             "generate_draft",
             "guard_repetition",
             "validate_authority",
+            "semantic_re_adjudication_on_failure",
             "repair_once",
             "guard_repetition",
             "contain_presentation_failure",
             "publish_accepted",
         ],
+        "semantic_policy": {
+            "ownership": "model",
+            "sensory_vs_internal_state": "model",
+            "addressed_response": "typed_planner_field",
+            "npc_introduction_semantics": "model",
+            "movement_intent_semantics": "model",
+            "requires_check": "structurally_forbidden",
+        },
         "turn_stream": identity(TurnRunner.run_turn_stream),
         "turn_saga": identity(TurnSaga.run_turn_stream),
         "provider_stream": identity(LLMProvider.generate_stream),
