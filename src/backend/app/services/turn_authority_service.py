@@ -13,6 +13,7 @@ from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_authority_resolvers import (
     ActorResolver,
     AuthorityResolutionError,
+    NpcIntroductionResolution,
     NpcIntroductionResolver,
 )
 
@@ -56,7 +57,11 @@ class TurnAuthorityService:
             if campaign.player_character_id
             else None
         )
-        selected_actor_id = await self._actors.resolve_id(
+        # A few focused contract tests construct the assembler with __new__ and inject repository
+        # doubles directly. Keep collaborators lazily composable so those tests exercise build()
+        # without re-introducing policy logic into this service.
+        actor_resolver = getattr(self, "_actors", None) or ActorResolver(self._session)
+        selected_actor_id = await actor_resolver.resolve_id(
             trigger_turn_id,
             acting_character_id,
         )
@@ -87,15 +92,26 @@ class TurnAuthorityService:
             actor = None
             effective_actor_id = None
 
-        try:
-            npc_resolution = await self._npc_introductions.resolve(
-                campaign_id=campaign_id,
-                introductions=list(plan.npc_introductions) if plan else [],
-                present_names=present_names,
-                target_location_id=(target_state.location_id if target_state else None),
+        introductions = list(plan.npc_introductions) if plan else []
+        if introductions:
+            npc_resolver = getattr(self, "_npc_introductions", None) or NpcIntroductionResolver(
+                self._session
             )
-        except AuthorityResolutionError as exc:
-            raise TurnAuthorityError(str(exc)) from exc
+            try:
+                npc_resolution = await npc_resolver.resolve(
+                    campaign_id=campaign_id,
+                    introductions=introductions,
+                    present_names=present_names,
+                    target_location_id=(target_state.location_id if target_state else None),
+                )
+            except AuthorityResolutionError as exc:
+                raise TurnAuthorityError(str(exc)) from exc
+        else:
+            npc_resolution = NpcIntroductionResolution(
+                new_introductions=[],
+                existing_arrivals=[],
+                present_names=present_names,
+            )
 
         present_names = npc_resolution.present_names
         present_keys = {identity_key(value) for value in present_names}
