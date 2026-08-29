@@ -6,6 +6,7 @@ from app.services.mixed_actor_response_guard import (
     actor_response_contract,
     protect_actor_response_validation,
 )
+from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
 class _Authority(SimpleNamespace):
@@ -35,30 +36,18 @@ def test_mixed_sequence_exposes_actor_response_contract_without_changing_world_d
     assert authority.scene_disposition == "sequence"
 
 
-def test_mixed_sequence_allows_selected_npc_owned_claim() -> None:
-    authority = _mixed_authority()
-    evidence = "Марина Орлова отвечает: «Фотографии сделала я сама вчера вечером.»"
-    result = NarrationValidationResult(
-        verdict="repair_required",
-        summary="Новое неподтвержденное обстоятельство",
-        violations=[
-            NarrationViolation(
-                violation_type="ungrounded_complication",
-                severity="error",
-                evidence=evidence,
-                correction="Не добавлять неавторизованную информацию.",
-            )
-        ],
-    )
+def test_mixed_sequence_actor_claim_is_authorized_by_typed_semantic_contract() -> None:
+    contract = actor_response_contract(_mixed_authority())
+    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
 
-    protected = protect_actor_response_validation(authority, result, evidence)
-
-    assert protected.verdict == "pass"
-    assert protected.violations == []
-    assert authority.scene_disposition == "sequence"
+    assert contract is not None
+    assert "state_personal_memories_observations_and_claims" in contract["authorized"]
+    assert "ACTOR TURN RIGHTS" in prompt
+    assert "character_claim" in prompt
+    assert "not objective world canon" in prompt
 
 
-def test_mixed_sequence_still_rejects_world_mutation_outside_npc_speech() -> None:
+def test_legacy_post_filter_is_noop_and_world_mutation_remains_for_semantic_validator() -> None:
     authority = _mixed_authority()
     candidate = (
         "Марина Орлова отвечает: «Фотографии сделала я сама вчера вечером.» "
@@ -79,6 +68,6 @@ def test_mixed_sequence_still_rejects_world_mutation_outside_npc_speech() -> Non
 
     protected = protect_actor_response_validation(authority, result, candidate)
 
+    assert protected is result
     assert protected.verdict == "repair_required"
     assert len(protected.violations) == 1
-    assert protected.violations[0].violation_type == "ungrounded_complication"
