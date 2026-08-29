@@ -68,6 +68,22 @@ class GenerationLifecycleRepository(BaseRepository):
         await self._session.flush()
         return GenerationLifecycleRead.model_validate(row)
 
+    async def set_phase_for_assistant(
+        self,
+        assistant_turn_id: UUID,
+        phase: GenerationPhase,
+    ) -> GenerationLifecycleRead | None:
+        run_id = (
+            await self._session.execute(
+                select(GenerationRun.id).where(
+                    GenerationRun.assistant_turn_id == str(assistant_turn_id)
+                )
+            )
+        ).scalar_one_or_none()
+        if run_id is None:
+            return None
+        return await self.set_phase(UUID(str(run_id)), phase)
+
     async def list_incomplete(
         self,
         campaign_id: UUID | None = None,
