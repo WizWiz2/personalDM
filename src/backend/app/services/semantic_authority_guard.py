@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
 from app import config
 from app.models.narration_validation import NarrationValidationResult
@@ -13,7 +12,6 @@ from app.providers.llm_provider import LLMProviderError
 from app.services.role_model_router import RoleModelSelection
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 from app.services.turn_authority_validator import TurnAuthorityValidator
-from app.services.turn_planner import TurnPlanningError
 
 _INSTALLED = False
 
@@ -21,7 +19,7 @@ _INSTALLED = False
 class SemanticCoordinatedTurnPlan(CoordinatedTurnPlan):
     """Planner result with explicit model-owned response routing.
 
-    The field replaces lexical guesses such as "contains a question mark" or verb lists.  It is
+    The field replaces lexical guesses such as "contains a question mark" or verb lists. It is
     intentionally authored by Planner because deciding whether the latest human input addresses an
     NPC is a semantic decision, not a string-classification invariant.
     """
@@ -30,14 +28,6 @@ class SemanticCoordinatedTurnPlan(CoordinatedTurnPlan):
 
     addressed_response_requested: bool = False
     response_ownership_reason: str | None = Field(default=None, max_length=500)
-
-
-class SemanticNarrationReview(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    verdict: Literal["pass", "repair_required"]
-    summary: str = Field(default="", max_length=1500)
-    violations: list = Field(default_factory=list, max_length=12)
 
 
 _PLANNER_SEMANTIC_CONTRACT = """
@@ -213,7 +203,7 @@ async def _semantic_generate_plan(
 
 async def _semantic_review_failed_narration(
     validator: TurnAuthorityValidator,
-    selection: RoleModelSelection,
+    selection: RoleModelSelection | None,
     authority,
     candidate_text: str,
     previous: NarrationValidationResult,
