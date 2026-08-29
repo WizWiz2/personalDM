@@ -21,6 +21,11 @@ _PHASE_TIMESTAMPS = {
     GenerationPhase.COMPENSATED: "compensated_at",
 }
 
+_DANGEROUS_INCOMPLETE_PHASES = {
+    GenerationPhase.PREPARED.value,
+    GenerationPhase.NARRATED.value,
+}
+
 
 class GenerationLifecycleRepository(BaseRepository):
     async def start_attempt(self, run_id: UUID) -> GenerationLifecycleRead:
@@ -36,6 +41,11 @@ class GenerationLifecycleRepository(BaseRepository):
             )
             self._session.add(row)
         else:
+            if row.phase in _DANGEROUS_INCOMPLETE_PHASES:
+                raise RuntimeError(
+                    f"generation run {run_id} is still {row.phase}; "
+                    "recover or compensate the previous prepared attempt before retrying"
+                )
             row.attempt += 1
             row.phase = GenerationPhase.RECEIVED.value
             row.received_at = now
@@ -96,12 +106,7 @@ class GenerationLifecycleRepository(BaseRepository):
             )
             .where(
                 GenerationRun.status.in_(("running", "failed", "cancelled")),
-                GenerationLifecycle.phase.in_(
-                    (
-                        GenerationPhase.PREPARED.value,
-                        GenerationPhase.NARRATED.value,
-                    )
-                ),
+                GenerationLifecycle.phase.in_(tuple(_DANGEROUS_INCOMPLETE_PHASES)),
             )
             .order_by(GenerationLifecycle.updated_at.asc())
         )
