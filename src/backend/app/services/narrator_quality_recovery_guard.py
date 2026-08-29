@@ -4,56 +4,9 @@ import json
 import re
 
 from app.config import settings
-from app.models.narration_validation import NarrationValidationResult, NarrationViolation
+from app.models.narration_validation import NarrationValidationResult
 
 _INSTALLED = False
-
-# Deterministic ownership checks must stay high-confidence. Physical realization of an already
-# approved action is semantic territory owned by TurnAuthority/action_sequence, not by lexical
-# verb matching: "Вхожу" -> "вы делаете шаг внутрь" is a normal narration paraphrase.
-_INTERNAL_AGENCY_PATTERNS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
-    (
-        re.compile(r"\b(?:реша\w*|решил\w*|решила\w*|решили\w*)\b", re.IGNORECASE),
-        ("реш",),
-    ),
-    (
-        re.compile(r"\b(?:дума\w*|подум\w*|понима\w*|понял\w*|поняла\w*|поняли\w*)\b", re.IGNORECASE),
-        ("дума", "подум", "понима", "понял", "поняла", "поняли"),
-    ),
-    (
-        re.compile(r"\b(?:чувству\w*|почувств\w*)\b", re.IGNORECASE),
-        ("чувств", "почувств"),
-    ),
-    (
-        re.compile(r"\b(?:намерева\w*|собира\w*\s+ся|хоч\w*)\b", re.IGNORECASE),
-        ("намер", "собира", "хоч"),
-    ),
-    (
-        re.compile(r"\b(?:соглаша\w*|согласил\w*|отказыва\w*|отказал\w*|обеща\w*)\b", re.IGNORECASE),
-        ("соглас", "отказ", "обещ"),
-    ),
-    (
-        re.compile(r"\b(?:пыта\w*|стара\w*)\b", re.IGNORECASE),
-        ("пыта", "стара"),
-    ),
-    (
-        re.compile(r"\b(?:боится|боишься|боитесь|испугал\w*|страшно|тревожит\w*ся|радует\w*ся|злит\w*ся)\b", re.IGNORECASE),
-        ("бо", "испуг", "страш", "тревож", "раду", "злит"),
-    ),
-    (
-        re.compile(r"\bсердц\w*\b.{0,48}\b(?:бь[её]т\w*|колот\w*|замира\w*)\b", re.IGNORECASE),
-        ("сердц",),
-    ),
-)
-
-_PLAYER_DIRECTIVE_PATTERN = re.compile(
-    r"^\s*(?:ты|вы)\s+(?:долж\w*|обязан\w*|нужно\b|следует\b)",
-    re.IGNORECASE,
-)
-_PLAYER_ADDRESSEE_PATTERN = re.compile(
-    r"\b(?:обраща\w*\s+к|спрашива\w*|спросил\w*|спросила\w*|говори\w*\s+(?:с|к)|адресу\w*)\b",
-    re.IGNORECASE,
-)
 
 
 def narrator_context_budget(context_window: int) -> int:
@@ -95,7 +48,7 @@ def _compact_step(step: object) -> dict | None:
 
 
 def compact_narrator_payload(authority) -> dict:
-    """Return prose-rendering data only, while preserving stable typed-authority field names."""
+    """Return prose-rendering data only, preserving typed-authority field names."""
     sequence = authority.action_sequence or {}
     raw_steps = sequence.get("steps") if isinstance(sequence, dict) else None
     steps = []
@@ -136,209 +89,6 @@ def compact_narrator_payload(authority) -> dict:
     }
 
 
-def _normalized(value: str) -> str:
-    return " ".join(
-        re.sub(r"[^0-9a-zа-яё]+", " ", value.casefold(), flags=re.IGNORECASE).split()
-    )
-
-
-def player_direct_speech(player_input: str) -> list[str]:
-    """Extract explicit player-owned direct speech without semantic guessing."""
-    text = player_input or ""
-    values: list[str] = []
-    for match in re.finditer(r"[«\"]([^»\"]{2,240})[»\"]", text):
-        values.append(match.group(1).strip())
-    for line in text.splitlines():
-        match = re.match(r"^\s*[-—–]\s*(.{2,240})$", line)
-        if match:
-            values.append(match.group(1).strip())
-    unique: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        key = _normalized(value)
-        if key and key not in seen:
-            unique.append(value)
-            seen.add(key)
-    return unique
-
-
-def _authority_explicitly_allows_echo(authority, utterance: str) -> bool:
-    needle = _normalized(utterance)
-    if not needle:
-        return False
-    text = " ".join(
-        [
-            *authority.observable_consequences,
-            *authority.narration_guidance,
-            authority.ending_hook or "",
-        ]
-    ).casefold()
-    if needle not in _normalized(text):
-        return False
-    return any(token in text for token in ("эхо", "повтор", "передраз", "echo", "repeat", "imitat"))
-
-
-def _player_subject_segment(segment: str, player_name: str | None) -> bool:
-    folded = " ".join(segment.casefold().split())
-    if re.search(r"^\s*(?:ты|вы)\b", folded):
-        return True
-    name = " ".join((player_name or "").casefold().split())
-    if not name:
-        return False
-    return bool(re.search(rf"^\s*[—–-]*\s*{re.escape(name)}\b", folded))
-
-
-def _segments(text: str) -> list[str]:
-    return [
-        value.strip()
-        for value in re.split(r"(?<=[.!?…])\s+|[\r\n]+", text or "")
-        if value.strip()
-    ]
-
-
-def _segment_containing(text: str, phrase: str) -> str | None:
-    needle = _normalized(phrase)
-    if not needle:
-        return None
-    for segment in _segments(text):
-        if needle in _normalized(segment):
-            return segment
-    return None
-
-
-def _player_input_allows_internal(player_input: str, roots: tuple[str, ...]) -> bool:
-    folded = (player_input or "").casefold()
-    return any(root in folded for root in roots)
-
-
-def _invented_addressee_segment(authority, candidate_text: str) -> str | None:
-    """Catch narration that chooses who the player addressed when the input did not."""
-    player_input = (authority.player_input or "").casefold()
-    player_name = (authority.player_character_name or "").casefold()
-    present = [
-        name
-        for name in authority.present_character_names
-        if name and name.casefold() != player_name
-    ]
-    if not present:
-        return None
-    for segment in _segments(candidate_text):
-        if not _player_subject_segment(segment, authority.player_character_name):
-            continue
-        folded = segment.casefold()
-        if not _PLAYER_ADDRESSEE_PATTERN.search(folded):
-            continue
-        for name in present:
-            key = name.casefold()
-            if key in folded and key not in player_input:
-                return segment
-    return None
-
-
-def narrator_ownership_violations(authority, candidate_text: str) -> list[NarrationViolation]:
-    """Catch only high-confidence player ownership violations deterministically.
-
-    Location/action equivalence is intentionally NOT inferred here. Typed authority and the
-    semantic validator own that question. This gate exists for things that are unambiguously human
-    owned: direct speech, selected addressee, thoughts, emotions, decisions and plans.
-    """
-    if authority.acting_character_id is not None:
-        return []
-
-    violations: list[NarrationViolation] = []
-    candidate_key = _normalized(candidate_text)
-    for utterance in player_direct_speech(authority.player_input):
-        utterance_key = _normalized(utterance)
-        if (
-            utterance_key
-            and utterance_key in candidate_key
-            and not _authority_explicitly_allows_echo(authority, utterance)
-        ):
-            evidence = _segment_containing(candidate_text, utterance) or utterance
-            violations.append(
-                NarrationViolation(
-                    violation_type="player_agency",
-                    severity="error",
-                    evidence=evidence[:500],
-                    correction=(
-                        "Не повторять и не переатрибутировать реплику игрока. Описать только "
-                        "реакцию мира или NPC после уже произнесённых игроком слов."
-                    ),
-                )
-            )
-            break
-
-    addressee = _invented_addressee_segment(authority, candidate_text)
-    if addressee:
-        violations.append(
-            NarrationViolation(
-                violation_type="player_agency",
-                severity="error",
-                evidence=addressee[:500],
-                correction=(
-                    "Не выбирать за игрока конкретного адресата общей реплики. Присутствующий NPC "
-                    "может сам откликнуться, если это разрешает TurnAuthority."
-                ),
-            )
-        )
-
-    input_folded = (authority.player_input or "").casefold()
-    for segment in _segments(candidate_text):
-        clean = " ".join(segment.split()).strip()
-        if not clean or not _player_subject_segment(clean, authority.player_character_name):
-            continue
-        folded = clean.casefold()
-        internal = next(
-            (
-                roots
-                for pattern, roots in _INTERNAL_AGENCY_PATTERNS
-                if pattern.search(folded) and not _player_input_allows_internal(input_folded, roots)
-            ),
-            None,
-        )
-        directive = _PLAYER_DIRECTIVE_PATTERN.search(folded) and not re.search(
-            r"\b(?:долж\w*|обязан\w*|нужно\b|следует\b)", input_folded
-        )
-        if internal or directive:
-            violations.append(
-                NarrationViolation(
-                    violation_type="player_agency",
-                    severity="error",
-                    evidence=clean[:500],
-                    correction=(
-                        "Удалить придуманную мысль, эмоцию, решение, намерение или директиву герою. "
-                        "Физический результат уже заявленного действия можно описывать, но следующий "
-                        "выбор и внутреннее состояние принадлежат игроку."
-                    ),
-                )
-            )
-            break
-    return violations
-
-
-def apply_narrator_ownership(
-    result: NarrationValidationResult,
-    authority,
-    candidate_text: str,
-) -> NarrationValidationResult:
-    violations = narrator_ownership_violations(authority, candidate_text)
-    if not violations:
-        return result
-    existing = list(result.violations)
-    for violation in violations:
-        if not any(
-            item.violation_type == violation.violation_type
-            and item.evidence == violation.evidence
-            for item in existing
-        ):
-            existing.append(violation)
-    return NarrationValidationResult(
-        verdict="repair_required",
-        summary="Нарратор нарушил владение репликой, адресатом или внутренним состоянием героя.",
-        violations=existing,
-    )
-
-
 def _better_authority_fallback(authority, published: str) -> str:
     """Never claim nothing changed after an applied transition or completed observation."""
     if " ".join((published or "").casefold().split()) != "пока ничего заметно не меняется.":
@@ -371,7 +121,11 @@ def literary_surgical_repair_candidate(
     candidate: str,
     validation: NarrationValidationResult | None,
 ) -> tuple[str | None, dict]:
-    """Remove exact bad spans without letting repair flatten an already literary scene."""
+    """Remove exact validator-evidenced spans without flattening an already literary scene.
+
+    This function does no semantic classification. It edits only exact spans already selected by the
+    semantic Validator and then the pipeline revalidates the candidate.
+    """
     errors = [
         item
         for item in (validation.violations if validation else [])
@@ -453,7 +207,7 @@ def literary_surgical_repair_candidate(
 
 
 def install() -> None:
-    """Recover artistic Narrator surface without weakening world-state authority."""
+    """Install literary rendering/recovery only; semantic ownership belongs to model agents."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -464,7 +218,6 @@ def install() -> None:
     from app.services.turn_authority_validator import TurnAuthorityValidator
     from app.services.turn_saga import TurnSaga
 
-    original_validate = TurnAuthorityValidator.validate
     original_publish = NarrationPublicationGuard.publish
     original_repair_prompt = TurnAuthorityValidator.repair_prompt
 
@@ -515,25 +268,18 @@ def install() -> None:
             "receipt or decorated dialogue tag. By default use 2–3 cohesive prose paragraphs when "
             "the scene has enough grounded material. Weave approved NPC dialogue into physical "
             "behavior, distance, posture and environmental staging. Across the response use 2–3 "
-            "relevant sensory channels such as sight, sound, smell, temperature or touch; vary them "
-            "naturally rather than listing them mechanically. Neutral sensory texture is welcome, "
-            "but never invent a new NPC, route, threat, clue, mechanically significant object or "
-            "outcome beyond this typed result. A present NPC may answer naturally from their own "
+            "relevant sensory channels naturally. Neutral sensory texture is welcome, but never "
+            "invent a new physical NPC, route, threat, clue, mechanically significant object or "
+            "outcome beyond typed authority. A present NPC may answer naturally from their own "
             "perspective. The human protagonist already performed and said exactly player_input: "
-            "never repeat it as another character's line, never choose an addressee the player did "
-            "not choose, and never add a new thought, emotion, decision, plan or next voluntary "
-            "action. You may naturally phrase the physical realization of an action that authority "
-            "already completed. Describe the world's response as a lived scene and stop before the "
-            "protagonist's next choice."
+            "never add a new thought, emotion, decision, plan or next voluntary action. Immediate "
+            "sensory perception is allowed when grounded; do not confuse it with authored emotion. "
+            "Describe the world's response as a lived scene and stop before the next player choice."
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
             *rest,
         ]
-
-    async def ownership_validating(self, selection, authority, candidate_text):
-        result = await original_validate(self, selection, authority, candidate_text)
-        return apply_narrator_ownership(result, authority, candidate_text)
 
     def literary_repair_prompt(authority, candidate, result):
         base = original_repair_prompt(authority, candidate, result)
@@ -543,9 +289,7 @@ def install() -> None:
             "Исправление не отменяет художественный контракт. Сохрани исходные 2–3 абзаца, "
             "живые легальные реплики NPC, пространственную постановку и нейтральную сенсорную "
             "фактуру. Если нарушение локальное — правь локально. Не превращай сцену в одну "
-            "реплику, speech tag, пересказ результата или служебную заглушку. После ремонта текст "
-            "должен по-прежнему ощущаться как короткая художественная сцена с 2–3 уместными "
-            "сенсорными каналами, если исходный контекст их поддерживает."
+            "реплику, speech tag, пересказ результата или служебную заглушку."
         )
 
     @classmethod
@@ -566,7 +310,6 @@ def install() -> None:
 
     TurnSaga._compile = narration_budget_compile
     TurnSaga._inject_authority = compact_inject_authority
-    TurnAuthorityValidator.validate = ownership_validating
     TurnAuthorityValidator.repair_prompt = staticmethod(literary_repair_prompt)
     NarrationPublicationGuard.surgical_repair_candidate = paragraph_preserving_surgical
     NarrationPublicationGuard.publish = better_publish
@@ -574,11 +317,8 @@ def install() -> None:
 
 
 __all__ = [
-    "apply_narrator_ownership",
     "compact_narrator_payload",
     "install",
     "literary_surgical_repair_candidate",
     "narrator_context_budget",
-    "narrator_ownership_violations",
-    "player_direct_speech",
 ]
