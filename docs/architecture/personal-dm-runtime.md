@@ -1,9 +1,9 @@
 # Personal DM: текущая runtime-архитектура
 
 **Статус:** current production overview  
-**Дата:** 24 августа 2026
+**Дата:** 29 августа 2026
 
-Этот документ описывает текущий runtime крупными блоками. Детальная причинная карта и observability gaps находятся в [`../runtime-transparency.md`](../runtime-transparency.md).
+Этот документ описывает фактический production runtime. Детальная причинная карта и observability gaps находятся в [`../runtime-transparency.md`](../runtime-transparency.md).
 
 ## 1. Клиенты и application boundary
 
@@ -29,25 +29,21 @@ flowchart LR
 
 ## 2. Runtime bootstrap
 
-`app.runtime.install_runtime()` устанавливает оставшиеся compatibility guards ровно один раз.
+`app.runtime.install_runtime()` устанавливает только compatibility guards, чьи invariants ещё не перенесены в explicit owners.
 
-Текущий список берётся из `runtime_manifest().guards` и на момент этой версии включает:
+Текущий список задаётся `runtime_manifest().guards`:
 
 ```text
 actor_turn_authority
 actor_memory_observability
 systemless_authority
-round33_identity
-round34_live
 mixed_actor_response
-memory_scribe
 narrator_quality_recovery
 narration_failure_containment
 session_zero_finalize
-thesis_lifecycle
 ```
 
-Часть архитектуры уже является явной composition (`ContextCompiler`, `TurnSaga`, `AuthorityNarrationPipeline`), но guard proliferation остаётся техническим долгом. Документация не должна делать вид, что этих monkeypatch boundaries нет.
+Round34 больше не является runtime monkeypatch: direct-contact contract принадлежит `TurnAuthorityPlanner`, tolerant unique location identity — `PlayerDestinationAuthorizer`.
 
 ## 3. Session Zero
 
@@ -78,26 +74,15 @@ sequenceDiagram
     end
 ```
 
-### Handoff invariants
-
-- final Session Zero reply не задаёт новый вопрос;
-- narrative turn запрещён до completed setup;
-- opening создаётся автоматически;
-- opening имеет `parent_turn_id=null` и привязан к первой Scene;
-- repeated finalize не создаёт duplicate opening;
-- visual generation после setup best-effort и не блокирует playable state.
+Инварианты: narrative turn запрещён до completed setup; opening создаётся автоматически и идемпотентно; visual generation best-effort и не блокирует playable state.
 
 ## 4. Input routing
 
-`GameApplication.route_input()` различает:
-
-- narrative action/dialogue;
-- `/DM` / `/OOC` meta channel;
-- actor-scoped talk mode.
-
-Meta path read-only и не запускает normal Planner/scene transition/memory mutation pipeline.
+`GameApplication.route_input()` различает narrative action/dialogue, `/DM`/`/OOC` meta channel и actor-scoped talk mode. Meta path read-only и не запускает normal Planner/scene transition/memory mutation pipeline.
 
 ## 5. Narrative Turn Saga
+
+Narrative runtime является persisted Saga, а не одной SQL-транзакцией вокруг LLM calls. Structured truth подготавливается **до prose**, чтобы Narrator видел именно тот world state, который ему разрешено описывать.
 
 ```mermaid
 sequenceDiagram
@@ -107,86 +92,98 @@ sequenceDiagram
     participant C as ContextCompiler
     participant Pl as TurnAuthorityPlanner
     participant E as Deterministic Executors
+    participant M as Materializer
     participant N as Narrator
     participant V as Authority Validator
-    participant M as Materializer
     participant DB as SQLite
     participant PT as PostTurn jobs
 
     P->>A: user input
     A->>T: narrative turn
-    T->>DB: persist user turn/generation run
-    T->>C: compile context
-    C-->>T: messages + manifest
+    T->>DB: user turn + generation run + RECEIVED
+    T->>C: compile Planner context
     T->>Pl: structured plan
-    Pl-->>T: resolution/action sequence/transitions/NPC introductions
-    T->>E: execute structured boundaries
-    E-->>T: executed state
+    Pl-->>T: resolution / sequence / transitions / NPC introductions
+    T->>DB: PLANNED
+    T->>E: prepare structured boundaries
+    E-->>T: prepared transition/state
     T->>T: build TurnAuthority
-    T->>N: context + compact authority
-    N-->>T: raw draft
-    T->>V: validate authority
-    alt pass
-      V-->>T: accepted
-    else repair
-      T->>N: targeted repair
-      N-->>T: repaired draft
-      T->>V: validate again
-    else presentation failure
-      T->>T: deterministic authority projection
-    end
     T->>M: materialize allowed structured outcomes
-    T->>DB: persist assistant turn + commit
-    T->>PT: enqueue background memory jobs
+    M-->>T: prepared structured truth
+    T->>DB: PREPARED
+    T->>C: recompile Narrator context from prepared world
+    T->>N: context + TurnAuthority
+    N-->>T: raw draft
+    T->>V: validate / repair / containment
+    V-->>T: accepted player-facing result
+    T->>DB: NARRATED
+    T->>DB: persist assistant + finalize transition + PUBLISHED
+    T->>PT: enqueue background jobs
+    PT-->>DB: POST_TURN_DONE when first processing pass is durable
 ```
 
-## 6. TurnAuthority
+### Persisted lifecycle
 
-Один typed `TurnAuthority` — handoff между semantic control plane и presentation layer.
+```text
+RECEIVED
+  → PLANNED
+  → PREPARED
+  → NARRATED
+  → PUBLISHED
+  → POST_TURN_DONE
+```
 
-Он содержит enough evidence для Narrator/Validator:
+Если turn прекращается после `PREPARED`, но до `PUBLISHED`, Saga компенсирует prepared materialization/transition и фиксирует `COMPENSATED`.
 
-- exact player input;
-- player/acting character identity;
-- scene disposition;
-- source/target location;
-- present/known-absent characters;
-- allowed new NPC introductions;
-- action sequence;
-- resolution/observable consequences;
-- narration constraints/guidance.
+`GenerationRun.status` и Saga phase — разные оси:
 
-### Ownership
+```text
+status: running | completed | failed | cancelled
+phase:  received | planned | prepared | narrated | published | post_turn_done | compensated
+```
+
+Например `status=failed, phase=compensated` — корректное завершённое аварийное состояние.
+
+`generation_lifecycles` хранит phase, attempt counter и timestamps. `GenerationLifecycleRepository.list_incomplete()` обнаруживает persisted `PREPARED/NARRATED` attempts, требующие recovery decision после crash/restart.
+
+## 6. Failure semantics
+
+До `PREPARED` failure не должен оставлять authoritative world mutation.
+
+После `PREPARED` и до `PUBLISHED` разрешены только два выхода:
+
+1. accepted deterministic containment и normal publication;
+2. compensation prepared effects и `COMPENSATED`.
+
+После `PUBLISHED` memory/post-turn failures не отменяют narrative turn: background jobs остаются independently retriable.
+
+Мы сознательно не держим SQLite transaction открытой во время долгих Planner/Narrator calls.
+
+## 7. TurnAuthority
+
+Один typed `TurnAuthority` — handoff между semantic control plane и presentation layer. Он содержит exact player input, actor identity, scene disposition, source/target location, present/known-absent characters, allowed new NPCs/arrivals, action sequence, resolution, observable consequences и narration constraints.
 
 | Concern | Owner |
 |---|---|
 | voluntary protagonist action/dialogue | human player |
 | intended resolution | Planner |
 | movement/Scene/Location | deterministic executors |
-| participant set | Scene state |
+| physical presence mutation | `PresenceService` |
+| physical state reads/invariants | `SceneStateService` |
 | allowed new NPC | Planner + deterministic materializer |
 | prose/style | Narrator |
 | prose acceptance/repair | Validator + deterministic guards |
 | long-term memory extraction | post-turn pipeline |
 
-## 7. ContextCompiler
+## 8. ContextCompiler
 
-Compiler собирает:
+Compiler собирает authoritative Scene/Location/time/participants/exits, active theses, actor-scoped cards/facts/beliefs/relationships, transient narrative details, relevant history, current input и auditable token-budget metadata.
 
-- system/session-zero contract;
-- authoritative Scene/Location/time/participants/exits;
-- active theses;
-- actor-scoped cards/facts/beliefs/relationships;
-- transient narrative details;
-- relevant history;
-- current input;
-- auditable token-budget metadata.
-
-Narrator получает compact authority after planning; полный audit object остаётся persisted evidence.
+Planner context компилируется до structured execution. Если prepared state изменил scene/presence/NPC state, Narrator context компилируется повторно после materialization. Поэтому `runtime_manifest()` явно различает `compile_planner_context` и `compile_narrator_context`.
 
 Подробности: [`context-pipeline.md`](context-pipeline.md).
 
-## 8. Narration pipeline
+## 9. Narration pipeline
 
 ```text
 generate draft
@@ -199,79 +196,50 @@ generate draft
 → publish
 ```
 
-Narrator не должен:
+Narrator не может менять outcome, перемещать персонажей вне structured transition, создавать незапланированного физического NPC или добавлять voluntary protagonist action/thought/emotion.
 
-- добавлять voluntary protagonist action/thought/emotion;
-- повторять direct player speech как чужую реплику;
-- перемещать персонажей вне structured transition;
-- создавать незапланированного физического NPC;
-- превращать blocked step в completed;
-- менять outcome после Validator reject.
+## 10. Scene / Location / Presence
 
-`safe_fallback` является degraded presentation, а не успешной prose generation.
+Scene != Location. Scene хранит активный драматический контекст; Location — физическое место/иерархия мест.
 
-Подробности: [`narration-pipeline.md`](narration-pipeline.md).
+`PresenceService` — единственный implementation owner для mutations пары `SceneParticipant` + `Character.current_location_id`. Старые repository APIs `add_participant/remove_participant` оставлены как compatibility facades и делегируют ему.
 
-## 9. Scene / Location
+`SceneStateService` остаётся read model + invariant checker.
 
-Scene != Location.
-
-Scene хранит активный драматический контекст и participants. Location — физическое место/иерархия мест.
-
-Инварианты:
+Основные инварианты:
 
 - у campaign одна authoritative current Scene;
 - current Scene связана с Location;
 - player `current_location_id` совпадает с active Scene Location;
-- movement проходит через structured transition;
-- return/revisit разрешается по known/visited route identity;
-- реальная неоднозначность fail-closed;
-- NPC не телепортируется между Scene без authority.
+- movement проходит через structured authority;
+- move удаляет stale participation на другой physical Location;
+- real identity ambiguity fail-closed;
+- NPC не телепортируется между Locations без structured movement.
 
-## 10. NPC и actor turns
+## 11. NPC и actor turns
 
-Actor-scoped turn использует выбранного physically-present NPC.
-
-Его контекст ограничен доступными ему знаниями. Объективный truth не должен выводиться из одной NPC speech только потому, что Scribe увидел предложение в тексте.
+Actor-scoped turn использует выбранного physically-present NPC. Его контекст ограничен доступными ему знаниями.
 
 New NPC protocol:
 
-1. Planner/normalizer создаёт typed introduction;
-2. authority разрешает introduction;
-3. Narrator может его отрендерить;
-4. deterministic materializer создаёт entity и participant state.
+1. Planner создаёт typed introduction;
+2. authority разрешает introduction/arrival;
+3. materializer создаёт structured character/presence;
+4. Narrator рендерит уже разрешённый факт.
 
-Generic contact может закончиться либо typed responder, либо explicit no-contact. «Кто-то ответил в prose, но entity не существует» — invalid state.
+Generic direct contact имеет binary structured outcome: typed responder либо explicit no-contact. Positive prose с отсутствующей identity — invalid handoff.
 
-## 11. Post-turn memory
+## 12. Post-turn memory
 
-После accepted/persisted narrative turn создаются durable background jobs.
+После `PUBLISHED` создаются durable background jobs. `PostTurnDispatcher` запускает processing вне player latency path. После первой durable processing pass lifecycle переходит в `POST_TURN_DONE`; failed jobs при этом сохраняют собственный `failed/retriable` статус.
 
-Типичный путь:
+Memory failure не отменяет опубликованный narrative turn.
 
-```text
-assistant turn
-→ Entity Registrar (legacy/background extraction where applicable)
-→ Memory Scribe
-→ deterministic validation/taxonomy
-→ proposals / facts / beliefs / relationships / events
-→ Thesis Curator / lifecycle
-```
+## 13. Undo
 
-Memory failure не должен отменять уже опубликованный turn.
+Undo работает по связанной user/assistant pair и восстанавливает structured consequences, а не только chat rows: active Scene, player Location, transition/bridge state, action-sequence-owned effects и materialized entities/presence.
 
-## 12. Undo
-
-Undo должен работать по связанной user/assistant pair и восстанавливать structured consequences, а не только скрывать chat rows.
-
-Особенно важно восстанавливать:
-
-- active Scene;
-- player Location;
-- transition/bridge state;
-- action-sequence-owned effects.
-
-## 13. Models
+## 14. Models
 
 Default local split:
 
@@ -280,25 +248,13 @@ campaign primary: gemma4:e4b
 control: qwen2.5:7b
 ```
 
-Primary: Narrator, Session Zero, `/DM`, Character Builder without override.
+Primary: Narrator, Session Zero, `/DM`, Character Builder without override. Control: Planner, Narration Validator, Entity Registrar, Scribe, Curator, Evaluator, simulation Player, Scenario Builder, structured repair.
 
-Control: Planner, Narration Validator, Entity Registrar, Scribe, Curator, Evaluator, simulation Player, Scenario Builder, structured repair.
+## 15. Visual runtime
 
-Control roles strict: schema/provider failure не должен скрыто превращать Gemma в Planner/Validator.
+ComfyUI visual generation — отдельный best-effort layer. GPU/ComfyUI failure не меняет campaign truth.
 
-## 14. Visual runtime
-
-ComfyUI visual generation — отдельный best-effort layer.
-
-Поддерживаются:
-
-- character portrait;
-- campaign cover;
-- scene image.
-
-Session Zero может фоново запланировать portrait/cover. Scene generation доступна из Play UI. GPU/ComfyUI failure не меняет campaign truth.
-
-## 15. Debugging
+## 16. Debugging
 
 Основные endpoints:
 
@@ -309,50 +265,38 @@ GET /api/campaigns/{id}/debugger/trace
 GET /api/debugger
 ```
 
-Per-turn causal order:
+Debugger показывает для generation run `status`, `phase`, `attempt`, phase timestamps и счётчик `dangerous_incomplete_generations`.
+
+Фактический causal order:
 
 ```text
 input
-→ route/actor
+→ Planner context
 → Planner
-→ execution
+→ deterministic execution
 → TurnAuthority
-→ raw Narrator
-→ validation/repair
-→ publication
 → materialization
-→ Scene/Location state
-→ memory jobs
+→ Narrator context
+→ Narrator
+→ validation/repair/containment
+→ publication
+→ post-turn
 ```
 
-При расследовании фиксируются отдельно:
-
-- first wrong boundary;
-- cascade;
-- player-visible symptom.
-
-## 16. Известный technical debt
-
-1. compatibility guards всё ещё меняют public extension points; их следует постепенно складывать обратно в явных owners;
-2. raw `NarrationValidationRun` audit не полностью представлен в playtest trace;
-3. `runtime_manifest()` пока неудобно читать из работающего GUI через API;
-4. per-turn token budget breakdown разнесён между context metadata и provider telemetry;
-5. `/DM` нуждается в отдельной player-facing sanitization boundary, чтобы debug snapshot никогда не становился prompt leakage;
-6. prose-quality benchmark пока является live-test дисциплиной, а не persisted runtime metric.
-
-Эти gaps подробно перечислены в [`../runtime-transparency.md`](../runtime-transparency.md).
+При расследовании отдельно фиксируются first wrong boundary, cascade и player-visible symptom.
 
 ## 17. Runtime parity
 
-CLI, FastAPI/GUI и test harness должны получать одинаковую production composition.
+CLI, FastAPI/GUI и test harness должны получать одинаковую production composition. `runtime_manifest()` — auditable fingerprint для guards, context pipeline, turn pipeline, generation phases, failure semantics, narration pipeline, implementation identities и post-turn mode.
 
-`runtime_manifest()` служит auditable fingerprint:
+Parity tests должны падать, если entrypoint случайно запускает другой pipeline или documentation/runtime снова расходятся.
 
-- guards;
-- context pipeline;
-- turn pipeline;
-- narration pipeline;
-- implementation identities;
-- post-turn mode.
+## 18. Оставшийся technical debt
 
-Parity tests должны падать, если один entrypoint случайно запускает другой pipeline.
+1. compatibility guards всё ещё меняют часть public extension points; их следует продолжать переносить в explicit owners;
+2. `ContextCompiler` всё ещё наследуется от legacy base compiler — следующий крупный composition cleanup;
+3. raw `NarrationValidationRun` audit не полностью представлен в playtest trace;
+4. per-turn token budget breakdown разнесён между context metadata и provider telemetry;
+5. `/DM` нуждается в отдельной player-facing sanitization boundary;
+6. prose-quality benchmark пока live-test discipline, а не persisted runtime metric;
+7. automatic startup recovery для обнаруженных `PREPARED/NARRATED` attempts пока не выполняется сам — persisted query уже позволяет добавить его без реконструкции из логов.
