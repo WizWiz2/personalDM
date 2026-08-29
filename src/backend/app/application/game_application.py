@@ -11,20 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
-from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.character import CharacterCreate, CharacterRead
-from app.models.fact import FactRead
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate, SceneRead
 from app.models.turn import TurnCreate
 from app.runtime import install_runtime
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
+from app.services.player_memory_query import PlayerMemoryQuery, PlayerMemoryView
 from app.services.post_turn_processor import PostTurnProcessor
+from app.services.presence_service import PresenceService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.session_zero_service import (
     SessionZeroIncompleteError,
@@ -102,11 +102,12 @@ class GameApplication:
         self._session = session
         self._campaigns = CampaignRepository(session)
         self._entities = EntityRepository(session)
-        self._facts = FactRepository(session)
         self._jobs = PostTurnJobRepository(session)
         self._locations = LocationRepository(session)
         self._scenes = SceneRepository(session)
         self._turns = TurnRepository(session)
+        self._presence = PresenceService(session)
+        self._player_memory = PlayerMemoryQuery(session)
 
     async def route_input(
         self,
@@ -245,7 +246,6 @@ class GameApplication:
                 await processor.process_job(job.id)
                 succeeded += 1
             except Exception:  # noqa: BLE001 - application retry boundary
-                # process_job has already persisted a durable failed state.
                 remaining += 1
         return RetryPostTurnResult(succeeded=succeeded, remaining=remaining)
 
@@ -291,8 +291,8 @@ class GameApplication:
             npcs=npcs,
         )
 
-    async def list_active_facts(self, campaign_id: UUID) -> list[FactRead]:
-        return await self._facts.list_active(campaign_id)
+    async def list_active_facts(self, campaign_id: UUID) -> list:
+        return await self._player_memory.list_active(campaign_id)
 
     async def create_character(
         self,
@@ -370,13 +370,8 @@ class GameApplication:
         if view is None:
             raise CurrentSceneError("Campaign has no active scene")
         try:
-            # This is an explicit admin operation, so moving the selected character
-            # into the active location is intentional rather than an implicit teleport.
-            await self._scenes.add_participant(
-                view.scene.id,
-                entity_id,
-                allow_movement=True,
-            )
+            # Explicit admin movement goes through the single physical-state writer.
+            await self._presence.move_to_scene(view.scene.id, entity_id)
             await self._session.commit()
         except Exception:
             await self._session.rollback()
@@ -395,7 +390,7 @@ class GameApplication:
                 "The player character cannot be removed from the active scene"
             )
         try:
-            removed = await self._scenes.remove_participant(view.scene.id, entity_id)
+            removed = await self._presence.remove_participant(view.scene.id, entity_id)
             await self._session.commit()
             return removed
         except Exception:
