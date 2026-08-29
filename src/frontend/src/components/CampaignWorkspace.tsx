@@ -3,6 +3,7 @@ import { NavLink, Outlet, useNavigate, useParams } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import { getLatestGeneration, type GenerationRun } from '../api/turnRuntime'
 import type { Campaign } from '../api/types'
+import { BrandLogo } from './BrandLogo'
 import { Icons } from './Icons'
 import { ErrorState, LoadingState } from './States'
 
@@ -127,6 +128,8 @@ export function CampaignWorkspace() {
         {mobileOpen && <button className="mobile-drawer-scrim" aria-label="Закрыть меню" onClick={() => setMobileOpen(false)} />}
 
         <aside className={`campaign-sidebar ${pinned ? 'pinned' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
+          <div className="workspace-brand"><BrandLogo /></div>
+
           <button className="rail-control" onClick={() => setPinned((v) => !v)} title={pinned ? 'Открепить меню' : 'Закрепить меню'}>
             <span className="rail-icon"><Icons.menu /></span>
             <span className="nav-label">Навигация</span>
