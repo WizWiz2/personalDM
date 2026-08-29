@@ -4,10 +4,12 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.narration_validation import NarrationValidationResult
+from app.models.turn_authority import TurnAuthority
 from app.services.actor_turn_authority_guard import (
     build_actor_segment_proposals,
     segment_actor_response,
 )
+from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.prompt_policy import CURRENT_PROMPT_POLICY
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 
@@ -115,3 +117,24 @@ def test_semantic_plan_reviewer_rejects_empty_success_instead_of_demanding_drama
     assert "RENDERABLE OUTCOME" in review
     assert "empty success" in review
     assert "Do not demand drama" in review
+
+
+def test_requires_check_never_becomes_player_facing_engine_stub_again():
+    assert TurnAuthority._player_facing_blocking_reason("requires a check") is None
+
+
+def test_location_projection_does_not_try_to_inflect_canonical_name():
+    authority = TurnAuthority(
+        campaign_id=uuid4(),
+        trigger_turn_id=uuid4(),
+        player_input="Иду на Старую Марину",
+        scene_disposition="location_transition",
+        transition_type="location_transition",
+        source_location_path=["Порт"],
+        target_location_path=["Старая Марина"],
+    )
+
+    rendered = NarrationPublicationGuard.render_authority(authority)
+
+    assert rendered == "Вы приходите туда, куда направлялись: Старая Марина."
+    assert "к Старая Марина" not in rendered
