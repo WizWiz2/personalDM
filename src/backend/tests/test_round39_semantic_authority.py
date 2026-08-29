@@ -3,17 +3,13 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
-import app.services.narrator_quality_recovery_guard as quality_guard
 import app.services.systemless_authority_guard as systemless_guard
 from app.models.narration_validation import NarrationValidationResult, NarrationViolation
 from app.models.turn_authority import TurnAuthority
-from app.services.semantic_authority_guard import (
-    SemanticCoordinatedTurnPlan,
-    _semantic_review_failed_narration,
-    install,
-)
-from app.services.turn_authority_planner import TurnAuthorityPlanner
+from app.services.semantic_authority_guard import _semantic_review_failed_narration, install
+from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
@@ -22,23 +18,11 @@ def semantic_runtime_policy():
     install()
 
 
-def _plan(*, addressed_response_requested: bool = False, requires_check: bool = False):
-    steps = []
-    if requires_check:
-        steps = [
-            {
-                "action_type": "observation",
-                "intent": "Осмотреть ящик К-7",
-                "resolution": "requires_check",
-                "safe_mundane": False,
-                "transition": {"required": False},
-            }
-        ]
-    return SemanticCoordinatedTurnPlan.model_validate(
+def _plan(*, addressed_response_requested: bool = False):
+    return CoordinatedTurnPlan.model_validate(
         {
             "player_intent": "Осмотреть ящик К-7",
-            "resolution": "sequence" if steps else "observation",
-            "action_sequence": {"steps": steps},
+            "resolution": "observation",
             "addressed_response_requested": addressed_response_requested,
             "response_ownership_reason": "Семантическое решение Planner.",
         }
@@ -54,13 +38,25 @@ def _authority(player_input: str = "Осматриваю ящик К-7") -> Turn
     )
 
 
-def test_requires_check_is_structurally_invalid_even_without_text_classification():
-    plan = _plan(requires_check=True)
-
-    issues = TurnAuthorityPlanner.contract_issues(plan, "Любая формулировка игрока")
-
-    assert len(issues) == 1
-    assert "requires_check" in issues[0]
+def test_requires_check_is_rejected_by_typed_plan_schema():
+    with pytest.raises(ValidationError, match="requires_check"):
+        CoordinatedTurnPlan.model_validate(
+            {
+                "player_intent": "Осмотреть ящик К-7",
+                "resolution": "sequence",
+                "action_sequence": {
+                    "steps": [
+                        {
+                            "action_type": "observation",
+                            "intent": "Осмотреть ящик К-7",
+                            "resolution": "requires_check",
+                            "safe_mundane": False,
+                            "transition": {"required": False},
+                        }
+                    ]
+                },
+            }
+        )
 
 
 def test_response_ownership_comes_from_typed_planner_field_not_question_mark_or_verbs():
@@ -82,7 +78,7 @@ def test_sticky_talk_is_only_transport_context_until_planner_decides_semantics()
     assert systemless_guard.input_uses_addressed_character("Кто выдаёт постановление?")
 
 
-def test_old_generic_contact_regex_no_longer_creates_an_npc_behind_planner_back():
+def test_contact_semantics_do_not_autocreate_an_npc_behind_planner_back():
     plan = _plan()
 
     returned = TurnAuthorityPlanner.normalize_affirmative_direct_contact(
@@ -111,11 +107,6 @@ def test_deterministic_layer_does_not_classify_sensation_or_emotion_by_word_stem
 
     assert sensory.verdict == "pass"
     assert emotional.verdict == "pass"
-    assert quality_guard.apply_narrator_ownership(
-        passed,
-        authority,
-        "Вы чувствуете что угодно — это должен решить semantic validator.",
-    ) is passed
 
 
 class _PassReviewRouter:
@@ -157,6 +148,10 @@ async def test_failed_player_agency_verdict_can_be_semantically_readjudicated():
 
 
 def test_planner_prompt_explicitly_assigns_semantics_to_model():
-    assert "[SEMANTIC AUTHORITY — NO LEXICAL HEURISTICS]" in TurnAuthorityPlanner.AUTHORITY_ADDENDUM
-    assert "addressed_response_requested" in TurnAuthorityPlanner.AUTHORITY_ADDENDUM
-    assert "requires_check is not a legal plan result" in TurnAuthorityPlanner.AUTHORITY_ADDENDUM
+    contract = TurnAuthorityPlanner.AUTHORITY_ADDENDUM
+
+    assert "[INTER-AGENT SEMANTIC AUTHORITY CONTRACT]" in contract
+    assert "does NOT guess meaning" in contract
+    assert "addressed_response_requested" in contract
+    assert "requires_check` is NOT a legal output" in contract
+    assert "verb lists" in contract
