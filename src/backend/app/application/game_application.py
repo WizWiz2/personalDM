@@ -22,7 +22,7 @@ from app.models.scene import SceneCreate, SceneRead
 from app.models.turn import TurnCreate
 from app.runtime import install_runtime
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
-from app.services.player_memory_query import PlayerMemoryQuery, PlayerMemoryView
+from app.services.player_memory_query import PlayerMemoryQuery
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.presence_service import PresenceService
 from app.services.scene_lifecycle import SceneLifecycleService
