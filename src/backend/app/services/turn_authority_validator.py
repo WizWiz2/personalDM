@@ -11,63 +11,61 @@ from app.models.narration_validation import (
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
-from app.services.player_intent_contract import (
-    language_mismatch,
-    unauthorized_player_speech,
-    unresolved_player_completion,
-)
+from app.services.player_intent_contract import language_mismatch
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 
 
 class TurnAuthorityValidator:
-    """Small control-model gate that judges prose against one typed authority object."""
+    """Semantic control-model gate over one typed TurnAuthority object.
+
+    Deterministic code here is intentionally limited to machine-provable state/surface invariants.
+    Meaning such as player agency, perception vs emotion, NPC ownership and movement paraphrase is
+    judged by the model from the complete authority and candidate prose.
+    """
 
     SYSTEM_PROMPT = """[TURN AUTHORITY VALIDATOR]
 You are not a game master and you never continue the story. You receive one machine-readable
 TURN AUTHORITY object and candidate prose. The authority object is the sole source of truth for
 what this turn is allowed to establish.
 
-Return repair_required only for concrete violations of that authority:
-- PLAYER AGENCY: the prose adds voluntary protagonist dialogue, choices, decisions, plans, beliefs,
-  consent, promises, attacks, thoughts or emotions that are not already contained in player_input.
-  A natural physical paraphrase of an action that authority already completed is allowed: for
-  example player_input "Вхожу в шатёр" may be rendered as "Вы делаете шаг внутрь". Reject only an
-  extra/next action or a stronger interaction that the authority did not complete.
-- CHARACTER PRESENCE: a known_absent_character acts/speaks/appears physically. Characters listed
-  in present_characters are present. Characters listed in allowed_new_npcs or allowed existing
-  arrivals are explicitly approved and MUST NOT be rejected as absent.
-- PRESENT NPC DIALOGUE: a present NPC may naturally answer the current question from their own
-  perspective. Their every sentence does NOT need to appear verbatim in observable_consequences.
-  Reject the speech only when it establishes new objective canon, claims unavailable knowledge,
-  contradicts authority, or performs an unauthorized action. Never repair a legal answer by making
-  the NPC silent unless authority explicitly establishes silence/no response.
-- UNPLANNED NPC: a genuinely new character not listed in allowed_new_npcs is introduced as present.
-- SCENE TEXTURE: neutral local sensory/furnishing details are allowed prose texture when they do not
-  create a new character, route, threat, clue, mechanically/causally significant object, or action
-  outcome. Ordinary light, weather, smell, material, background clutter or room texture is not an
-  absent_object violation merely because it is omitted from objects_here. A new figure, creature,
-  weapon, discoverable clue, locked route or ominous incoming threat is NOT neutral texture.
-- MOVEMENT/TIME: prose completes a location/time/focus change not authorized by scene_disposition,
-  transition_type or action_sequence.
-- OUTCOME: prose contradicts approved observable_consequences or a completed structured sequence.
-- CURRENT TURN: prose answers or repeats a previous turn instead of the current player_input and
-  current observable_consequences.
-- LANGUAGE: when player_input is Russian, final narration must be Russian. Established canonical
-  names may remain exact, but Chinese/English prose or translated character names are not valid.
-- SURFACE: player-facing prose must not expose UUIDs, slugs, route/debug paths, TURN AUTHORITY,
-  BLOCKED/SKIPPED/COMPLETED labels, validator diagnostics, or meta commentary about the response,
-  narration, engine, player input, or waiting for the player's next message.
-- COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
+Judge SEMANTICALLY from the whole sentence, grammatical subject and scene context. Never decide from
+a word/stem whitelist or blacklist.
 
-Do not reconstruct hidden campaign rules. Do not complain that an approved/present NPC was not in
-some older participant list. Do not invent corrections that change the approved turn outcome. Judge
-only the actual offending span: one bad sentence does not make the rest of a grounded draft bad.
+Return repair_required only for concrete violations:
+- PLAYER AGENCY: prose assigns the human protagonist new voluntary dialogue, choices, decisions,
+  plans, beliefs, consent, promises, attacks, thoughts, emotions, intentions or next actions beyond
+  player_input. Physical realization of an action already completed by authority is allowed.
+- PERCEPTION IS NOT INTERNAL AGENCY: immediate seeing, hearing, smell, taste, touch, temperature,
+  pain, pressure, balance and other bodily/sensory perception may be narrated when grounded by the
+  scene. Decide from meaning in context. Do not classify a phrase merely because it uses a verb such
+  as "чувствовать".
+- NPC OWNERSHIP: thoughts, emotions, facial expressions, gestures, posture, speech and local
+  conversational behavior of a present/authorized NPC belong to that NPC, not to the protagonist.
+- PRESENT NPC DIALOGUE: a present response actor may answer naturally from their perspective. Their
+  sentences do not need to be prewritten in observable_consequences. Personal memories,
+  observations, opinions, uncertainty, claims and lies are epistemic character claims, not objective
+  canon merely because they contain new information. Never turn a legal answer into silence.
+- CHARACTER PRESENCE: a known_absent_character physically acts/speaks/appears. Characters in
+  present_characters, allowed_new_npcs and allowed_existing_npc_arrivals are authorized physically.
+- UNPLANNED NPC: a genuinely new physical person appears without typed NPC authority.
+- SCENE TEXTURE: neutral local sensory/furnishing detail is allowed when it does not create a new
+  character, route, threat, clue, mechanically/causally significant object or action outcome.
+- MOVEMENT/TIME: prose completes a physical location/time/focus change not authorized by structured
+  authority. Distinguish a natural paraphrase/local body movement from a true scene transition by
+  meaning, not vocabulary.
+- OUTCOME: prose contradicts observable_consequences or completed structured execution.
+- CURRENT TURN: prose answers/repeats a previous turn instead of current player_input/current result.
+- COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
+- LANGUAGE/SURFACE: final player-facing text must use the player's language and must not expose UUIDs,
+  slugs, route/debug paths, TURN AUTHORITY, engine statuses or validator/meta commentary.
+
+Do not reconstruct hidden campaign rules. Do not complain that an approved/present NPC was missing
+from an older participant list. Do not change the approved outcome while repairing prose.
 For EVERY error, evidence MUST quote the shortest exact offending fragment from candidate prose.
-Do not paraphrase evidence: deterministic surgical repair may remove that exact segment.
-All human-readable fields (summary, evidence, correction) MUST be written in Russian even if the
-candidate or your internal reasoning uses another language.
+Evidence for player_agency MUST actually have the protagonist as semantic owner; never cite an
+NPC-owned fragment as player agency. One bad span does not invalidate unrelated legal prose.
+All human-readable fields must be Russian.
 
 Return exactly:
 {
@@ -77,7 +75,7 @@ Return exactly:
     {
       "violation_type": "absent_character|absent_object|invalid_movement|invalid_time_advance|player_agency|ungrounded_complication|sequence_violation|canon_conflict|other",
       "severity": "warning|error",
-      "evidence": "exact candidate fragment in Russian",
+      "evidence": "shortest exact candidate fragment",
       "correction": "specific prose-only correction in Russian"
     }
   ]
@@ -97,30 +95,8 @@ Return exactly:
         flags=re.IGNORECASE,
     )
     META_SURFACE_PATTERN = re.compile(
-        r"(?:ответ\s+заканчива(?:ется|ет)|"
-        r"жд[её]т\s+дальнейших\s+(?:слов|действий)\s+игрока|"
-        r"игрок\s+(?:должен|может|теперь)|"
-        r"следующ(?:ий|ую|ее)\s+(?:ход|реплик|действ).*игрок|"
-        r"player\s+(?:must|should|can|input)|"
-        r"waits?\s+for\s+(?:the\s+)?player|"
-        r"candidate\s+narration|engine\s+state)",
-        flags=re.IGNORECASE,
-    )
-    # High-confidence physical relocation vocabulary. The guard deliberately does not treat local
-    # movement such as "подходит к окну" as a location transition.
-    PHYSICAL_RELOCATION_PATTERN = re.compile(
-        r"\b(?:возвраща\w*|прибыва\w*|добира\w*|оказыва\w*|покида\w*|"
-        r"выш(?:ел|ла|ли)|выходит|вош(?:ел|ла|ли)|входит|заходит|заш(?:ел|ла|ли)|"
-        r"направля\w*|движ\w*|ид[её]т|пош[её]л|следу\w*)\b",
-        flags=re.IGNORECASE,
-    )
-    PHYSICAL_DESTINATION_PATTERN = re.compile(
-        r"\b(?:морг\w*|офис\w*|библиотек\w*|улиц\w*|переул\w*|площад\w*|"
-        r"таверн\w*|трактир\w*|склад\w*|порт\w*|причал\w*|набереж\w*|"
-        r"станц\w*|больниц\w*|участ\w*|магазин\w*|лавк\w*|дом\w*|здани\w*|"
-        r"квартал\w*|район\w*|город\w*|деревн\w*|замок\w*|крепост\w*|"
-        r"вокзал\w*|аэропорт\w*|театр\w*|двор\w*|школ\w*|храм\w*|"
-        r"церк\w*|башн\w*|гостиниц\w*|кафе\w*|бар\w*|ресторан\w*)\b",
+        r"(?:candidate\s+narration|engine\s+state|turn\s+authority|"
+        r"validator\s+(?:status|result)|narration\s+validation)",
         flags=re.IGNORECASE,
     )
 
@@ -153,6 +129,7 @@ Return exactly:
                     ],
                 }
             )
+
         messages = [
             ChatMessage(role="system", content=self.SYSTEM_PROMPT),
             ChatMessage(
@@ -180,25 +157,8 @@ Return exactly:
             )
             result = NarrationValidationResult.model_validate(data)
             result = self.apply_deterministic_authority(result, authority)
-            result = self.apply_deterministic_language(
-                result,
-                authority,
-                candidate_text,
-            )
-            result = self.apply_deterministic_surface_quality(
-                result,
-                candidate_text,
-            )
-            result = self.apply_deterministic_movement_surface(
-                result,
-                authority,
-                candidate_text,
-            )
-            return self.apply_deterministic_player_agency(
-                result,
-                authority,
-                candidate_text,
-            )
+            result = self.apply_deterministic_language(result, authority, candidate_text)
+            return self.apply_deterministic_surface_quality(result, candidate_text)
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise NarrationValidationError(str(exc)) from exc
 
@@ -226,7 +186,7 @@ Return exactly:
         result: NarrationValidationResult,
         authority: TurnAuthority,
     ) -> NarrationValidationResult:
-        """Never let a control-model hallucination overrule typed presence authority."""
+        """Typed presence wins over a control-model absent-character hallucination."""
         protected = {
             value.casefold()
             for value in [
@@ -272,7 +232,6 @@ Return exactly:
         authority: TurnAuthority,
         candidate_text: str,
     ) -> NarrationValidationResult:
-        """Weak multilingual models may drift scripts even after the validator says pass."""
         if not language_mismatch(candidate_text, authority.player_input):
             return result
         return cls._append_error(
@@ -282,8 +241,8 @@ Return exactly:
                 severity="error",
                 evidence="Наррация сменила язык относительно русского ввода игрока.",
                 correction=(
-                    "Переписать весь внутриигровой ответ на русском языке, сохранив точные "
-                    "канонические имена без перевода или переименования."
+                    "Переписать внутриигровой ответ на русском языке, сохранив точные "
+                    "канонические имена."
                 ),
             ),
             "Детерминированная проверка обнаружила смену языка наррации.",
@@ -295,14 +254,14 @@ Return exactly:
         result: NarrationValidationResult,
         candidate_text: str,
     ) -> NarrationValidationResult:
-        """Keep debug/control-plane language out of text shown to the player."""
+        """Keep unambiguously technical control-plane syntax out of player-facing prose."""
         evidence = None
         if cls.UUID_PATTERN.search(candidate_text):
             evidence = "Наррация содержит внутренний UUID."
         elif cls.TECHNICAL_TOKEN_PATTERN.search(candidate_text):
             evidence = "Наррация содержит технический идентификатор или статус движка."
         elif cls.META_SURFACE_PATTERN.search(candidate_text):
-            evidence = "Наррация описывает ответ/игрока как элементы интерфейса вместо мира игры."
+            evidence = "Наррация содержит явный служебный комментарий о движке/валидаторе."
         if evidence is None:
             return result
         return cls._append_error(
@@ -311,45 +270,13 @@ Return exactly:
                 violation_type="other",
                 severity="error",
                 evidence=evidence,
-                correction=(
-                    "Удалить служебный или мета-текст и выразить только подтверждённое событие "
-                    "внутриигровой прозой без внутренних идентификаторов."
-                ),
+                correction="Удалить служебный текст и оставить только внутриигровую прозу.",
             ),
-            "Детерминированная проверка обнаружила технический или мета-текст.",
+            "Детерминированная проверка обнаружила технический текст.",
         )
 
-    @classmethod
-    def _unauthorized_physical_movement_segment(
-        cls,
-        authority: TurnAuthority,
-        candidate_text: str,
-    ) -> str | None:
-        # A real structured location change is authoritative and may be narrated freely.
-        if authority.source_location_path != authority.target_location_path:
-            return None
-        if authority.scene_disposition == "location_transition" or authority.transition_type == "location_transition":
-            return None
-
-        player_name = " ".join((authority.player_character_name or "").casefold().split())
-        for segment in re.split(r"(?<=[.!?…])\s+|[\r\n]+", candidate_text or ""):
-            clean = " ".join(segment.split()).strip()
-            if not clean:
-                continue
-            folded = clean.casefold()
-            # The statement must be about the player, not an NPC independently changing rooms.
-            if player_name:
-                if player_name not in folded and not re.search(r"\b(?:ты|вы)\b", folded):
-                    continue
-            elif not re.search(r"\b(?:ты|вы)\b", folded):
-                continue
-            if not cls.PHYSICAL_RELOCATION_PATTERN.search(folded):
-                continue
-            if not cls.PHYSICAL_DESTINATION_PATTERN.search(folded):
-                continue
-            return clean
-        return None
-
+    # Backward-compatible entry points intentionally contain no semantic inference. They remain so
+    # older callers/tests cannot silently reactivate word-list authority.
     @classmethod
     def apply_deterministic_movement_surface(
         cls,
@@ -357,24 +284,8 @@ Return exactly:
         authority: TurnAuthority,
         candidate_text: str,
     ) -> NarrationValidationResult:
-        """Reject Round-26 prose/state divergence even if the LLM validator misses it."""
-        evidence = cls._unauthorized_physical_movement_segment(authority, candidate_text)
-        if evidence is None:
-            return result
-        return cls._append_error(
-            result,
-            NarrationViolation(
-                violation_type="invalid_movement",
-                severity="error",
-                evidence=evidence,
-                correction=(
-                    "Не описывать прибытие, возврат, выход или переход героя в другую физическую "
-                    "локацию: TurnAuthority не содержит structured location transition. Можно "
-                    "описать только результат, разрешённый текущей локацией."
-                ),
-            ),
-            "Детерминированная проверка обнаружила физическое перемещение без structured transition.",
-        )
+        del cls, authority, candidate_text
+        return result
 
     @classmethod
     def apply_deterministic_player_agency(
@@ -383,81 +294,8 @@ Return exactly:
         authority: TurnAuthority,
         candidate_text: str,
     ) -> NarrationValidationResult:
-        """Protect unresolved choices and new protagonist speech independently of the LLM judge."""
-        if any(
-            item.violation_type == "player_agency" and item.severity == "error"
-            for item in result.violations
-        ):
-            return result
-
-        if unauthorized_player_speech(
-            candidate_text,
-            player_input=authority.player_input,
-            player_name=authority.player_character_name,
-        ):
-            result = cls._append_error(
-                result,
-                NarrationViolation(
-                    violation_type="player_agency",
-                    severity="error",
-                    evidence=(
-                        f"Нарратор придумал новую прямую реплику героя "
-                        f"{authority.player_character_name or 'игрока'}."
-                    ),
-                    correction=(
-                        "Удалить придуманную реплику протагониста; его слова задаёт только человек."
-                    ),
-                ),
-                "Детерминированная проверка обнаружила придуманную реплику героя.",
-            )
-
-        if unresolved_player_completion(
-            candidate_text,
-            player_input=authority.player_input,
-            player_name=authority.player_character_name,
-        ):
-            result = cls._append_error(
-                result,
-                NarrationViolation(
-                    violation_type="player_agency",
-                    severity="error",
-                    evidence=(
-                        "Нарратор завершил одну из альтернатив, которую игрок оставил нерешённой."
-                    ),
-                    correction=(
-                        "Оставить выбор открытым и описать только уже совершённое действие или "
-                        "внешнюю реакцию мира."
-                    ),
-                ),
-                "Детерминированная проверка обнаружила самовольное завершение выбора игрока.",
-            )
-
-        if authority.scene_disposition != "actor_turn" or not authority.player_character_name:
-            return result
-
-        actor_safe = NarrationPublicationGuard._drop_player_owned_segments(
-            candidate_text,
-            authority.player_character_name,
-        )
-        if " ".join(actor_safe.split()) == " ".join(candidate_text.split()):
-            return result
-
-        return cls._append_error(
-            result,
-            NarrationViolation(
-                violation_type="player_agency",
-                severity="error",
-                evidence=(
-                    f"Ответ за {authority.acting_character_name or 'NPC'} содержит новую реплику "
-                    f"или самостоятельное действие героя {authority.player_character_name}."
-                ),
-                correction=(
-                    f"Оставить только ответ и действия {authority.acting_character_name or 'NPC'}; "
-                    f"следующую реплику или действие {authority.player_character_name} вводит человек."
-                ),
-            ),
-            "Детерминированная проверка обнаружила управление героем в ответе NPC.",
-        )
+        del cls, authority, candidate_text
+        return result
 
     @classmethod
     def apply_deterministic_actor_agency(
@@ -466,8 +304,8 @@ Return exactly:
         authority: TurnAuthority,
         candidate_text: str,
     ) -> NarrationValidationResult:
-        """Backward-compatible entry point for actor-agency regression tests."""
-        return cls.apply_deterministic_player_agency(result, authority, candidate_text)
+        del cls, authority, candidate_text
+        return result
 
     @staticmethod
     def repair_prompt(
@@ -488,14 +326,15 @@ Return exactly:
             "не перечислены ниже как нарушения. Не пересочиняй ответ с нуля и не сокращай его до "
             "служебной заглушки. Удали или перепиши только конкретные offending spans.\n\n"
             "Критически важно:\n"
-            "- не заменяй легальную реплику NPC на молчание, если Authority не устанавливает "
-            "молчание/no-response;\n"
+            "- не заменяй легальную реплику NPC на молчание;\n"
             "- естественная формулировка уже выполненного действия допустима, но не добавляй "
-            "следующий шаг, более сильное взаимодействие или новый результат;\n"
+            "следующий шаг или новый результат;\n"
             "- не добавляй мысли, эмоции, решения, планы, согласие или новые реплики героя;\n"
-            "- не добавляй новый NPC, маршрут, угрозу, clue или причинно значимый объект;\n"
+            "- непосредственное физическое/сенсорное восприятие не является автоматически "
+            "внутренней эмоцией: сохраняй его, если оно не нарушает Authority;\n"
+            "- мысли, эмоции, жесты и речь NPC принадлежат NPC, а не герою;\n"
+            "- не добавляй новый физический NPC, маршрут, угрозу, clue или причинно значимый объект;\n"
             "- нейтральная сенсорная фактура сцены допустима;\n"
-            "- не выводи UUID, slugs, BLOCKED/SKIPPED, поля authority/validator или мета-фразы;\n"
             "- верни только цельную естественную художественную прозу на русском языке.\n\n"
             "AUTHORITY:\n"
             + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
