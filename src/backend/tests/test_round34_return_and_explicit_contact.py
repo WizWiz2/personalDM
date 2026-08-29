@@ -122,12 +122,13 @@ def test_affirmative_unknown_contact_requires_typed_temporary_identity():
 def test_negative_contact_must_be_explicit_and_does_not_require_materialization():
     prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    assert "no contact occurs" in prompt
+    assert "nobody answers/is found" in prompt
     assert "negative outcome must be explicit" in prompt
 
 
 def test_unresolved_contact_cannot_be_silently_promoted_to_success():
     prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    assert "Do not silently convert" in prompt
-    assert "new physical NPC" in prompt
+    assert "CONTACT/IDENTITY" in prompt
+    assert "resolved positively" in prompt
+    assert "negative outcome must be explicit" in prompt
