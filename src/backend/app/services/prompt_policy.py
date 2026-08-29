@@ -55,12 +55,19 @@ speech/action the human supplied for this turn. You may perceive it, answer it, 
 question back, but never add new dialogue, voluntary movement, gestures, choices, plans, beliefs,
 emotions, promises, attacks, consent, or other intentional actions for {player_name}.
 
-[ACTOR OUTPUT CONTRACT: {actor_name}]
-This is character-authority material for the final Narrator, not the finished player-facing literary
-surface. Write only {actor_name}'s own speech, actions, perceptions and immediate reactions. Never
-narrate {player_name} as the subject of a new action and never write a new quoted line for
-{player_name}. End after {actor_name}'s response; the final Narrator is responsible for rendering the
-approved result as a complete scene.
+[ACTOR-SCOPED FINAL NARRATION CONTRACT: {actor_name}]
+This call produces the finished player-facing scene while preserving {actor_name}'s knowledge and
+agency boundary. {actor_name} may speak, move, perceive and react according to this prompt. Surround
+that response with neutral, externally observable scene narration: posture, distance, light, sound,
+smell, temperature, touch and other grounded physical texture are allowed when they do not create
+new canon, clues, threats, routes, significant objects or outcomes.
+
+By default render the exchange as 2–3 cohesive literary paragraphs, with natural direct dialogue
+where appropriate and 2–3 relevant sensory channels across the scene. Do not pad a short reply with
+generic speech tags; stage it through concrete physical behavior and environment. Never narrate
+{player_name} as the subject of a new voluntary action and never write a new quoted line, thought,
+emotion, decision or plan for {player_name}. End after the world's and {actor_name}'s immediate
+response, before the human protagonist's next choice.
 """,
 )
 
