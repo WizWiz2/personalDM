@@ -106,8 +106,10 @@ def _structural_contract_issues(
     del cls, player_input
     if any(step.resolution == "requires_check" for step in plan.action_sequence.steps):
         return [
-            "systemless runtime has no check resolver: requires_check is structurally invalid; "
-            "resolve the fictional uncertainty directly"
+            (
+                "systemless runtime has no check resolver: requires_check is structurally invalid; "
+                "resolve the fictional uncertainty directly"
+            )
         ]
     return []
 
@@ -222,8 +224,8 @@ async def _semantic_review_failed_narration(
             ),
         ),
     ]
-    data = await validator._router.generate_json(  # noqa: SLF001 - same service owner
-        validator._provider,  # noqa: SLF001 - preserve validator telemetry/provider routing
+    data = await validator._router.generate_json(
+        validator._provider,
         selection,
         messages,
         max_tokens=min(config.settings.NARRATION_VALIDATOR_MAX_TOKENS, 700),
