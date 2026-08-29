@@ -114,12 +114,11 @@ class PlaytestTraceService:
             for turn in snapshot.get("turns", [])
             if turn.get("role") == "user" and turn.get("id")
         }
-        validation_audits = await self._validation_audits(campaign_id, trigger_turn_ids)
-        trace = self._trace_from_snapshot(
-            snapshot,
-            str(assistant_turn_id),
-            validation_audits=validation_audits,
+        snapshot["_narration_validation_audits"] = await self._validation_audits(
+            campaign_id,
+            trigger_turn_ids,
         )
+        trace = self._trace_from_snapshot(snapshot, str(assistant_turn_id))
         if trace is None:
             raise ValueError("Assistant turn not found in campaign")
         return trace
@@ -131,18 +130,15 @@ class PlaytestTraceService:
             for turn in snapshot.get("turns", [])
             if turn.get("role") == "user" and turn.get("id")
         }
-        validation_audits = await self._validation_audits(campaign_id, trigger_turn_ids)
+        snapshot["_narration_validation_audits"] = await self._validation_audits(
+            campaign_id,
+            trigger_turn_ids,
+        )
         traces = [
             trace
             for turn in snapshot.get("turns", [])
             if turn.get("role") == "assistant"
-            for trace in [
-                self._trace_from_snapshot(
-                    snapshot,
-                    turn["id"],
-                    validation_audits=validation_audits,
-                )
-            ]
+            for trace in [self._trace_from_snapshot(snapshot, turn["id"])]
             if trace is not None
         ]
         flags = Counter(
@@ -182,12 +178,7 @@ class PlaytestTraceService:
         }
 
     @staticmethod
-    def _trace_from_snapshot(
-        snapshot: dict,
-        assistant_turn_id: str,
-        *,
-        validation_audits: list[dict] | None = None,
-    ) -> dict | None:
+    def _trace_from_snapshot(snapshot: dict, assistant_turn_id: str) -> dict | None:
         turns = snapshot.get("turns", [])
         by_id = {turn.get("id"): turn for turn in turns}
         assistant = by_id.get(assistant_turn_id)
@@ -352,7 +343,7 @@ class PlaytestTraceService:
         user_turn_id = str((user or {}).get("id") or "")
         audit_runs = [
             item
-            for item in (validation_audits or [])
+            for item in (snapshot.get("_narration_validation_audits") or [])
             if (
                 (persisted_run_id and str(item.get("id") or "") == persisted_run_id)
                 or str(item.get("assistant_turn_id") or "") == assistant_turn_id
