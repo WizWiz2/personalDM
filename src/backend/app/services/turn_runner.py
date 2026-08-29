@@ -3,8 +3,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.job_repo import GenerationRunRepository
 from app.models.turn import ChatMessage, TurnCreate
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
 from app.services.post_turn_dispatcher import PostTurnDispatcher
@@ -188,6 +191,20 @@ class TurnRunner(TurnSaga):
             or self._requires_fresh_post_turn_memory(routed_turn)
         ):
             await PostTurnDispatcher.wait_for_idle()
+
+    @staticmethod
+    async def stop_generation(
+        campaign_id: UUID,
+        session: AsyncSession,
+    ) -> bool:
+        """Request durable cancellation and cancel the in-process Saga task when present."""
+        requested = await GenerationRunRepository(session).request_cancel(campaign_id)
+        await session.commit()
+
+        task = active_tasks.get(str(campaign_id))
+        if task:
+            task.cancel()
+        return bool(requested or task)
 
 
 __all__ = ["TurnRunner", "active_tasks"]
