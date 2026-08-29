@@ -6,18 +6,19 @@ from app import config
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
-from app.services.role_model_router import RoleModelSelection
+from app.services.role_model_router import ModelRole, RoleModelSelection
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
 _INSTALLED = False
 
 
 _NARRATION_REVIEW_PROMPT = """[SEMANTIC NARRATION AUTHORITY REVIEW]
-You are the final semantic reviewer of a proposed validator verdict. Do not continue the story and do
-not rewrite prose. Judge candidate prose against TURN AUTHORITY from meaning, grammatical roles and
-scene context. Never use keyword/stem whitelists or blacklists.
+You are an independent semantic reviewer of a proposed narration-validator verdict. Do not continue
+the story and do not rewrite prose. Judge candidate prose against TURN AUTHORITY from meaning,
+grammatical roles and scene context. Never use keyword/stem whitelists or blacklists.
 
-The previous validator may be wrong. Re-evaluate every alleged violation from scratch.
+The previous validator may be wrong. Re-evaluate every alleged violation from scratch; do not defer to
+its count or wording.
 
 Critical ownership rules:
 - PLAYER AGENCY exists only when prose actually assigns the human protagonist new voluntary speech,
@@ -52,6 +53,14 @@ async def _semantic_review_failed_narration(
     candidate_text: str,
     previous: NarrationValidationResult,
 ) -> NarrationValidationResult:
+    review_selection = await validator._router.resolve(
+        authority.campaign_id,
+        ModelRole.EVALUATOR,
+    )
+    review_selection = review_selection or selection
+    if review_selection is None:
+        return previous
+
     messages = [
         ChatMessage(role="system", content=_NARRATION_REVIEW_PROMPT),
         ChatMessage(
@@ -68,7 +77,7 @@ async def _semantic_review_failed_narration(
     ]
     data = await validator._router.generate_json(
         validator._provider,
-        selection,
+        review_selection,
         messages,
         max_tokens=min(config.settings.NARRATION_VALIDATOR_MAX_TOKENS, 700),
         temperature=0.0,
@@ -83,7 +92,7 @@ async def _semantic_review_failed_narration(
 
 
 def install() -> None:
-    """Add model-based re-adjudication for failed narration and a structural check boundary."""
+    """Add independent model re-adjudication and a structural executor defense."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -121,7 +130,7 @@ def install() -> None:
         plan,
         **kwargs,
     ):
-        if any(step.resolution == "requires_check" for step in plan.steps):
+        if any(getattr(step, "resolution", None) == "requires_check" for step in plan.steps):
             raise ValueError(
                 "systemless planner contract violation: requires_check escaped typed planning"
             )
