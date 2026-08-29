@@ -17,6 +17,8 @@ class NarrationViolation(BaseModel):
         "ungrounded_complication",
         "sequence_violation",
         "canon_conflict",
+        "speaker_consistency",
+        "meta_language",
         "other",
     ]
     severity: Literal["warning", "error"] = "error"
