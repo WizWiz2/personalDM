@@ -57,9 +57,8 @@ class TurnAuthorityService:
             if campaign.player_character_id
             else None
         )
-        # A few focused contract tests construct the assembler with __new__ and inject repository
-        # doubles directly. Keep collaborators lazily composable so those tests exercise build()
-        # without re-introducing policy logic into this service.
+        # Focused contract tests construct the assembler with __new__ and inject repository doubles.
+        # Keep collaborators lazily composable without putting their policy back into this service.
         actor_resolver = getattr(self, "_actors", None) or ActorResolver(self._session)
         selected_actor_id = await actor_resolver.resolve_id(
             trigger_turn_id,
@@ -146,7 +145,7 @@ class TurnAuthorityService:
                 "planned": plan.action_sequence.model_dump(mode="json"),
             }
 
-        return TurnAuthority(
+        authority = TurnAuthority(
             campaign_id=campaign_id,
             trigger_turn_id=trigger_turn_id,
             player_character_id=campaign.player_character_id,
@@ -186,6 +185,25 @@ class TurnAuthorityService:
             ),
             action_sequence=executed_sequence,
         )
+
+        # Sticky `/talk` identifies a possible listener, not unconditional ownership of every later
+        # player action. Explicit actor-scoped internal callers remain authoritative; public routing
+        # may assign a response actor only when the current input actually addresses that character.
+        if acting_character_id is None and authority.acting_character_id is not None:
+            from app.services.systemless_authority_guard import addressed_response_requested
+
+            if not addressed_response_requested(player_input, plan):
+                update = {
+                    "acting_character_id": None,
+                    "acting_character_name": None,
+                }
+                if authority.scene_disposition == "actor_turn":
+                    update["scene_disposition"] = planned_disposition
+                    if planned_disposition == "stay":
+                        update["transition_type"] = "none"
+                authority = authority.model_copy(update=update)
+
+        return authority
 
 
 __all__ = ["TurnAuthorityError", "TurnAuthorityService"]
