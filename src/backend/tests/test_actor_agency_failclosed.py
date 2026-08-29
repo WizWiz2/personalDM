@@ -49,4 +49,5 @@ def test_actor_turn_contract_explicitly_distinguishes_speaker_consistency():
     prompt = TurnAuthorityValidator.SYSTEM_PROMPT
 
     assert "SPEAKER CONSISTENCY" in prompt
-    assert "current actor" in prompt
+    assert "acting_character" in prompt
+    assert "first-person NPC dialogue" in prompt
