@@ -1,16 +1,13 @@
 from uuid import uuid4
 
 from app.config import settings
-from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
 from app.services.narrator_quality_recovery_guard import (
     _better_authority_fallback,
-    apply_narrator_ownership,
     compact_narrator_payload,
     narrator_context_budget,
-    narrator_ownership_violations,
-    player_direct_speech,
 )
+from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
 def authority(**updates):
@@ -33,48 +30,21 @@ def authority(**updates):
     return TurnAuthority(**base)
 
 
-def passed_result():
-    return NarrationValidationResult(verdict="pass", summary="ok", violations=[])
+def test_player_ownership_is_a_semantic_validator_responsibility():
+    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
+
+    assert "grammatical subject and scene context" in prompt
+    assert "Never decide from" in prompt
+    assert "word/stem whitelist or blacklist" in prompt
+    assert "Evidence for player_agency MUST actually have the protagonist as semantic owner" in prompt
 
 
-def test_extracts_exact_player_direct_speech_from_live_input():
-    assert player_direct_speech("Я оглядываюсь.\n- Кто здесь?") == ["Кто здесь?"]
+def test_sensory_perception_and_internal_state_are_not_classified_by_word_stems():
+    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
 
-
-def test_live_echo_inversion_is_rejected_even_if_model_validator_passed():
-    turn = authority()
-    candidate = (
-        "Ты различаешь стол в центре шатра. Кто-то в темноте отвечает:\n"
-        "— Кто здесь?"
-    )
-
-    result = apply_narrator_ownership(passed_result(), turn, candidate)
-
-    assert result.verdict == "repair_required"
-    assert any(item.violation_type == "player_agency" for item in result.violations)
-    assert any("Кто здесь" in item.evidence for item in result.violations)
-
-
-def test_live_added_actions_and_emotion_are_rejected():
-    turn = authority()
-    candidate = (
-        "Александр медленно обходит шатер и быстро оборачивается. "
-        "Александр чувствует, как сердце начинает биться быстрее."
-    )
-
-    violations = narrator_ownership_violations(turn, candidate)
-
-    assert violations
-    assert violations[0].violation_type == "player_agency"
-
-
-def test_player_declared_action_is_not_mistaken_for_new_action():
-    turn = authority(player_input="Я обхожу шатер и оглядываюсь.")
-    candidate = "Александр обходит шатер; за столом никого не видно."
-
-    violations = narrator_ownership_violations(turn, candidate)
-
-    assert violations == []
+    assert "PERCEPTION IS NOT INTERNAL AGENCY" in prompt
+    assert 'verb such as "чувствовать"' in prompt
+    assert "NPC OWNERSHIP" in prompt
 
 
 def test_narrator_budget_no_longer_reserves_previous_planner_call():

@@ -5,7 +5,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.models.narration_validation import NarrationValidationResult
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
@@ -20,83 +19,8 @@ class ActorSegmentSelection(BaseModel):
     segment_ids: list[int] = Field(default_factory=list, max_length=8)
 
 
-_ACTOR_LOCAL_MARKERS = (
-    "говор",
-    "сказ",
-    "ответ",
-    "отвеч",
-    "спрос",
-    "произн",
-    "добав",
-    "продолж",
-    "шеп",
-    "крич",
-    "кив",
-    "покач",
-    "вздох",
-    "улыб",
-    "хмур",
-    "пожим",
-    "тереб",
-    "чеш",
-    "смотр",
-    "огляд",
-    "осматр",
-    "сжим",
-    "скрещ",
-    "потира",
-    "молчит",
-    "умолкает",
-    "присаж",
-    "садит",
-    "садится",
-    "встает",
-    "встаёт",
-    "пауза",
-    "голос",
-    "тон",
-    "дрож",
-    "нерв",
-    "устал",
-    "тревог",
-)
-_SPEECH_ATTRIBUTION_MARKERS = (
-    "говор",
-    "сказ",
-    "ответ",
-    "отвеч",
-    "спрос",
-    "произн",
-    "добав",
-    "продолж",
-    "шеп",
-    "крич",
-    "сообщ",
-    "объясн",
-    "рассказ",
-)
-_PLAYER_OWNERSHIP_MARKERS = (
-    "игрок",
-    "герой",
-    "героин",
-    "протагонист",
-    "персонаж игрока",
-)
-# Inside the acting NPC's own speech these validator classes describe the *content of a claim*,
-# not a world-state mutation. The same violations outside actor-owned speech remain fully enforced.
-_ACTOR_CLAIM_SAFE_VIOLATIONS = {
-    "absent_character",
-    "absent_object",
-    "invalid_movement",
-    "invalid_time_advance",
-    "ungrounded_complication",
-    "sequence_violation",
-    "canon_conflict",
-}
-_SILENCE_PATTERN = re.compile(
-    r"\b(?:молчит|умолкает|не\s+отвечает|ничего\s+не\s+говорит)\b",
-    flags=re.IGNORECASE,
-)
+# These regexes only segment already-published text into immutable spans. They do not decide who owns
+# a thought, whether a claim is true, or whether narration is authorized; the Scribe agent does that.
 _WORD_RE = re.compile(r"[\w]+", flags=re.UNICODE)
 _QUOTE_RE = re.compile(r"«([^»]{2,1600})»|“([^”]{2,1600})”|\"([^\"]{2,1600})\"")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|[\r\n]+")
@@ -104,138 +28,6 @@ _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|[\r\n]+")
 
 def _key(value: object) -> str:
     return " ".join(str(value or "").casefold().replace("ё", "е").split())
-
-
-def _references_player(text: str, player: str) -> bool:
-    return bool(player and player in text) or any(
-        marker in text for marker in _PLAYER_OWNERSHIP_MARKERS
-    )
-
-
-def _actor_speech_fragments(candidate_text: str, actor: str) -> list[str]:
-    """Return normalized fragments that are clearly the selected NPC's own speech.
-
-    We do not decide whether the claim is true. This function only distinguishes epistemic speech
-    from narration that asserts a physical world change. Both prefix and suffix attribution are
-    supported so `Елена отвечает: «...»` and `«...», — отвечает Елена` behave identically.
-    """
-    if not candidate_text or not actor:
-        return []
-
-    fragments: list[str] = []
-    for match in _QUOTE_RE.finditer(candidate_text):
-        quoted = next((group for group in match.groups() if group is not None), "")
-        prefix = _key(candidate_text[max(0, match.start() - 220) : match.start()])
-        suffix = _key(candidate_text[match.end() : match.end() + 220])
-        attributed = any(
-            actor in context
-            and any(marker in context for marker in _SPEECH_ATTRIBUTION_MARKERS)
-            for context in (prefix, suffix)
-        )
-        if attributed:
-            fragments.append(_key(quoted))
-
-    for segment in _split_candidate_text(candidate_text):
-        normalized = _key(segment)
-        if actor not in normalized:
-            continue
-        if any(marker in normalized for marker in _SPEECH_ATTRIBUTION_MARKERS):
-            fragments.append(normalized)
-    return [value for value in fragments if value]
-
-
-def _evidence_is_actor_speech(
-    evidence: str,
-    *,
-    actor: str,
-    candidate_text: str,
-) -> bool:
-    evidence_key = _key(evidence)
-    if not evidence_key:
-        return False
-    for fragment in _actor_speech_fragments(candidate_text, actor):
-        if evidence_key in fragment or fragment in evidence_key:
-            return True
-    return False
-
-
-def protect_actor_turn_validation(
-    authority,
-    result: NarrationValidationResult,
-    candidate_text: str = "",
-) -> NarrationValidationResult:
-    """Protect NPC-owned speech/texture without weakening real world-state authority.
-
-    Actor turns are epistemic: the selected NPC may reveal previously unknown information, be wrong,
-    lie, mention absent people/places, and show transient conversational behavior. None of that makes
-    the claim objective canon. Physical arrivals, movement, item transfer, player control and other
-    narrated world mutations remain subject to the ordinary typed authority rules.
-    """
-    if authority.scene_disposition != "actor_turn" or not authority.acting_character_name:
-        return result
-
-    actor = _key(authority.acting_character_name)
-    player = _key(authority.player_character_name)
-    kept = []
-    removed = False
-    for violation in result.violations:
-        if violation.severity != "error":
-            kept.append(violation)
-            continue
-
-        evidence = _key(violation.evidence)
-        correction = _key(violation.correction)
-        combined = _key(f"{violation.evidence} {violation.correction}")
-        references_player = _references_player(combined, player)
-        actor_owned_speech = _evidence_is_actor_speech(
-            violation.evidence,
-            actor=actor,
-            candidate_text=candidate_text,
-        )
-        actor_owned_local = (
-            bool(actor and actor in combined)
-            and any(marker in combined for marker in _ACTOR_LOCAL_MARKERS)
-            and not references_player
-        )
-
-        if violation.violation_type == "player_agency":
-            if (actor_owned_speech or actor_owned_local) and not references_player:
-                removed = True
-                continue
-            kept.append(violation)
-            continue
-
-        if (
-            violation.violation_type in _ACTOR_CLAIM_SAFE_VIOLATIONS
-            and actor_owned_speech
-            and not references_player
-        ):
-            # Example: `Елена: «Свет погас на несколько секунд»` is her claim. It must not be
-            # rejected as a world complication or time/movement fact merely because Planner did
-            # not establish it. Indexed actor memory will persist it as source-scoped knowledge.
-            removed = True
-            continue
-
-        # Keep every violation whose evidence is narration outside the actor's own speech. A line
-        # such as `В этот момент гаснет свет` is still a real ungrounded world complication.
-        _ = (evidence, correction)  # keep locals explicit for debugger-friendly stepping
-        kept.append(violation)
-
-    if not removed:
-        return result
-    errors = [item for item in kept if item.severity == "error"]
-    return NarrationValidationResult(
-        verdict="repair_required" if errors else "pass",
-        summary=(
-            result.summary
-            if errors
-            else (
-                "Actor-turn authority разрешает выбранному NPC собственную речь, новые "
-                "character claims и локальную обратимую реакцию."
-            )
-        ),
-        violations=kept,
-    )
 
 
 def actor_turn_contract(authority) -> dict | None:
@@ -256,7 +48,7 @@ def actor_turn_contract(authority) -> dict | None:
             "invent_player_dialogue_or_voluntary_action",
             "move_to_another_location_without_structured_authority",
             "physically_introduce_or_control_other_characters",
-            "transfer_items_or_create_irreversible_world_outcomes_without_authority",
+            "transfer_items_or_create_irversible_world_outcomes_without_authority",
             "establish_world_outcomes_beyond_the_actor_own_claims",
         ],
         "epistemic_rule": (
@@ -367,9 +159,9 @@ async def extract_actor_segment_proposals(
     acting_character_id: UUID,
     player_character_id: UUID,
 ) -> list[ProposedChangeCreate]:
-    """Ask Qwen only which immutable published segments are factual actor claims."""
+    """Ask the Scribe which immutable published segments are factual actor claims."""
     clean = " ".join((assistant_content or "").split()).strip()
-    if not clean or (_SILENCE_PATTERN.search(clean) and len(clean) < 180):
+    if not clean:
         return []
 
     actor = await scribe._entity_repo.get_character(acting_character_id)
@@ -396,14 +188,14 @@ async def extract_actor_segment_proposals(
                     role="system",
                     content=(
                         "[ACTOR CLAIM SEGMENT SELECTOR]\n"
-                        "Тебе уже даны неизменяемые фрагменты ОПУБЛИКОВАННОГО ответа NPC. "
-                        "Не пиши и не исправляй текст. Верни только номера S-сегментов, в которых "
-                        "сам выбранный NPC сообщает персонажу игрока конкретное фактическое "
+                        "Тебе даны неизменяемые фрагменты ОПУБЛИКОВАННОГО ответа NPC. "
+                        "Не пиши и не исправляй текст. Семантически выбери только номера S-сегментов, "
+                        "где именно выбранный NPC сообщает персонажу игрока конкретное фактическое "
                         "сведение о человеке, месте, предмете, событии, времени, доступе, внешности "
                         "или наблюдении. Не выбирай жесты, эмоции, атмосферу, описание Narrator, "
-                        "вопросы, приветствия, намерения или предположения рассказчика. Явное "
-                        "отрицательное утверждение NPC допустимо. Не решай, прав ли NPC: это лишь "
-                        "character_claim. Если фактических утверждений нет, верни пустой список.\n"
+                        "вопросы, приветствия, намерения или предположения рассказчика. Не решай, "
+                        "прав ли NPC: это character_claim. Если фактических утверждений нет, верни "
+                        "пустой список. Определяй говорящего и смысл по контексту, не по словам-маркерам.\n"
                         f"Говорящий NPC: {actor.canonical_name}.\n"
                         f"Слушатель: {player.canonical_name}.\n"
                         "Формат: {\"segment_ids\":[1,2]}"
@@ -428,12 +220,7 @@ async def extract_actor_segment_proposals(
 
 
 def install() -> None:
-    """Install only actor-turn narration/validation rights.
-
-    Actor memory is intentionally NOT monkeypatched here. PostTurnProcessor owns the explicit
-    indexed-claim branch so production, tests and background workers all execute the same visible
-    path regardless of import or patch ordering.
-    """
+    """Install actor rights as typed Validator context, without lexical post-filtering."""
     global _INSTALLED
     if _INSTALLED:
         return
@@ -443,7 +230,6 @@ def install() -> None:
     from app.services.turn_authority_validator import TurnAuthorityValidator
 
     original_validator_payload = TurnAuthority.validator_payload
-    original_validate = TurnAuthorityValidator.validate
 
     if "ACTOR TURN RIGHTS" not in TurnAuthorityValidator.SYSTEM_PROMPT:
         TurnAuthorityValidator.SYSTEM_PROMPT += """
@@ -453,18 +239,14 @@ When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
 - acting_character is explicitly authorized to speak as themselves, answer the current player
   message, reveal their own memories/observations/claims and use local reversible conversational
   body language or transient affect;
-- NEW INFORMATION IN ACTOR-OWNED SPEECH IS EPISTEMIC: it is a character_claim, not an objective
-  world fact/event and not an UNGROUNDED COMPLICATION merely because Planner did not pre-state it;
-- an actor claim may mention absent people, places, objects or past events. Mentioning them does not
-  physically materialize them and must not be reported as CHARACTER PRESENCE/MOVEMENT/TIME errors;
-- those actor-owned speech/gesture fragments are NOT PLAYER AGENCY violations;
-- player_character still remains fully protected: never invent their speech, voluntary action,
-  choice, thought or emotion;
-- actor_turn does NOT authorize actually changing location, transferring items, physically
-  introducing/controlling other characters, or establishing narrated world outcomes outside the
-  actor's own speech. Report those real world mutations under the appropriate non-agency violation.
-Distinguish `Елена говорит: «Свет погас»` (allowed claim) from `В этот момент свет гаснет`
-(unauthorized world complication unless Authority establishes it).
+- new information in actor-owned speech is epistemic character_claim, not objective world canon;
+- an actor claim may mention absent people, places, objects or past events without materializing them;
+- actor-owned speech/gesture/thought/emotion is NOT PLAYER AGENCY;
+- player_character remains fully protected from invented speech, voluntary action, choice, thought
+  or emotion;
+- actor_turn does not authorize physical relocation, item transfer, new physical characters or
+  objective world mutations beyond typed authority.
+Judge ownership semantically from subject/context. Do not use word-marker lists.
 """
 
     def actor_aware_validator_payload(self):
@@ -474,12 +256,7 @@ Distinguish `Елена говорит: «Свет погас»` (allowed claim)
             payload["actor_turn_contract"] = contract
         return payload
 
-    async def actor_aware_validate(self, selection, authority, candidate_text):
-        result = await original_validate(self, selection, authority, candidate_text)
-        return protect_actor_turn_validation(authority, result, candidate_text)
-
     TurnAuthority.validator_payload = actor_aware_validator_payload
-    TurnAuthorityValidator.validate = actor_aware_validate
 
 
 __all__ = [
@@ -488,6 +265,5 @@ __all__ = [
     "build_actor_segment_proposals",
     "extract_actor_segment_proposals",
     "install",
-    "protect_actor_turn_validation",
     "segment_actor_response",
 ]
