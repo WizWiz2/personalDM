@@ -26,12 +26,14 @@ def _paragraphs(text: str) -> list[str]:
 def test_player_facing_prompt_requires_literary_scene_not_engine_receipt():
     contract = CURRENT_PROMPT_POLICY.narrator_surface_contract
 
-    assert CURRENT_PROMPT_POLICY.version == "narrator-v5-literary"
+    assert CURRENT_PROMPT_POLICY.version == "narrator-v6-speaker-grounded"
     assert "2–3 cohesive prose paragraphs" in contract
     assert "2–3 relevant sensory channels" in contract
     assert "short piece of fiction" in contract
     assert "bare quote" in contract
     assert "generic padding" in contract
+    assert "Keep speaker identity coherent" in contract
+    assert "internal action produced no external state change" in contract
 
 
 def test_actor_scoped_turn_is_also_a_finished_literary_scene():
@@ -42,6 +44,8 @@ def test_actor_scoped_turn_is_also_a_finished_literary_scene():
     assert "2–3 cohesive literary paragraphs" in contract
     assert "2–3 relevant sensory channels" in contract
     assert "generic speech tags" in contract
+    assert "response actor" in contract
+    assert "do not recycle or reassign another NPC's earlier line" in contract
 
 
 def test_literary_surgical_repair_preserves_paragraphs_and_grounded_texture():
