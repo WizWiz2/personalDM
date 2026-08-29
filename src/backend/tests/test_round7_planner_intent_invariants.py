@@ -72,7 +72,8 @@ def test_semantic_reviewer_not_verb_lists_owns_movement_and_contact_meaning():
     assert "MOVEMENT/TIME" in prompt
     assert "CONTACT/IDENTITY" in prompt
     assert "Do not use keyword lists" in prompt
-    assert "previously unknown physical responder must be typed" in prompt
+    assert "npc_introductions" in prompt
+    assert "responder" in prompt
 
 
 def test_contract_issues_no_longer_reinterprets_player_text():
