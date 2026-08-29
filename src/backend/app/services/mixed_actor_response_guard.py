@@ -1,22 +1,14 @@
 from __future__ import annotations
 
 import app.services.actor_turn_authority_guard as actor_guard
-from app.services.actor_turn_authority_guard import (
-    actor_turn_contract,
-    protect_actor_turn_validation,
-)
+from app.models.narration_validation import NarrationValidationResult
+from app.services.actor_turn_authority_guard import actor_turn_contract
 
-_INSTALLED = False
 _QUOTE_CHARS = frozenset('«»“”"')
 
 
 def _strict_actor_speech_fragments(candidate_text: str, actor: str) -> list[str]:
-    """Keep quoted actor speech separate from adjacent narrator/world prose.
-
-    The legacy sentence splitter can see `Марина отвечает: «... .» В этот момент дверь...` as one
-    sentence because punctuation precedes a closing quote. Treat quoted spans explicitly and never
-    widen a mixed quoted+narrated segment into actor-owned evidence.
-    """
+    """Keep quoted actor speech separate from adjacent narrator/world prose."""
     if not candidate_text or not actor:
         return []
 
@@ -41,8 +33,6 @@ def _strict_actor_speech_fragments(candidate_text: str, actor: str) -> list[str]
             fragments.append(actor_guard._key(quoted))  # noqa: SLF001
 
     for segment in actor_guard._split_candidate_text(candidate_text):  # noqa: SLF001
-        # Quoted speech is already handled above. Skipping any quote-bearing composite segment
-        # prevents following narrator prose from inheriting the actor's epistemic permissions.
         if any(char in segment for char in _QUOTE_CHARS):
             continue
         normalized = actor_guard._key(segment)  # noqa: SLF001
@@ -57,11 +47,6 @@ def _strict_actor_speech_fragments(candidate_text: str, actor: str) -> list[str]
 
 
 def _actor_turn_view(authority):
-    """Return an actor-turn view without changing the structured world disposition.
-
-    A mixed turn may execute player world actions as a sequence and still have an addressed NPC own
-    the response. Actor speech rights are epistemic and orthogonal to the sequence disposition.
-    """
     if authority.scene_disposition == "actor_turn":
         return authority
     return authority.model_copy(update={"scene_disposition": "actor_turn"})
@@ -80,69 +65,86 @@ def actor_response_contract(authority) -> dict | None:
     return contract
 
 
-def protect_actor_response_validation(authority, result, candidate_text: str = ""):
-    """Apply actor-owned speech protection whenever TurnAuthority names a response actor.
+def _evidence_is_actor_speech(evidence: str, *, actor: str, candidate_text: str) -> bool:
+    evidence_key = actor_guard._key(evidence)  # noqa: SLF001
+    if not evidence_key:
+        return False
+    return any(
+        evidence_key in fragment or fragment in evidence_key
+        for fragment in _strict_actor_speech_fragments(candidate_text, actor)
+    )
 
-    The structured disposition continues to govern physical movement/actions. Only the selected
-    actor's own speech, claims and local reversible conversational behavior receive actor rights.
-    """
+
+def protect_actor_response_validation(authority, result, candidate_text: str = ""):
+    """Protect only the selected NPC's own speech/local reaction, independent of world disposition."""
     if not authority.acting_character_id or not authority.acting_character_name:
         return result
-    if authority.scene_disposition == "actor_turn":
-        # The original actor-turn guard already handled this path.
+
+    actor = actor_guard._key(authority.acting_character_name)  # noqa: SLF001
+    player = actor_guard._key(authority.player_character_name)  # noqa: SLF001
+    kept = []
+    removed = False
+    for violation in result.violations:
+        if violation.severity != "error":
+            kept.append(violation)
+            continue
+
+        combined = actor_guard._key(  # noqa: SLF001
+            f"{violation.evidence} {violation.correction}"
+        )
+        references_player = actor_guard._references_player(combined, player)  # noqa: SLF001
+        actor_owned_speech = _evidence_is_actor_speech(
+            violation.evidence,
+            actor=actor,
+            candidate_text=candidate_text,
+        )
+        actor_owned_local = (
+            actor in combined
+            and any(
+                marker in combined
+                for marker in actor_guard._ACTOR_LOCAL_MARKERS  # noqa: SLF001
+            )
+            and not references_player
+        )
+
+        if violation.violation_type == "player_agency":
+            if (actor_owned_speech or actor_owned_local) and not references_player:
+                removed = True
+                continue
+            kept.append(violation)
+            continue
+
+        if (
+            violation.violation_type
+            in actor_guard._ACTOR_CLAIM_SAFE_VIOLATIONS  # noqa: SLF001
+            and actor_owned_speech
+            and not references_player
+        ):
+            removed = True
+            continue
+
+        kept.append(violation)
+
+    if not removed:
         return result
-    return protect_actor_turn_validation(
-        _actor_turn_view(authority),
-        result,
-        candidate_text,
+    errors = [item for item in kept if item.severity == "error"]
+    return NarrationValidationResult(
+        verdict="repair_required" if errors else "pass",
+        summary=(
+            result.summary
+            if errors
+            else (
+                "Actor-response authority разрешает выбранному NPC собственную речь, новые "
+                "character claims и локальную обратимую реакцию."
+            )
+        ),
+        violations=kept,
     )
 
 
 def install() -> None:
-    """Extend actor-turn rights to mixed sequence+response authority without weakening world rules."""
-    global _INSTALLED
-    if _INSTALLED:
-        return
-
-    from app.models.turn_authority import TurnAuthority
-    from app.services.turn_authority_validator import TurnAuthorityValidator
-
-    # Tighten the shared actor-speech boundary for both pure and mixed actor responses. The existing
-    # validator helper resolves this module global at call time, so this fixes the pure actor path too
-    # without duplicating its validation logic.
-    actor_guard._actor_speech_fragments = _strict_actor_speech_fragments  # noqa: SLF001
-
-    original_validator_payload = TurnAuthority.validator_payload
-    original_validate = TurnAuthorityValidator.validate
-
-    if "MIXED ACTOR RESPONSE RIGHTS" not in TurnAuthorityValidator.SYSTEM_PROMPT:
-        TurnAuthorityValidator.SYSTEM_PROMPT += """
-
-MIXED ACTOR RESPONSE RIGHTS
-When TURN AUTHORITY contains `actor_turn_contract` and an `acting_character`, those actor-owned
-speech/claim/body-language rights apply even when scene_disposition is `sequence`, `focus_transition`
-or another structured world disposition. The disposition controls the player's structured world
-actions; it does not revoke the selected NPC's right to answer the addressed part of the same input.
-Do not treat the NPC's own epistemic claim as an objective world mutation. Continue to reject
-player control, unauthorized physical arrivals/movement, item transfers and world outcomes outside
-the acting NPC's own speech.
-"""
-
-    def mixed_actor_validator_payload(self):
-        payload = original_validator_payload(self)
-        if "actor_turn_contract" not in payload:
-            contract = actor_response_contract(self)
-            if contract:
-                payload["actor_turn_contract"] = contract
-        return payload
-
-    async def mixed_actor_validate(self, selection, authority, candidate_text):
-        result = await original_validate(self, selection, authority, candidate_text)
-        return protect_actor_response_validation(authority, result, candidate_text)
-
-    TurnAuthority.validator_payload = mixed_actor_validator_payload
-    TurnAuthorityValidator.validate = mixed_actor_validate
-    _INSTALLED = True
+    """Deprecated compatibility hook; production owners call these policies explicitly."""
+    return None
 
 
 __all__ = [
