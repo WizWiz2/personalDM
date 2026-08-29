@@ -34,8 +34,6 @@ class _SceneSyncRouter:
 
         self.plan_calls += 1
         if self.plan_calls == 1:
-            # Reproduce БАГ-8: prose-ish consequence says the player leaves, while the typed plan
-            # remains in the old scene.
             return {
                 "player_intent": "Дойти до Старой Марины.",
                 "resolution": "observation",
@@ -86,25 +84,40 @@ def _selection():
 async def test_committed_physical_travel_hidden_as_stay_is_repaired_before_narrator():
     router = _SceneSyncRouter()
     planner = TurnAuthorityPlanner(router)
-
-    plan = await planner.plan(
-        _selection(),
-        [
-            ChatMessage(
-                role="system",
-                content=(
-                    "[AUTHORITATIVE SCENE STATE]\n"
-                    "Scene: Промышленный комплекс (active)\n"
-                    "Location: Промышленный комплекс\n"
-                ),
+    selection = _selection()
+    context = [
+        ChatMessage(
+            role="system",
+            content=(
+                "[AUTHORITATIVE SCENE STATE]\n"
+                "Scene: Промышленный комплекс (active)\n"
+                "Location: Промышленный комплекс\n"
             ),
-            ChatMessage(role="user", content="Иду в город, на Старую Марину."),
-        ],
+        ),
+        ChatMessage(role="user", content="Иду в город, на Старую Марину."),
+    ]
+    base_messages = planner.planning_messages(context)
+    player_input = planner._latest_user_text(context)
+
+    rejected = await planner._generate_plan(selection, base_messages)
+    first_review = await planner._semantic_review(selection, context, player_input, rejected)
+    assert first_review.verdict == "repair_required"
+
+    repaired = await planner._generate_plan(
+        selection,
+        planner._repair_messages(
+            base_messages,
+            player_input,
+            first_review.issues,
+            rejected,
+        ),
     )
+    final_review = await planner._semantic_review(selection, context, player_input, repaired)
 
     assert router.plan_calls == 2
     assert router.review_calls == 2
-    assert plan.scene_disposition == "location_transition"
-    assert plan.scene_transition.required is True
-    assert plan.scene_transition.transition_type == "location_transition"
-    assert plan.scene_transition.destination_location == "Старая Марина"
+    assert final_review.verdict == "pass"
+    assert repaired.scene_disposition == "location_transition"
+    assert repaired.scene_transition.required is True
+    assert repaired.scene_transition.transition_type == "location_transition"
+    assert repaired.scene_transition.destination_location == "Старая Марина"
