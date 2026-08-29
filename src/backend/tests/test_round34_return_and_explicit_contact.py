@@ -16,8 +16,7 @@ from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.services.player_destination_authorization import PlayerDestinationAuthorizer
 from app.services.scene_lifecycle import SceneLifecycleService
-from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
-from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
+from app.services.turn_authority_planner import TurnAuthorityPlanner
 
 
 @pytest.mark.asyncio
@@ -112,83 +111,23 @@ async def test_live_return_ignores_trailing_punctuation_in_visited_location_iden
     assert "previously visited physical location" in authorization.reason
 
 
-def _contact_plan(*, consequence: str | None, resolution: str = "auto_success"):
-    return CoordinatedTurnPlan(
-        player_intent="расспросить прохожего о подозрительных людях",
-        resolution="sequence",
-        action_sequence=ActionSequencePlan(
-            steps=[
-                ActionStepPlan(
-                    action_type="interaction",
-                    intent="расспросить прохожего о подозрительных людях",
-                    resolution=resolution,
-                    safe_mundane=resolution == "auto_success",
-                    observable_outcome=None,
-                    blocking_reason=(
-                        "Никого подходящего рядом нет."
-                        if resolution != "auto_success"
-                        else None
-                    ),
-                )
-            ]
-        ),
-        observable_consequences=[consequence] if consequence else [],
-        npc_introductions=[],
-    )
+def test_affirmative_unknown_contact_requires_typed_temporary_identity():
+    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
+
+    assert "CONTACT/IDENTITY" in prompt
+    assert "unknown physical responder" in prompt
+    assert "npc_introductions" in prompt
 
 
-def test_affirmative_auto_success_contact_gets_typed_temporary_identity():
-    player_input = (
-        "На улице расспрашиваю прохожего, не видел ли он кого-нибудь подозрительного."
-    )
-    consequence = (
-        "Прохожий, мужчина средних лет, отвечает, что ничего подозрительного не замечал."
-    )
-    plan = _contact_plan(consequence=consequence)
+def test_negative_contact_must_be_explicit_and_does_not_require_materialization():
+    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    TurnAuthorityPlanner.normalize_affirmative_direct_contact(plan, player_input)
-
-    assert len(plan.npc_introductions) == 1
-    intro = plan.npc_introductions[0]
-    assert intro.canonical_name == "Прохожий"
-    assert intro.role == "прохожий"
-    assert intro.temporary_name is True
-    assert plan.action_sequence.steps[0].observable_outcome == consequence
-    assert TurnAuthorityPlanner.contract_issues(plan, player_input) == []
+    assert "no contact occurs" in prompt
+    assert "negative outcome must be explicit" in prompt
 
 
-def test_explicit_negative_contact_does_not_force_materialization():
-    player_input = "Расспрашиваю прохожего, не видел ли он машину."
-    plan = _contact_plan(consequence="Никто из прохожих не останавливается.")
+def test_unresolved_contact_cannot_be_silently_promoted_to_success():
+    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    TurnAuthorityPlanner.normalize_affirmative_direct_contact(plan, player_input)
-
-    assert plan.npc_introductions == []
-    assert plan.action_sequence.steps[0].observable_outcome is None
-    assert TurnAuthorityPlanner.contract_issues(plan, player_input) == []
-
-
-def test_unresolved_contact_without_positive_outcome_is_not_forced_to_succeed():
-    player_input = "Расспрашиваю прохожего, не видел ли он машину."
-    plan = _contact_plan(consequence=None)
-
-    TurnAuthorityPlanner.normalize_affirmative_direct_contact(plan, player_input)
-
-    assert plan.npc_introductions == []
-    assert plan.action_sequence.steps[0].observable_outcome is None
-    assert any(
-        "direct contact" in issue.casefold()
-        for issue in TurnAuthorityPlanner.contract_issues(plan, player_input)
-    )
-
-
-def test_blocked_contact_is_not_promoted_even_with_stale_positive_prose():
-    player_input = "Расспрашиваю прохожего, не видел ли он машину."
-    plan = _contact_plan(
-        consequence="Прохожий отвечает на вопрос.",
-        resolution="blocked",
-    )
-
-    TurnAuthorityPlanner.normalize_affirmative_direct_contact(plan, player_input)
-
-    assert plan.npc_introductions == []
+    assert "Do not silently convert" in prompt
+    assert "new physical NPC" in prompt
