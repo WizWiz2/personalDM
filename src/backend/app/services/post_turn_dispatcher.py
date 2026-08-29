@@ -7,7 +7,9 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.db.repositories.generation_lifecycle_repo import GenerationLifecycleRepository
 from app.db.tables import Turn
+from app.models.jobs import GenerationPhase
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.visual_generation_dispatcher import VisualGenerationDispatcher
 
@@ -18,8 +20,6 @@ class PostTurnDispatcher:
     """Run durable post-turn jobs outside the player's response latency path."""
 
     _tasks: set[asyncio.Task] = set()
-    # Deterministic tests may opt into awaiting the exact same background task. Production
-    # never changes this value and therefore never waits for Registrar/Scribe/Curator.
     wait_inline_for_tests: bool = False
 
     @classmethod
@@ -36,10 +36,12 @@ class PostTurnDispatcher:
             try:
                 async with factory() as session:
                     await PostTurnProcessor(session).process_turn(assistant_turn_id)
-                    # TurnSaga records authoritative new-NPC ids in the assistant snapshot
-                    # before this dispatcher runs. Visual generation reads that evidence instead
-                    # of re-inferring NPCs from prose, so portraits are created exactly once for
-                    # actual materialized characters and never for hallucinated mentions.
+                    await GenerationLifecycleRepository(session).set_phase_for_assistant(
+                        assistant_turn_id,
+                        GenerationPhase.POST_TURN_DONE,
+                    )
+                    await session.commit()
+
                     row = await session.get(Turn, str(assistant_turn_id))
                     if row and row.context_snapshot:
                         try:
