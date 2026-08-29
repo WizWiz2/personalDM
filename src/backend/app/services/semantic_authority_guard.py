@@ -31,6 +31,9 @@ Critical ownership rules:
 - A present response actor may answer the current question naturally and may state personal claims,
   memories, observations, opinions, uncertainty or lies. Such speech is epistemic character_claim,
   not objective world canon merely because it contains new information.
+- When acting_character is set, verify speaker consistency semantically. New first-person NPC dialogue
+  must belong to that actor, not be a copied/reassigned earlier line, self-reference, grammatical
+  identity or conversational stance of a different NPC. Use speaker_consistency for this defect.
 - Evidence for player_agency must quote the shortest exact fragment that actually belongs to the
   protagonist. Never cite an NPC-owned fragment as protagonist agency.
 
@@ -40,9 +43,16 @@ World authority rules:
 - Neutral scene texture and sensory staging are allowed when they do not create a significant fact.
 - allowed_new_npcs and allowed_existing_npc_arrivals are authoritative physical permissions.
 
+Player-facing surface rules:
+- The answer must stay inside the fiction. Semantic commentary about an internal action causing no
+  external state change, information being mechanically received, the player/response/narration, or
+  waiting for a next turn is meta_language even when it contains no obvious debug token.
+- Do not reject ordinary in-world narration merely because it says nothing changed; reject only when
+  the text explains the game/engine abstraction instead of dramatizing the fictional moment.
+
 Return exactly the NarrationValidationResult schema. If the candidate is legal, return pass with an
-empty violations list even when the previous validator claimed many errors. All human-readable fields
-must be Russian.
+empty violations list even when the previous validator claimed many errors. Use speaker_consistency
+and meta_language when those are the actual defects. All human-readable fields must be Russian.
 """
 
 
