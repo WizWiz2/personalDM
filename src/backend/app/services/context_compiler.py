@@ -5,10 +5,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn import ChatMessage
-from app.services.base_context_compiler import (
-    ContextCompiler as BaseContextCompiler,
-)
+from app.services.base_context_compiler import ContextCompiler as CoreContextCompiler
 from app.services.base_context_compiler import count_tokens
 from app.services.context_pipeline import (
     ContextPipeline,
@@ -20,8 +20,13 @@ from app.services.context_pipeline import (
 from app.services.prompt_policy import CURRENT_PROMPT_POLICY, PromptPolicy
 
 
-class ContextCompiler(BaseContextCompiler):
-    """Compile context data, then layer a versioned prompt policy and ordered providers."""
+class ContextCompiler:
+    """Compose core context selection, prompt policy and ordered enrichment providers.
+
+    The legacy/core compiler remains the data-selection implementation for now, but it is an
+    explicit dependency rather than a production base class. This keeps prompt policy, provider
+    enrichment and data selection independently replaceable and testable.
+    """
 
     DEFAULT_PROVIDER_NAMES = (
         SceneStateContextProvider.name,
@@ -38,8 +43,12 @@ class ContextCompiler(BaseContextCompiler):
         session: AsyncSession,
         context_providers: Sequence[ContextProvider] | None = None,
         prompt_policy: PromptPolicy = CURRENT_PROMPT_POLICY,
+        core_compiler: CoreContextCompiler | None = None,
     ):
-        super().__init__(session)
+        self._session = session
+        self._core = core_compiler or CoreContextCompiler(session)
+        self._campaign_repo = CampaignRepository(session)
+        self._entity_repo = EntityRepository(session)
         self._prompt_policy = prompt_policy
         providers = (
             tuple(context_providers)
@@ -179,7 +188,7 @@ class ContextCompiler(BaseContextCompiler):
         current_user_content: str | None = None,
         max_budget_override: int | None = None,
     ) -> tuple[list[ChatMessage], dict]:
-        messages, metadata = await super().compile_context(
+        messages, metadata = await self._core.compile_context(
             campaign_id=campaign_id,
             acting_character_id=acting_character_id,
             scene_id=scene_id,
