@@ -4,10 +4,11 @@ import json
 from dataclasses import dataclass
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
-from app.db.tables import Turn
+from app.db.tables import Character, Turn
 from app.models.turn_authority import ExistingNpcArrival
 from app.services.entity_identity import identity_key, resolve_character_candidates
 
@@ -55,6 +56,7 @@ class NpcIntroductionResolver:
     """Classify planned NPC introductions against structured identity and presence state."""
 
     def __init__(self, session: AsyncSession):
+        self._session = session
         self._entities = EntityRepository(session)
 
     async def resolve(
@@ -72,15 +74,21 @@ class NpcIntroductionResolver:
             entity_type="character",
         )
 
-        character_states = {}
-        character_locations: dict[UUID, UUID | None] = {}
-        for entity in all_characters:
-            character = await self._entities.get_character(entity.id)
-            if not character:
-                continue
-            entity_id = UUID(str(entity.id))
-            character_states[entity_id] = character
-            character_locations[entity_id] = character.current_location_id
+        ids = [str(entity.id) for entity in all_characters]
+        rows = []
+        if ids:
+            rows = (
+                await self._session.execute(
+                    select(Character).where(Character.entity_id.in_(ids))
+                )
+            ).scalars().all()
+        character_states = {UUID(row.entity_id): row for row in rows}
+        character_locations: dict[UUID, UUID | None] = {
+            entity_id: (
+                UUID(row.current_location_id) if row.current_location_id else None
+            )
+            for entity_id, row in character_states.items()
+        }
 
         new_introductions = []
         existing_arrivals: list[ExistingNpcArrival] = []
@@ -112,11 +120,12 @@ class NpcIntroductionResolver:
                 continue
 
             character = character_states.get(existing_id)
-            if (
-                character
-                and target_location_id
-                and character.current_location_id == target_location_id
-            ):
+            current_location_id = (
+                UUID(character.current_location_id)
+                if character and character.current_location_id
+                else None
+            )
+            if target_location_id and current_location_id == target_location_id:
                 existing_arrivals.append(
                     ExistingNpcArrival(
                         entity_id=existing_id,
@@ -128,11 +137,7 @@ class NpcIntroductionResolver:
                 present_keys.add(existing_key)
                 continue
 
-            location = (
-                str(character.current_location_id)
-                if character and character.current_location_id
-                else "неизвестна"
-            )
+            location = str(current_location_id) if current_location_id else "неизвестна"
             target = str(target_location_id) if target_location_id else "неизвестна"
             raise AuthorityResolutionError(
                 "Известный персонаж не может появиться без структурного перемещения: "
