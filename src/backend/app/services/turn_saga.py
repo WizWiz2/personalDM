@@ -39,10 +39,10 @@ active_tasks: dict[str, asyncio.Task] = {}
 class TurnSaga:
     """Single production owner of the interactive narrative turn saga.
 
-    The transaction is intentionally not one long SQL transaction around LLM calls. Structured
-    truth is durably prepared before prose so Narrator observes the world it is authorized to
-    describe. Every durable boundary is therefore checkpointed and a failed prepared turn is
-    explicitly compensated.
+    The transaction is intentionally not one long SQL transaction around LLM calls. Planner runs
+    before a structured prepare transaction. Transition/materialization changes and the PREPARED
+    lifecycle checkpoint are then committed together. Only after that durable boundary do we call
+    Narrator/Validator. A failed prepared turn is explicitly compensated.
     """
 
     def __init__(self, session):
@@ -254,10 +254,13 @@ class TurnSaga:
         materialized_outcome: MaterializedTurnOutcome | None,
         prepared: bool,
     ) -> None:
+        if not prepared:
+            # Before PREPARED all structured writes belong to one still-uncommitted transaction.
+            await self._session.rollback()
+            return
         await self._rollback_materialization(materializer, materialized_outcome)
         await self._rollback_prepared_transition(transition_executor, applied_transition)
-        if prepared:
-            await self._set_phase(run_id, GenerationPhase.COMPENSATED)
+        await self._set_phase(run_id, GenerationPhase.COMPENSATED)
 
     async def run_turn_stream(
         self,
@@ -314,7 +317,6 @@ class TurnSaga:
                 primary_config,
             )
             messages, context_metadata = compiled
-            narrator_messages = messages
             plan: CoordinatedTurnPlan | None = None
             planner_metadata: dict = {
                 "status": "skipped",
@@ -333,22 +335,27 @@ class TurnSaga:
                     role_router=role_router,
                     primary_config=primary_config,
                 )
+
+            # Planner output is durable before any structured world mutation begins.
+            await self._set_phase(generation_run.id, GenerationPhase.PLANNED)
+
+            if turn_create.acting_character_id is None:
                 transition_executor = SceneTransitionExecutor(self._session)
                 existing_transition = await transition_executor.existing_for_turn(
                     campaign_id,
                     user_turn.id,
                 )
                 applied_transition = existing_transition
-                if not existing_transition and plan.scene_transition.required:
+                if not existing_transition and plan and plan.scene_transition.required:
                     try:
+                        # Deliberately do not commit here. Transition + materialization + PREPARED
+                        # checkpoint form one prepare transaction below.
                         applied_transition = await transition_executor.apply(
                             campaign_id,
                             source_scene_id,
                             user_turn.id,
                             plan.scene_transition,
                         )
-                        if applied_transition:
-                            await self._session.commit()
                     except ValueError as exc:
                         await self._session.rollback()
                         failed_plan = plan.model_dump(mode="json")
@@ -396,15 +403,6 @@ class TurnSaga:
                             else None
                         ),
                     }
-                    narrator_messages, context_metadata = await self._recompile_narrator_context(
-                        compiler=compiler,
-                        campaign_id=campaign_id,
-                        turn_create=turn_create,
-                        scene_id=effective_scene_id,
-                        max_budget_override=max_budget_override,
-                    )
-
-            await self._set_phase(generation_run.id, GenerationPhase.PLANNED)
 
             authority_service = TurnAuthorityService(self._session)
             try:
@@ -422,13 +420,10 @@ class TurnSaga:
                     raise
 
                 if applied_transition and applied_transition.status == "prepared":
-                    if not await self._rollback_prepared_transition(
-                        transition_executor,
-                        applied_transition,
-                    ):
-                        raise RuntimeError(
-                            "Authority rejection could not roll back its prepared scene transition"
-                        ) from exc
+                    # This attempt has not crossed PREPARED yet, so its transition is still part of
+                    # the local prepare transaction. Roll it back atomically instead of invoking
+                    # durable compensation for a state that was never published as prepared.
+                    await self._session.rollback()
                     applied_transition = None
                     effective_scene_id = source_scene_id
                     transition_metadata = {
@@ -470,34 +465,37 @@ class TurnSaga:
                     plan=plan,
                     acting_character_id=None,
                 )
-                narrator_messages, context_metadata = await self._recompile_narrator_context(
-                    compiler=compiler,
-                    campaign_id=campaign_id,
-                    turn_create=turn_create,
-                    scene_id=effective_scene_id,
-                    max_budget_override=max_budget_override,
-                )
 
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(
                 authority,
                 source_turn_id=user_turn.id,
             )
-            if materialized_outcome.has_changes:
-                await self._session.commit()
-                narrator_messages, context_metadata = await self._recompile_narrator_context(
-                    compiler=compiler,
-                    campaign_id=campaign_id,
-                    turn_create=turn_create,
-                    scene_id=effective_scene_id,
-                    max_budget_override=max_budget_override,
-                )
 
-            await self._set_phase(generation_run.id, GenerationPhase.PREPARED)
+            # The PREPARED checkpoint is committed in the same transaction as every structured
+            # mutation produced for this attempt. There is no crash window where world state is
+            # durable but lifecycle still claims only PLANNED.
+            await self._generation_lifecycle.set_phase(
+                generation_run.id,
+                GenerationPhase.PREPARED,
+            )
+            await self._session.commit()
             prepared = True
+
+            # Narrator always gets a fresh snapshot from the now-durable prepared world. This also
+            # removes the old split where transition and NPC materialization could recompile at
+            # different moments.
+            narrator_messages, context_metadata = await self._recompile_narrator_context(
+                compiler=compiler,
+                campaign_id=campaign_id,
+                turn_create=turn_create,
+                scene_id=effective_scene_id,
+                max_budget_override=max_budget_override,
+            )
 
             narrator_messages = self._inject_authority(narrator_messages, authority)
             context_metadata = dict(context_metadata)
+            lifecycle = await self._generation_lifecycle.get(generation_run.id)
             context_metadata.update(
                 {
                     "planner_context_scene_id": (
@@ -525,7 +523,7 @@ class TurnSaga:
                         ],
                     },
                     "generation_lifecycle": {
-                        "attempt": (await self._generation_lifecycle.get(generation_run.id)).attempt,
+                        "attempt": lifecycle.attempt if lifecycle else 1,
                         "phase_at_narration": GenerationPhase.PREPARED.value,
                     },
                 }
