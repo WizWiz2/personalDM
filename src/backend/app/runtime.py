@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from typing import Any
+import faulthandler
+import os
+import sys
+import traceback
+from pathlib import Path
+from typing import Any, TextIO
 
 from app.models.jobs import GenerationPhase
 
 _INSTALLED = False
+_CRASH_LOG_HANDLE: TextIO | None = None
 _GUARDS = (
     "actor_turn_authority",
     "actor_memory_observability",
@@ -17,11 +23,54 @@ _GUARDS = (
 )
 
 
+def _install_crash_diagnostics() -> None:
+    """Persist fatal/unhandled Python diagnostics without changing failure semantics."""
+    global _CRASH_LOG_HANDLE
+    if _CRASH_LOG_HANDLE is not None:
+        return
+    path = Path(os.getenv("PDM_CRASH_LOG", "data/personal-dm-crash.log"))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a", encoding="utf-8", buffering=1)
+    except OSError:
+        # Diagnostics must never prevent the game from starting.
+        try:
+            faulthandler.enable(all_threads=True)
+        except (RuntimeError, OSError):
+            pass
+        return
+
+    _CRASH_LOG_HANDLE = handle
+    try:
+        faulthandler.enable(file=handle, all_threads=True)
+    except (RuntimeError, OSError):
+        pass
+
+    previous_hook = sys.excepthook
+
+    def logged_excepthook(exc_type, exc_value, exc_traceback):
+        try:
+            handle.write("\n=== UNHANDLED PERSONALDM EXCEPTION ===\n")
+            traceback.print_exception(
+                exc_type,
+                exc_value,
+                exc_traceback,
+                file=handle,
+            )
+            handle.flush()
+        finally:
+            previous_hook(exc_type, exc_value, exc_traceback)
+
+    sys.excepthook = logged_excepthook
+
+
 def install_runtime() -> None:
     """Install compatibility guards, then replace lexical semantics with agent-owned policy."""
     global _INSTALLED
     if _INSTALLED:
         return
+
+    _install_crash_diagnostics()
 
     from app.services.actor_memory_observability_guard import (
         install as install_actor_memory_observability,
@@ -114,6 +163,13 @@ def runtime_manifest() -> dict[str, Any]:
             "npc_introduction_semantics": "model",
             "movement_intent_semantics": "model",
             "requires_check": "structurally_forbidden",
+        },
+        "crash_diagnostics": {
+            "faulthandler": True,
+            "unhandled_exception_log": os.getenv(
+                "PDM_CRASH_LOG",
+                "data/personal-dm-crash.log",
+            ),
         },
         "turn_stream": identity(TurnRunner.run_turn_stream),
         "turn_saga": identity(TurnSaga.run_turn_stream),
