@@ -3,6 +3,7 @@
 from app.application.game_application import (
     CampaignNotFoundError,
     CurrentSceneError,
+    GameApplication,
     GameInputRoute,
     GameNotReadyError,
     GamePostTurnStatus,
@@ -12,7 +13,7 @@ from app.application.game_application import (
     TurnNotFoundError,
     TurnRegenerationError,
 )
-from app.application.player_game_application import GameApplication, PlayerMemoryView
+from app.services.player_memory_query import PlayerMemoryView
 
 __all__ = [
     "CampaignNotFoundError",
