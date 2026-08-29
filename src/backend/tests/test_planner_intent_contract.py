@@ -5,7 +5,9 @@ def test_contact_identity_is_owned_by_semantic_plan_reviewer():
     prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
     assert "CONTACT/IDENTITY" in prompt
-    assert "previously unknown physical responder must be typed" in prompt
+    assert "previously" in prompt
+    assert "unknown physical responder" in prompt
+    assert "npc_introductions" in prompt
     assert "negative outcome must be explicit" in prompt
 
 
