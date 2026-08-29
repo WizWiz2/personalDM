@@ -357,6 +357,101 @@ def _better_authority_fallback(authority, published: str) -> str:
     return published
 
 
+def _paragraphs(text: str) -> list[str]:
+    """Return authored paragraphs without treating wrapped dialogue lines as separate paragraphs."""
+    return [
+        value.strip()
+        for value in re.split(r"\n\s*\n", text or "")
+        if value.strip()
+    ]
+
+
+def literary_surgical_repair_candidate(
+    guard_cls,
+    candidate: str,
+    validation: NarrationValidationResult | None,
+) -> tuple[str | None, dict]:
+    """Remove exact bad spans without letting repair flatten an already literary scene."""
+    errors = [
+        item
+        for item in (validation.violations if validation else [])
+        if item.severity == "error"
+    ]
+    if not errors:
+        return None, {"strategy": "deterministic_span_removal", "reason": "no_error_violations"}
+
+    evidence = [guard_cls._key(item.evidence) for item in errors]
+    original_paragraphs = _paragraphs(candidate)
+    literary_surface = len(original_paragraphs) >= 2
+    matched: set[int] = set()
+    repaired_paragraphs: list[str] = []
+
+    for paragraph in original_paragraphs or [candidate]:
+        kept: list[str] = []
+        for segment in guard_cls._segments(paragraph):
+            normalized = guard_cls._key(segment)
+            reject = False
+            for index, needle in enumerate(evidence):
+                if len(needle) < 6 or not normalized:
+                    continue
+                if needle in normalized or normalized in needle:
+                    matched.add(index)
+                    reject = True
+            if not reject:
+                kept.append(segment)
+        if kept:
+            repaired_paragraphs.append(" ".join(kept).strip())
+
+    repaired = "\n\n".join(value for value in repaired_paragraphs if value).strip()
+    original_compact = " ".join((candidate or "").split())
+    repaired_compact = " ".join(repaired.split())
+    original_len = max(1, len(original_compact))
+    retained_ratio = round(len(repaired_compact) / original_len, 4) if repaired_compact else 0.0
+
+    metadata = {
+        "strategy": "deterministic_span_removal",
+        "preservation_policy": "literary" if literary_surface else "compact_compatibility",
+        "matched_errors": len(matched),
+        "error_count": len(errors),
+        "retained_ratio": retained_ratio,
+        "original_paragraphs": len(original_paragraphs),
+        "repaired_paragraphs": len(repaired_paragraphs),
+        "removed_characters": max(0, original_len - len(repaired_compact)),
+    }
+    if len(matched) != len(errors):
+        return None, {
+            **metadata,
+            "status": "skipped",
+            "reason": "not_all_error_evidence_matched",
+        }
+    if literary_surface:
+        if len(repaired_compact) < 120 or retained_ratio < 0.70:
+            return None, {
+                **metadata,
+                "status": "skipped",
+                "reason": "literary_surface_degraded",
+            }
+        if len(repaired_paragraphs) < 2:
+            return None, {
+                **metadata,
+                "status": "skipped",
+                "reason": "literary_paragraph_structure_lost",
+            }
+    elif len(repaired_compact) < 24 or retained_ratio < 0.20:
+        return None, {
+            **metadata,
+            "status": "skipped",
+            "reason": "too_little_safe_surface_remained",
+        }
+    if guard_cls._player_facing_fragment(repaired) is None:
+        return None, {
+            **metadata,
+            "status": "skipped",
+            "reason": "remaining_surface_not_player_facing",
+        }
+    return repaired, {**metadata, "status": "candidate"}
+
+
 def install() -> None:
     """Recover artistic Narrator surface without weakening world-state authority."""
     global _INSTALLED
@@ -371,6 +466,7 @@ def install() -> None:
 
     original_validate = TurnAuthorityValidator.validate
     original_publish = NarrationPublicationGuard.publish
+    original_repair_prompt = TurnAuthorityValidator.repair_prompt
 
     async def narration_budget_compile(
         self,
@@ -415,15 +511,20 @@ def install() -> None:
             "[TYPED TURN AUTHORITY — compact render contract]\n"
             f"{payload}"
             f"{sequence_section}"
-            "\nRender the immediate result as natural Russian fiction. Use 1–3 compact paragraphs when "
-            "the scene supports them. Neutral sensory texture is welcome, but never invent a new "
-            "NPC, route, threat, clue, mechanically significant object or outcome beyond this typed "
-            "result. A present NPC may answer naturally from their own perspective. The human "
-            "protagonist already performed and said exactly player_input: never repeat it as another "
-            "character's line, never choose an addressee the player did not choose, and never add a "
-            "new thought, emotion, decision, plan or next voluntary action. You may naturally phrase "
-            "the physical realization of an action that authority already completed. Describe the "
-            "world's response and stop before the protagonist's next choice."
+            "\nRender the immediate result as natural Russian literary fiction, not as an engine "
+            "receipt or decorated dialogue tag. By default use 2–3 cohesive prose paragraphs when "
+            "the scene has enough grounded material. Weave approved NPC dialogue into physical "
+            "behavior, distance, posture and environmental staging. Across the response use 2–3 "
+            "relevant sensory channels such as sight, sound, smell, temperature or touch; vary them "
+            "naturally rather than listing them mechanically. Neutral sensory texture is welcome, "
+            "but never invent a new NPC, route, threat, clue, mechanically significant object or "
+            "outcome beyond this typed result. A present NPC may answer naturally from their own "
+            "perspective. The human protagonist already performed and said exactly player_input: "
+            "never repeat it as another character's line, never choose an addressee the player did "
+            "not choose, and never add a new thought, emotion, decision, plan or next voluntary "
+            "action. You may naturally phrase the physical realization of an action that authority "
+            "already completed. Describe the world's response as a lived scene and stop before the "
+            "protagonist's next choice."
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
@@ -434,19 +535,40 @@ def install() -> None:
         result = await original_validate(self, selection, authority, candidate_text)
         return apply_narrator_ownership(result, authority, candidate_text)
 
+    def literary_repair_prompt(authority, candidate, result):
+        base = original_repair_prompt(authority, candidate, result)
+        return (
+            base
+            + "\n\n[LITERARY SURFACE MUST SURVIVE THE REPAIR]\n"
+            "Исправление не отменяет художественный контракт. Сохрани исходные 2–3 абзаца, "
+            "живые легальные реплики NPC, пространственную постановку и нейтральную сенсорную "
+            "фактуру. Если нарушение локальное — правь локально. Не превращай сцену в одну "
+            "реплику, speech tag, пересказ результата или служебную заглушку. После ремонта текст "
+            "должен по-прежнему ощущаться как короткая художественная сцена с 2–3 уместными "
+            "сенсорными каналами, если исходный контекст их поддерживает."
+        )
+
+    @classmethod
+    def paragraph_preserving_surgical(cls, candidate, validation):
+        return literary_surgical_repair_candidate(cls, candidate, validation)
+
     @classmethod
     def better_publish(cls, authority, candidate, validation):
         published, metadata = original_publish(authority, candidate, validation)
         improved = _better_authority_fallback(authority, published)
+        metadata = dict(metadata)
         if improved != published:
-            metadata = dict(metadata)
             metadata["authority_projection_improved"] = True
             metadata["published_characters"] = len(improved)
+        if metadata.get("mode") == "authority_projection":
+            metadata["degraded_literary_fallback"] = True
         return improved, metadata
 
     TurnSaga._compile = narration_budget_compile
     TurnSaga._inject_authority = compact_inject_authority
     TurnAuthorityValidator.validate = ownership_validating
+    TurnAuthorityValidator.repair_prompt = staticmethod(literary_repair_prompt)
+    NarrationPublicationGuard.surgical_repair_candidate = paragraph_preserving_surgical
     NarrationPublicationGuard.publish = better_publish
     _INSTALLED = True
 
@@ -455,6 +577,7 @@ __all__ = [
     "apply_narrator_ownership",
     "compact_narrator_payload",
     "install",
+    "literary_surgical_repair_candidate",
     "narrator_context_budget",
     "narrator_ownership_violations",
     "player_direct_speech",
