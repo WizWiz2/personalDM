@@ -90,13 +90,12 @@ def test_actor_publication_guard_discards_rejected_actor_candidate():
         validation,
     )
 
-    # Once a candidate has validation errors, even apparently useful unflagged fragments are not
-    # trusted. Repair happens upstream and must be independently revalidated; an exhausted actor
-    # response falls back to deterministic Authority rather than a partial scrub of rejected prose.
+    # Multiple rejected agency spans make the whole draft untrusted. A single isolated span may be
+    # surgically excised, but this response must fail closed to deterministic Authority.
     assert "Тень свернула" not in published
     assert "кивнул" not in published
     assert "Спасибо, Грета" not in published
-    assert published == "Старуха Грета пока не отвечает."
+    assert published == "Старуха Грета умолкает."
     assert diagnostics["mode"] == "authority_projection"
     assert diagnostics["candidate_discarded"] is True
 
