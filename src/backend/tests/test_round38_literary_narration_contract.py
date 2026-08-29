@@ -34,12 +34,14 @@ def test_player_facing_prompt_requires_literary_scene_not_engine_receipt():
     assert "generic padding" in contract
 
 
-def test_actor_contract_is_explicitly_intermediate_not_final_surface():
+def test_actor_scoped_turn_is_also_a_finished_literary_scene():
     contract = CURRENT_PROMPT_POLICY.player_control_contract
 
-    assert "not the finished player-facing literary" in contract
-    assert "final Narrator" in contract
-    assert "complete scene" in contract
+    assert "ACTOR-SCOPED FINAL NARRATION CONTRACT" in contract
+    assert "finished player-facing scene" in contract
+    assert "2–3 cohesive literary paragraphs" in contract
+    assert "2–3 relevant sensory channels" in contract
+    assert "generic speech tags" in contract
 
 
 def test_literary_surgical_repair_preserves_paragraphs_and_grounded_texture():
