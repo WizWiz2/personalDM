@@ -10,13 +10,16 @@ on:
       - "src/backend/app/services/narration_validator.py"
       - "src/backend/app/services/narration_pipeline.py"
       - "src/backend/app/services/narrator_quality_recovery_guard.py"
+      - "src/backend/app/services/semantic_authority_guard.py"
       - "src/backend/app/services/prompt_policy.py"
       - "src/backend/app/services/turn_runner.py"
       - "src/backend/app/services/base_turn_runner.py"
       - "src/backend/app/services/role_model_router.py"
+      - "src/backend/app/runtime.py"
       - "src/backend/alembic/**"
       - "src/backend/tests/test_narration_validation.py"
       - "src/backend/tests/test_round38_literary_narration_contract.py"
+      - "src/backend/tests/test_round39_semantic_authority.py"
       - ".github/workflows/narration-validation-tests.yml"
   workflow_dispatch:
 
@@ -43,8 +46,8 @@ jobs:
           alembic downgrade e9f0a1b2c3d4
           alembic upgrade head
       - name: Run narration validation contracts
-        run: pytest -q tests/test_narration_validation.py tests/test_round38_literary_narration_contract.py tests/test_turn_planner.py tests/test_turns.py --tb=short
+        run: pytest -q tests/test_narration_validation.py tests/test_round38_literary_narration_contract.py tests/test_round39_semantic_authority.py tests/test_turn_planner.py tests/test_turns.py --tb=short
       - name: Lint explicit narration pipeline
         run: |
-          ruff check app/config.py app/main.py app/db/narration_validation_table.py app/models/narration_validation.py app/services/narration_validator.py app/services/narration_pipeline.py app/services/narrator_quality_recovery_guard.py app/services/prompt_policy.py app/services/turn_runner.py app/services/role_model_router.py tests/test_narration_validation.py tests/test_round38_literary_narration_contract.py
+          ruff check app/config.py app/main.py app/db/narration_validation_table.py app/models/narration_validation.py app/services/narration_validator.py app/services/narration_pipeline.py app/services/narrator_quality_recovery_guard.py app/services/semantic_authority_guard.py app/services/prompt_policy.py app/services/turn_runner.py app/services/role_model_router.py tests/test_narration_validation.py tests/test_round38_literary_narration_contract.py tests/test_round39_semantic_authority.py
           ruff check --extend-ignore SIM102,BLE001 app/services/base_turn_runner.py
