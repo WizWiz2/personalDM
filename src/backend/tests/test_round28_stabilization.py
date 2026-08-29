@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
-from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.actor_memory_observability_guard import (
     _augment_trace,
     extract_actor_segment_proposals_with_audit,
@@ -13,9 +13,8 @@ from app.services.systemless_authority_guard import (
     detect_contained_repetition,
     ensure_distinct_physical_location,
     normalize_addressed_conversation,
-    systemless_contract_issues,
 )
-from app.services.turn_authority_planner import CoordinatedTurnPlan
+from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
 
 
@@ -34,36 +33,19 @@ def _base_plan(**updates) -> CoordinatedTurnPlan:
     return CoordinatedTurnPlan.model_validate(payload)
 
 
-def test_systemless_contract_rejects_requires_check() -> None:
-    plan = _base_plan(
-        action_sequence=ActionSequencePlan(
-            steps=[
-                ActionStepPlan(
-                    action_type="interaction",
-                    intent="Спросить Виктора, кто ещё мог это видеть",
-                    resolution="requires_check",
-                )
-            ]
+def test_systemless_schema_rejects_requires_check_before_execution() -> None:
+    with pytest.raises(ValidationError):
+        ActionStepPlan(
+            action_type="interaction",
+            intent="Спросить Виктора, кто ещё мог это видеть",
+            resolution="requires_check",
         )
-    )
-
-    issues = systemless_contract_issues(plan, "Кто ещё мог это видеть?")
-
-    assert any("no check resolver" in issue for issue in issues)
 
 
-def test_plain_addressed_question_normalizes_to_actor_conversation() -> None:
+def test_plain_addressed_question_is_typed_as_response_ownership_not_action_step() -> None:
     plan = _base_plan(
-        action_sequence=ActionSequencePlan(
-            steps=[
-                ActionStepPlan(
-                    action_type="interaction",
-                    intent="Уточнить у Виктора, было ли что-нибудь необычное",
-                    resolution="requires_check",
-                )
-            ]
-        ),
-        observable_consequences=["Ответ зависит от проверки."],
+        addressed_response_requested=True,
+        response_ownership_reason="Игрок задаёт вопрос выбранному присутствующему NPC.",
     )
 
     normalized = normalize_addressed_conversation(
@@ -71,83 +53,43 @@ def test_plain_addressed_question_normalizes_to_actor_conversation() -> None:
         "Было ли что-нибудь необычное?",
     )
 
+    assert normalized is plan
     assert normalized.resolution == "conversation"
     assert normalized.action_sequence.steps == []
-    assert normalized.scene_transition.required is False
-    assert normalized.observable_consequences == []
+    assert normalized.addressed_response_requested is True
 
 
-def test_mixed_world_action_keeps_world_step_and_extracts_dialogue_response() -> None:
+def test_mixed_world_action_keeps_only_world_step_and_typed_response_request() -> None:
     plan = _base_plan(
+        resolution="sequence",
+        addressed_response_requested=True,
+        response_ownership_reason="После осмотра игрок задаёт вопрос Виктору.",
         action_sequence=ActionSequencePlan(
             steps=[
                 ActionStepPlan(
                     action_type="observation",
                     intent="Обыскать шкаф",
-                    resolution="requires_check",
-                ),
-                ActionStepPlan(
-                    action_type="interaction",
-                    intent="Спросить Виктора о шкафе",
-                    resolution="requires_choice",
-                ),
+                    resolution="auto_success",
+                    safe_mundane=True,
+                    observable_outcome="Шкаф осмотрен.",
+                )
             ]
-        )
+        ),
     )
 
-    normalized = normalize_addressed_conversation(
-        plan,
-        "Осматриваю шкаф. Виктор, что вы о нём знаете?",
-    )
-
-    assert len(normalized.action_sequence.steps) == 1
-    assert normalized.action_sequence.steps[0].intent == "Обыскать шкаф"
-    assert normalized.resolution == "sequence"
+    assert len(plan.action_sequence.steps) == 1
+    assert plan.action_sequence.steps[0].intent == "Обыскать шкаф"
+    assert plan.addressed_response_requested is True
 
 
-def test_player_premise_cannot_create_unsolicited_npc() -> None:
-    plan = _base_plan(
-        npc_introductions=[
-            PlannedNpcIntroduction(
-                canonical_name="Символ",
-                role="странный символ на двери",
-                reason="Игрок упомянул символ в своём описании.",
-            )
-        ]
-    )
+def test_person_vs_object_and_unsolicited_contact_meaning_belongs_to_semantic_reviewer() -> None:
+    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
-    issues = systemless_contract_issues(
-        plan,
-        "Осматриваю дверь, на которой, по словам свидетеля, был странный символ.",
-    )
-
-    assert any(
-        "new physical NPC introductions are not authorized" in issue
-        for issue in issues
-    )
-
-
-def test_directly_sought_unknown_contact_may_still_be_introduced() -> None:
-    plan = _base_plan(
-        npc_introductions=[
-            PlannedNpcIntroduction(
-                canonical_name="Прохожий",
-                role="прохожий",
-                temporary_name=True,
-                reason="Игрок прямо расспрашивает прохожего.",
-            )
-        ]
-    )
-
-    issues = systemless_contract_issues(
-        plan,
-        "Расспрашиваю прохожего о старом особняке.",
-    )
-
-    assert not any(
-        "new physical NPC introductions are not authorized" in issue
-        for issue in issues
-    )
+    assert "CONTACT/IDENTITY" in prompt
+    assert "previously" in prompt
+    assert "unknown physical responder" in prompt
+    assert "npc_introductions" in prompt
+    assert "Do not use keyword lists" in prompt
 
 
 def test_location_transition_cannot_resolve_to_current_physical_location() -> None:
