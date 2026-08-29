@@ -16,14 +16,18 @@ flowchart LR
     CLI[CLI]
     API[FastAPI]
     App[GameApplication]
+    Memory[PlayerMemoryQuery]
     Runtime[install_runtime]
     DB[(SQLite)]
 
     Player --> GUI --> API --> App
     Player --> CLI --> App
+    App --> Memory
     App --> Runtime
     App --> DB
 ```
+
+Player-specific projections являются query services, а не отдельными subclasses application boundary. `/facts`, например, использует `PlayerMemoryQuery`, который объединяет durable facts и beliefs героя.
 
 Клиент не должен сам менять Scene/Location/participants или обходить use-case boundary.
 
@@ -163,10 +167,14 @@ phase:  received | planned | prepared | narrated | published | post_turn_done | 
 
 Один typed `TurnAuthority` — handoff между semantic control plane и presentation layer. Он содержит exact player input, actor identity, scene disposition, source/target location, present/known-absent characters, allowed new NPCs/arrivals, action sequence, resolution, observable consequences и narration constraints.
 
+`TurnAuthorityService` является assembler. Input-routing actor resolution принадлежит `ActorResolver`, а identity/presence classification planned NPC introductions — `NpcIntroductionResolver`. Последний bulk-load'ит physical character state, поэтому authority assembly не делает N+1 `get_character()` по всему roster.
+
 | Concern | Owner |
 |---|---|
 | voluntary protagonist action/dialogue | human player |
 | intended resolution | Planner |
+| addressed actor provenance | `ActorResolver` |
+| NPC identity/arrival classification | `NpcIntroductionResolver` |
 | movement/Scene/Location | deterministic executors |
 | physical presence mutation | `PresenceService` |
 | physical state reads/invariants | `SceneStateService` |
@@ -177,7 +185,13 @@ phase:  received | planned | prepared | narrated | published | post_turn_done | 
 
 ## 8. ContextCompiler
 
-Compiler собирает authoritative Scene/Location/time/participants/exits, active theses, actor-scoped cards/facts/beliefs/relationships, transient narrative details, relevant history, current input и auditable token-budget metadata.
+Production `ContextCompiler` использует composition, а не legacy inheritance. Он объединяет три явных слоя:
+
+1. `CoreContextCompiler` — data selection/token budgeting;
+2. versioned `PromptPolicy` — narrator/player ownership contracts;
+3. ordered `ContextPipeline` providers — structured scene state и transient narrative details.
+
+Compiler собирает authoritative Scene/Location/time/participants/exits, active theses, actor-scoped cards/facts/beliefs/relationships, transient narrative details, relevant history, current input и auditable token-budget metadata. `prompt_policy_version` сохраняется в metadata каждого compiled context.
 
 Planner context компилируется до structured execution. Если prepared state изменил scene/presence/NPC state, Narrator context компилируется повторно после materialization. Поэтому `runtime_manifest()` явно различает `compile_planner_context` и `compile_narrator_context`.
 
@@ -190,11 +204,13 @@ generate draft
 → repetition guard
 → deterministic agency checks
 → authority validator
-→ optional targeted repair
-→ second validation
+→ optional surgical/model repair candidate
+→ mandatory second validation
 → deterministic presentation containment if needed
-→ publish
+→ publication trust boundary
 ```
+
+`NarrationPublicationGuard` не доверяет rejected prose. Surgical repair helper может только создать untrusted candidate; прямой publish возможен лишь после отдельного validator pass. Иначе публикуется deterministic projection из `TurnAuthority`.
 
 Narrator не может менять outcome, перемещать персонажей вне structured transition, создавать незапланированного физического NPC или добавлять voluntary protagonist action/thought/emotion.
 
@@ -202,17 +218,19 @@ Narrator не может менять outcome, перемещать персон
 
 Scene != Location. Scene хранит активный драматический контекст; Location — физическое место/иерархия мест.
 
-`PresenceService` — единственный implementation owner для mutations пары `SceneParticipant` + `Character.current_location_id`. Старые repository APIs `add_participant/remove_participant` оставлены как compatibility facades и делегируют ему.
+`PresenceService` — единственный implementation owner для mutations пары `SceneParticipant` + `Character.current_location_id`. Старые repository APIs `add_participant/remove_participant` оставлены только как compatibility facades и делегируют ему. `GameApplication` и `SceneLifecycleService` используют `PresenceService` напрямую.
+
+`SceneParticipant` на completed scenes хранит historical scene roster и не удаляется при перемещении. Текущее физическое положение определяется `Character.current_location_id` и active scene. Это позволяет bridge/undo/debugger видеть, кто действительно участвовал в прошлой сцене, не принимая historical membership за текущую physical presence.
 
 `SceneStateService` остаётся read model + invariant checker.
 
 Основные инварианты:
 
 - у campaign одна authoritative current Scene;
-- current Scene связана с Location;
-- player `current_location_id` совпадает с active Scene Location;
-- movement проходит через structured authority;
-- move удаляет stale participation на другой physical Location;
+- structured active Scene, если у неё есть Location, согласована с physical state;
+- player `current_location_id` совпадает с active Scene Location для structured scenes;
+- movement проходит через structured authority или явную admin operation;
+- historical SceneParticipant не является разрешением на физическое присутствие сейчас;
 - real identity ambiguity fail-closed;
 - NPC не телепортируется между Locations без structured movement.
 
@@ -223,9 +241,10 @@ Actor-scoped turn использует выбранного physically-present N
 New NPC protocol:
 
 1. Planner создаёт typed introduction;
-2. authority разрешает introduction/arrival;
-3. materializer создаёт structured character/presence;
-4. Narrator рендерит уже разрешённый факт.
+2. `NpcIntroductionResolver` классифицирует new identity / existing local arrival / invalid remote appearance;
+3. authority разрешает introduction/arrival;
+4. materializer создаёт structured character/presence;
+5. Narrator рендерит уже разрешённый факт.
 
 Generic direct contact имеет binary structured outcome: typed responder либо explicit no-contact. Positive prose с отсутствующей identity — invalid handoff.
 
@@ -293,8 +312,8 @@ Parity tests должны падать, если entrypoint случайно з�
 
 ## 18. Оставшийся technical debt
 
-1. compatibility guards всё ещё меняют часть public extension points; их следует продолжать переносить в explicit owners;
-2. `ContextCompiler` всё ещё наследуется от legacy base compiler — следующий крупный composition cleanup;
+1. семь compatibility guards всё ещё меняют часть public extension points; их следует продолжать переносить в explicit owners небольшими regression-backed изменениями;
+2. `CoreContextCompiler` всё ещё содержит большой data-selection implementation; production больше от него не наследуется, но его внутренности стоит со временем дробить по read-model responsibilities;
 3. raw `NarrationValidationRun` audit не полностью представлен в playtest trace;
 4. per-turn token budget breakdown разнесён между context metadata и provider telemetry;
 5. `/DM` нуждается в отдельной player-facing sanitization boundary;
