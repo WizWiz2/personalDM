@@ -6,35 +6,45 @@ import pytest
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.services.role_model_router import ModelRole, RoleModelSelection
-from app.services.turn_authority_planner import TurnAuthorityPlanner
+from app.services.turn_authority_planner import (
+    CoordinatedTurnPlan,
+    SemanticPlanReview,
+    TurnAuthorityPlanner,
+)
 
 pytestmark = pytest.mark.interagent_contract_enforced
 
 
 class _RepairingPlannerRouter:
     def __init__(self):
-        self.calls = 0
+        self.plan_calls = 0
+        self.review_calls = 0
 
-    async def generate_json(self, provider, selection, messages, **kwargs):
-        self.calls += 1
-        if self.calls == 1:
+    async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+        if response_model is SemanticPlanReview:
+            self.review_calls += 1
+            if self.review_calls == 1:
+                return {
+                    "verdict": "repair_required",
+                    "summary": "Контакт разрешён положительно, но responder не типизирован.",
+                    "issues": ["Положительный responder должен быть в npc_introductions."],
+                }
+            return {"verdict": "pass", "summary": "Исправлено.", "issues": []}
+
+        assert response_model is CoordinatedTurnPlan
+        self.plan_calls += 1
+        if self.plan_calls == 1:
             return {
                 "player_intent": "Постучать и дождаться ответа.",
                 "resolution": "observation",
-                "scene_disposition": "stay",
                 "npc_introductions": [],
                 "observable_consequences": ["Стук разносится за дверью."],
-                "character_beats": [],
-                "canon_constraints": [],
-                "new_fact_candidates": [],
-                "narration_guidance": [],
-                "ending_hook": "",
             }
-        assert "[PLAN CONTRACT REPAIR]" in messages[-1].content
+
+        assert "[PLAN SEMANTIC REPAIR]" in messages[-1].content
         return {
             "player_intent": "Постучать и дождаться ответа.",
             "resolution": "conversation",
-            "scene_disposition": "stay",
             "npc_introductions": [
                 {
                     "canonical_name": "Дежурный фабрики",
@@ -47,10 +57,6 @@ class _RepairingPlannerRouter:
                 }
             ],
             "observable_consequences": ["На стук дверь открывает Дежурный фабрики."],
-            "character_beats": [],
-            "canon_constraints": [],
-            "new_fact_candidates": [],
-            "narration_guidance": [],
             "ending_hook": "Дежурный ждёт вопроса.",
         }
 
@@ -77,7 +83,7 @@ def _selection():
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_contact_plan_gets_targeted_contract_repair():
+async def test_ambiguous_contact_plan_gets_targeted_semantic_repair():
     router = _RepairingPlannerRouter()
     planner = TurnAuthorityPlanner(router)
 
@@ -89,12 +95,7 @@ async def test_ambiguous_contact_plan_gets_targeted_contract_repair():
         ],
     )
 
-    assert router.calls == 2
-    assert [npc.canonical_name for npc in plan.npc_introductions] == [
-        "Дежурный фабрики"
-    ]
+    assert router.plan_calls == 2
+    assert router.review_calls == 2
+    assert [npc.canonical_name for npc in plan.npc_introductions] == ["Дежурный фабрики"]
     assert "открывает" in plan.observable_consequences[0]
-    assert TurnAuthorityPlanner.contract_issues(
-        plan,
-        "Подхожу к двери и трижды стучу.",
-    ) == []
