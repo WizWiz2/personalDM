@@ -32,6 +32,10 @@ class TurnRunner(TurnSaga):
 
     @staticmethod
     def _addressed_character_id(turn_create: TurnCreate) -> UUID | None:
+        from app.services.systemless_authority_guard import input_uses_addressed_character
+
+        if not input_uses_addressed_character(str(turn_create.content or "")):
+            return None
         snapshot = turn_create.context_snapshot
         if not isinstance(snapshot, dict):
             return None
@@ -144,10 +148,11 @@ class TurnRunner(TurnSaga):
         scene_id,
         max_budget_override,
     ):
-        addressed_id = self._addressed_character_id(turn_create)
+        # Sticky `/talk` is input routing only. Response ownership is carried by typed TurnAuthority,
+        # so narrator context stays actor-neutral after structured execution.
         messages, metadata = await compiler.compile_context(
             campaign_id=campaign_id,
-            acting_character_id=addressed_id,
+            acting_character_id=None,
             scene_id=scene_id,
             current_user_content=turn_create.content,
             max_budget_override=max_budget_override,
