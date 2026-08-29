@@ -25,30 +25,21 @@ def _authority(*, moved: bool = False) -> TurnAuthority:
     )
 
 
-def test_round26_t5_rejects_morg_arrival_when_authority_stays():
+def test_movement_meaning_is_owned_by_semantic_validator_not_word_matching():
     result = TurnAuthorityValidator.apply_deterministic_movement_surface(
         _passed(),
         _authority(moved=False),
         "Виктор Соколов движется к массивному зданию городского морга.",
     )
 
-    assert result.verdict == "repair_required"
-    violation = next(item for item in result.violations if item.violation_type == "invalid_movement")
-    assert "городского морга" in violation.evidence
+    assert result.verdict == "pass"
+    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
+    assert "MOVEMENT/TIME" in prompt
+    assert "true scene transition" in prompt
+    assert "meaning, not vocabulary" in prompt
 
 
-def test_round26_t6_rejects_return_to_office_when_authority_stays():
-    result = TurnAuthorityValidator.apply_deterministic_movement_surface(
-        _passed(),
-        _authority(moved=False),
-        "Виктор Соколов возвращается к старому офису и толкает дверь.",
-    )
-
-    assert result.verdict == "repair_required"
-    assert any(item.violation_type == "invalid_movement" for item in result.violations)
-
-
-def test_local_movement_inside_current_scene_is_not_location_transition():
+def test_local_movement_inside_current_scene_is_not_deterministically_reclassified():
     result = TurnAuthorityValidator.apply_deterministic_movement_surface(
         _passed(),
         _authority(moved=False),
@@ -59,18 +50,15 @@ def test_local_movement_inside_current_scene_is_not_location_transition():
     assert result.violations == []
 
 
-def test_real_structured_transition_allows_arrival_narration():
-    result = TurnAuthorityValidator.apply_deterministic_movement_surface(
-        _passed(),
-        _authority(moved=True),
-        "Виктор Соколов прибывает к городскому моргу.",
-    )
+def test_real_structured_transition_remains_machine_visible():
+    authority = _authority(moved=True)
 
-    assert result.verdict == "pass"
-    assert result.violations == []
+    assert authority.scene_disposition == "location_transition"
+    assert authority.transition_type == "location_transition"
+    assert authority.source_location_path != authority.target_location_path
 
 
-def test_npc_movement_does_not_fake_player_location_divergence():
+def test_npc_movement_is_not_misclassified_by_deterministic_player_surface_code():
     result = TurnAuthorityValidator.apply_deterministic_movement_surface(
         _passed(),
         _authority(moved=False),
