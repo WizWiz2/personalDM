@@ -246,7 +246,10 @@ class NarrationPublicationGuard:
                 if destination:
                     cls._append_unique(parts, f"Путь приводит к {destination}")
 
-        if authority.acting_character_id:
+        actor_scoped = authority.scene_disposition == "actor_turn" or bool(
+            authority.acting_character_id
+        )
+        if actor_scoped:
             for beat in authority.character_beats:
                 safe = cls._player_facing_fragment(beat)
                 if safe:
