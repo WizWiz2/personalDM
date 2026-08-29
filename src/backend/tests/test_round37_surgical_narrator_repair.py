@@ -14,7 +14,6 @@ from app.models.turn_authority import TurnAuthority
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.campaign_service import CampaignService
 from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.narrator_quality_recovery_guard import narrator_ownership_violations
 from app.services.role_model_router import RoleModelRouter
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
@@ -58,38 +57,26 @@ def _rejected(evidence: str, correction: str = "Удалить нарушени�
     )
 
 
-def test_physical_paraphrase_of_authorized_action_is_not_lexically_rejected():
-    authority = _authority(
-        player_input="Вхожу в шатёр.",
-        scene_disposition="location_transition",
-        transition_type="location_transition",
-        source_location_path=["перевал", "лагерь"],
-        target_location_path=["перевал", "лагерь", "шатёр"],
-    )
-    candidate = "Вы делаете шаг внутрь шатра. Внутри тесно и пахнет сухой тканью."
+def test_physical_paraphrase_of_authorized_action_is_semantic_validator_policy():
+    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
 
-    assert narrator_ownership_violations(authority, candidate) == []
+    assert "Physical realization of an action already completed by authority is allowed" in prompt
+    assert "meaning, not vocabulary" in prompt
 
 
-def test_high_confidence_internal_state_is_still_rejected():
-    authority = _authority(player_input="Осматриваюсь внутри.")
-    candidate = "Вы понимаете, что нужно остаться, и чувствуете тревогу."
+def test_internal_state_and_sensory_perception_are_semantically_distinguished():
+    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
 
-    violations = narrator_ownership_violations(authority, candidate)
-
-    assert violations
-    assert violations[0].violation_type == "player_agency"
-    assert "понимаете" in violations[0].evidence.casefold()
+    assert "PERCEPTION IS NOT INTERNAL AGENCY" in prompt
+    assert "thoughts, emotions, intentions" in prompt
+    assert "чувствовать" in prompt
 
 
-def test_general_question_does_not_let_narrator_choose_tamar_as_addressee():
-    authority = _authority()
-    candidate = "Вы обращаетесь к Тамар. Она смотрит в сторону тропы."
+def test_general_question_addressee_is_not_selected_by_lexical_runtime():
+    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
 
-    violations = narrator_ownership_violations(authority, candidate)
-
-    assert violations
-    assert any("обращаетесь к Тамар" in item.evidence for item in violations)
+    assert "grammatical subject and scene context" in prompt
+    assert "word/stem whitelist or blacklist" in prompt
 
 
 def test_present_tamar_is_protected_from_false_absent_character_verdict():
