@@ -8,6 +8,8 @@ Create Date: 2026-08-02
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_compat import adopt_existing_table
+
 
 revision = "c7d8e9f0a1b2"
 down_revision = "b6f7c8d9e0a1"
@@ -16,48 +18,101 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    runtime_adopted = adopt_existing_table(
         "scene_runtime_states",
-        sa.Column("scene_id", sa.String(length=36), nullable=False),
-        sa.Column("world_time_label", sa.String(length=255), nullable=True),
-        sa.Column("world_time_order", sa.Integer(), nullable=False),
-        sa.Column("scene_goal", sa.Text(), nullable=True),
-        sa.Column("active_conflict", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(["scene_id"], ["scenes.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("scene_id"),
+        required_columns={
+            "scene_id",
+            "world_time_label",
+            "world_time_order",
+            "scene_goal",
+            "active_conflict",
+            "created_at",
+            "updated_at",
+        },
+        primary_key={"scene_id"},
+        non_nullable={"scene_id", "world_time_order", "created_at", "updated_at"},
+        foreign_keys={(("scene_id",), "scenes", ("id",))},
     )
-    op.create_table(
+    if not runtime_adopted:
+        op.create_table(
+            "scene_runtime_states",
+            sa.Column("scene_id", sa.String(length=36), nullable=False),
+            sa.Column("world_time_label", sa.String(length=255), nullable=True),
+            sa.Column("world_time_order", sa.Integer(), nullable=False),
+            sa.Column("scene_goal", sa.Text(), nullable=True),
+            sa.Column("active_conflict", sa.Text(), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("updated_at", sa.DateTime(), nullable=False),
+            sa.ForeignKeyConstraint(["scene_id"], ["scenes.id"], ondelete="CASCADE"),
+            sa.PrimaryKeyConstraint("scene_id"),
+        )
+
+    exits_adopted = adopt_existing_table(
         "location_exits",
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("campaign_id", sa.String(length=36), nullable=False),
-        sa.Column("from_location_id", sa.String(length=36), nullable=False),
-        sa.Column("to_location_id", sa.String(length=36), nullable=False),
-        sa.Column("label", sa.String(length=255), nullable=False),
-        sa.Column("direction", sa.String(length=100), nullable=True),
-        sa.Column("travel_time", sa.String(length=100), nullable=True),
-        sa.Column("access_rule", sa.Text(), nullable=True),
-        sa.Column("discovered", sa.Boolean(), nullable=False),
-        sa.Column("active", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["campaign_id"], ["campaigns.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["from_location_id"], ["entities.id"], ondelete="CASCADE"
-        ),
-        sa.ForeignKeyConstraint(
-            ["to_location_id"], ["entities.id"], ondelete="CASCADE"
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
+        required_columns={
+            "id",
+            "campaign_id",
             "from_location_id",
             "to_location_id",
-            name="uq_location_exit_direction",
-        ),
+            "label",
+            "direction",
+            "travel_time",
+            "access_rule",
+            "discovered",
+            "active",
+            "created_at",
+            "updated_at",
+        },
+        primary_key={"id"},
+        non_nullable={
+            "id",
+            "campaign_id",
+            "from_location_id",
+            "to_location_id",
+            "label",
+            "discovered",
+            "active",
+            "created_at",
+            "updated_at",
+        },
+        foreign_keys={
+            (("campaign_id",), "campaigns", ("id",)),
+            (("from_location_id",), "entities", ("id",)),
+            (("to_location_id",), "entities", ("id",)),
+        },
+        unique_constraints={("from_location_id", "to_location_id")},
     )
+    if not exits_adopted:
+        op.create_table(
+            "location_exits",
+            sa.Column("id", sa.String(length=36), nullable=False),
+            sa.Column("campaign_id", sa.String(length=36), nullable=False),
+            sa.Column("from_location_id", sa.String(length=36), nullable=False),
+            sa.Column("to_location_id", sa.String(length=36), nullable=False),
+            sa.Column("label", sa.String(length=255), nullable=False),
+            sa.Column("direction", sa.String(length=100), nullable=True),
+            sa.Column("travel_time", sa.String(length=100), nullable=True),
+            sa.Column("access_rule", sa.Text(), nullable=True),
+            sa.Column("discovered", sa.Boolean(), nullable=False),
+            sa.Column("active", sa.Boolean(), nullable=False),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("updated_at", sa.DateTime(), nullable=False),
+            sa.ForeignKeyConstraint(
+                ["campaign_id"], ["campaigns.id"], ondelete="CASCADE"
+            ),
+            sa.ForeignKeyConstraint(
+                ["from_location_id"], ["entities.id"], ondelete="CASCADE"
+            ),
+            sa.ForeignKeyConstraint(
+                ["to_location_id"], ["entities.id"], ondelete="CASCADE"
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint(
+                "from_location_id",
+                "to_location_id",
+                name="uq_location_exit_direction",
+            ),
+        )
 
     op.execute(
         sa.text(
@@ -82,6 +137,11 @@ def upgrade() -> None:
                 CURRENT_TIMESTAMP,
                 CURRENT_TIMESTAMP
             FROM scenes
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM scene_runtime_states existing
+                WHERE existing.scene_id = scenes.id
+            )
             """
         )
     )
