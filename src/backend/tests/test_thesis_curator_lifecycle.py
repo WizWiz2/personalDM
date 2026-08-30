@@ -26,7 +26,6 @@ class FakeSceneRepository:
 
     async def create_thesis(self, scene_id, data, source_turn_id=None):
         self.created.append((scene_id, data, source_turn_id))
-        return None
 
 
 class FakeSession:
