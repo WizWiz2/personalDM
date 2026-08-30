@@ -202,6 +202,14 @@ class SessionZeroInterviewModelDecision(BaseModel):
     """One natural agent reply plus hidden state-management tool calls."""
 
     assistant_message: str = Field(min_length=1)
+    conversation_disposition: Literal["continue", "start_game"] = Field(
+        description=(
+            "Semantic handoff decision for this turn. Use start_game whenever the player "
+            "meaningfully asks to begin now, regardless of exact wording, or when the session "
+            "zero is already creatively sufficient. Use continue only when another conversational "
+            "turn is genuinely useful."
+        )
+    )
     tool_calls: list[SessionZeroAgentToolCall] = Field(default_factory=list)
     question_topics: list[str] = Field(default_factory=list)
     summary: str | None = None
@@ -239,38 +247,36 @@ class SessionZeroInterviewModelDecision(BaseModel):
             calls.append({"name": "update_session_zero", "patch": legacy_patch})
         if converted.get("ready_to_finalize"):
             calls.append({"name": "finalize_session_zero"})
+
+        finalize_present = any(
+            isinstance(item, dict)
+            and (item.get("name") or item.get("tool"))
+            in {"finalize_session_zero", "finalize", "complete_session_zero"}
+            for item in calls
+        )
+        if "conversation_disposition" not in converted:
+            # Legacy fixtures/providers had no explicit semantic handoff field. Preserve their
+            # behavior without making free text a source of authority.
+            converted["conversation_disposition"] = (
+                "start_game" if finalize_present else "continue"
+            )
+        elif converted.get("conversation_disposition") == "start_game" and not finalize_present:
+            # The semantic decision is authoritative. Tool syntax is merely the execution detail.
+            calls.append({"name": "finalize_session_zero"})
+            finalize_present = True
         converted["tool_calls"] = calls
 
         normalized_message = converted.get("assistant_message")
         if not isinstance(normalized_message, str) or not normalized_message.strip():
             converted["assistant_message"] = (
-                "Основа кампании собрана. Проверь итоговую сводку перед стартом."
-                if any(
-                    isinstance(item, dict)
-                    and (item.get("name") or item.get("tool"))
-                    in {"finalize_session_zero", "finalize"}
-                    for item in calls
-                )
+                "Основа кампании собрана. Переходим к первой сцене."
+                if converted.get("conversation_disposition") == "start_game"
                 else (
                     "Я сохранил твой ответ. Что тебе хочется определить дальше — "
                     "героя, мир или стартовую ситуацию?"
                 )
             )
         return converted
-
-    @model_validator(mode="after")
-    def keep_conversation_open_until_finalize(self) -> SessionZeroInterviewModelDecision:
-        """A Session Zero DM must keep leading until it explicitly starts the game."""
-        if self.ready_to_finalize:
-            return self
-        message = self.assistant_message.strip()
-        if "?" not in message:
-            separator = " " if message else ""
-            self.assistant_message = (
-                f"{message}{separator}Что тебе хочется добавить или уточнить дальше — "
-                "про героя, мир или начало приключения?"
-            )
-        return self
 
     @property
     def patch(self) -> SessionZeroInterviewPatch:
