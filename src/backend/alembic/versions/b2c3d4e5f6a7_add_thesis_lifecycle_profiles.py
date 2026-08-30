@@ -8,6 +8,8 @@ Create Date: 2026-08-02
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_compat import adopt_existing_table, ensure_index
+
 
 revision = "b2c3d4e5f6a7"
 down_revision = "a1b2c3d4e5f6"
@@ -29,38 +31,61 @@ CASE thesis_type
 END
 """
 
+_TABLE = "thesis_lifecycle_profiles"
+
 
 def upgrade() -> None:
-    op.create_table(
-        "thesis_lifecycle_profiles",
-        sa.Column("thesis_id", sa.String(length=36), nullable=False),
-        sa.Column("semantic_key", sa.String(length=160), nullable=False),
-        sa.Column("ttl_turns", sa.Integer(), nullable=False),
-        sa.Column("last_reinforced_turn_id", sa.String(length=36), nullable=True),
-        sa.Column("closure_reason", sa.String(length=100), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.CheckConstraint(
-            "ttl_turns >= 1 AND ttl_turns <= 50",
-            name="ck_thesis_lifecycle_ttl",
-        ),
-        sa.ForeignKeyConstraint(
-            ["thesis_id"],
-            ["scene_theses.id"],
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["last_reinforced_turn_id"],
-            ["turns.id"],
-            ondelete="SET NULL",
-        ),
-        sa.PrimaryKeyConstraint("thesis_id"),
+    adopted = adopt_existing_table(
+        _TABLE,
+        required_columns={
+            "thesis_id",
+            "semantic_key",
+            "ttl_turns",
+            "last_reinforced_turn_id",
+            "closure_reason",
+            "created_at",
+            "updated_at",
+        },
+        primary_key={"thesis_id"},
+        non_nullable={
+            "thesis_id",
+            "semantic_key",
+            "ttl_turns",
+            "created_at",
+            "updated_at",
+        },
+        foreign_keys={
+            (("thesis_id",), "scene_theses", ("id",)),
+            (("last_reinforced_turn_id",), "turns", ("id",)),
+        },
     )
-    op.create_index(
-        op.f("ix_thesis_lifecycle_profiles_last_reinforced_turn_id"),
-        "thesis_lifecycle_profiles",
+    if not adopted:
+        op.create_table(
+            _TABLE,
+            sa.Column("thesis_id", sa.String(length=36), nullable=False),
+            sa.Column("semantic_key", sa.String(length=160), nullable=False),
+            sa.Column("ttl_turns", sa.Integer(), nullable=False),
+            sa.Column("last_reinforced_turn_id", sa.String(length=36), nullable=True),
+            sa.Column("closure_reason", sa.String(length=100), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("updated_at", sa.DateTime(), nullable=False),
+            sa.CheckConstraint(
+                "ttl_turns >= 1 AND ttl_turns <= 50",
+                name="ck_thesis_lifecycle_ttl",
+            ),
+            sa.ForeignKeyConstraint(
+                ["thesis_id"], ["scene_theses.id"], ondelete="CASCADE"
+            ),
+            sa.ForeignKeyConstraint(
+                ["last_reinforced_turn_id"], ["turns.id"], ondelete="SET NULL"
+            ),
+            sa.PrimaryKeyConstraint("thesis_id"),
+        )
+
+    ensure_index(
+        _TABLE,
+        "ix_thesis_lifecycle_profiles_last_reinforced_turn_id",
         ["last_reinforced_turn_id"],
-        unique=False,
     )
     op.execute(
         sa.text(
@@ -75,14 +100,19 @@ def upgrade() -> None:
                 updated_at
             )
             SELECT
-                id,
-                substr(lower(trim(text)), 1, 160),
+                scene_theses.id,
+                substr(lower(trim(scene_theses.text)), 1, 160),
                 {_TTL_CASE},
-                source_turn_id,
-                CASE WHEN status = 'active' THEN NULL ELSE status END,
+                scene_theses.source_turn_id,
+                CASE WHEN scene_theses.status = 'active' THEN NULL ELSE scene_theses.status END,
                 CURRENT_TIMESTAMP,
                 CURRENT_TIMESTAMP
             FROM scene_theses
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM thesis_lifecycle_profiles existing
+                WHERE existing.thesis_id = scene_theses.id
+            )
             """
         )
     )
@@ -90,7 +120,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index(
-        op.f("ix_thesis_lifecycle_profiles_last_reinforced_turn_id"),
-        table_name="thesis_lifecycle_profiles",
+        "ix_thesis_lifecycle_profiles_last_reinforced_turn_id",
+        table_name=_TABLE,
     )
-    op.drop_table("thesis_lifecycle_profiles")
+    op.drop_table(_TABLE)
