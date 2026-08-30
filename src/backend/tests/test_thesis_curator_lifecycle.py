@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.services.memory_operations import MemoryOperationsService
 from app.services.thesis_curator import ThesisCurator
 
 
@@ -25,11 +26,15 @@ class FakeSceneRepository:
 
     async def create_thesis(self, scene_id, data, source_turn_id=None):
         self.created.append((scene_id, data, source_turn_id))
-        return None
 
 
 class FakeSession:
     async def flush(self):
+        return None
+
+
+class AuditableFakeSession(FakeSession):
+    async def execute(self, *_args, **_kwargs):
         return None
 
 
@@ -89,3 +94,40 @@ async def test_close_scene_resolves_pinned_and_unpinned_working_memory():
     assert count == 2
     assert pinned.status == "resolved"
     assert mutable.status == "resolved"
+
+
+@pytest.mark.asyncio
+async def test_curator_records_reconcile_lifecycle_without_runtime_patch(monkeypatch):
+    calls = []
+
+    async def record_reconcile(self, scene_id, source_turn_id, desired):
+        calls.append((scene_id, source_turn_id, desired))
+
+    monkeypatch.setattr(MemoryOperationsService, "record_reconcile", record_reconcile)
+    scene_id = uuid4()
+    source_turn_id = uuid4()
+    repo = FakeSceneRepository([thesis()])
+    curator = ThesisCurator(AuditableFakeSession())
+    curator._scene_repo = repo
+
+    await curator.reconcile(scene_id, source_turn_id, desired=[])
+
+    assert calls == [(scene_id, source_turn_id, [])]
+
+
+@pytest.mark.asyncio
+async def test_curator_records_scene_closure_without_runtime_patch(monkeypatch):
+    calls = []
+
+    async def record_closed_scene(self, scene_id):
+        calls.append(scene_id)
+
+    monkeypatch.setattr(MemoryOperationsService, "record_closed_scene", record_closed_scene)
+    scene_id = uuid4()
+    repo = FakeSceneRepository([thesis(pinned=True), thesis()])
+    curator = ThesisCurator(AuditableFakeSession())
+    curator._scene_repo = repo
+
+    await curator.close_scene(scene_id)
+
+    assert calls == [scene_id]
