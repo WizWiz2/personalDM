@@ -15,6 +15,7 @@ on:
       - "src/backend/app/main.py"
       - "src/backend/alembic/**"
       - "src/backend/tests/test_memory_operations.py"
+      - "src/backend/tests/test_thesis_curator_lifecycle.py"
       - "src/backend/tests/test_generative_simulation_overhaul.py"
       - ".github/workflows/memory-operations-tests.yml"
 
@@ -47,6 +48,7 @@ jobs:
             tests/test_memory_operations.py \
             tests/test_memory_taxonomy.py \
             tests/test_thesis_curator.py \
+            tests/test_thesis_curator_lifecycle.py \
             tests/test_generative_simulation_overhaul.py \
             --tb=short
       - name: Lint changed files
@@ -58,4 +60,5 @@ jobs:
             app/services/memory_operations.py \
             app/services/thesis_curator.py \
             app/main.py \
-            tests/test_memory_operations.py
+            tests/test_memory_operations.py \
+            tests/test_thesis_curator_lifecycle.py
