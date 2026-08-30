@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Scene
+from app.db.tables import Campaign, Character, Entity, Item, Scene
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
@@ -186,6 +186,15 @@ class ActionSequenceExecutor:
                     str(current_scene_id) if current_scene_id else None
                 )
 
+            if step.action_type == "inventory":
+                await self._apply_inventory_step(
+                    campaign_id,
+                    current_scene_id,
+                    trigger_turn_id,
+                    step,
+                    db_step,
+                )
+
             db_step.status = "completed"
             sequence.completed_steps += 1
 
@@ -194,6 +203,54 @@ class ActionSequenceExecutor:
         )
         await self._session.flush()
         return await self.get(UUID(sequence.id))
+
+    async def _apply_inventory_step(
+        self,
+        campaign_id: UUID,
+        scene_id: UUID | None,
+        trigger_turn_id: UUID,
+        step,
+        db_step: ActionStep,
+    ) -> None:
+        """Apply a planner-resolved item transfer and record a compensating snapshot."""
+        if step.item_id is None or step.inventory_operation is None:
+            raise ValueError("Inventory step is missing its typed item operation")
+        item = await self._session.get(Item, str(step.item_id))
+        entity = await self._session.get(Entity, str(step.item_id))
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        if not item or not entity or entity.campaign_id != str(campaign_id):
+            raise ValueError("Inventory step references an item outside the campaign")
+        if not campaign or not campaign.player_character_id:
+            raise ValueError("Inventory step has no player character")
+
+        location_id = (
+            await self._scenes.get_location_id(scene_id) if scene_id else None
+        )
+        operation = step.inventory_operation
+        if operation == "take":
+            if item.current_location_id != (str(location_id) if location_id else None):
+                raise ValueError("Item is not physically present in the current scene")
+            result_owner, result_location = str(campaign.player_character_id), None
+        elif operation == "drop" or operation == "place":
+            if not location_id:
+                raise ValueError("Cannot place an item in a scene without a location")
+            result_owner, result_location = None, str(location_id)
+        else:  # give
+            target = await self._session.get(Entity, str(step.inventory_target_id))
+            if not target or target.campaign_id != str(campaign_id):
+                raise ValueError("Inventory transfer target is outside the campaign")
+            result_owner, result_location = str(step.inventory_target_id), None
+
+        db_step.item_id = str(step.item_id)
+        db_step.item_name = entity.canonical_name
+        db_step.item_operation = operation
+        db_step.item_previous_owner_id = item.current_owner_id
+        db_step.item_previous_location_id = item.current_location_id
+        db_step.item_result_owner_id = result_owner
+        db_step.item_result_location_id = result_location
+        item.current_owner_id = result_owner
+        item.current_location_id = result_location
+        await self._session.flush()
 
     async def get(self, sequence_id: UUID) -> ActionSequenceExecution:
         sequence = await self._session.get(ActionSequence, str(sequence_id))
@@ -331,6 +388,11 @@ class ActionSequenceExecutor:
                     )
             if step.status in {"completed", "blocked", "skipped"}:
                 step.status = final_status
+            if step.item_id and step.status == final_status:
+                item = await self._session.get(Item, step.item_id)
+                if item:
+                    item.current_owner_id = step.item_previous_owner_id
+                    item.current_location_id = step.item_previous_location_id
 
         sequence.status = final_status
         sequence.undone_at = datetime.utcnow()
@@ -399,6 +461,18 @@ class ActionSequenceExecutor:
                 )
             else:
                 lines.append(f"{label} -> {step.status.upper()}")
+            if step.status == "completed" and step.item_id:
+                if step.item_result_owner_id:
+                    position = f"owned by entity {step.item_result_owner_id}"
+                elif step.item_result_location_id:
+                    position = f"at location {step.item_result_location_id}"
+                else:
+                    position = "without a recorded physical position"
+                lines.append(
+                    f"   ITEM STATE: {step.item_name or step.item_id} "
+                    f"({step.item_operation or 'transfer'}) is now {position}. "
+                    "This state is authoritative and must not be contradicted."
+                )
         lines.extend(
             [
                 "Hard rules:",
@@ -430,5 +504,20 @@ class ActionSequenceExecutor:
             ),
             target_scene_id=(
                 UUID(step.target_scene_id) if step.target_scene_id else None
+            ),
+            item_id=UUID(step.item_id) if step.item_id else None,
+            item_name=step.item_name,
+            item_operation=step.item_operation,
+            item_previous_owner_id=(
+                UUID(step.item_previous_owner_id) if step.item_previous_owner_id else None
+            ),
+            item_previous_location_id=(
+                UUID(step.item_previous_location_id) if step.item_previous_location_id else None
+            ),
+            item_result_owner_id=(
+                UUID(step.item_result_owner_id) if step.item_result_owner_id else None
+            ),
+            item_result_location_id=(
+                UUID(step.item_result_location_id) if step.item_result_location_id else None
             ),
         )

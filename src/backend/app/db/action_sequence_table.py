@@ -111,6 +111,13 @@ class ActionStep(Base):
         ForeignKey("scenes.id", ondelete="SET NULL"),
         nullable=True,
     )
+    item_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    item_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    item_operation: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    item_previous_owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    item_previous_location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    item_result_owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    item_result_location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

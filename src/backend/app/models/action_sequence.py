@@ -22,6 +22,13 @@ class ExecutedActionStep(BaseModel):
     transition_id: UUID | None = None
     source_scene_id: UUID | None = None
     target_scene_id: UUID | None = None
+    item_id: UUID | None = None
+    item_name: str | None = None
+    item_operation: str | None = None
+    item_previous_owner_id: UUID | None = None
+    item_previous_location_id: UUID | None = None
+    item_result_owner_id: UUID | None = None
+    item_result_location_id: UUID | None = None
 
 
 class ActionSequenceExecution(BaseModel):

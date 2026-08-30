@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -77,6 +78,11 @@ class ActionStepPlan(BaseModel):
     safe_mundane: bool = False
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
+    # Inventory mutations are resolved by entity id, never by a runtime word/substring match.
+    # The planner receives ids for objects physically present in the scene.
+    item_id: UUID | None = None
+    inventory_operation: Literal["take", "drop", "give", "place"] | None = None
+    inventory_target_id: UUID | None = None
     transition: SceneTransitionPlan = Field(default_factory=SceneTransitionPlan)
 
     @model_validator(mode="after")
@@ -87,6 +93,13 @@ class ActionStepPlan(BaseModel):
             raise ValueError("auto_success steps cannot have a blocking_reason")
         if self.resolution == "blocked" and not self.blocking_reason:
             raise ValueError("blocked steps need a blocking_reason")
+        if self.action_type == "inventory" and self.resolution == "auto_success":
+            if self.item_id is None or self.inventory_operation is None:
+                raise ValueError(
+                    "completed inventory steps require item_id and inventory_operation"
+                )
+        if self.inventory_operation == "give" and self.inventory_target_id is None:
+            raise ValueError("give inventory steps require inventory_target_id")
         return self
 
 
@@ -250,6 +263,9 @@ Return only this schema:
         "safe_mundane": false,
         "observable_outcome": null,
         "blocking_reason": null,
+        "item_id": null,
+        "inventory_operation": null,
+        "inventory_target_id": null,
         "transition": {
           "required": false,
           "transition_type": "none|location_transition|time_transition|focus_transition",

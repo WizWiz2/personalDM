@@ -354,7 +354,10 @@ class SceneStateService:
             + (f" ({item.access_rule})" if item.access_rule else "")
             for item in state.available_exits
         ) or "none recorded"
-        objects = ", ".join(state.object_names) or "none recorded"
+        objects = ", ".join(
+            f"{name} [id={object_id}]"
+            for object_id, name in zip(state.object_ids, state.object_names)
+        ) or "none recorded"
         return (
             "[AUTHORITATIVE SCENE STATE]\n"
             f"Scene: {state.scene_title} ({state.scene_status})\n"

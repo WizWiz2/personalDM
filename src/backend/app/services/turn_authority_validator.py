@@ -59,6 +59,10 @@ Return repair_required only for concrete violations:
   authority. Distinguish a natural paraphrase/local body movement from a true scene transition by
   meaning, not vocabulary.
 - OUTCOME: prose contradicts observable_consequences or completed structured execution.
+- ITEM STATE: for a completed inventory step, the `ITEM STATE` record in the structured execution
+  is authoritative. Reject prose that reverses or ignores that transfer (for example, describing
+  an item as falling back to the floor after an authoritative `take`). The correction must preserve
+  the typed resulting ownership/location; do not reinterpret the player's action.
 - CURRENT TURN: prose answers/repeats a previous turn instead of current player_input/current result.
 - COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
 - META LANGUAGE: player-facing prose talks about game/engine causality instead of the fictional
