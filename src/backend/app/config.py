@@ -1,9 +1,11 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.paths import default_data_dir, default_database_url
+
 
 class Settings(BaseSettings):
-    DATABASE_URL: str = "sqlite+aiosqlite:///./data/campaign.db"
-    DATA_DIR: str = "./data"
+    DATABASE_URL: str = default_database_url()
+    DATA_DIR: str = default_data_dir()
 
     # LLM settings (OpenAI-compatible / native Ollama)
     TEXT_PROVIDER: str = "local"
