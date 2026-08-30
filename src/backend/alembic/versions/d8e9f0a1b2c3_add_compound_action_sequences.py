@@ -8,6 +8,8 @@ Create Date: 2026-08-02
 from alembic import op
 import sqlalchemy as sa
 
+from app.db.migration_compat import adopt_existing_table, ensure_index
+
 
 revision = "d8e9f0a1b2c3"
 down_revision = "c7d8e9f0a1b2"
@@ -16,112 +18,166 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
+    sequences_adopted = adopt_existing_table(
         "action_sequences",
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("campaign_id", sa.String(length=36), nullable=False),
-        sa.Column("trigger_turn_id", sa.String(length=36), nullable=False),
-        sa.Column("source_scene_id", sa.String(length=36), nullable=True),
-        sa.Column("final_scene_id", sa.String(length=36), nullable=True),
-        sa.Column("status", sa.String(length=32), nullable=False),
-        sa.Column("summary", sa.Text(), nullable=True),
-        sa.Column("planned_steps", sa.Integer(), nullable=False),
-        sa.Column("completed_steps", sa.Integer(), nullable=False),
-        sa.Column("blocked_step_index", sa.Integer(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.Column("applied_at", sa.DateTime(), nullable=True),
-        sa.Column("undone_at", sa.DateTime(), nullable=True),
-        sa.ForeignKeyConstraint(
-            ["campaign_id"],
-            ["campaigns.id"],
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["trigger_turn_id"],
-            ["turns.id"],
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["source_scene_id"],
-            ["scenes.id"],
-            ondelete="SET NULL",
-        ),
-        sa.ForeignKeyConstraint(
-            ["final_scene_id"],
-            ["scenes.id"],
-            ondelete="SET NULL",
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
+        required_columns={
+            "id",
+            "campaign_id",
             "trigger_turn_id",
-            name="uq_action_sequence_trigger_turn",
-        ),
+            "source_scene_id",
+            "final_scene_id",
+            "status",
+            "summary",
+            "planned_steps",
+            "completed_steps",
+            "blocked_step_index",
+            "created_at",
+            "updated_at",
+            "applied_at",
+            "undone_at",
+        },
+        primary_key={"id"},
+        non_nullable={
+            "id",
+            "campaign_id",
+            "trigger_turn_id",
+            "status",
+            "planned_steps",
+            "completed_steps",
+            "created_at",
+            "updated_at",
+        },
+        foreign_keys={
+            (("campaign_id",), "campaigns", ("id",)),
+            (("trigger_turn_id",), "turns", ("id",)),
+            (("source_scene_id",), "scenes", ("id",)),
+            (("final_scene_id",), "scenes", ("id",)),
+        },
+        unique_constraints={("trigger_turn_id",)},
     )
-    op.create_index(
-        op.f("ix_action_sequences_campaign_id"),
+    if not sequences_adopted:
+        op.create_table(
+            "action_sequences",
+            sa.Column("id", sa.String(length=36), nullable=False),
+            sa.Column("campaign_id", sa.String(length=36), nullable=False),
+            sa.Column("trigger_turn_id", sa.String(length=36), nullable=False),
+            sa.Column("source_scene_id", sa.String(length=36), nullable=True),
+            sa.Column("final_scene_id", sa.String(length=36), nullable=True),
+            sa.Column("status", sa.String(length=32), nullable=False),
+            sa.Column("summary", sa.Text(), nullable=True),
+            sa.Column("planned_steps", sa.Integer(), nullable=False),
+            sa.Column("completed_steps", sa.Integer(), nullable=False),
+            sa.Column("blocked_step_index", sa.Integer(), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("updated_at", sa.DateTime(), nullable=False),
+            sa.Column("applied_at", sa.DateTime(), nullable=True),
+            sa.Column("undone_at", sa.DateTime(), nullable=True),
+            sa.ForeignKeyConstraint(
+                ["campaign_id"], ["campaigns.id"], ondelete="CASCADE"
+            ),
+            sa.ForeignKeyConstraint(
+                ["trigger_turn_id"], ["turns.id"], ondelete="CASCADE"
+            ),
+            sa.ForeignKeyConstraint(
+                ["source_scene_id"], ["scenes.id"], ondelete="SET NULL"
+            ),
+            sa.ForeignKeyConstraint(
+                ["final_scene_id"], ["scenes.id"], ondelete="SET NULL"
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint(
+                "trigger_turn_id",
+                name="uq_action_sequence_trigger_turn",
+            ),
+        )
+    ensure_index(
         "action_sequences",
+        "ix_action_sequences_campaign_id",
         ["campaign_id"],
-        unique=False,
     )
 
-    op.create_table(
+    steps_adopted = adopt_existing_table(
         "action_steps",
-        sa.Column("id", sa.String(length=36), nullable=False),
-        sa.Column("sequence_id", sa.String(length=36), nullable=False),
-        sa.Column("step_index", sa.Integer(), nullable=False),
-        sa.Column("action_type", sa.String(length=50), nullable=False),
-        sa.Column("intent", sa.Text(), nullable=False),
-        sa.Column("resolution", sa.String(length=50), nullable=False),
-        sa.Column("safe_mundane", sa.Boolean(), nullable=False),
-        sa.Column("status", sa.String(length=32), nullable=False),
-        sa.Column("observable_outcome", sa.Text(), nullable=True),
-        sa.Column("blocking_reason", sa.Text(), nullable=True),
-        sa.Column("transition_id", sa.String(length=36), nullable=True),
-        sa.Column("source_scene_id", sa.String(length=36), nullable=True),
-        sa.Column("target_scene_id", sa.String(length=36), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["sequence_id"],
-            ["action_sequences.id"],
-            ondelete="CASCADE",
-        ),
-        sa.ForeignKeyConstraint(
-            ["transition_id"],
-            ["scene_transitions.id"],
-            ondelete="SET NULL",
-        ),
-        sa.ForeignKeyConstraint(
-            ["source_scene_id"],
-            ["scenes.id"],
-            ondelete="SET NULL",
-        ),
-        sa.ForeignKeyConstraint(
-            ["target_scene_id"],
-            ["scenes.id"],
-            ondelete="SET NULL",
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
+        required_columns={
+            "id",
             "sequence_id",
             "step_index",
-            name="uq_action_step_sequence_index",
-        ),
+            "action_type",
+            "intent",
+            "resolution",
+            "safe_mundane",
+            "status",
+            "observable_outcome",
+            "blocking_reason",
+            "transition_id",
+            "source_scene_id",
+            "target_scene_id",
+            "created_at",
+            "updated_at",
+        },
+        primary_key={"id"},
+        non_nullable={
+            "id",
+            "sequence_id",
+            "step_index",
+            "action_type",
+            "intent",
+            "resolution",
+            "safe_mundane",
+            "status",
+            "created_at",
+            "updated_at",
+        },
+        foreign_keys={
+            (("sequence_id",), "action_sequences", ("id",)),
+            (("transition_id",), "scene_transitions", ("id",)),
+            (("source_scene_id",), "scenes", ("id",)),
+            (("target_scene_id",), "scenes", ("id",)),
+        },
+        unique_constraints={("sequence_id", "step_index")},
     )
-    op.create_index(
-        op.f("ix_action_steps_sequence_id"),
-        "action_steps",
-        ["sequence_id"],
-        unique=False,
-    )
+    if not steps_adopted:
+        op.create_table(
+            "action_steps",
+            sa.Column("id", sa.String(length=36), nullable=False),
+            sa.Column("sequence_id", sa.String(length=36), nullable=False),
+            sa.Column("step_index", sa.Integer(), nullable=False),
+            sa.Column("action_type", sa.String(length=50), nullable=False),
+            sa.Column("intent", sa.Text(), nullable=False),
+            sa.Column("resolution", sa.String(length=50), nullable=False),
+            sa.Column("safe_mundane", sa.Boolean(), nullable=False),
+            sa.Column("status", sa.String(length=32), nullable=False),
+            sa.Column("observable_outcome", sa.Text(), nullable=True),
+            sa.Column("blocking_reason", sa.Text(), nullable=True),
+            sa.Column("transition_id", sa.String(length=36), nullable=True),
+            sa.Column("source_scene_id", sa.String(length=36), nullable=True),
+            sa.Column("target_scene_id", sa.String(length=36), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.Column("updated_at", sa.DateTime(), nullable=False),
+            sa.ForeignKeyConstraint(
+                ["sequence_id"], ["action_sequences.id"], ondelete="CASCADE"
+            ),
+            sa.ForeignKeyConstraint(
+                ["transition_id"], ["scene_transitions.id"], ondelete="SET NULL"
+            ),
+            sa.ForeignKeyConstraint(
+                ["source_scene_id"], ["scenes.id"], ondelete="SET NULL"
+            ),
+            sa.ForeignKeyConstraint(
+                ["target_scene_id"], ["scenes.id"], ondelete="SET NULL"
+            ),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint(
+                "sequence_id",
+                "step_index",
+                name="uq_action_step_sequence_index",
+            ),
+        )
+    ensure_index("action_steps", "ix_action_steps_sequence_id", ["sequence_id"])
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_action_steps_sequence_id"), table_name="action_steps")
+    op.drop_index("ix_action_steps_sequence_id", table_name="action_steps")
     op.drop_table("action_steps")
-    op.drop_index(
-        op.f("ix_action_sequences_campaign_id"),
-        table_name="action_sequences",
-    )
+    op.drop_index("ix_action_sequences_campaign_id", table_name="action_sequences")
     op.drop_table("action_sequences")
