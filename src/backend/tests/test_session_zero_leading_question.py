@@ -1,18 +1,20 @@
 from app.models.session_zero_interview import SessionZeroInterviewModelDecision
 
 
-def test_non_final_session_zero_reply_always_keeps_conversation_open():
+def test_non_final_session_zero_reply_is_not_surgically_rewritten():
+    message = "Хороший персонаж, запишем."
     decision = SessionZeroInterviewModelDecision.model_validate(
         {
-            "assistant_message": "Хороший персонаж, запишем.",
+            "assistant_message": message,
+            "conversation_disposition": "continue",
             "tool_calls": [],
             "question_topics": [],
         }
     )
 
     assert decision.ready_to_finalize is False
-    assert decision.assistant_message.startswith("Хороший персонаж, запишем.")
-    assert "?" in decision.assistant_message
+    assert decision.conversation_disposition == "continue"
+    assert decision.assistant_message == message
 
 
 def test_existing_question_is_not_rewritten():
@@ -20,6 +22,7 @@ def test_existing_question_is_not_rewritten():
     decision = SessionZeroInterviewModelDecision.model_validate(
         {
             "assistant_message": message,
+            "conversation_disposition": "continue",
             "tool_calls": [],
             "question_topics": ["character.first_goal"],
         }
@@ -33,10 +36,12 @@ def test_finalize_reply_may_close_without_another_question():
     decision = SessionZeroInterviewModelDecision.model_validate(
         {
             "assistant_message": message,
+            "conversation_disposition": "start_game",
             "tool_calls": [{"name": "finalize_session_zero"}],
             "question_topics": [],
         }
     )
 
     assert decision.ready_to_finalize is True
+    assert decision.conversation_disposition == "start_game"
     assert decision.assistant_message == message
