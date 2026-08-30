@@ -1,9 +1,29 @@
+import os
+from pathlib import Path
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _default_data_dir() -> str:
+    """Use the normal per-user data location, while keeping dev/test overrides."""
+    explicit = os.getenv("PDM_DATA_DIR")
+    if explicit:
+        return explicit
+    if os.name == "nt":
+        root = os.getenv("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return str(Path(root) / "PersonalDM" / "library")
+    root = os.getenv("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return str(Path(root) / "PersonalDM" / "library")
+
+
+def _default_database_url() -> str:
+    return f"sqlite+aiosqlite:///{Path(_default_data_dir()) / 'campaign.db'}"
+
+
 class Settings(BaseSettings):
-    DATABASE_URL: str = "sqlite+aiosqlite:///./data/campaign.db"
-    DATA_DIR: str = "./data"
+    DATABASE_URL: str = Field(default_factory=_default_database_url)
+    DATA_DIR: str = Field(default_factory=_default_data_dir)
 
     # LLM settings (OpenAI-compatible / native Ollama)
     TEXT_PROVIDER: str = "local"

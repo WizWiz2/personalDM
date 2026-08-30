@@ -59,6 +59,14 @@ Launcher готовит Python-окружение, локальные LLM и п�
 
 Для GUI нужен Node.js с npm. При первом запуске launcher выполняет установку frontend dependencies.
 
+Игровая библиотека хранится в пользовательском каталоге `%APPDATA%\PersonalDM\library`, а не в репозитории. Для удаления есть `uninstall.bat`; скрипт показывает границы режима и требует явного ввода `DELETE`:
+
+- `infrastructure` — управляемые PersonalDM runtime и зависимости;
+- `games` — кэш и сгенерированные картинки, при этом `campaign.db` и `%APPDATA%\PersonalDM\saves` сохраняются;
+- `all` — приложение и runtime, но сохранения остаются.
+
+Ollama, Node.js и Python, установленные отдельно в системе, не удаляются.
+
 Ручной запуск:
 
 ```bash

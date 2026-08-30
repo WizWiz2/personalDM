@@ -311,6 +311,59 @@ def bootstrap_providers() -> int:
     return 0
 
 
+def migrate_user_data() -> int:
+    """Move the old repository-local data directory to the per-user game library."""
+    service = RuntimeProviderService()
+    env = service.read_env()
+    configured = env.get("PDM_DATA_DIR", "").replace("/", "\\").rstrip("\\")
+    legacy = (BACKEND_DIR / "data").resolve()
+    target = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "PersonalDM" / "library"
+    if configured.casefold() not in {".\\data", "data", "./data"} or not legacy.is_dir() or legacy.resolve() == target.resolve():
+        return 0
+    if target.exists() and any(target.iterdir()):
+        print(f"[Storage] Новая библиотека уже существует: {target}. Старую папку не трогаю.")
+        return 0
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
+    # The backend imports settings before this command and may already have created
+    # the empty target directory. Move its contents, never nest `data` inside it.
+    for item in legacy.iterdir():
+        destination = target / item.name
+        if destination.exists():
+            raise RuntimeError(f"Не могу перенести {item}: уже существует {destination}")
+        shutil.move(str(item), str(destination))
+    legacy.rmdir()
+    service._write_env({"PDM_DATA_DIR": str(target), "PDM_DATABASE_URL": f"sqlite+aiosqlite:///{target / 'campaign.db'}"})
+    print(f"[Storage] Игровая база перенесена в {target}. Сохранения сохранены.")
+    return 0
+
+
+def uninstall_menu() -> int:
+    """Run the transparent Russian uninstall menu using the same UI as play.bat."""
+    selected = select_menu(
+        "Что удалить?",
+        [
+            ("Инфраструктура — ComfyUI, runtime и зависимости; сохранения остаются", "infrastructure"),
+            ("База игр — кэш и картинки; campaign.db и сохранения остаются", "games"),
+            ("Всё приложение — приложение и инфраструктура; сохранения остаются", "all"),
+            ("Отмена", "exit"),
+        ],
+    )
+    if selected in {None, "exit"}:
+        return 0
+    print("\nРежим удаления: " + selected)
+    print("Для подтверждения введите DELETE. Сохранения не удаляются.\n")
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell:
+        print("[Ошибка] PowerShell не найден.")
+        return 1
+    script = ROOT_DIR / "uninstall.ps1"
+    return subprocess.call(
+        [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Mode", selected],
+        cwd=ROOT_DIR,
+    )
+
+
 def launcher_menu() -> int:
     while True:
         selected = select_menu(
@@ -332,9 +385,15 @@ def launcher_menu() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--bootstrap-providers", action="store_true")
+    parser.add_argument("--migrate-user-data", action="store_true")
+    parser.add_argument("--uninstall", action="store_true")
     args, _ = parser.parse_known_args()
     if args.bootstrap_providers:
         return bootstrap_providers()
+    if args.migrate_user_data:
+        return migrate_user_data()
+    if args.uninstall:
+        return uninstall_menu()
     return launcher_menu()
 
 

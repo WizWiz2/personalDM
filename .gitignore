@@ -74,3 +74,9 @@ src/backend/scratch/
 node_modules/
 src/frontend/dist/
 *.tsbuildinfo
+
+# Local PersonalDM installation/runtime
+.grok/
+tools/
+src/backend/local_launcher.py
+src/backend/.env.bak-*

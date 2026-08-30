@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import subprocess
@@ -35,6 +34,7 @@ class RuntimeProviderService:
     COMFY_DIR = COMFY_ROOT / "ComfyUI"
     COMFY_ENV = TOOLS_DIR / "comfy-runtime"
     COMFY_READY = COMFY_ENV / ".personaldm-ready"
+    COMFY_LOG = COMFY_ROOT / "comfyui.log"
 
     TEXT_LOCAL_BASE_URL = "http://127.0.0.1:11434/v1"
     TEXT_LOCAL_MODEL = "gemma4:e4b"
@@ -373,15 +373,30 @@ class RuntimeProviderService:
                 self._download(url, target)
 
         if not self._url_ok(f"{self.IMAGE_LOCAL_BASE_URL}/system_stats"):
-            kwargs: dict = {"cwd": self.COMFY_DIR, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+            self.COMFY_LOG.parent.mkdir(parents=True, exist_ok=True)
+            log_handle = self.COMFY_LOG.open("a", encoding="utf-8", errors="replace")
+            kwargs: dict = {"cwd": self.COMFY_DIR, "stdout": log_handle, "stderr": subprocess.STDOUT}
             if os.name == "nt":
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-            subprocess.Popen(
-                [str(python_exe), "main.py", "--lowvram", "--disable-auto-launch", "--port", "8188"],
-                **kwargs,
-            )
+            try:
+                process = subprocess.Popen(
+                    [str(python_exe), "main.py", "--lowvram", "--disable-auto-launch", "--port", "8188"],
+                    **kwargs,
+                )
+            finally:
+                log_handle.close()
             if not self._wait_url(f"{self.IMAGE_LOCAL_BASE_URL}/system_stats", 90):
-                raise RuntimeProviderError("ComfyUI установлен, но не поднялся на :8188")
+                detail = ""
+                if self.COMFY_LOG.is_file():
+                    detail = self.COMFY_LOG.read_text(encoding="utf-8", errors="replace")[-1600:].strip()
+                if process.poll() is not None:
+                    raise RuntimeProviderError(
+                        "ComfyUI завершился при запуске. "
+                        f"Лог: {self.COMFY_LOG}\n{detail}"
+                    )
+                raise RuntimeProviderError(
+                    f"ComfyUI установлен, но не поднялся на :8188. Лог: {self.COMFY_LOG}"
+                )
         return self.check_image()
 
     def ensure_selected_local_providers(self) -> dict:

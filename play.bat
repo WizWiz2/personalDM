@@ -35,6 +35,9 @@ if errorlevel 1 (
 )
 
 rem 3. Apply database migrations on every launch; Alembic is idempotent.
+echo [Setup] Checking user data location...
+python src\backend\launcher.py --migrate-user-data
+if errorlevel 1 goto :err_data
 echo [Setup] Checking database schema...
 pushd src\backend
 alembic upgrade head
@@ -71,6 +74,11 @@ exit /b 1
 
 :err_migrations
 echo [ERROR] Database migration failed.
+pause
+exit /b 1
+
+:err_data
+echo [ERROR] Failed to move the game library to the user data folder.
 pause
 exit /b 1
 
