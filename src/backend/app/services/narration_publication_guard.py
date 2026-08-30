@@ -68,6 +68,29 @@ class NarrationPublicationGuard:
         candidate: str,
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
+        # A conservative Planner fallback is deliberately non-authoritative: it means that
+        # control-plane planning failed and no world outcome was established.  A passing
+        # prose-validator verdict must not turn that empty authority into an invented action,
+        # movement, NPC, or clue.  This is a structural state check, not semantic classification.
+        conservative_fallback = (
+            authority.resolution == "uncertain"
+            and authority.scene_disposition == "stay"
+            and not authority.observable_consequences
+            and not authority.action_sequence
+            and authority.acting_character_id is None
+        )
+        if conservative_fallback:
+            fallback = cls._safe_authority_projection(authority)
+            return fallback, {
+                "mode": "authority_projection",
+                "candidate_characters": len(candidate),
+                "published_characters": len(fallback),
+                "error_count": 0,
+                "candidate_discarded": True,
+                "validated_surface": False,
+                "reason": "conservative_authority_without_observable_outcome",
+            }
+
         errors = [
             item
             for item in (validation.violations if validation else [])

@@ -83,7 +83,6 @@ export function HeroPage() {
             />
           </div>
           <button className="btn" type="button" disabled={portraitGenerating} onClick={() => void regeneratePortrait()}>{portraitGenerating ? 'Рисуем…' : 'Перерисовать портрет'}</button>
-          <span className="eyebrow">Игрок</span>
           <h2>{character.canonical_name}</h2>
           <p>{character.description || 'Описание пока не задано.'}</p>
           <div className="chips">{character.values?.map((v) => <span className="chip" key={v}>{v}</span>)}</div>

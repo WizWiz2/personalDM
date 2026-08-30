@@ -45,6 +45,18 @@ export function CampaignLibraryPage() {
 
   useEffect(() => { void load() }, [])
 
+  useEffect(() => {
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void load()
+    }
+    window.addEventListener('focus', refreshWhenVisible)
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [])
+
   const campaignIds = campaigns.map((campaign) => campaign.id).join('|')
   useEffect(() => {
     if (!campaigns.length) return

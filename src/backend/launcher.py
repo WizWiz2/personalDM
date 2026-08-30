@@ -21,6 +21,19 @@ BACKEND_URL = "http://127.0.0.1:8000"
 FRONTEND_URL = "http://127.0.0.1:5173"
 
 
+def _hidden_process_kwargs() -> dict:
+    """Return Windows subprocess options that keep service consoles invisible."""
+    if os.name != "nt":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+        "startupinfo": startupinfo,
+    }
+
+
 def _url_ready(url: str, timeout: float = 0.7) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=timeout):
@@ -178,6 +191,7 @@ def run_gui() -> int:
             backend = subprocess.Popen(
                 [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
                 cwd=BACKEND_DIR,
+                **_hidden_process_kwargs(),
             )
             if not _wait_ready(f"{BACKEND_URL}/health", backend):
                 print("[Ошибка] Backend не поднялся на http://127.0.0.1:8000.")
@@ -192,6 +206,7 @@ def run_gui() -> int:
             frontend = subprocess.Popen(
                 _npm_command("run", "dev", "--", "--host", "127.0.0.1"),
                 cwd=FRONTEND_DIR,
+                **_hidden_process_kwargs(),
             )
             if not _wait_ready(FRONTEND_URL, frontend):
                 print("[Ошибка] Frontend не поднялся на http://127.0.0.1:5173.")

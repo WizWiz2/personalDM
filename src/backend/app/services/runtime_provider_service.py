@@ -61,6 +61,19 @@ class RuntimeProviderService:
         ),
     )
 
+    @staticmethod
+    def _hidden_process_kwargs() -> dict:
+        """Keep locally managed Windows services from opening console windows."""
+        if os.name != "nt":
+            return {}
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
+        return {
+            "creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
+            "startupinfo": startupinfo,
+        }
+
     def read_env(self) -> dict[str, str]:
         result: dict[str, str] = {}
         if not self.ENV_FILE.exists():
@@ -329,8 +342,7 @@ class RuntimeProviderService:
 
         if not self._url_ok("http://127.0.0.1:11434/api/tags"):
             kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-            if os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            kwargs.update(self._hidden_process_kwargs())
             subprocess.Popen([ollama, "serve"], **kwargs)
             if not self._wait_url("http://127.0.0.1:11434/api/tags", 30):
                 raise RuntimeProviderError("Ollama установлен, но сервис не запустился")
@@ -376,8 +388,7 @@ class RuntimeProviderService:
             self.COMFY_LOG.parent.mkdir(parents=True, exist_ok=True)
             log_handle = self.COMFY_LOG.open("a", encoding="utf-8", errors="replace")
             kwargs: dict = {"cwd": self.COMFY_DIR, "stdout": log_handle, "stderr": subprocess.STDOUT}
-            if os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+            kwargs.update(self._hidden_process_kwargs())
             try:
                 process = subprocess.Popen(
                     [str(python_exe), "main.py", "--lowvram", "--disable-auto-launch", "--port", "8188"],

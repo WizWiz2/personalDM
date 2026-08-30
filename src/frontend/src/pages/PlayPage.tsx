@@ -10,7 +10,7 @@ import { Icons } from '../components/Icons'
 import { PixelScene } from '../components/PixelArt'
 import { ErrorState, LoadingState } from '../components/States'
 
-type Mode = 'action' | 'talk' | 'dm'
+type Mode = 'play' | 'dm'
 
 function readStoredTurn(key: string): Turn | null {
   try {
@@ -23,7 +23,7 @@ function readStoredTurn(key: string): Turn | null {
 
 function readStoredMode(key: string): Mode {
   const value = window.sessionStorage.getItem(key)
-  return value === 'talk' || value === 'dm' ? value : 'action'
+  return value === 'dm' ? 'dm' : 'play'
 }
 
 export function PlayPage() {
@@ -42,6 +42,7 @@ export function PlayPage() {
   const [turns, setTurns] = useState<Turn[]>([])
   const [acceptedTurn, setAcceptedTurn] = useState<Turn | null>(() => readStoredTurn(acceptedKey))
   const [scene, setScene] = useState<SceneState | null>(null)
+  const [playerName, setPlayerName] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mode, setMode] = useState<Mode>(() => readStoredMode(modeKey))
@@ -64,8 +65,14 @@ export function PlayPage() {
         return
       }
       const freshCampaign = await refreshCampaign()
-      const history = await api.listTurns(campaign.id, 150, 'all')
+      const [history, characterCard] = await Promise.all([
+        api.listTurns(campaign.id, 150, 'all'),
+        freshCampaign.player_character_id
+          ? api.getCharacterCard(freshCampaign.player_character_id).catch(() => null)
+          : Promise.resolve(null),
+      ])
       setTurns(history)
+      setPlayerName(characterCard?.character.canonical_name ?? '')
       if (freshCampaign.current_scene_id) {
         setScene(await api.getSceneState(campaign.id, freshCampaign.current_scene_id))
       } else {
@@ -129,6 +136,10 @@ export function PlayPage() {
   }, [generation?.id, generation?.status])
 
   const visibleTurns = useMemo(() => turns.filter((turn) => turn.role !== 'system'), [turns])
+  const latestMasterTurnId = useMemo(
+    () => [...visibleTurns].reverse().find((turn) => turn.role === 'assistant')?.id,
+    [visibleTurns],
+  )
   const timelineTurns = useMemo(() => {
     if (!acceptedTurn || visibleTurns.some((turn) => turn.id === acceptedTurn.id)) return visibleTurns
     return [...visibleTurns, acceptedTurn]
@@ -209,7 +220,7 @@ export function PlayPage() {
       <header className="workspace-topbar">
         <div><h1>{campaign.name}</h1><p>{scene?.location_path.join(' · ') || scene?.scene_title || 'Текущая сцена'}</p></div>
         <div className="topbar-actions">
-          <button className="btn context-toggle" onClick={() => setDrawer(true)}>Сейчас</button>
+          <button className="btn primary context-toggle" onClick={() => setDrawer(true)}>Сейчас</button>
           <button className="btn primary scene-generate" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода мастера: текстовая и графическая модели делят видеопамять' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
         </div>
       </header>
@@ -233,10 +244,11 @@ export function PlayPage() {
               const failed = failedAccepted && turn.id === acceptedTurn?.id
               const label = meta
                 ? (player ? 'Вопрос мастеру' : 'Мастер вне игры')
-                : (player ? 'Ты' : 'Мастер')
+                : (player ? (playerName || 'Персонаж') : 'Мастер')
               return <article key={turn.id} className={`turn ${player ? 'player' : 'dm'} ${meta ? 'meta' : ''} ${failed ? 'failed' : ''}`}>
                 <div className="turn-label">{label}{failed ? ' · не обработано' : ''}</div>
                 <div>{meta && player ? turn.content.replace(/^\s*\/(DM|OOC)\s*/i, '') : turn.content}</div>
+                {!meta && turn.id === latestMasterTurnId && !busy && <button type="button" className="btn primary turn-undo" onClick={() => void undo()}><Icons.undo />Откатить последний ход</button>}
               </article>
             })}
             {busy && <article className={`turn dm thinking-turn ${generation?.user_turn_id === acceptedTurn?.id && acceptedTurn?.role === 'meta_user' ? 'meta' : ''}`}>
@@ -248,13 +260,11 @@ export function PlayPage() {
 
           <form className="composer" onSubmit={send}>
             <div className="mode-row">
-              <button type="button" className={mode === 'action' ? 'active' : ''} onClick={() => setMode('action')}>Действие</button>
-              <button type="button" className={mode === 'talk' ? 'active' : ''} onClick={() => setMode('talk')}><Icons.chat />Реплика</button>
-              <button type="button" className={mode === 'dm' ? 'active' : ''} onClick={() => setMode('dm')}><Icons.shield />Мастер</button>
+              <span className="composer-hint">Опиши ход персонажа свободно — действие и речь можно сочетать.</span>
+              <button type="button" className={`btn primary composer-mode ${mode === 'dm' ? 'active' : ''}`} onClick={() => setMode(mode === 'dm' ? 'play' : 'dm')}><Icons.shield />{mode === 'dm' ? 'Вернуться в игру' : 'Обращение к мастеру'}</button>
             </div>
-            <div className="compose-row"><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? 'Можно набросать следующий ход — черновик сохранится…' : mode === 'dm' ? 'Спроси мастера вне игры…' : mode === 'talk' ? 'Что ты говоришь?' : 'Что ты делаешь?'} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} /><button className="btn primary send-btn" disabled={!input.trim() || busy} aria-label="Отправить"><Icons.send /></button></div>
+            <div className="compose-row"><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? 'Можно набросать следующий ход — черновик сохранится…' : mode === 'dm' ? 'Спроси мастера вне игры…' : 'Что делает и говорит персонаж?'} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} /><button className="btn primary send-btn" disabled={!input.trim() || busy} aria-label="Отправить"><Icons.send /></button></div>
             <div className="composer-footer">
-              <button type="button" className="quiet-action" onClick={() => void undo()} disabled={busy}><Icons.undo />Отменить</button>
               {busy
                 ? <><span className="turn-runtime-note">Ход сохранён. Можно открыть Героя, Мир или Хронику — мастер продолжит работу.</span><button type="button" className="quiet-action danger" onClick={() => void stop()}><Icons.stop />Остановить</button></>
                 : <span className="turn-runtime-note">Черновик ввода сохраняется при переходах между разделами.</span>}
