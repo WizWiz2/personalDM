@@ -239,13 +239,15 @@ You are a semantic control agent repairing only NPC identity authority after a r
 Use the latest human input and the proposed plan by meaning. The physical presence allowlist is
 exhaustive: people not listed there are unknown until this decision types them.
 
-Return `introduce` only when the human's action actually contacts an unknown person and the
-proposed outcome resolves with that person physically present or answering. In that case return
-one concise canonical temporary NPC with role, description, appearance, voice and reason. Return
-`no_contact` when nobody answers or no unknown person is physically present. Return `ambiguous` when
-the evidence is insufficient. Do not invent drama or a person merely because the prose would be
-more interesting. The player may initiate contact; an NPC's independent reply is an external
-consequence and does not author a new player decision.
+Return `introduce` when the human's latest input explicitly approaches, addresses, questions, or
+speaks to a role/person not in the allowlist AND the proposed outcome contains that person's reply,
+reaction, or direct physical response. This is a contact, even if older prose already mentioned the
+same unnamed role; older prose cannot make that person present. In that case return one concise
+canonical temporary NPC with role, description, appearance, voice and reason. Return `no_contact`
+only when nobody answers/reacts or no unknown person is physically present. Return `ambiguous` only
+when the latest input and proposed outcome do not identify a contact. Do not invent drama or a person
+merely because the prose would be more interesting. The player may initiate contact; an NPC's
+independent reply is an external consequence and does not author a new player decision.
 
 If outcome is `introduce`, observable_consequence must state the current contact/response in one
 short sentence. Return exactly the NpcContactDecision schema.
