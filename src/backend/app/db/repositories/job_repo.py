@@ -157,7 +157,9 @@ class PostTurnJobRepository(BaseRepository):
             update(PostTurnJob)
             .where(
                 PostTurnJob.status == "running",
-                PostTurnJob.locked_at < threshold,
+                # Older workers could leave a running row without a lock timestamp. Treat that
+                # state as stale too; otherwise the desktop restart can never reclaim the job.
+                (PostTurnJob.locked_at.is_(None) | (PostTurnJob.locked_at < threshold)),
             )
             .values(status="pending", locked_at=None, error="Recovered after worker restart")
         )
