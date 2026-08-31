@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 from uuid import UUID
 
 from app.application import GameApplication
@@ -298,8 +299,16 @@ async def campaign_menu(
 
 
 async def main() -> None:
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    # ``play.bat`` applies Alembic migrations before entering the CLI.  Calling
+    # ``create_all`` here against an existing SQLite database makes SQLAlchemy
+    # re-parse every sqlite_schema row and turns a stale/corrupt schema entry
+    # into a hard crash before the campaign menu can open.  The CLI is allowed
+    # to bootstrap only a genuinely new database; existing databases are owned
+    # by Alembic and must not be implicitly rewritten by the UI.
+    database_path = Path(engine.url.database) if engine.url.database else None
+    if database_path is not None and not database_path.exists():
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
         campaign_service = CampaignService(session)
