@@ -216,7 +216,11 @@ class TurnSaga:
 
         planner = TurnAuthorityPlanner(role_router)
         try:
-            plan = await planner.plan(planner_selection, messages)
+            plan = await planner.plan(
+                planner_selection,
+                messages,
+                latest_user_input=user_input,
+            )
             return plan, {
                 "status": "completed",
                 "model_name": planner_selection.config.model_name,

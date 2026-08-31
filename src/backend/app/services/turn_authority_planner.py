@@ -224,11 +224,16 @@ Return exactly:
         return dict(self._provider.last_telemetry or {})
 
     @classmethod
-    def planning_messages(cls, context_messages: list[ChatMessage]) -> list[ChatMessage]:
+    def planning_messages(
+        cls,
+        context_messages: list[ChatMessage],
+        *,
+        latest_user_input: str | None = None,
+    ) -> list[ChatMessage]:
         if not context_messages:
             raise TurnPlanningError("planner received an empty context")
         first, *rest = context_messages
-        return [
+        result = [
             ChatMessage(
                 role="system",
                 content=(
@@ -238,6 +243,23 @@ Return exactly:
             ),
             *rest,
         ]
+        if latest_user_input is not None:
+            # The compiled transcript may end with an older user message after context trimming.
+            # The application boundary knows the exact current input, so make recency explicit to
+            # the semantic planner instead of asking it to infer it from narrative ordering.
+            result.append(
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "[LATEST HUMAN INPUT — authoritative]\n"
+                        "This is the only human turn to resolve now. The authoritative scene state "
+                        "above outranks older narrative prose and repeated earlier inputs.\n"
+                        + latest_user_input
+                        + "\n[/LATEST HUMAN INPUT]"
+                    ),
+                )
+            )
+        return result
 
     @staticmethod
     def _latest_user_text(messages: list[ChatMessage]) -> str:
@@ -299,7 +321,10 @@ Return exactly:
             self._provider,
             selection,
             messages,
-            max_tokens=max(settings.PLANNER_MAX_TOKENS, 1250),
+            # The complete typed hand-off is larger than a short prose answer. A too-small
+            # budget makes Ollama truncate valid decisions into incomplete JSON and silently
+            # forces the conservative fallback for otherwise ordinary turns.
+            max_tokens=max(settings.PLANNER_MAX_TOKENS, 3000),
             temperature=settings.PLANNER_TEMPERATURE,
             response_model=CoordinatedTurnPlan,
         )
@@ -340,9 +365,14 @@ Return exactly:
         self,
         selection: RoleModelSelection,
         context_messages: list[ChatMessage],
+        *,
+        latest_user_input: str | None = None,
     ) -> CoordinatedTurnPlan:
-        base_messages = self.planning_messages(context_messages)
-        player_input = self._latest_user_text(context_messages)
+        base_messages = self.planning_messages(
+            context_messages,
+            latest_user_input=latest_user_input,
+        )
+        player_input = latest_user_input or self._latest_user_text(context_messages)
         present_names = present_character_names(context_messages)
         try:
             plan = await self._generate_plan(selection, base_messages)

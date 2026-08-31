@@ -80,6 +80,23 @@ def _selection():
     )
 
 
+def test_planner_can_anchor_the_exact_current_input_after_trimmed_history():
+    context = [
+        ChatMessage(role="system", content="[AUTHORITATIVE SCENE STATE]\nScene: Контора"),
+        ChatMessage(role="user", content="Старый вопрос из истории"),
+    ]
+    current = "Я выхожу вместе с грузчиком к причалу."
+
+    messages = TurnAuthorityPlanner.planning_messages(
+        context,
+        latest_user_input=current,
+    )
+
+    assert messages[-1].role == "user"
+    assert current in messages[-1].content
+    assert TurnAuthorityPlanner._latest_user_text(messages) == messages[-1].content
+
+
 @pytest.mark.asyncio
 async def test_committed_physical_travel_hidden_as_stay_is_repaired_before_narrator():
     router = _SceneSyncRouter()

@@ -163,8 +163,19 @@ def install() -> None:
                 issues.append(issue)
         return issues
 
-    async def guarded_plan(self, selection, context_messages):
-        return await original_plan(self, selection, context_messages)
+    async def guarded_plan(
+        self,
+        selection,
+        context_messages,
+        *,
+        latest_user_input=None,
+    ):
+        return await original_plan(
+            self,
+            selection,
+            context_messages,
+            latest_user_input=latest_user_input,
+        )
 
     async def reject_same_physical_location(
         self,
