@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import TypeVar
 
 import questionary
@@ -24,6 +25,18 @@ _MENU_STYLE = Style(
 
 def _interactive_terminal() -> bool:
     return bool(sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _ask_outside_running_loop(prompt):
+    """Run questionary's synchronous prompt without nesting asyncio.run().
+
+    The CLI menus are called from async service flows, while questionary's
+    synchronous ``ask()`` owns its own event loop.  A tiny worker thread keeps
+    those two event-loop lifecycles separate and preserves the interactive
+    arrow-key UI.
+    """
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="personal-dm-prompt") as pool:
+        return pool.submit(prompt.ask).result()
 
 
 def _fallback_select(message: str, choices: Sequence[tuple[str, T]]) -> T | None:
@@ -53,13 +66,14 @@ def select_menu(message: str, choices: Sequence[tuple[str, T]]) -> T | None:
     if not _interactive_terminal():
         return _fallback_select(message, choices)
     try:
-        return questionary.select(
+        prompt = questionary.select(
             message,
             choices=[questionary.Choice(title=label, value=value) for label, value in choices],
             qmark="",
             pointer="❯",
             style=_MENU_STYLE,
-        ).ask()
+        )
+        return _ask_outside_running_loop(prompt)
     except (KeyboardInterrupt, EOFError):
         return None
 
@@ -76,12 +90,13 @@ def confirm_menu(message: str, *, default: bool = False) -> bool:
             return default
         return raw in {"y", "yes", "д", "да"}
     try:
-        result = questionary.confirm(
+        prompt = questionary.confirm(
             message,
             default=default,
             qmark="",
             style=_MENU_STYLE,
-        ).ask()
+        )
+        result = _ask_outside_running_loop(prompt)
         return bool(result)
     except (KeyboardInterrupt, EOFError):
         return False
