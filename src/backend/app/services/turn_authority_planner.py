@@ -577,6 +577,19 @@ short sentence. Return exactly the NpcContactDecision schema.
                 return recovered
             raise
         except (LLMProviderError, ValueError, TypeError) as exc:
+            # _generate_plan may surface either a provider error or a schema/repair error.
+            # Both mean the full hand-off is unavailable, but neither should prevent the small
+            # semantic contact recovery from typing a genuinely responding NPC.
+            fallback = CoordinatedTurnPlan.conservative_fallback(player_input)
+            recovered = await self._apply_npc_contact_recovery(
+                selection,
+                player_input,
+                present_names,
+                fallback,
+                [str(exc)[:1000]],
+            )
+            if recovered is not None:
+                return recovered
             raise TurnPlanningError(str(exc)) from exc
 
 
