@@ -94,6 +94,7 @@ def test_planner_can_anchor_the_exact_current_input_after_trimmed_history():
 
     assert messages[-1].role == "user"
     assert current in messages[-1].content
+    assert "Physical presence allowlist" in messages[-1].content
     assert TurnAuthorityPlanner._latest_user_text(messages) == messages[-1].content
 
 

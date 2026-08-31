@@ -229,6 +229,7 @@ Return exactly:
         context_messages: list[ChatMessage],
         *,
         latest_user_input: str | None = None,
+        present_character_names: list[str] | None = None,
     ) -> list[ChatMessage]:
         if not context_messages:
             raise TurnPlanningError("planner received an empty context")
@@ -257,6 +258,10 @@ Return exactly:
                         "For every auto_success action step, provide a non-empty observable_outcome "
                         "or its own structured transition; never use null for both. If an action "
                         "cannot be resolved, mark that step blocked with a concrete reason.\n"
+                        "Physical presence allowlist for this turn: "
+                        + ", ".join(present_character_names or [])
+                        + ". Any other person who physically appears or answers must be typed in "
+                        "npc_introductions; historical prose cannot make them present.\n"
                         + latest_user_input
                         + "\n[/LATEST HUMAN INPUT]"
                     ),
@@ -311,6 +316,11 @@ Return exactly:
                     + "\n- ".join(issues)
                     + "\nRejected plan:\n"
                     + rejected_plan.model_dump_json()
+                    + "\nFINAL REPAIR CHECK: Resolve only the latest player input above. If it commits to "
+                    "physical movement, use a structured location_transition. If it directly "
+                    "contacts an unknown person and that person answers, include exactly that "
+                    "person in npc_introductions with a reason; do not leave the contact as prose. "
+                    "If nobody answers, state that explicitly and introduce no NPC."
                 ),
             ),
         ]
@@ -371,12 +381,13 @@ Return exactly:
         *,
         latest_user_input: str | None = None,
     ) -> CoordinatedTurnPlan:
+        player_input = latest_user_input or self._latest_user_text(context_messages)
+        present_names = present_character_names(context_messages)
         base_messages = self.planning_messages(
             context_messages,
             latest_user_input=latest_user_input,
+            present_character_names=present_names,
         )
-        player_input = latest_user_input or self._latest_user_text(context_messages)
-        present_names = present_character_names(context_messages)
         try:
             plan = await self._generate_plan(selection, base_messages)
             sanitize_existing_present_npc_introductions(plan, present_names)
