@@ -36,6 +36,7 @@ class NpcContactDecision(BaseModel):
         default_factory=list,
         max_length=4,
     )
+    observable_consequence: str | None = Field(default=None, max_length=1000)
     response_ownership_reason: str | None = Field(default=None, max_length=500)
 
 
@@ -246,7 +247,8 @@ the evidence is insufficient. Do not invent drama or a person merely because the
 more interesting. The player may initiate contact; an NPC's independent reply is an external
 consequence and does not author a new player decision.
 
-Return exactly the NpcContactDecision schema.
+If outcome is `introduce`, observable_consequence must state the current contact/response in one
+short sentence. Return exactly the NpcContactDecision schema.
 """
 
     def __init__(self, router: RoleModelRouter):
@@ -485,6 +487,11 @@ Return exactly the NpcContactDecision schema.
                     decision.response_ownership_reason
                     or "Неизвестный физически присутствующий responder типизирован recovery-агентом."
                 ),
+                "resolution": "conversation",
+                "observable_consequences": [
+                    decision.observable_consequence
+                    or "Неизвестный собеседник физически отвечает на обращение игрока."
+                ],
             },
         )
         sanitize_existing_present_npc_introductions(recovered, present_names)
@@ -557,7 +564,17 @@ Return exactly the NpcContactDecision schema.
                     + "; ".join(remaining)
                 )
             return repaired
-        except TurnPlanningError:
+        except TurnPlanningError as exc:
+            fallback = CoordinatedTurnPlan.conservative_fallback(player_input)
+            recovered = await self._apply_npc_contact_recovery(
+                selection,
+                player_input,
+                present_names,
+                fallback,
+                [str(exc)[:1000]],
+            )
+            if recovered is not None:
+                return recovered
             raise
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise TurnPlanningError(str(exc)) from exc
