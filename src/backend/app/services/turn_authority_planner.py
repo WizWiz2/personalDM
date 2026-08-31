@@ -354,6 +354,7 @@ Return exactly:
         context_messages: list[ChatMessage],
         player_input: str,
         plan: CoordinatedTurnPlan,
+        present_names: list[str] | None = None,
     ) -> SemanticPlanReview:
         context = "\n\n".join(
             f"[{message.role.upper()}]\n{message.content}" for message in context_messages
@@ -367,6 +368,12 @@ Return exactly:
                     role="user",
                     content=(
                         f"[LATEST HUMAN INPUT]\n{player_input}\n\n"
+                        "[AUTHORITATIVE PHYSICAL PRESENCE ALLOWLIST]\n"
+                        "Only these characters are currently present: "
+                        + ", ".join(present_names or [])
+                        + ". Any other person physically encountered or responding in the "
+                        "proposed outcome must appear in npc_introductions. Older narrative prose "
+                        "cannot expand this list.\n\n"
                         f"[CAMPAIGN CONTEXT]\n{context}\n\n"
                         "[PROPOSED PLAN]\n"
                         + plan.model_dump_json()
@@ -402,6 +409,7 @@ Return exactly:
                 context_messages,
                 player_input,
                 plan,
+                present_names,
             )
             if review.verdict == "pass":
                 return plan
@@ -417,6 +425,7 @@ Return exactly:
                 context_messages,
                 player_input,
                 repaired,
+                present_names,
             )
             if final_review.verdict != "pass":
                 remaining = final_review.issues or [
