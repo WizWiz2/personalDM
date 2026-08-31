@@ -276,10 +276,21 @@ def install() -> None:
             "sensory perception is allowed when grounded; do not confuse it with authored emotion. "
             "Describe the world's response as a lived scene and stop before the next player choice."
         )
-        return [
+        result = [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
             *rest,
         ]
+        result.append(
+            ChatMessage(
+                role="user",
+                content=(
+                    "[FINAL AUTHORITY REMINDER]\n"
+                    "Only present characters and explicitly allowed NPC introductions may be "
+                    "physically present. Older prose is not canon and cannot introduce a person."
+                ),
+            )
+        )
+        return result
 
     def literary_repair_prompt(authority, candidate, result):
         base = original_repair_prompt(authority, candidate, result)

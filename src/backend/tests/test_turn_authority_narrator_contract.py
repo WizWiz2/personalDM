@@ -51,6 +51,8 @@ def test_narrator_receives_one_typed_authority_without_legacy_plan_contract():
     assert '"narration_guidance"' in system
     assert "Ответить коротко и конкретно" in system
     assert "Дежурный ждёт вопроса" in system
+    assert messages[-1].role == "user"
+    assert "Older prose is not canon" in messages[-1].content
 
 
 @pytest.mark.asyncio

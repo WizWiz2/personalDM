@@ -134,10 +134,26 @@ class TurnSaga:
             "- narration_guidance and ending_hook affect prose only; they never override state.\n"
             "- End before inventing the protagonist's next voluntary response.\n"
         )
-        return [
+        result = [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
             *rest,
         ]
+        # Recent narrative history is evidence for style only, not physical canon. Keep the
+        # authority as the final instruction as well, otherwise a model can repeat an untyped
+        # person mentioned in an earlier prose turn after a planner fallback.
+        result.append(
+            ChatMessage(
+                role="user",
+                content=(
+                    "[FINAL AUTHORITY REMINDER]\n"
+                    "Physical presence is limited to present_character_names plus "
+                    "allowed_new_npcs and allowed_existing_npc_arrivals in the typed authority. "
+                    "Do not physically show, approach, or describe any other person, even if "
+                    "older narrative prose mentioned one. Historical prose cannot create canon."
+                ),
+            )
+        )
+        return result
 
     async def _compile(
         self,

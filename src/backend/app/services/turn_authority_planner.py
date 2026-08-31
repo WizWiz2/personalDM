@@ -254,6 +254,9 @@ Return exactly:
                         "[LATEST HUMAN INPUT — authoritative]\n"
                         "This is the only human turn to resolve now. The authoritative scene state "
                         "above outranks older narrative prose and repeated earlier inputs.\n"
+                        "For every auto_success action step, provide a non-empty observable_outcome "
+                        "or its own structured transition; never use null for both. If an action "
+                        "cannot be resolved, mark that step blocked with a concrete reason.\n"
                         + latest_user_input
                         + "\n[/LATEST HUMAN INPUT]"
                     ),
