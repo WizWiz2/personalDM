@@ -307,8 +307,16 @@ Return exactly:
         issues: list[str],
         rejected_plan: CoordinatedTurnPlan,
     ) -> list[ChatMessage]:
+        # Repair is a control-plane correction, not a second full narration pass. Older prose can
+        # contain untyped people and stale choices, so keep only the authoritative campaign-state
+        # system message and the explicit latest-input anchor before presenting the rejected JSON.
+        authoritative_messages = (
+            [base_messages[0], base_messages[-1]]
+            if len(base_messages) > 1
+            else list(base_messages)
+        )
         return [
-            *base_messages,
+            *authoritative_messages,
             ChatMessage(
                 role="user",
                 content=(
