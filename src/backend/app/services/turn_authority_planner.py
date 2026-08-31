@@ -515,6 +515,20 @@ short sentence. Return exactly the NpcContactDecision schema.
             plan = await self._generate_plan(selection, base_messages)
             sanitize_existing_present_npc_introductions(plan, present_names)
 
+            # A model may treat a person mentioned in historical prose as already known and
+            # return `pass` before the regular reviewer notices the allowlist conflict. Run the
+            # compact semantic contact check before that verdict; `no_contact` is a no-op.
+            if not plan.npc_introductions:
+                preflight_contact = await self._apply_npc_contact_recovery(
+                    selection,
+                    player_input,
+                    present_names,
+                    plan,
+                    ["Проверка физического ответа неизвестного персонажа перед обычным review."],
+                )
+                if preflight_contact is not None:
+                    plan = preflight_contact
+
             review = await self._semantic_review(
                 selection,
                 context_messages,
