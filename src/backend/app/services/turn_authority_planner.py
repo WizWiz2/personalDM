@@ -26,6 +26,19 @@ class SemanticPlanReview(BaseModel):
     issues: list[str] = Field(default_factory=list, max_length=10)
 
 
+class NpcContactDecision(BaseModel):
+    """Small semantic recovery result used when a full plan repair is too brittle."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    outcome: Literal["introduce", "no_contact", "ambiguous"]
+    npc_introductions: list[PlannedNpcIntroduction] = Field(
+        default_factory=list,
+        max_length=4,
+    )
+    response_ownership_reason: str | None = Field(default=None, max_length=500)
+
+
 class CoordinatedTurnPlan(TurnPlan):
     """Typed semantic hand-off from Planner to deterministic execution."""
 
@@ -220,6 +233,22 @@ Return exactly:
 }
 """
 
+    NPC_CONTACT_RECOVERY_PROMPT = """[NPC CONTACT RECOVERY]
+You are a semantic control agent repairing only NPC identity authority after a rejected full plan.
+Use the latest human input and the proposed plan by meaning. The physical presence allowlist is
+exhaustive: people not listed there are unknown until this decision types them.
+
+Return `introduce` only when the human's action actually contacts an unknown person and the
+proposed outcome resolves with that person physically present or answering. In that case return
+one concise canonical temporary NPC with role, description, appearance, voice and reason. Return
+`no_contact` when nobody answers or no unknown person is physically present. Return `ambiguous` when
+the evidence is insufficient. Do not invent drama or a person merely because the prose would be
+more interesting. The player may initiate contact; an NPC's independent reply is an external
+consequence and does not author a new player decision.
+
+Return exactly the NpcContactDecision schema.
+"""
+
     def __init__(self, router: RoleModelRouter):
         self._router = router
         self._provider = LLMProvider()
@@ -394,6 +423,73 @@ Return exactly:
         )
         return SemanticPlanReview.model_validate(data)
 
+    async def _recover_npc_contact(
+        self,
+        selection: RoleModelSelection,
+        player_input: str,
+        present_names: list[str],
+        plan: CoordinatedTurnPlan,
+        issues: list[str],
+    ) -> NpcContactDecision:
+        data = await self._router.generate_json(
+            self._provider,
+            selection,
+            [
+                ChatMessage(role="system", content=self.NPC_CONTACT_RECOVERY_PROMPT),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "[LATEST HUMAN INPUT]\n"
+                        + player_input
+                        + "\n\n[PHYSICAL PRESENCE ALLOWLIST]\n"
+                        + ", ".join(present_names)
+                        + "\n\n[REVIEW ISSUES]\n- "
+                        + "\n- ".join(issues)
+                        + "\n\n[PROPOSED PLAN]\n"
+                        + plan.model_dump_json()
+                    ),
+                ),
+            ],
+            max_tokens=700,
+            temperature=0.0,
+            response_model=NpcContactDecision,
+        )
+        return NpcContactDecision.model_validate(data)
+
+    async def _apply_npc_contact_recovery(
+        self,
+        selection: RoleModelSelection,
+        player_input: str,
+        present_names: list[str],
+        plan: CoordinatedTurnPlan,
+        issues: list[str],
+    ) -> CoordinatedTurnPlan | None:
+        try:
+            decision = await self._recover_npc_contact(
+                selection,
+                player_input,
+                present_names,
+                plan,
+                issues,
+            )
+        except (LLMProviderError, ValueError, TypeError):
+            return None
+        if decision.outcome != "introduce" or not decision.npc_introductions:
+            return None
+        recovered = plan.model_copy(
+            deep=True,
+            update={
+                "npc_introductions": decision.npc_introductions,
+                "addressed_response_requested": True,
+                "response_ownership_reason": (
+                    decision.response_ownership_reason
+                    or "Неизвестный физически присутствующий responder типизирован recovery-агентом."
+                ),
+            },
+        )
+        sanitize_existing_present_npc_introductions(recovered, present_names)
+        return recovered
+
     async def plan(
         self,
         selection: RoleModelSelection,
@@ -439,6 +535,23 @@ Return exactly:
                 remaining = final_review.issues or [
                     final_review.summary or "Семантический план остался неоднозначным."
                 ]
+                recovered = await self._apply_npc_contact_recovery(
+                    selection,
+                    player_input,
+                    present_names,
+                    plan,
+                    remaining,
+                )
+                if recovered is not None:
+                    recovered_review = await self._semantic_review(
+                        selection,
+                        context_messages,
+                        player_input,
+                        recovered,
+                        present_names,
+                    )
+                    if recovered_review.verdict == "pass":
+                        return recovered
                 raise TurnPlanningError(
                     "planner hand-off remained semantically invalid after repair: "
                     + "; ".join(remaining)
