@@ -196,6 +196,11 @@ Return repair_required only when the proposed typed plan semantically violates o
   unknown physical responder must be typed in npc_introductions. If nobody answers/is found, the
   negative outcome must be explicit. A known present addressed character needs response ownership,
   not recreation as a new NPC.
+- PRESENCE CONSISTENCY: treat present_character_names plus npc_introductions as an exhaustive
+  physical allowlist. If the proposed outcome, character beats, or interaction result says that an
+  unnamed person/group responds, approaches, watches, or is physically encountered while the
+  allowlist does not contain them, require repair. Either type the responder(s), or make the
+  no-contact outcome explicit; do not approve a prose-only person.
 - ENTITY TYPE: objects, symbols, clues, doors, smells, lights, documents and locations are not people.
   Do not accept an npc_introduction caused by a category mistake.
 - SYSTEMLESS: no result may depend on a future dice/check/rules resolver. Uncertainty must be resolved
