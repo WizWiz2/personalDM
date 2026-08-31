@@ -87,6 +87,15 @@ class TurnUndoService:
                     campaign_id,
                     source_scene_id,
                 )
+                # The player is not guaranteed to be a scene participant (the playable bootstrap
+                # stores the player's location on Character), so restoring participant locations
+                # alone can leave the campaign pointing at the transition destination after undo.
+                source_scene = await self._session.get(Scene, str(source_scene_id))
+                campaign = await self._session.get(Campaign, str(campaign_id))
+                if source_scene and campaign and campaign.player_character_id:
+                    player = await self._session.get(Character, campaign.player_character_id)
+                    if player:
+                        player.current_location_id = source_scene.location_id
             else:
                 campaign = await self._session.get(Campaign, str(campaign_id))
                 if campaign:

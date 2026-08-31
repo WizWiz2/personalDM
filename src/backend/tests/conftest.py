@@ -71,7 +71,7 @@ def mock_turn_planner(request):
         ending_hook="Return a meaningful situation to the player.",
     )
 
-    async def bridge_authority_plan(_self, selection, context_messages):
+    async def bridge_authority_plan(_self, selection, context_messages, *, latest_user_input=None):
         # Tests may temporarily replace TurnPlanner.plan inside their own `with patch(...)` block.
         # Calling it here deliberately sees that more-specific patch.
         legacy = await TurnPlanner(AsyncMock()).plan(selection, context_messages)

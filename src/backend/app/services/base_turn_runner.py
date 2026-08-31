@@ -21,6 +21,7 @@ from app.services.scene_transition_executor import (
     AppliedSceneTransition,
     SceneTransitionExecutor,
 )
+from app.services.initial_world_state import InitialWorldStateService
 from app.services.turn_planner import (
     SceneTransitionPlan,
     TurnPlanner,
@@ -291,6 +292,14 @@ class TurnRunner:
                 planner = TurnPlanner(role_router)
                 try:
                     turn_plan = await planner.plan(planner_selection, messages)
+                    if turn_plan.scene_transition.required or any(
+                        step.transition.transition_type == "location_transition"
+                        for step in turn_plan.action_sequence.steps
+                    ):
+                        await InitialWorldStateService(self._session).ensure_snapshot(
+                            campaign_id,
+                            exclude_turn_id=user_turn.id,
+                        )
                     transition_executor = SceneTransitionExecutor(self._session)
                     existing_transition = await transition_executor.existing_for_turn(
                         campaign_id,

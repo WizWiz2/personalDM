@@ -26,6 +26,7 @@ from app.services.turn_authority_planner import (
     TurnAuthorityPlanner,
 )
 from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
+from app.services.initial_world_state import InitialWorldStateService
 from app.services.turn_outcome_materializer import (
     MaterializedTurnOutcome,
     TurnOutcomeMaterializer,
@@ -360,6 +361,19 @@ class TurnSaga:
             await self._set_phase(generation_run.id, GenerationPhase.PLANNED)
 
             if turn_create.acting_character_id is None:
+                # Capture the pre-turn projection before scene transitions or action steps mutate
+                # character locations. Canon replay uses this checkpoint for a correct undo.
+                if plan and (
+                    plan.scene_transition.required
+                    or any(
+                        step.transition.transition_type == "location_transition"
+                        for step in plan.action_sequence.steps
+                    )
+                ):
+                    await InitialWorldStateService(self._session).ensure_snapshot(
+                        campaign_id,
+                        exclude_turn_id=user_turn.id,
+                    )
                 transition_executor = SceneTransitionExecutor(self._session)
                 existing_transition = await transition_executor.existing_for_turn(
                     campaign_id,
