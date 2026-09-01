@@ -19,6 +19,9 @@ from app.services.entity_identity import identity_key, resolve_character_candida
 class MaterializedTurnOutcome:
     introduced_character_ids: tuple[UUID, ...] = ()
     arrived_existing_participants: tuple[tuple[UUID, UUID], ...] = ()
+    renamed_existing_characters: tuple[
+        tuple[UUID, str, tuple[str, ...], dict | None], ...
+    ] = ()
 
     @property
     def arrived_existing_character_ids(self) -> tuple[UUID, ...]:
@@ -26,7 +29,11 @@ class MaterializedTurnOutcome:
 
     @property
     def has_changes(self) -> bool:
-        return bool(self.introduced_character_ids or self.arrived_existing_participants)
+        return bool(
+            self.introduced_character_ids
+            or self.arrived_existing_participants
+            or self.renamed_existing_characters
+        )
 
 
 class TurnOutcomeMaterializer:
@@ -85,6 +92,8 @@ class TurnOutcomeMaterializer:
                 character_locations[entity.id] = card.current_location_id
 
         created_ids: list[UUID] = []
+        renamed_existing: list[tuple[UUID, str, tuple[str, ...], dict | None]] = []
+        resolved_introduction_ids: set[UUID] = set()
         for introduction in authority.allowed_new_npcs:
             contextual = resolve_character_candidates(
                 known,
@@ -108,13 +117,20 @@ class TurnOutcomeMaterializer:
 
             if unique_contextual:
                 existing = next(iter(unique_contextual.values()))
+                existing_id = UUID(str(existing.id))
+                if existing_id in resolved_introduction_ids:
+                    raise ValueError(
+                        "Multiple planned new NPCs resolve to the same existing identity: "
+                        f"{existing.canonical_name}"
+                    )
+                resolved_introduction_ids.add(existing_id)
+
                 if existing.status in {"dead", "destroyed", "inactive"}:
                     raise ValueError(
                         "Cannot materialize planned new NPC because the resolved identity is not "
                         f"active: {existing.canonical_name} ({existing.status})"
                     )
 
-                existing_id = UUID(str(existing.id))
                 existing_location = character_locations.get(existing_id)
                 if (
                     target_scene.location_id is not None
@@ -127,7 +143,8 @@ class TurnOutcomeMaterializer:
                     )
 
                 # A structured temporary role can later acquire a real name. Upgrade the same
-                # entity rather than creating a second character and keep the old label as alias.
+                # entity rather than creating a second character and keep enough prior state for
+                # rollback if prose generation/publication subsequently aborts.
                 fields = existing.custom_fields or {}
                 if (
                     isinstance(fields, dict)
@@ -136,11 +153,20 @@ class TurnOutcomeMaterializer:
                     and identity_key(existing.canonical_name)
                     != identity_key(introduction.canonical_name)
                 ):
+                    previous_fields = dict(fields)
                     aliases = list(existing.aliases)
                     if identity_key(existing.canonical_name) not in {
                         identity_key(alias) for alias in aliases
                     }:
                         aliases.append(existing.canonical_name)
+                    renamed_existing.append(
+                        (
+                            existing_id,
+                            existing.canonical_name,
+                            tuple(existing.aliases),
+                            previous_fields,
+                        )
+                    )
                     fields = dict(fields)
                     fields["temporary_name"] = False
                     await self._entities.update(
@@ -200,6 +226,7 @@ class TurnOutcomeMaterializer:
         return MaterializedTurnOutcome(
             introduced_character_ids=tuple(created_ids),
             arrived_existing_participants=tuple(arrived_existing),
+            renamed_existing_characters=tuple(renamed_existing),
         )
 
     async def bind_to_assistant(
@@ -228,6 +255,17 @@ class TurnOutcomeMaterializer:
             # Existing characters must never be deleted. Remove only the participant relation
             # inserted by this turn; historical participation in older scenes stays intact.
             await self._scenes.remove_participant(scene_id, entity_id)
+        for entity_id, canonical_name, aliases, custom_fields in reversed(
+            outcome.renamed_existing_characters
+        ):
+            await self._entities.update(
+                entity_id,
+                EntityUpdate(
+                    canonical_name=canonical_name,
+                    aliases=list(aliases),
+                    custom_fields=custom_fields,
+                ),
+            )
         for entity_id in outcome.introduced_character_ids:
             await self._entities.delete(entity_id)
         await self._session.flush()
