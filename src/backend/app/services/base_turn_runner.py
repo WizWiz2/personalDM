@@ -16,12 +16,12 @@ from app.providers.llm_provider import (
     LLMProviderError,
     LLMProviderTruncatedError,
 )
+from app.services.initial_world_state import InitialWorldStateService
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.scene_transition_executor import (
     AppliedSceneTransition,
     SceneTransitionExecutor,
 )
-from app.services.initial_world_state import InitialWorldStateService
 from app.services.turn_planner import (
     SceneTransitionPlan,
     TurnPlanner,
@@ -217,7 +217,6 @@ class TurnRunner:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield "[Generation failed: no LLM provider is configured for this campaign.]"
             return
-
         role_router = RoleModelRouter(self._config_repo)
         narrator_selection = await role_router.resolve(
             campaign_id,
