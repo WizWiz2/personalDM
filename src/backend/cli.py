@@ -5,9 +5,12 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application import GameApplication
+from app.application.post_turn_runtime import (
+    recover_stale_post_turn_jobs,
+    wait_for_post_turn_idle,
+)
 from app.config import settings
 from app.db.engine import AsyncSessionLocal, Base, engine
-from app.db.repositories.job_repo import PostTurnJobRepository
 from app.models.campaign import CampaignCreate
 from app.models.character import CharacterCreate
 from app.models.provider_config import ProviderConfigCreate
@@ -20,7 +23,6 @@ from app.services.session_zero_interview import (
     SessionZeroInterviewService,
 )
 from app.services.session_zero_service import SessionZeroService
-from app.services.post_turn_dispatcher import PostTurnDispatcher
 
 install_runtime()
 
@@ -427,8 +429,7 @@ async def play_game_loop(
     # CLI owns its event loop. Recover jobs left by an interrupted play.bat and let
     # the dispatcher finish the current turn before returning control to the player;
     # otherwise the loop closes and durable memory remains permanently pending.
-    await PostTurnJobRepository(session).recover_stale()
-    await session.commit()
+    await recover_stale_post_turn_jobs(session)
     setup = await SessionZeroService(session).get(campaign_id)
     if setup.status != "completed":
         if not await run_session_zero_interview(campaign_id, session):
@@ -540,7 +541,7 @@ async def play_game_loop(
         if route.channel == "narrative":
             assistant_turn_id = await application.latest_assistant_turn_id(campaign_id)
             if assistant_turn_id:
-                await PostTurnDispatcher.wait_for_idle()
+                await wait_for_post_turn_idle()
                 await _show_post_turn_status(application, assistant_turn_id)
 
 
