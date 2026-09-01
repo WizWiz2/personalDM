@@ -233,7 +233,14 @@ def run_gui() -> int:
 
 
 def run_cli() -> int:
-    return subprocess.call([sys.executable, "cli_tui.py"], cwd=BACKEND_DIR)
+    process = subprocess.Popen([sys.executable, "cli_tui.py"], cwd=BACKEND_DIR)
+    try:
+        return process.wait()
+    except KeyboardInterrupt:
+        # Ctrl+C is otherwise delivered to the launcher while the child CLI can survive and
+        # leave post-turn work orphaned. Reuse the same scoped tree cleanup as the GUI runner.
+        _terminate_tree(process)
+        return 130
 
 
 def _ask_text_provider(service: RuntimeProviderService) -> bool:

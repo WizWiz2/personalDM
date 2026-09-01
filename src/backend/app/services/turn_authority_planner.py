@@ -13,6 +13,7 @@ from app.services.starter_identity import (
     present_character_names,
     sanitize_existing_present_npc_introductions,
 )
+from app.services.player_intent_contract import contains_cjk, expects_russian
 from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
 
 
@@ -256,6 +257,29 @@ short sentence. Return exactly the NpcContactDecision schema.
     def __init__(self, router: RoleModelRouter):
         self._router = router
         self._provider = LLMProvider()
+
+    @staticmethod
+    def _sanitize_npc_names(plan: CoordinatedTurnPlan, player_input: str) -> None:
+        """Keep generated NPC identities readable on a clearly Russian campaign surface."""
+        if not expects_russian(player_input):
+            return
+        used = {
+            item.canonical_name.casefold()
+            for item in plan.npc_introductions
+            if not contains_cjk(item.canonical_name)
+        }
+        for item in plan.npc_introductions:
+            if not contains_cjk(item.canonical_name):
+                continue
+            base = "Безымянный собеседник"
+            candidate = base
+            index = 2
+            while candidate.casefold() in used:
+                candidate = f"{base} {index}"
+                index += 1
+            item.canonical_name = candidate
+            item.temporary_name = True
+            used.add(candidate.casefold())
 
     @property
     def telemetry(self) -> dict:
@@ -516,6 +540,7 @@ short sentence. Return exactly the NpcContactDecision schema.
         try:
             plan = await self._generate_plan(selection, base_messages)
             sanitize_existing_present_npc_introductions(plan, present_names)
+            self._sanitize_npc_names(plan, player_input)
 
             # A model may treat a person mentioned in historical prose as already known and
             # return `pass` before the regular reviewer notices the allowlist conflict. Run the
@@ -530,6 +555,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                 )
                 if preflight_contact is not None:
                     plan = preflight_contact
+                    self._sanitize_npc_names(plan, player_input)
 
             review = await self._semantic_review(
                 selection,
@@ -547,6 +573,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                 self._repair_messages(base_messages, player_input, issues, plan),
             )
             sanitize_existing_present_npc_introductions(repaired, present_names)
+            self._sanitize_npc_names(repaired, player_input)
             final_review = await self._semantic_review(
                 selection,
                 context_messages,
@@ -566,6 +593,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                     remaining,
                 )
                 if recovered is not None:
+                    self._sanitize_npc_names(recovered, player_input)
                     recovered_review = await self._semantic_review(
                         selection,
                         context_messages,
@@ -590,6 +618,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                 [str(exc)[:1000]],
             )
             if recovered is not None:
+                self._sanitize_npc_names(recovered, player_input)
                 return recovered
             raise
         except (LLMProviderError, ValueError, TypeError) as exc:
@@ -605,6 +634,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                 [str(exc)[:1000]],
             )
             if recovered is not None:
+                self._sanitize_npc_names(recovered, player_input)
                 return recovered
             raise TurnPlanningError(str(exc)) from exc
 
