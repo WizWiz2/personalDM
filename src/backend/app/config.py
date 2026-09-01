@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     CONTROL_LLM_MODEL: str = "qwen2.5:7b"
     CONTROL_LLM_API_KEY: str | None = None
     CONTROL_LLM_CONTEXT_WINDOW: int | None = None
+    CONTROL_REQUEST_DEADLINE_SECONDS: float = 120.0
     PLANNER_LLM_MODEL: str | None = None
     SCRIBE_LLM_MODEL: str | None = None
     CURATOR_LLM_MODEL: str | None = None
