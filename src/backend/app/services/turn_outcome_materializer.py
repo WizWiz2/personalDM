@@ -10,8 +10,9 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Entity
 from app.models.character import CharacterCreate
+from app.models.entity import EntityUpdate
 from app.models.turn_authority import TurnAuthority
-from app.services.entity_identity import identity_key
+from app.services.entity_identity import identity_key, resolve_character_candidates
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,10 @@ class TurnOutcomeMaterializer:
         if not authority.target_scene_id:
             raise ValueError("Planned NPC materialization has no authoritative target scene")
 
+        target_scene = await self._scenes.get_by_id(authority.target_scene_id)
+        if not target_scene:
+            raise ValueError("Planned NPC materialization target scene does not exist")
+
         existing_participants = set(
             await self._scenes.get_participants(authority.target_scene_id)
         )
@@ -73,19 +78,97 @@ class TurnOutcomeMaterializer:
             authority.campaign_id,
             entity_type="character",
         )
-        known_names: set[str] = set()
+        character_locations: dict[UUID, UUID | None] = {}
         for entity in known:
-            known_names.add(identity_key(entity.canonical_name))
-            known_names.update(identity_key(alias) for alias in entity.aliases)
+            card = await self._entities.get_character(entity.id)
+            if card:
+                character_locations[entity.id] = card.current_location_id
 
         created_ids: list[UUID] = []
         for introduction in authority.allowed_new_npcs:
-            key = identity_key(introduction.canonical_name)
-            if key in known_names:
-                raise ValueError(
-                    "Cannot materialize planned new NPC because that identity already exists: "
-                    f"{introduction.canonical_name}"
+            contextual = resolve_character_candidates(
+                known,
+                proposed_name=introduction.canonical_name,
+                proposed_role=introduction.role,
+                temporary_name=introduction.temporary_name,
+                target_location_id=target_scene.location_id,
+                character_locations=character_locations,
+            )
+            unique_contextual = {
+                UUID(str(candidate.id)): candidate for candidate in contextual
+            }
+            if len(unique_contextual) > 1:
+                names = ", ".join(
+                    sorted(candidate.canonical_name for candidate in unique_contextual.values())
                 )
+                raise ValueError(
+                    "Cannot materialize planned new NPC because identity is ambiguous: "
+                    f"{introduction.canonical_name} -> {names}"
+                )
+
+            if unique_contextual:
+                existing = next(iter(unique_contextual.values()))
+                if existing.status in {"dead", "destroyed", "inactive"}:
+                    raise ValueError(
+                        "Cannot materialize planned new NPC because the resolved identity is not "
+                        f"active: {existing.canonical_name} ({existing.status})"
+                    )
+
+                existing_id = UUID(str(existing.id))
+                existing_location = character_locations.get(existing_id)
+                if (
+                    target_scene.location_id is not None
+                    and existing_location is not None
+                    and existing_location != target_scene.location_id
+                ):
+                    raise ValueError(
+                        "Cannot reconcile planned new NPC with an existing character in another "
+                        f"location: {existing.canonical_name}"
+                    )
+
+                # A structured temporary role can later acquire a real name. Upgrade the same
+                # entity rather than creating a second character and keep the old label as alias.
+                fields = existing.custom_fields or {}
+                if (
+                    isinstance(fields, dict)
+                    and fields.get("temporary_name")
+                    and not introduction.temporary_name
+                    and identity_key(existing.canonical_name)
+                    != identity_key(introduction.canonical_name)
+                ):
+                    aliases = list(existing.aliases)
+                    if identity_key(existing.canonical_name) not in {
+                        identity_key(alias) for alias in aliases
+                    }:
+                        aliases.append(existing.canonical_name)
+                    fields = dict(fields)
+                    fields["temporary_name"] = False
+                    await self._entities.update(
+                        existing_id,
+                        EntityUpdate(
+                            canonical_name=introduction.canonical_name,
+                            aliases=aliases,
+                            description=existing.description
+                            or introduction.description
+                            or introduction.role,
+                            custom_fields=fields,
+                        ),
+                    )
+
+                if existing_id not in existing_participants:
+                    await self._scenes.add_participant(
+                        authority.target_scene_id,
+                        existing_id,
+                        allow_movement=False,
+                    )
+                    arrived_existing.append((authority.target_scene_id, existing_id))
+                    existing_participants.add(existing_id)
+                continue
+
+            key = identity_key(introduction.canonical_name)
+            if not key:
+                raise ValueError("Cannot materialize planned new NPC with an empty identity")
+
             character = await self._entities.create_character(
                 authority.campaign_id,
                 CharacterCreate(
@@ -109,7 +192,9 @@ class TurnOutcomeMaterializer:
                 allow_movement=True,
             )
             created_ids.append(character.id)
-            known_names.add(key)
+            existing_participants.add(character.id)
+            known.append(character)
+            character_locations[character.id] = target_scene.location_id
 
         await self._session.flush()
         return MaterializedTurnOutcome(
