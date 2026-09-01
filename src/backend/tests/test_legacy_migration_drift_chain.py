@@ -133,7 +133,7 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
             ).fetchall()
         }
 
-    assert revision == ("c3d4e5f6a7b8",)
+    assert revision == ("f6a7b8c9d0e1",)
     assert transition == ("preserve me", "legacy-runtime")
     assert lifecycle == ("received", 1)
     assert "ix_scene_transitions_campaign_id" in indexes
