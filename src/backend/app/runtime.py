@@ -12,6 +12,7 @@ from app.models.jobs import GenerationPhase
 _INSTALLED = False
 _CRASH_LOG_HANDLE: TextIO | None = None
 _GUARDS = (
+    "control_plane_timeout",
     "actor_turn_authority",
     "actor_memory_observability",
     "systemless_authority",
@@ -76,6 +77,7 @@ def install_runtime() -> None:
         install as install_actor_memory_observability,
     )
     from app.services.actor_turn_authority_guard import install as install_actor_turn_authority
+    from app.services.control_plane_timeout_guard import install as install_control_plane_timeout
     from app.services.mixed_actor_response_guard import install as install_mixed_actor_response
     from app.services.narration_failure_containment_guard import (
         install as install_narration_failure_containment,
@@ -87,6 +89,10 @@ def install_runtime() -> None:
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.systemless_authority_guard import install as install_systemless_authority
 
+    # Bound one structured control stage before installing higher-level semantic guards. The
+    # provider still owns its internal JSON repair attempts, but a single stage can no longer
+    # monopolize a live turn for many minutes before normal failure recovery runs.
+    install_control_plane_timeout()
     install_actor_turn_authority()
     install_systemless_authority()
     install_mixed_actor_response()
@@ -104,6 +110,7 @@ def runtime_manifest() -> dict[str, Any]:
     """Return the auditable causal order used by the production runtime."""
     install_runtime()
 
+    from app.config import settings
     from app.providers.llm_provider import LLMProvider
     from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
     from app.services.context_compiler import ContextCompiler
@@ -163,6 +170,9 @@ def runtime_manifest() -> dict[str, Any]:
             "npc_introduction_semantics": "model",
             "movement_intent_semantics": "model",
             "requires_check": "structurally_forbidden",
+        },
+        "control_plane": {
+            "structured_call_deadline_seconds": settings.CONTROL_REQUEST_DEADLINE_SECONDS,
         },
         "crash_diagnostics": {
             "faulthandler": True,
