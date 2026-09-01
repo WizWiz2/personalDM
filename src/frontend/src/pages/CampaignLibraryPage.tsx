@@ -27,6 +27,7 @@ export function CampaignLibraryPage() {
   const [error, setError] = useState('')
   const [modal, setModal] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
 
@@ -134,6 +135,23 @@ export function CampaignLibraryPage() {
     }
   }
 
+  const deleteCampaign = async (campaign: Campaign) => {
+    const confirmed = window.confirm(
+      `Удалить кампанию «${campaign.name}» безвозвратно? Все сцены, ходы и факты будут удалены.`,
+    )
+    if (!confirmed) return
+    setDeletingId(campaign.id)
+    setError('')
+    try {
+      await api.deleteCampaign(campaign.id)
+      setCampaigns((current) => current.filter((item) => item.id !== campaign.id))
+    } catch (err) {
+      setError(readableError(err))
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   return (
     <div className="global-page">
       <header className="global-topbar">
@@ -190,6 +208,13 @@ export function CampaignLibraryPage() {
                         <span>{relativeUpdated(campaign.updated_at)}</span>
                       </div>
                       <div className="campaign-card-footer">
+                        <button
+                          className="btn danger"
+                          disabled={deletingId === campaign.id}
+                          onClick={() => void deleteCampaign(campaign)}
+                        >
+                          {deletingId === campaign.id ? 'Удаляем…' : 'Удалить'}
+                        </button>
                         <button className="btn primary" onClick={() => void openCampaign(campaign)}>Продолжить</button>
                       </div>
                     </div>

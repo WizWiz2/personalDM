@@ -129,6 +129,8 @@ export const api = {
   getCampaign: (id: UUID) => request<Campaign>(`/api/campaigns/${id}`),
   createCampaign: (data: CampaignCreate) =>
     request<Campaign>('/api/campaigns', { method: 'POST', body: JSON.stringify(data) }),
+  deleteCampaign: (id: UUID) =>
+    request<void>(`/api/campaigns/${id}`, { method: 'DELETE' }),
   updateCampaign: (id: UUID, data: Partial<Campaign>) =>
     request<Campaign>(`/api/campaigns/${id}`, {
       method: 'PUT',
