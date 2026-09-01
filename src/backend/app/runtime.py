@@ -13,6 +13,7 @@ _INSTALLED = False
 _CRASH_LOG_HANDLE: TextIO | None = None
 _GUARDS = (
     "control_plane_timeout",
+    "npc_identity_authority",
     "actor_turn_authority",
     "actor_memory_observability",
     "systemless_authority",
@@ -85,6 +86,7 @@ def install_runtime() -> None:
     from app.services.narrator_quality_recovery_guard import (
         install as install_narrator_quality_recovery,
     )
+    from app.services.npc_identity_authority_guard import install as install_npc_identity_authority
     from app.services.semantic_authority_guard import install as install_semantic_authority
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.systemless_authority_guard import install as install_systemless_authority
@@ -93,6 +95,8 @@ def install_runtime() -> None:
     # provider still owns its internal JSON repair attempts, but a single stage can no longer
     # monopolize a live turn for many minutes before normal failure recovery runs.
     install_control_plane_timeout()
+    # Invalid control-model names must fail closed before TurnAuthority can materialize them.
+    install_npc_identity_authority()
     install_actor_turn_authority()
     install_systemless_authority()
     install_mixed_actor_response()
