@@ -121,14 +121,18 @@ def entity_role_families(entity) -> set[str]:
     )
 
 
-def _structured_starter_role_key(entity) -> str:
-    """Return a role key only for a temporary NPC created by structured Session Zero presence."""
+def _structured_temporary_role_key(entity) -> str:
+    """Return a role key only for temporary NPCs created by structured truth authority."""
     custom_fields = getattr(entity, "custom_fields", None) or {}
     if not isinstance(custom_fields, dict):
         return ""
     if not custom_fields.get("temporary_name"):
         return ""
-    if custom_fields.get("source") != "session_zero_structured_presence":
+    structured = (
+        custom_fields.get("source") == "session_zero_structured_presence"
+        or custom_fields.get("introduced_by") == "turn_authority"
+    )
+    if not structured:
         return ""
     role = custom_fields.get("role") or custom_fields.get("bootstrap_role")
     return identity_key(role)
@@ -147,9 +151,9 @@ def resolve_character_candidates(
 
     Resolution order:
     1. Script-normalized canonical name / alias equality is authoritative.
-    2. A named proposal may reconcile with a *unique same-location temporary structured starter*
-       whose stored role exactly equals the proposed role. This repairs Session Zero payloads where
-       the role survived but an explicitly known name was omitted; ambiguity still fails closed.
+    2. A named proposal may reconcile with a *unique same-location temporary structured NPC*
+       whose stored role exactly equals the proposed role. This covers both Session Zero presence
+       and NPCs previously introduced through TurnAuthority; ambiguity still fails closed.
     3. Only a temporary generic role name may fall back to the older coarse role-family matching.
     """
 
@@ -161,15 +165,15 @@ def resolve_character_candidates(
     if target_location_id is not None and proposed_role:
         requested_role = identity_key(proposed_role)
         if requested_role:
-            starter_matches = []
+            structured_matches = []
             for entity in entities:
                 entity_id = UUID(str(entity.id))
                 if character_locations.get(entity_id) != target_location_id:
                     continue
-                if _structured_starter_role_key(entity) == requested_role:
-                    starter_matches.append(entity)
-            if starter_matches:
-                return starter_matches
+                if _structured_temporary_role_key(entity) == requested_role:
+                    structured_matches.append(entity)
+            if structured_matches:
+                return structured_matches
 
     if not temporary_name or target_location_id is None:
         return []
