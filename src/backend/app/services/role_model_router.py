@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from enum import Enum
 from uuid import UUID
@@ -159,6 +160,42 @@ class RoleModelRouter:
             source=source,
         )
 
+    async def _generate_json_once(
+        self,
+        provider: LLMProvider,
+        selection: RoleModelSelection,
+        config: ProviderConfigRead,
+        api_key: str | None,
+        messages: list[ChatMessage],
+        **kwargs,
+    ) -> dict:
+        request = provider.generate_json(
+            messages,
+            config,
+            api_key,
+            **kwargs,
+        )
+        if selection.role not in CONTROL_ROLES:
+            return await request
+
+        timeout_seconds = max(1.0, float(settings.CONTROL_LLM_TIMEOUT_SECONDS))
+        try:
+            return await asyncio.wait_for(request, timeout=timeout_seconds)
+        except TimeoutError as exc:
+            telemetry = dict(provider.last_telemetry or {})
+            provider.last_telemetry = {
+                **telemetry,
+                "status": "control_timeout",
+                "control_plane": True,
+                "model": config.model_name,
+                "model_role": selection.role.value,
+                "timeout_seconds": timeout_seconds,
+            }
+            raise LLMProviderError(
+                f"Control model role {selection.role.value} exceeded "
+                f"{timeout_seconds:g}s request budget"
+            ) from exc
+
     async def generate_json(
         self,
         provider: LLMProvider,
@@ -167,10 +204,12 @@ class RoleModelRouter:
         **kwargs,
     ) -> dict:
         try:
-            result = await provider.generate_json(
-                messages,
+            result = await self._generate_json_once(
+                provider,
+                selection,
                 selection.config,
                 selection.api_key,
+                messages,
                 **kwargs,
             )
             telemetry = dict(provider.last_telemetry or {})
@@ -186,10 +225,12 @@ class RoleModelRouter:
         except LLMProviderError as primary_error:
             if not selection.has_distinct_fallback:
                 raise
-            result = await provider.generate_json(
-                messages,
+            result = await self._generate_json_once(
+                provider,
+                selection,
                 selection.fallback_config,
                 selection.fallback_api_key,
+                messages,
                 **kwargs,
             )
             telemetry = dict(provider.last_telemetry or {})
