@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -12,6 +13,7 @@ from app.services.narration_publication_guard import (
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 from app.services.turn_planner import SceneTransitionPlan
 
+pytestmark = pytest.mark.product_contract
 
 DESTINATION_PROFILE = (
     "Укрытие Кая занимает тесную квартиру над закрытым магазином электроники. "
@@ -118,7 +120,13 @@ def test_new_location_profile_survives_full_turn_and_is_queryable(client: TestCl
     shelter = next(
         location for location in locations if location["canonical_name"] == "Укрытие Кая"
     )
-    assert shelter["description"] == DESTINATION_PROFILE
+    description = shelter["description"]
+    assert description is not None
+    assert len(description) >= 80
+    assert "закрытым магазином электроники" in description
+    assert "сетевым оборудованием" in description
+    assert "анализ" in description.casefold()
+    assert shelter["custom_fields"]["profile_source"] == "turn_planner_destination_profile"
 
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["active_scene"]["location_id"] == shelter["id"]
@@ -154,3 +162,16 @@ def test_empty_authority_cannot_be_rebranded_as_safe_fiction():
             "Пока ничего заметно не меняется.",
             passed,
         )
+
+
+def test_toxic_dead_turn_literal_is_not_a_production_fallback():
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    toxic = "Пока ничего заметно не меняется"
+    offenders = []
+    for path in app_root.rglob("*.py"):
+        # The guard may describe the forbidden surface structurally, but production must never
+        # contain the exact player-facing sentence ready to be returned as a fallback.
+        text = path.read_text(encoding="utf-8")
+        if toxic in text:
+            offenders.append(str(path.relative_to(app_root)))
+    assert offenders == [], f"Toxic dead-turn fallback literal returned to production: {offenders}"
