@@ -7,7 +7,7 @@ import {
 import { Icons } from './Icons'
 
 interface Props {
-  campaignId: UUID
+  campaignId?: UUID
   onMessage: (message: string) => void
   onError: (message: string) => void
 }
@@ -80,7 +80,7 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
     try {
       await runtimeProviderApi.configureText({
         mode: textMode,
-        campaign_id: campaignId,
+        ...(campaignId ? { campaign_id: campaignId } : {}),
         ...(textMode === 'cloud' ? {
           base_url: textBaseUrl,
           model: textModel,
