@@ -14,6 +14,7 @@ _CRASH_LOG_HANDLE: TextIO | None = None
 _GUARDS = (
     "actor_turn_authority",
     "actor_memory_observability",
+    "narrator_memory_audit",
     "systemless_authority",
     "mixed_actor_response",
     "narrator_quality_recovery",
@@ -82,6 +83,7 @@ def install_runtime() -> None:
     from app.services.narration_failure_containment_guard import (
         install as install_narration_failure_containment,
     )
+    from app.services.narrator_memory_audit_guard import install as install_narrator_memory_audit
     from app.services.narrator_quality_recovery_guard import (
         install as install_narrator_quality_recovery,
     )
@@ -97,6 +99,7 @@ def install_runtime() -> None:
     install_systemless_authority()
     install_mixed_actor_response()
     install_actor_memory_observability()
+    install_narrator_memory_audit()
     install_narrator_quality_recovery()
     install_narration_failure_containment()
     install_session_zero_finalize()
@@ -171,6 +174,8 @@ def runtime_manifest() -> dict[str, Any]:
             "npc_introduction_semantics": "model",
             "movement_intent_semantics": "model",
             "compound_action_coverage": "model_with_semantic_review",
+            "narrator_memory_attribution": "independent_segment_audit",
+            "plot_fact_recovery": "evidence_grounded_second_pass",
             "requires_check": "structurally_forbidden",
         },
         "crash_diagnostics": {
