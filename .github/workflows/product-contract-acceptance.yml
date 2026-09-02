@@ -9,11 +9,13 @@ on:
     paths:
       - "src/backend/app/**"
       - "src/backend/tests/**"
+      - "src/backend/pyproject.toml"
       - ".github/workflows/product-contract-acceptance.yml"
   pull_request:
     paths:
       - "src/backend/app/**"
       - "src/backend/tests/**"
+      - "src/backend/pyproject.toml"
       - ".github/workflows/product-contract-acceptance.yml"
 
 jobs:
@@ -33,10 +35,11 @@ jobs:
       - name: Install backend and test dependencies
         run: python -m pip install -e "src/backend[dev]"
 
-      - name: Compile product-contract paths
+      - name: Compile acceptance boundaries
         run: >-
           python -m compileall -q
           src/backend/app
+          src/backend/tests/conftest.py
           src/backend/tests/test_product_contract_acceptance.py
           src/backend/tests/test_golden_playthrough.py
           src/backend/tests/test_round42_live_playtest_materialization.py
@@ -46,6 +49,7 @@ jobs:
           src/backend/tests/test_round44_memory_attribution_and_plot_facts.py
           src/backend/tests/test_stabilization_location_presence_identity.py
           src/backend/tests/test_turn_undo_authority.py
+          src/backend/tests/test_npc_language_safety.py
 
       - name: Validate migration chain
         working-directory: src/backend
@@ -53,11 +57,14 @@ jobs:
           rm -rf data
           alembic upgrade head
 
-      - name: Run player-visible product contracts
+      - name: Run marked product contracts
+        working-directory: src/backend
+        run: pytest -q -m product_contract --tb=short
+
+      - name: Run legacy cross-system acceptance during marker migration
         working-directory: src/backend
         run: >-
           pytest -q
-          tests/test_product_contract_acceptance.py
           tests/test_golden_playthrough.py
           tests/test_round42_live_playtest_materialization.py
           tests/test_round43_scene_memory_integration.py
@@ -66,13 +73,17 @@ jobs:
           tests/test_round44_memory_attribution_and_plot_facts.py
           tests/test_stabilization_location_presence_identity.py
           tests/test_turn_undo_authority.py
+          tests/test_npc_language_safety.py
           --tb=short
 
       - name: Lint acceptance boundary
         working-directory: src/backend
         run: >-
           ruff check
+          tests/conftest.py
           tests/test_product_contract_acceptance.py
+          tests/test_npc_language_safety.py
           app/services/dead_turn_guard.py
           app/services/location_profile_guard.py
           app/services/narration_publication_guard.py
+          app/services/turn_authority_planner.py
