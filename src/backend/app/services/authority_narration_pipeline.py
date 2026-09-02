@@ -461,17 +461,18 @@ class AuthorityNarrationPipeline:
                     validation_status=gate.status,
                 )
 
-            surgical, surgical_result, surgery, surgery_attempted = self._try_surgical_repair(
-                audit=audit,
-                run=run,
-                validator=validator,
-                validation_selection=validation_selection,
-                authority=authority,
-                draft=draft,
-                initial_result=result,
-                attempt_index=1,
+            surgical, surgical_result, surgery, surgery_attempted = (
+                await self._try_surgical_repair(
+                    audit=audit,
+                    run=run,
+                    validator=validator,
+                    validation_selection=validation_selection,
+                    authority=authority,
+                    draft=draft,
+                    initial_result=result,
+                    attempt_index=1,
+                )
             )
-            surgical, surgical_result, surgery, surgery_attempted = await surgical
             if surgical is not None:
                 gate = await audit.finalize(
                     run,
