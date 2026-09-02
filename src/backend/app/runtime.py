@@ -20,6 +20,7 @@ _GUARDS = (
     "narration_failure_containment",
     "session_zero_finalize",
     "session_zero_placeholder",
+    "planner_compound",
     "semantic_authority",
 )
 
@@ -84,6 +85,7 @@ def install_runtime() -> None:
     from app.services.narrator_quality_recovery_guard import (
         install as install_narrator_quality_recovery,
     )
+    from app.services.planner_compound_guard import install as install_planner_compound
     from app.services.semantic_authority_guard import install as install_semantic_authority
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.session_zero_placeholder_guard import (
@@ -99,6 +101,7 @@ def install_runtime() -> None:
     install_narration_failure_containment()
     install_session_zero_finalize()
     install_session_zero_placeholder()
+    install_planner_compound()
     # This policy intentionally installs last: legacy guards may still expose compatibility helpers,
     # but no lexical/regex semantic decision is allowed to remain authoritative in production.
     install_semantic_authority()
@@ -167,6 +170,7 @@ def runtime_manifest() -> dict[str, Any]:
             "addressed_response": "typed_planner_field",
             "npc_introduction_semantics": "model",
             "movement_intent_semantics": "model",
+            "compound_action_coverage": "model_with_semantic_review",
             "requires_check": "structurally_forbidden",
         },
         "crash_diagnostics": {
