@@ -66,11 +66,14 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["guards"] == [
         "actor_turn_authority",
         "actor_memory_observability",
+        "narrator_memory_audit",
         "systemless_authority",
         "mixed_actor_response",
         "narrator_quality_recovery",
         "narration_failure_containment",
         "session_zero_finalize",
+        "session_zero_placeholder",
+        "planner_compound",
         "semantic_authority",
     ]
     assert cli_manifest["context_pipeline"] == [
@@ -114,6 +117,9 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "addressed_response": "typed_planner_field",
         "npc_introduction_semantics": "model",
         "movement_intent_semantics": "model",
+        "compound_action_coverage": "model_with_semantic_review",
+        "narrator_memory_attribution": "independent_segment_audit",
+        "plot_fact_recovery": "evidence_grounded_second_pass",
         "requires_check": "structurally_forbidden",
     }
     assert cli_manifest["turn_stream"].endswith("TurnRunner.run_turn_stream")
