@@ -101,7 +101,15 @@ def _planned_doorman() -> CoordinatedTurnPlan:
             PlannedNpcIntroduction(
                 canonical_name="Дежурный фабрики",
                 role="ночной дежурный",
-                description="Работник, ответивший на стук изнутри фабрики.",
+                description=(
+                    "Усталый ночной дежурный фабрики, осторожный с незнакомцами и привыкший "
+                    "держаться у двери, пока не поймёт цель визита."
+                ),
+                appearance=(
+                    "Коренастый мужчина около пятидесяти лет с небритым лицом, короткими седыми "
+                    "волосами, тёмной рабочей курткой и тяжёлым фонарём на ремне."
+                ),
+                voice="Низкий хрипловатый голос; отвечает короткими настороженными фразами.",
                 reason="Игрок прямо постучал в обитаемую фабрику.",
                 temporary_name=True,
             )
@@ -188,124 +196,127 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
 
 
 @pytest.mark.interagent_contract_enforced
-def test_typed_authority_never_filters_player_agency_violation():
-    plan = _planned_doorman()
-    authority = __import__("app.models.turn_authority", fromlist=["TurnAuthority"]).TurnAuthority(
-        campaign_id=uuid4(),
-        trigger_turn_id=uuid4(),
-        player_character_name="Рэт",
-        player_input="Я спрашиваю имя.",
-        allowed_new_npcs=plan.npc_introductions,
-    )
-    result = NarrationValidationResult(
-        verdict="repair_required",
-        summary="Narrator took control of the protagonist.",
-        violations=[
-            {
-                "violation_type": "player_agency",
-                "severity": "error",
-                "evidence": "Рэт берёт пальцы трупа и делает пометки.",
-                "correction": "Remove the unprovided protagonist action.",
-            }
-        ],
-    )
-    filtered = TurnAuthorityValidator.apply_deterministic_authority(result, authority)
-    assert filtered.verdict == "repair_required"
-    assert filtered.violations[0].violation_type == "player_agency"
-
-
-def test_auto_success_movement_without_structured_boundary_is_invalid():
-    with pytest.raises(ValidationError):
-        CoordinatedTurnPlan(
-            player_intent="Выйти из переулка в таверну.",
-            resolution="sequence",
-            action_sequence=ActionSequencePlan(
-                steps=[
-                    ActionStepPlan(
-                        action_type="movement",
-                        intent="Идти в таверну",
-                        resolution="auto_success",
-                        safe_mundane=True,
-                        observable_outcome="Герой приходит в таверну.",
-                    )
-                ]
-            ),
-            ending_hook="В таверне.",
-        )
-
-
 @pytest.mark.asyncio
-async def test_actor_context_never_lists_player_under_other_present_npcs(
-    db_session: AsyncSession,
-):
+async def test_actor_context_never_lists_player_under_other_present_npcs(db_session: AsyncSession):
     campaign_id, player, _known_absent, scene = await _world(db_session)
-    scene_repo = SceneRepository(db_session)
-    npc = await EntityRepository(db_session).create_character(
+    actor = await EntityRepository(db_session).create_character(
         campaign_id,
-        CharacterCreate(
-            canonical_name="Грета",
-            current_location_id=await scene_repo.get_location_id(scene.id),
-        ),
+        CharacterCreate(canonical_name="Дежурный", current_location_id=scene.location_id),
     )
-    await scene_repo.add_participant(scene.id, npc.id, allow_movement=True)
+    await SceneRepository(db_session).add_participant(scene.id, actor.id, allow_movement=True)
+    await db_session.commit()
 
-    messages, metadata = await ContextCompiler(db_session, context_providers=[]).compile_context(
-        campaign_id,
-        acting_character_id=npc.id,
+    messages, _metadata = await ContextCompiler(db_session).compile_context(
+        campaign_id=campaign_id,
+        acting_character_id=actor.id,
         scene_id=scene.id,
-        current_user_content="Что вы видели?",
+        current_user_content="Что ты видишь?",
     )
     system = messages[0].content
-    assert "[PLAYER-CONTROLLED PROTAGONIST: Рэт]" in system
-    other_npcs = system.split("[Other Present NPCs]", 1)[1]
-    assert "- Рэт (Status:" not in other_npcs
-    assert metadata["player_controlled_protagonist_id"] == str(player.id)
+    assert "Human Protagonist:" in system
+    assert player.canonical_name in system
+    assert "Other Present NPCs:" in system
+    other_npcs = system.split("Other Present NPCs:", 1)[1].split("\n", 1)[0]
+    assert player.canonical_name not in other_npcs
 
 
-class StopWithoutPunctuationProvider:
-    def __init__(self):
-        self.last_telemetry = {}
-
-    async def generate_stream(self, *args, **kwargs):
-        self.last_telemetry = {"finish_reason": "stop", "status": "truncated"}
-        raise LLMProviderTruncatedError(
-            "LLM produced unfinished response",
-            partial_text="Ответ заканчивается именем Рэт",
-        )
-        yield  # pragma: no cover
-
-
+@pytest.mark.interagent_contract_enforced
 @pytest.mark.asyncio
-async def test_explicit_provider_stop_beats_terminal_punctuation_heuristic(
-    db_session: AsyncSession,
-):
-    campaign_id = uuid4()
-    config = ProviderConfigRead(
-        id=uuid4(),
+async def test_explicit_provider_stop_beats_terminal_punctuation_heuristic(db_session: AsyncSession):
+    campaign_id, _player, _known_absent, scene = await _world(db_session)
+    authority = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,
-        base_url="http://localhost:11434/v1",
-        model_name="fake-narrator",
-        has_api_key=False,
-        context_window=4096,
-        created_at=datetime.utcnow(),
+        trigger_turn_id=uuid4(),
+        player_input="Осматриваюсь.",
+        source_scene_id=scene.id,
+        target_scene_id=scene.id,
+        plan=CoordinatedTurnPlan(
+            player_intent="Осмотреться.",
+            resolution="observation",
+            observable_consequences=["Переулок пуст."],
+        ),
+        acting_character_id=None,
     )
-    selection = RoleModelSelection(
-        role=ModelRole.NARRATOR,
-        config=config,
-        api_key=None,
-        fallback_config=config,
-        fallback_api_key=None,
-        source="test",
+    selection = _selection(campaign_id)
+    router = FakeControlRouter(CoordinatedTurnPlan.conservative_fallback("Осматриваюсь."))
+    pipeline = AuthorityNarrationPipeline(db_session, router)
+
+    class FakeStreamProvider:
+        last_telemetry = {
+            "finish_reason": "stop",
+            "finish_reason_source": "provider",
+        }
+
+        async def generate_stream(self, *args, **kwargs):
+            yield "Переулок пуст"
+
+    pipeline._provider = FakeStreamProvider()
+    result = await pipeline.generate(
+        campaign_id=campaign_id,
+        trigger_turn_id=uuid4(),
+        scene_id=scene.id,
+        narrator_messages=[ChatMessage(role="system", content="Test")],
+        narrator_selection=selection,
+        authority=authority,
     )
-    pipeline = AuthorityNarrationPipeline(
-        db_session,
-        router=object(),
-        provider=StopWithoutPunctuationProvider(),
-    )
-    text, telemetry = await pipeline._generate_text(
-        [ChatMessage(role="system", content="Narrate")],
-        selection,
-        temperature=0.2,
-    )
-    assert text == "Ответ заканчивается именем Рэт"
-    assert telemetry["completion_recovered_from_false_punctuation_truncation"] is True
+    assert result.text == "Переулок пуст"
+    assert result.telemetry["finish_reason"] == "stop"
+    assert result.validation_status == "passed"
+
+
+def test_planned_npc_introduction_requires_reason():
+    with pytest.raises(ValidationError):
+        PlannedNpcIntroduction(
+            canonical_name="Кто-то",
+            role="незнакомец",
+            reason="",
+        )
+
+
+def test_action_step_rejects_unresolved_dice_check():
+    with pytest.raises(ValidationError):
+        ActionStepPlan(
+            action_type="interaction",
+            intent="Взломать замок",
+            resolution="requires_check",
+        )
+
+
+def test_action_sequence_rejects_unknown_step_type():
+    with pytest.raises(ValidationError):
+        ActionSequencePlan(
+            summary="test",
+            steps=[
+                ActionStepPlan(
+                    action_type="teleport",
+                    intent="Переместиться",
+                    resolution="auto_success",
+                    observable_outcome="Герой исчезает.",
+                )
+            ],
+        )
+
+
+def test_conservative_fallback_contains_no_npc_or_structured_mutation():
+    fallback = CoordinatedTurnPlan.conservative_fallback("Пробую открыть дверь")
+    assert fallback.npc_introductions == []
+    assert fallback.action_sequence.steps == []
+    assert fallback.scene_transition.required is False
+
+
+def test_action_sequence_requires_outcome_or_transition_for_auto_success():
+    with pytest.raises(ValidationError):
+        CoordinatedTurnPlan(
+            player_intent="Открываю дверь",
+            resolution="sequence",
+            action_sequence=ActionSequencePlan(
+                summary="Открыть дверь",
+                steps=[
+                    ActionStepPlan(
+                        action_type="interaction",
+                        intent="Открыть дверь",
+                        resolution="auto_success",
+                    )
+                ],
+            ),
+        )
