@@ -1,0 +1,52 @@
+select {
+  font: inherit;
+  color-scheme: dark;
+}
+
+.settings-section select,
+.modal select {
+  width: 100%;
+  min-height: 46px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: #151610;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #aaa99f 50%),
+    linear-gradient(135deg, #aaa99f 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 13px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  color: var(--text);
+  padding: 10px 38px 10px 11px;
+  cursor: pointer;
+  transition: border-color .15s, background-color .15s, box-shadow .15s;
+}
+
+.settings-section select:hover,
+.modal select:hover {
+  border-color: #5a5547;
+  background-color: #191a15;
+}
+
+.settings-section select:focus-visible,
+.modal select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-color: var(--accent);
+}
+
+.settings-section select:disabled,
+.modal select:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.settings-section select option,
+.modal select option {
+  background: #1d1e19;
+  color: var(--text);
+}
