@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import re
 from functools import wraps
 
 from app.models.location import LocationUpdate
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_authority_planner import TurnAuthorityPlanner
 from app.services.turn_planner import TurnPlanningError
+from app.services.turn_saga import TurnSaga
 
 _INSTALLED = False
 _PROFILE_MARKER = "DESTINATION PROFILE:"
@@ -54,9 +54,8 @@ def extract_destination_profile(value: object) -> str | None:
         clean = " ".join(tail.split()).strip(" -—–;,.\n\t")
         return clean or None
 
-    # Backward-compatible acceptance for older planner/test fixtures that already supplied a
-    # substantial stable bridge summary before the explicit marker protocol existed. New model
-    # prompts always use the marker; this path prevents existing good data from becoming unusable.
+    # Backward-compatible acceptance for durable bridge summaries created before the explicit
+    # marker protocol. New Planner output always uses the markers.
     clean = " ".join(text.split()).strip()
     return clean if len(clean) >= 80 else None
 
@@ -66,6 +65,33 @@ def _usable_profile(value: str | None) -> bool:
         return False
     words = value.split()
     return len(words) >= 10 and len(set(word.casefold() for word in words)) >= 8
+
+
+def _location_transitions(plan) -> list:
+    result = []
+    top = getattr(plan, "scene_transition", None)
+    if top and top.required and top.transition_type == "location_transition":
+        result.append(top)
+    sequence = getattr(plan, "action_sequence", None)
+    for step in getattr(sequence, "steps", []) or []:
+        transition = getattr(step, "transition", None)
+        if (
+            transition
+            and transition.required
+            and transition.transition_type == "location_transition"
+        ):
+            result.append(transition)
+    return result
+
+
+def _require_gameplay_profiles(plan) -> None:
+    for transition in _location_transitions(plan):
+        profile = extract_destination_profile(transition.bridge_summary)
+        if not _usable_profile(profile):
+            destination = transition.destination_location or "destination"
+            raise TurnPlanningError(
+                f"Location transition to {destination!r} has no durable public destination profile"
+            )
 
 
 def install() -> None:
@@ -79,19 +105,26 @@ def install() -> None:
     if _LOCATION_REVIEW_CONTRACT not in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT:
         TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT += _LOCATION_REVIEW_CONTRACT
 
+    # Product-level completeness belongs at the gameplay planning boundary, not inside the generic
+    # low-level transition executor. Direct/admin/replay executor callers therefore keep their
+    # original semantics, while every normal player turn fails before mutation when its destination
+    # lacks a durable profile.
+    original_plan = TurnSaga._plan
+
+    @wraps(original_plan)
+    async def profiled_plan(self, *args, **kwargs):
+        plan, metadata = await original_plan(self, *args, **kwargs)
+        if metadata.get("status") == "completed":
+            _require_gameplay_profiles(plan)
+        return plan, metadata
+
+    TurnSaga._plan = profiled_plan
+
     original_apply = SceneTransitionExecutor.apply
 
     @wraps(original_apply)
     async def profiled_apply(self, campaign_id, source_scene_id, trigger_turn_id, plan, *args, **kwargs):
-        location_transition = (
-            plan.required and plan.transition_type == "location_transition"
-        )
-        before_ids = set()
-        if location_transition:
-            before_ids = {
-                item.id for item in await self._locations.list_by_campaign(campaign_id)
-            }
-
+        location_transition = plan.required and plan.transition_type == "location_transition"
         result = await original_apply(
             self,
             campaign_id,
@@ -109,10 +142,7 @@ def install() -> None:
             raise TurnPlanningError("Structured transition produced no durable destination location")
 
         profile = extract_destination_profile(plan.bridge_summary)
-        is_new = result.target_location_id not in before_ids
-        needs_profile = not _usable_profile(location.description)
-
-        if needs_profile and _usable_profile(profile):
+        if not _usable_profile(location.description) and _usable_profile(profile):
             custom = dict(location.custom_fields or {})
             custom["profile_source"] = "turn_planner_destination_profile"
             await self._locations.update(
@@ -122,16 +152,14 @@ def install() -> None:
                     custom_fields=custom,
                 ),
             )
-        elif is_new and needs_profile:
-            # This is still inside TurnSaga's prepare transaction. Raising here rolls the new
-            # location/scene back instead of committing a permanently empty world-card entity.
-            raise TurnPlanningError(
-                "New location lacks a durable public destination profile; refusing empty materialization"
-            )
 
         return result
 
     SceneTransitionExecutor.apply = profiled_apply
 
 
-__all__ = ["extract_destination_profile", "install"]
+__all__ = [
+    "_require_gameplay_profiles",
+    "extract_destination_profile",
+    "install",
+]
