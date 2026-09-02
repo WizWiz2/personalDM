@@ -65,8 +65,32 @@ def _location_plan(*, with_profile: bool) -> CoordinatedTurnPlan:
     )
 
 
+def _investigation_plan() -> CoordinatedTurnPlan:
+    return CoordinatedTurnPlan(
+        player_intent="Поднять системные журналы, найти следы взлома и возможные зацепки.",
+        resolution="observation",
+        observable_consequences=[
+            "В системных журналах обнаружены три неудачные попытки входа в административный контур.",
+            "Все три попытки пришли с одного внешнего адреса в течение семи минут.",
+        ],
+        canon_constraints=[
+            "Не объявлять личность атакующего установленной без отдельного подтверждения."
+        ],
+        narration_guidance=[
+            "Сообщить найденные технические следы и отделить наблюдаемую зацепку от вывода о виновнике."
+        ],
+        ending_hook="Внешний адрес можно проверять дальше.",
+    )
+
+
 async def _narrate_return(*args, **kwargs):
     yield "Ты возвращаешься в укрытие; дверь закрывается за спиной, и знакомая комната снова вокруг тебя."
+
+
+async def _dead_investigation_narration(*args, **kwargs):
+    # Reproduce the live regression deliberately: Narrator tries to collapse a resolved
+    # investigation into the historical generic no-change surface.
+    yield "Пока ничего заметно не меняется."
 
 
 def test_new_location_without_profile_fails_before_world_mutation(client: TestClient):
@@ -136,6 +160,42 @@ def test_new_location_profile_survives_full_turn_and_is_queryable(client: TestCl
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
     assert [turn["role"] for turn in history] == ["user", "assistant"]
     assert history[-1]["content"] == response.text
+
+
+def test_investigation_publishes_typed_findings_even_when_narrator_returns_dead_stub(
+    client: TestClient,
+):
+    campaign_id, _hero = _campaign_with_player(client)
+    player_input = (
+        "Я пытаюсь поднять системные журналы и найти следы взлома. "
+        "И желательно зацепки, к которым они могут привести."
+    )
+
+    with patch.object(
+        TurnAuthorityPlanner,
+        "plan",
+        new_callable=AsyncMock,
+        return_value=_investigation_plan(),
+    ), patch(
+        "app.providers.llm_provider.LLMProvider.generate_stream",
+        side_effect=_dead_investigation_narration,
+    ):
+        response = client.post(
+            f"/api/campaigns/{campaign_id}/turns",
+            json={"role": "user", "content": player_input},
+        )
+
+    assert response.status_code == 200, response.text
+    published = response.text.casefold()
+    assert "пока ничего заметно не меняется" not in published
+    assert "ничего не происходит" not in published
+    assert "три неудачные попытки" in published
+    assert "одного внешнего адреса" in published
+    assert "семи минут" in published
+
+    history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
+    assistant = next(turn for turn in history if turn["role"] == "assistant")
+    assert assistant["content"] == response.text
 
 
 def test_empty_authority_cannot_be_rebranded_as_safe_fiction():
