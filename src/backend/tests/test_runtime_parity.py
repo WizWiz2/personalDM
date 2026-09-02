@@ -74,6 +74,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "session_zero_finalize",
         "session_zero_placeholder",
         "planner_compound",
+        "location_profile",
+        "dead_turn",
         "semantic_authority",
     ]
     assert cli_manifest["context_pipeline"] == [
@@ -100,6 +102,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "before_prepare": "fail_without_world_compensation",
         "after_prepare_before_publish": "compensate_then_fail",
         "after_publish": "post_turn_is_independent_and_retriable",
+        "empty_control_outcome": "fail_never_publish_generic_no_change",
     }
     assert cli_manifest["narration_pipeline"] == [
         "generate_draft",
@@ -118,6 +121,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "npc_introduction_semantics": "model",
         "movement_intent_semantics": "model",
         "compound_action_coverage": "model_with_semantic_review",
+        "location_profile": "typed_transition_bridge_profile",
+        "empty_turn_fallback": "forbidden_fail_closed",
         "narrator_memory_attribution": "independent_segment_audit",
         "plot_fact_recovery": "evidence_grounded_second_pass",
         "requires_check": "structurally_forbidden",
