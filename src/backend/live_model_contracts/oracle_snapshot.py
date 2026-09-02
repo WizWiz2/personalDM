@@ -7,6 +7,134 @@ from pathlib import Path
 from typing import Any
 
 
+ORACLE_SCHEMA: dict[str, frozenset[str]] = {
+    "campaigns": frozenset({"id", "name", "current_scene_id", "player_character_id"}),
+    "entities": frozenset(
+        {
+            "id",
+            "campaign_id",
+            "entity_type",
+            "canonical_name",
+            "aliases",
+            "description",
+            "status",
+            "provenance",
+            "version",
+            "custom_fields",
+        }
+    ),
+    "characters": frozenset(
+        {"entity_id", "appearance", "personality", "voice", "current_location_id", "emotional_state"}
+    ),
+    "locations": frozenset(
+        {
+            "entity_id",
+            "geography",
+            "atmosphere",
+            "access_rules",
+            "parent_location_id",
+            "climate",
+            "notable_features",
+            "danger_level",
+        }
+    ),
+    "items": frozenset({"entity_id", "current_owner_id", "current_location_id"}),
+    "scenes": frozenset(
+        {"id", "campaign_id", "title", "status", "location_description", "created_at"}
+    ),
+    "scene_location_links": frozenset({"scene_id", "location_id"}),
+    "scene_participants": frozenset({"scene_id", "entity_id"}),
+    "facts": frozenset(
+        {
+            "id",
+            "campaign_id",
+            "subject",
+            "predicate",
+            "object_value",
+            "truth_status",
+            "scope",
+            "is_current",
+            "created_at",
+        }
+    ),
+    "fact_memory_profiles": frozenset({"fact_id", "memory_kind", "subject_entity_id"}),
+    "beliefs": frozenset(
+        {
+            "id",
+            "character_id",
+            "proposition",
+            "status",
+            "confidence",
+            "source_character_id",
+            "is_current",
+            "created_at",
+        }
+    ),
+    "relationship_assertions": frozenset(
+        {
+            "id",
+            "campaign_id",
+            "subject_id",
+            "object_id",
+            "relation_type",
+            "description",
+            "intensity",
+            "is_current",
+            "created_at",
+        }
+    ),
+    "scene_theses": frozenset(
+        {
+            "id",
+            "scene_id",
+            "thesis_type",
+            "text",
+            "priority",
+            "status",
+            "pinned",
+            "related_entity_ids",
+            "created_at",
+        }
+    ),
+    "events": frozenset({"id", "campaign_id", "event_type", "description", "location_id", "created_at"}),
+    "event_participants": frozenset({"event_id", "entity_id"}),
+    "turns": frozenset(
+        {"id", "campaign_id", "role", "content", "status", "acting_character_id", "model_name", "created_at"}
+    ),
+    "scene_runtime_states": frozenset(
+        {"scene_id", "world_time_label", "world_time_order", "scene_goal", "active_conflict"}
+    ),
+    "action_sequences": frozenset(
+        {
+            "id",
+            "campaign_id",
+            "status",
+            "summary",
+            "planned_steps",
+            "completed_steps",
+            "blocked_step_index",
+            "created_at",
+        }
+    ),
+    "action_steps": frozenset(
+        {
+            "sequence_id",
+            "step_index",
+            "action_type",
+            "status",
+            "observable_outcome",
+            "blocking_reason",
+            "item_name",
+            "item_operation",
+        }
+    ),
+    "generation_runs": frozenset({"id", "campaign_id", "status", "error", "created_at"}),
+    "post_turn_jobs": frozenset(
+        {"id", "campaign_id", "job_type", "status", "attempts", "error", "created_at"}
+    ),
+}
+
+
 def _loads(value: object, default: Any) -> Any:
     if value in (None, ""):
         return default
@@ -32,6 +160,38 @@ def _table_exists(db: sqlite3.Connection, name: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
         (name,),
     ).fetchone() is not None
+
+
+def _validate_schema(db: sqlite3.Connection) -> None:
+    problems: list[str] = []
+    for table, required in ORACLE_SCHEMA.items():
+        if not _table_exists(db, table):
+            problems.append(f"missing table {table}")
+            continue
+        actual = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+        missing = sorted(required - actual)
+        if missing:
+            problems.append(f"{table}: missing columns {', '.join(missing)}")
+    if problems:
+        raise RuntimeError("Live-model truth oracle schema mismatch: " + "; ".join(problems))
+
+
+def _fact_rows(db: sqlite3.Connection, campaign_id: str) -> list[dict]:
+    return _rows(
+        db,
+        """SELECT f.subject, f.predicate, f.object_value, f.truth_status, f.scope,
+                  COALESCE(
+                      fp.memory_kind,
+                      CASE WHEN f.scope='scene' THEN 'scene_state' ELSE 'world_canon' END
+                  ) AS memory_kind,
+                  fp.subject_entity_id AS subject_entity_id,
+                  f.is_current
+             FROM facts f
+             LEFT JOIN fact_memory_profiles fp ON fp.fact_id=f.id
+            WHERE f.campaign_id=?
+            ORDER BY f.created_at, f.id""",
+        (campaign_id,),
+    )
 
 
 @dataclass(frozen=True)
@@ -100,6 +260,7 @@ def capture(db_path: Path, campaign_id: str) -> TruthSnapshot:
     """Read the actual SQLite truth store; no model is used to judge another model."""
     db = sqlite3.connect(db_path)
     try:
+        _validate_schema(db)
         campaign = _one(
             db,
             "SELECT id, name, current_scene_id, player_character_id FROM campaigns WHERE id=?",
@@ -190,19 +351,17 @@ def capture(db_path: Path, campaign_id: str) -> TruthSnapshot:
                  FROM scenes WHERE campaign_id=? ORDER BY created_at, id""",
             (campaign_id,),
         )
-        scene_location = {}
-        if _table_exists(db, "scene_location_links"):
-            scene_location = {
-                row["scene_id"]: names.get(str(row["location_id"]))
-                for row in _rows(
-                    db,
-                    """SELECT sl.scene_id, sl.location_id
-                         FROM scene_location_links sl
-                         JOIN scenes s ON s.id=sl.scene_id
-                        WHERE s.campaign_id=?""",
-                    (campaign_id,),
-                )
-            }
+        scene_location = {
+            row["scene_id"]: names.get(str(row["location_id"]))
+            for row in _rows(
+                db,
+                """SELECT sl.scene_id, sl.location_id
+                     FROM scene_location_links sl
+                     JOIN scenes s ON s.id=sl.scene_id
+                    WHERE s.campaign_id=?""",
+                (campaign_id,),
+            )
+        }
         participant_rows = _rows(
             db,
             """SELECT sp.scene_id, sp.entity_id
@@ -235,17 +394,11 @@ def capture(db_path: Path, campaign_id: str) -> TruthSnapshot:
                 "object": row["object_value"],
                 "truth": row["truth_status"],
                 "scope": row["scope"],
-                "memory_kind": row.get("memory_kind"),
+                "memory_kind": row["memory_kind"],
                 "subject_entity": names.get(str(row.get("subject_entity_id") or "")),
                 "current": bool(row["is_current"]),
             }
-            for row in _rows(
-                db,
-                """SELECT subject, predicate, object_value, truth_status, scope, memory_kind,
-                          subject_entity_id, is_current
-                     FROM facts WHERE campaign_id=? ORDER BY created_at, id""",
-                (campaign_id,),
-            )
+            for row in _fact_rows(db, campaign_id)
         ]
         beliefs = [
             {
@@ -351,7 +504,7 @@ def capture(db_path: Path, campaign_id: str) -> TruthSnapshot:
 
         scene_state = None
         active = next((row for row in scenes if row["status"] == "active"), None)
-        if active and _table_exists(db, "scene_runtime_states"):
+        if active:
             scene_state = _one(
                 db,
                 """SELECT world_time_label, world_time_order, scene_goal, active_conflict
@@ -360,29 +513,28 @@ def capture(db_path: Path, campaign_id: str) -> TruthSnapshot:
             )
 
         sequences: list[dict] = []
-        if _table_exists(db, "action_sequences"):
-            for sequence in _rows(
-                db,
-                """SELECT id, status, summary, planned_steps, completed_steps, blocked_step_index
-                     FROM action_sequences WHERE campaign_id=? ORDER BY created_at, id""",
-                (campaign_id,),
-            ):
-                sequences.append(
-                    {
-                        "status": sequence["status"],
-                        "summary": sequence["summary"],
-                        "planned": sequence["planned_steps"],
-                        "completed": sequence["completed_steps"],
-                        "blocked_index": sequence["blocked_step_index"],
-                        "steps": _rows(
-                            db,
-                            """SELECT step_index, action_type, status, observable_outcome,
-                                      blocking_reason, item_name, item_operation
-                                 FROM action_steps WHERE sequence_id=? ORDER BY step_index""",
-                            (sequence["id"],),
-                        ),
-                    }
-                )
+        for sequence in _rows(
+            db,
+            """SELECT id, status, summary, planned_steps, completed_steps, blocked_step_index
+                 FROM action_sequences WHERE campaign_id=? ORDER BY created_at, id""",
+            (campaign_id,),
+        ):
+            sequences.append(
+                {
+                    "status": sequence["status"],
+                    "summary": sequence["summary"],
+                    "planned": sequence["planned_steps"],
+                    "completed": sequence["completed_steps"],
+                    "blocked_index": sequence["blocked_step_index"],
+                    "steps": _rows(
+                        db,
+                        """SELECT step_index, action_type, status, observable_outcome,
+                                  blocking_reason, item_name, item_operation
+                             FROM action_steps WHERE sequence_id=? ORDER BY step_index""",
+                        (sequence["id"],),
+                    ),
+                }
+            )
 
         generations = _rows(
             db,
