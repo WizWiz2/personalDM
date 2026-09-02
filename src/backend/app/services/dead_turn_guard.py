@@ -24,9 +24,7 @@ def _is_empty_plan(plan) -> bool:
         return False
     if plan.character_beats:
         return False
-    if plan.narration_policy.pending_player_choice:
-        return False
-    return True
+    return not plan.narration_policy.pending_player_choice
 
 
 def _is_dead_surface(value: object) -> bool:
