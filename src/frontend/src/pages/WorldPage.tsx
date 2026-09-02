@@ -26,6 +26,9 @@ function CharacterPortrait({ id, name }: { id: string; name: string }) {
     src={visualUrls.characterPortrait(id)}
     alt={`Портрет ${name}`}
     fallback={<PixelPortrait seed={name} />}
+    retryOnError
+    retryIntervalMs={5000}
+    maxRetries={8}
   />
 }
 
