@@ -4,8 +4,7 @@ import re
 from functools import wraps
 
 from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.scene_transition_executor import SceneTransitionExecutor
-from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
+from app.services.turn_authority_service import TurnAuthorityService
 from app.services.turn_planner import TurnPlanningError
 from app.services.turn_saga import TurnSaga
 
@@ -71,43 +70,21 @@ def install() -> None:
 
     TurnSaga._plan = strict_plan
 
-    original_apply = SceneTransitionExecutor.apply
-
-    @wraps(original_apply)
-    async def strict_transition(self, campaign_id, source_scene_id, trigger_turn_id, plan, *args, **kwargs):
-        try:
-            return await original_apply(
-                self,
-                campaign_id,
-                source_scene_id,
-                trigger_turn_id,
-                plan,
-                *args,
-                **kwargs,
-            )
-        except ValueError as exc:
-            # Interactive transitions used to be converted by TurnSaga into the same empty
-            # conservative plan. Translate only that production boundary so the saga's outer
-            # compensation/failure path owns the error. Administrative/direct executor callers
-            # keep their precise ValueError behavior.
-            if trigger_turn_id is None:
-                raise
-            raise TurnPlanningError(f"Structured scene transition rejected: {exc}") from exc
-
-    SceneTransitionExecutor.apply = strict_transition
-
     original_build = TurnAuthorityService.build
 
     @wraps(original_build)
     async def strict_authority(self, *args, **kwargs):
-        try:
-            return await original_build(self, *args, **kwargs)
-        except TurnAuthorityError as exc:
-            # TurnSaga names this argument. Other/direct callers may use positional arguments and
-            # must keep the original exception semantics instead of being silently reclassified.
-            if "acting_character_id" not in kwargs or kwargs["acting_character_id"] is not None:
-                raise
-            raise TurnPlanningError(f"TurnAuthority rejected the planned turn: {exc}") from exc
+        # TurnSaga's historical transition/authority recovery path replaces a rejected plan with
+        # CoordinatedTurnPlan.conservative_fallback() and then calls build() again. Reject that
+        # second empty plan before it can become PREPARED world state. Actor-scoped turns legitimately
+        # use plan=None and are deliberately outside this rule.
+        plan = kwargs.get("plan")
+        acting_character_id = kwargs.get("acting_character_id")
+        if acting_character_id is None and plan is not None and _is_empty_plan(plan):
+            raise TurnPlanningError(
+                "Control-plane recovery produced no concrete typed outcome; retry the turn instead"
+            )
+        return await original_build(self, *args, **kwargs)
 
     TurnAuthorityService.build = strict_authority
 
