@@ -103,7 +103,9 @@ def install() -> None:
         try:
             return await original_build(self, *args, **kwargs)
         except TurnAuthorityError as exc:
-            if kwargs.get("acting_character_id") is not None:
+            # TurnSaga names this argument. Other/direct callers may use positional arguments and
+            # must keep the original exception semantics instead of being silently reclassified.
+            if "acting_character_id" not in kwargs or kwargs["acting_character_id"] is not None:
                 raise
             raise TurnPlanningError(f"TurnAuthority rejected the planned turn: {exc}") from exc
 
