@@ -43,6 +43,7 @@ def _plan(*destinations: str) -> dict:
 
 
 @pytest.mark.asyncio
+@pytest.mark.interagent_contract_enforced
 async def test_semantic_reviewer_repairs_dropped_compound_movement_step():
     install_compound_guard()
     router = SimpleNamespace()
