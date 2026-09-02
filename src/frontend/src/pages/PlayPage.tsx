@@ -6,6 +6,7 @@ import type { SceneState, Turn } from '../api/types'
 import { visualApi, visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
 import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
+import { GenerationFailurePanel } from '../components/GenerationFailurePanel'
 import { Icons } from '../components/Icons'
 import { PixelScene } from '../components/PixelArt'
 import { ErrorState, LoadingState } from '../components/States'
@@ -54,6 +55,10 @@ export function PlayPage() {
   const previousGeneration = useRef<{ id: string; status: string } | null>(null)
 
   const busy = generation?.status === 'running'
+  const failedGeneration = generation
+    && (generation.status === 'failed' || generation.status === 'cancelled')
+    ? generation
+    : null
 
   const load = async (showLoader = false) => {
     if (showLoader) setLoading(true)
@@ -123,14 +128,10 @@ export function PlayPage() {
       if (current.status === 'completed') {
         setAcceptedTurn(null)
         window.sessionStorage.removeItem(acceptedKey)
-      } else if (current.status === 'failed' || current.status === 'cancelled') {
-        setError(
-          generation?.error
-            || (current.status === 'cancelled'
-              ? 'Генерация остановлена. Твой отправленный ход сохранён как не обработанный.'
-              : 'Мастер не смог обработать сохранённый ход.'),
-        )
       }
+      // Failed/cancelled generations are rendered from durable generation state below.
+      // Do not copy the transient error into generic page-loading state: the failure
+      // panel must survive navigation and a fresh PlayPage mount.
       void load(false)
     }
   }, [generation?.id, generation?.status])
@@ -205,11 +206,6 @@ export function PlayPage() {
 
   if (loading) return <div className="workspace-page"><LoadingState label="Восстанавливаем сцену…" /></div>
 
-  const failedAccepted = Boolean(
-    acceptedTurn
-    && generation?.user_turn_id === acceptedTurn.id
-    && (generation.status === 'failed' || generation.status === 'cancelled'),
-  )
   const fallbackScene = <PixelScene seed={`${campaign.name}:${scene?.scene_title ?? ''}`} />
   const sceneArtSrc = scene
     ? `${visualUrls.scene(scene.scene_id)}${sceneArtNonce ? `?v=${sceneArtNonce}` : ''}`
@@ -234,6 +230,7 @@ export function PlayPage() {
             <div className="scene-overlay"><h2>{scene?.scene_title || 'Сцена'}</h2><span>{[scene?.world_time_label, scene?.location_path.at(-1)].filter(Boolean).join(' · ')}</span></div>
           </div>
 
+          {failedGeneration && <GenerationFailurePanel generation={failedGeneration} />}
           {error && <ErrorState message={error} />}
 
           <div className="timeline" aria-live="polite">
@@ -241,7 +238,7 @@ export function PlayPage() {
             {timelineTurns.map((turn) => {
               const meta = turn.role.startsWith('meta_')
               const player = turn.role === 'user' || turn.role === 'meta_user'
-              const failed = failedAccepted && turn.id === acceptedTurn?.id
+              const failed = failedGeneration?.user_turn_id === turn.id
               const label = meta
                 ? (player ? 'Вопрос мастеру' : 'Мастер вне игры')
                 : (player ? (playerName || 'Персонаж') : 'Мастер')
