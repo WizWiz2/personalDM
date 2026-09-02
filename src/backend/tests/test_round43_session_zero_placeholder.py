@@ -34,14 +34,16 @@ async def test_finalize_never_materializes_starting_location_placeholder(db_sess
     state.draft.character.first_goal = "Узнать, кто отправил письмо."
     await interview._save_state(campaign.id, state, commit=True)
 
-    with patch.object(
-        interview._router,
-        "resolve",
-        new_callable=AsyncMock,
-        return_value=None,
+    with (
+        patch.object(
+            interview._router,
+            "resolve",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        pytest.raises(SessionZeroInterviewIncompleteError) as exc,
     ):
-        with pytest.raises(SessionZeroInterviewIncompleteError) as exc:
-            await interview.finalize(campaign.id)
+        await interview.finalize(campaign.id)
 
     assert "world.starting_location_name" in exc.value.missing_fields
     assert await LocationRepository(db_session).list_by_campaign(campaign.id) == []
