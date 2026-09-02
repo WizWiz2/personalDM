@@ -413,14 +413,39 @@ class AuthorityNarrationPipeline:
                 },
             )
             if result.verdict == "pass":
+                published, publication = NarrationPublicationGuard.publish(
+                    authority,
+                    draft,
+                    result,
+                )
+                publication_changed = published != draft
+                if publication_changed:
+                    await audit.record_attempt(
+                        run,
+                        attempt_index=1,
+                        candidate_text=published,
+                        result=self._synthetic_safe_result(
+                            "Deterministic publication guard overruled a validator-approved surface."
+                        ),
+                        telemetry={
+                            "authority_version": authority.version,
+                            "publication_guard": publication,
+                            "reason": "validator_pass_overruled_by_publication_guard",
+                        },
+                    )
                 gate = await audit.finalize(
                     run,
-                    status="passed",
-                    final_text=draft,
-                    repair_attempts=0,
+                    status="repaired" if publication_changed else "passed",
+                    final_text=published,
+                    repair_attempts=1 if publication_changed else 0,
+                    failure_reason=(
+                        "validator-approved narration failed deterministic publication invariants"
+                        if publication_changed
+                        else None
+                    ),
                 )
                 return AuthorityNarrationResult(
-                    text=draft,
+                    text=published,
                     telemetry={
                         **narrator_telemetry,
                         "narration_validation": {
@@ -428,13 +453,15 @@ class AuthorityNarrationPipeline:
                             "validation_run_id": str(gate.validation_run_id),
                             "authority_version": authority.version,
                             "validator_telemetry": validator.telemetry,
+                            "publication_guard": publication,
+                            "deterministic_publication_override": publication_changed,
                         },
                     },
                     validation_run_id=gate.validation_run_id,
                     validation_status=gate.status,
                 )
 
-            surgical, surgical_result, surgery, surgery_attempted = await self._try_surgical_repair(
+            surgical, surgical_result, surgery, surgery_attempted = self._try_surgical_repair(
                 audit=audit,
                 run=run,
                 validator=validator,
@@ -444,6 +471,7 @@ class AuthorityNarrationPipeline:
                 initial_result=result,
                 attempt_index=1,
             )
+            surgical, surgical_result, surgery, surgery_attempted = await surgical
             if surgical is not None:
                 gate = await audit.finalize(
                     run,
@@ -546,14 +574,40 @@ class AuthorityNarrationPipeline:
                     },
                 )
 
+            published, publication = NarrationPublicationGuard.publish(
+                authority,
+                repaired,
+                repaired_result,
+            )
+            publication_changed = published != repaired
+            if publication_changed:
+                await audit.record_attempt(
+                    run,
+                    attempt_index=model_attempt_index + 1,
+                    candidate_text=published,
+                    result=self._synthetic_safe_result(
+                        "Deterministic publication guard corrected validator-approved repaired prose."
+                    ),
+                    telemetry={
+                        "authority_version": authority.version,
+                        "publication_guard": publication,
+                        "repair_strategy": "deterministic_publication_projection",
+                    },
+                )
+            final_repair_attempts = repair_attempts + (1 if publication_changed else 0)
             gate = await audit.finalize(
                 run,
                 status="repaired",
-                final_text=repaired,
-                repair_attempts=repair_attempts,
+                final_text=published,
+                repair_attempts=final_repair_attempts,
+                failure_reason=(
+                    "validator-approved repaired narration failed deterministic publication invariants"
+                    if publication_changed
+                    else None
+                ),
             )
             return AuthorityNarrationResult(
-                text=repaired,
+                text=published,
                 telemetry={
                     **narrator_telemetry,
                     "repair_generation": repair_telemetry,
@@ -564,6 +618,8 @@ class AuthorityNarrationPipeline:
                         "repair_strategy": "preserve_first_model_edit",
                         "surgical_repair": surgery,
                         "validator_telemetry": validator.telemetry,
+                        "publication_guard": publication,
+                        "deterministic_publication_override": publication_changed,
                     },
                 },
                 validation_run_id=gate.validation_run_id,
