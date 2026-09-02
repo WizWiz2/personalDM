@@ -45,6 +45,14 @@ class AuditableFakeSession(FakeSession):
         return None
 
 
+class FullLifecycleFakeSession(AuditableFakeSession):
+    async def get(self, *_args, **_kwargs):
+        return None
+
+    def add(self, *_args, **_kwargs):
+        return None
+
+
 def thesis(*, priority=5, created_offset=0, pinned=False):
     created = datetime.utcnow() + timedelta(seconds=created_offset)
     return SimpleNamespace(
@@ -136,7 +144,7 @@ async def test_curator_does_not_call_old_scope_based_record_reconcile(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_curator_records_scene_closure_without_runtime_patch(monkeypatch):
+async def test_curator_records_scene_closure_when_lifecycle_storage_is_available(monkeypatch):
     calls = []
 
     async def record_closed_scene(self, scene_id):
@@ -145,7 +153,7 @@ async def test_curator_records_scene_closure_without_runtime_patch(monkeypatch):
     monkeypatch.setattr(MemoryOperationsService, "record_closed_scene", record_closed_scene)
     scene_id = uuid4()
     repo = FakeSceneRepository([thesis(pinned=True), thesis()])
-    curator = ThesisCurator(AuditableFakeSession())
+    curator = ThesisCurator(FullLifecycleFakeSession())
     curator._scene_repo = repo
 
     await curator.close_scene(scene_id)
