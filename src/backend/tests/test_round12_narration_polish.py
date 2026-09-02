@@ -1,9 +1,14 @@
 from uuid import uuid4
 
+import pytest
+
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
 from app.services.context_compiler import ContextCompiler
-from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narration_publication_guard import (
+    NarrationPublicationError,
+    NarrationPublicationGuard,
+)
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
@@ -81,7 +86,7 @@ def test_safe_projection_never_exposes_meta_actor_waiting_message():
     assert "ответ" not in text.casefold()
 
 
-def test_safe_projection_drops_technical_consequences_and_route_ids():
+def test_safe_projection_drops_technical_consequences_and_fails_if_nothing_real_remains():
     internal_id = str(uuid4())
     turn = authority(
         observable_consequences=[
@@ -91,12 +96,8 @@ def test_safe_projection_drops_technical_consequences_and_route_ids():
         ending_hook="",
     )
 
-    text = NarrationPublicationGuard.render_authority(turn)
-
-    assert internal_id not in text
-    assert "target_scene_id" not in text
-    assert "Действие не выполнено" not in text
-    assert text == "Пока ничего заметно не меняется."
+    with pytest.raises(NarrationPublicationError):
+        NarrationPublicationGuard.render_authority(turn)
 
 
 def test_deterministic_surface_gate_handles_only_machine_provable_leaks():
