@@ -1,8 +1,13 @@
 from uuid import uuid4
 
+import pytest
+
 from app.models.narration_validation import NarrationValidationResult, NarrationViolation
 from app.models.turn_authority import TurnAuthority
-from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narration_publication_guard import (
+    NarrationPublicationError,
+    NarrationPublicationGuard,
+)
 
 
 def _authority(*, actor_turn: bool = False) -> TurnAuthority:
@@ -73,31 +78,24 @@ def test_actor_projection_does_not_publish_player_choice_hook():
     assert "Хозяин" in published
 
 
-def test_round26_unauthorized_npc_cannot_survive_safe_fallback():
+def test_round26_unauthorized_npc_cannot_be_replaced_with_empty_safe_fallback():
     authority = _authority(actor_turn=False)
     rejected = "Незнакомец в тёмном плаще входит в офис и закрывает дверь."
 
-    published, audit = NarrationPublicationGuard.publish(
-        authority,
-        rejected,
-        _error("other", "Незнакомец в тёмном плаще входит в офис"),
-    )
-
-    assert "Незнакомец" not in published
-    assert "плащ" not in published
-    assert audit["mode"] == "authority_projection"
-    assert audit["validated_surface"] is False
+    with pytest.raises(NarrationPublicationError):
+        NarrationPublicationGuard.publish(
+            authority,
+            rejected,
+            _error("other", "Незнакомец в тёмном плаще входит в офис"),
+        )
 
 
-def test_unvalidated_candidate_is_not_a_canonical_surface():
+def test_unvalidated_candidate_is_not_replaced_with_empty_canonical_surface():
     authority = _authority(actor_turn=False)
     rejected = "Незнакомец входит в офис."
 
-    published, audit = NarrationPublicationGuard.publish(authority, rejected, None)
-
-    assert rejected not in published
-    assert "Незнакомец" not in published
-    assert audit["candidate_discarded"] is True
+    with pytest.raises(NarrationPublicationError):
+        NarrationPublicationGuard.publish(authority, rejected, None)
 
 
 def test_validated_candidate_remains_publishable():
