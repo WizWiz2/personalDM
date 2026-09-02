@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from functools import wraps
+from uuid import UUID
 
+from app.db.repositories.location_repo import LocationRepository
 from app.models.location import LocationUpdate
+from app.services.location_identity import display_location_name, same_location_reference
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_authority_planner import TurnAuthorityPlanner
 from app.services.turn_planner import TurnPlanningError
@@ -31,11 +34,13 @@ repeat only the destination name. Existing canonical place facts outrank new des
 _LOCATION_REVIEW_CONTRACT = f"""
 
 LOCATION PROFILE REVIEW:
-- Every proposed `location_transition` must carry a durable destination profile in bridge_summary,
+- Every proposed `location_transition` should carry a durable destination profile in bridge_summary,
   beginning with `{_PROFILE_MARKER}` and followed by `{_TRANSITION_MARKER}`.
-- Require repair when the profile is missing, role/label-only, mostly about the current movement
-  instead of the place, contains hidden information, or is too vague to identify the environment on
-  a later revisit.
+- Require repair when a newly introduced destination lacks that profile, or when a supplied profile
+  is role/label-only, mostly about the current movement instead of the place, contains hidden
+  information, or is too vague to identify the environment on a later revisit.
+- Revisiting an already-known durable location does not require the Planner to restate its complete
+  profile; existing canonical place facts remain authoritative.
 """
 
 
@@ -84,14 +89,50 @@ def _location_transitions(plan) -> list:
     return result
 
 
-def _require_gameplay_profiles(plan) -> None:
-    for transition in _location_transitions(plan):
+def _matches_existing_location(destination: str, locations) -> bool:
+    clean = " ".join(destination.split())
+    display = display_location_name(clean)
+    for location in locations:
+        candidates = [
+            location.canonical_name,
+            display_location_name(location.canonical_name),
+            *location.aliases,
+        ]
+        if any(
+            same_location_reference(needle, candidate)
+            for needle in (clean, display)
+            for candidate in candidates
+            if candidate
+        ):
+            return True
+    return False
+
+
+async def _require_gameplay_profiles(session, campaign_id: UUID, plan) -> None:
+    """Refuse only the corruption case: materializing a brand-new empty location.
+
+    Planner/reviewer still request profiles for every location transition because a revisit may enrich
+    legacy sparse data. Runtime blocking is narrower: an already-known Location is valid authority
+    even when the Planner does not redundantly restate its card, while a new destination may not be
+    created from a label alone.
+    """
+    transitions = _location_transitions(plan)
+    if not transitions:
+        return
+    locations = await LocationRepository(session).list_by_campaign(campaign_id)
+    for transition in transitions:
         profile = extract_destination_profile(transition.bridge_summary)
-        if not _usable_profile(profile):
-            destination = transition.destination_location or "destination"
-            raise TurnPlanningError(
-                f"Location transition to {destination!r} has no durable public destination profile"
-            )
+        if _usable_profile(profile):
+            continue
+        destination = transition.destination_location or "destination"
+        if transition.destination_location and _matches_existing_location(
+            transition.destination_location,
+            locations,
+        ):
+            continue
+        raise TurnPlanningError(
+            f"New location transition to {destination!r} has no durable public destination profile"
+        )
 
 
 def install() -> None:
@@ -107,15 +148,16 @@ def install() -> None:
 
     # Product-level completeness belongs at the gameplay planning boundary, not inside the generic
     # low-level transition executor. Direct/admin/replay executor callers therefore keep their
-    # original semantics, while every normal player turn fails before mutation when its destination
-    # lacks a durable profile.
+    # original semantics, while every normal player turn fails before mutation if it would create a
+    # brand-new destination without a durable public profile.
     original_plan = TurnSaga._plan
 
     @wraps(original_plan)
     async def profiled_plan(self, *args, **kwargs):
         plan, metadata = await original_plan(self, *args, **kwargs)
-        if metadata.get("status") == "completed":
-            _require_gameplay_profiles(plan)
+        campaign_id = kwargs.get("campaign_id")
+        if metadata.get("status") == "completed" and campaign_id is not None:
+            await _require_gameplay_profiles(self._session, campaign_id, plan)
         return plan, metadata
 
     TurnSaga._plan = profiled_plan
