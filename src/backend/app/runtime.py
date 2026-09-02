@@ -19,6 +19,7 @@ _GUARDS = (
     "narrator_quality_recovery",
     "narration_failure_containment",
     "session_zero_finalize",
+    "session_zero_placeholder",
     "semantic_authority",
 )
 
@@ -85,6 +86,9 @@ def install_runtime() -> None:
     )
     from app.services.semantic_authority_guard import install as install_semantic_authority
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
+    from app.services.session_zero_placeholder_guard import (
+        install as install_session_zero_placeholder,
+    )
     from app.services.systemless_authority_guard import install as install_systemless_authority
 
     install_actor_turn_authority()
@@ -94,6 +98,7 @@ def install_runtime() -> None:
     install_narrator_quality_recovery()
     install_narration_failure_containment()
     install_session_zero_finalize()
+    install_session_zero_placeholder()
     # This policy intentionally installs last: legacy guards may still expose compatibility helpers,
     # but no lexical/regex semantic decision is allowed to remain authoritative in production.
     install_semantic_authority()
