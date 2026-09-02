@@ -1,0 +1,71 @@
+name: Deterministic backend coverage
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+    paths:
+      - "src/backend/app/**"
+      - "src/backend/tests/**"
+      - "src/backend/pyproject.toml"
+      - ".github/workflows/deterministic-coverage.yml"
+  pull_request:
+    paths:
+      - "src/backend/app/**"
+      - "src/backend/tests/**"
+      - "src/backend/pyproject.toml"
+      - ".github/workflows/deterministic-coverage.yml"
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+
+      - name: Install backend and deterministic test dependencies
+        run: python -m pip install -e "src/backend[dev]"
+
+      - name: Run deterministic suite with branch coverage
+        working-directory: src/backend
+        run: |
+          mkdir -p data/coverage
+          pytest -q tests \
+            --cov=app \
+            --cov-branch \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=json:data/coverage/coverage.json \
+            --tb=short
+
+      - name: Summarize measured coverage
+        working-directory: src/backend
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          payload = json.loads(Path("data/coverage/coverage.json").read_text(encoding="utf-8"))
+          totals = payload["totals"]
+          print(f"Line coverage:   {totals['percent_covered_display']}%")
+          print(f"Covered lines:   {totals['covered_lines']}/{totals['num_statements']}")
+          print(f"Covered branches:{totals['covered_branches']}/{totals['num_branches']}")
+          print("This metric covers deterministic Python code only; it is not evidence of LLM semantic quality.")
+          PY
+
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deterministic-backend-coverage
+          path: src/backend/data/coverage/coverage.json
+          retention-days: 14
