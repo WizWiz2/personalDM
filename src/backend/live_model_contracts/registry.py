@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from live_model_contracts.cases import CaseSpec, all_cases as base_cases
+from live_model_contracts.cases import CaseSpec
+from live_model_contracts.cases import all_cases as base_cases
 from live_model_contracts.transition_cases import additional_cases, replacement_cases
 
 
