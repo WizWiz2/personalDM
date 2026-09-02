@@ -30,10 +30,21 @@ echo =======================================================================
 echo.
 echo This suite uses the actual Ollama models and an isolated temporary game DB.
 echo It does NOT use pytest Planner/Validator/Scribe mocks and does not touch
- echo your normal campaign library or provider .env.
+echo your normal campaign library or provider .env.
 echo.
 
+echo [Setup] Checking Ollama runtime and required models...
 pushd src\backend
+python -m live_model_contracts.bootstrap %*
+set "BOOTSTRAP_RC=%ERRORLEVEL%"
+if not "%BOOTSTRAP_RC%"=="0" (
+    popd
+    echo.
+    echo [FAIL] Live model runtime bootstrap failed.
+    exit /b %BOOTSTRAP_RC%
+)
+
+echo.
 python -m live_model_contracts.runner %*
 set "RC=%ERRORLEVEL%"
 popd
