@@ -21,13 +21,17 @@ class FakeConfigRepo:
         return self.api_key
 
 
-def primary_config():
+def primary_config(
+    *,
+    base_url: str = "http://localhost:11434/v1",
+    model_name: str = "gemma4:e4b",
+):
     campaign_id = uuid4()
     return ProviderConfigRead(
         id=uuid4(),
         campaign_id=campaign_id,
-        base_url="http://localhost:11434/v1",
-        model_name="gemma4:e4b",
+        base_url=base_url,
+        model_name=model_name,
         has_api_key=True,
         context_window=6144,
         created_at=datetime.utcnow(),
@@ -49,7 +53,7 @@ async def test_narrator_and_builder_keep_campaign_model(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_control_roles_default_to_qwen_without_narrator_fallback(monkeypatch):
+async def test_local_control_roles_default_to_qwen_without_narrator_fallback(monkeypatch):
     primary = primary_config()
     monkeypatch.setattr(settings, "CONTROL_LLM_MODEL", "qwen2.5:7b")
     monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", None)
@@ -69,15 +73,57 @@ async def test_control_roles_default_to_qwen_without_narrator_fallback(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_local_legacy_same_model_control_setting_restores_qwen_split(monkeypatch):
+    primary = primary_config()
+    monkeypatch.setattr(settings, "CONTROL_LLM_MODEL", "gemma4:e4b")
+    monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", None)
+    monkeypatch.setattr(settings, "PLANNER_LLM_MODEL", None)
+    router = RoleModelRouter(FakeConfigRepo(primary))
+
+    selection = await router.resolve(primary.campaign_id, ModelRole.PLANNER)
+
+    assert selection.config.model_name == "qwen2.5:7b"
+    assert selection.source == "local_control_default"
+
+
+@pytest.mark.asyncio
+async def test_cloud_control_roles_use_campaign_model_not_local_default(monkeypatch):
+    primary = primary_config(
+        base_url="https://cloud.example/v1",
+        model_name="qwen-cloud-27b",
+    )
+    monkeypatch.setattr(settings, "CONTROL_LLM_MODEL", "qwen2.5:7b")
+    monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", None)
+    monkeypatch.setattr(settings, "CONTROL_LLM_API_KEY", None)
+    monkeypatch.setattr(settings, "PLANNER_LLM_MODEL", None)
+    monkeypatch.setattr(settings, "SCRIBE_LLM_MODEL", None)
+    router = RoleModelRouter(FakeConfigRepo(primary, api_key="cloud-secret"))
+
+    planner = await router.resolve(primary.campaign_id, ModelRole.PLANNER)
+    scribe = await router.resolve(primary.campaign_id, ModelRole.SCRIBE)
+    repair = await router.resolve(primary.campaign_id, ModelRole.STRUCTURED_REPAIR)
+
+    for selection in (planner, scribe, repair):
+        assert selection.config.base_url == "https://cloud.example/v1"
+        assert selection.config.model_name == "qwen-cloud-27b"
+        assert selection.api_key == "cloud-secret"
+        assert selection.fallback_config.model_name == "qwen-cloud-27b"
+        assert selection.has_distinct_fallback is False
+        assert selection.source == "campaign_primary_control"
+
+
+@pytest.mark.asyncio
 async def test_control_endpoint_never_receives_campaign_secret_implicitly(monkeypatch):
     primary = primary_config()
     monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", "https://control.example/v1")
+    monkeypatch.setattr(settings, "CONTROL_LLM_MODEL", "qwen-control:test")
     monkeypatch.setattr(settings, "CONTROL_LLM_API_KEY", None)
     router = RoleModelRouter(FakeConfigRepo(primary))
 
     selection = await router.resolve(primary.campaign_id, ModelRole.CURATOR)
 
     assert selection.config.base_url == "https://control.example/v1"
+    assert selection.config.model_name == "qwen-control:test"
     assert selection.api_key is None
     assert selection.fallback_config.base_url == "https://control.example/v1"
     assert selection.fallback_api_key is None
