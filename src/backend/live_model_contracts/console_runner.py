@@ -1,21 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
-import queue
-import re
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
-
-_START_RE = re.compile(r"^\[(?P<case>[^]]+)] run (?P<repeat>\d+)/(\d+) \.\.\.$")
-_DONE_RE = re.compile(
-    r"^\[(?P<case>[^]]+)] (?P<status>PASS|FAIL) \((?P<model>[0-9.]+)s model time\)$"
-)
-_ARTIFACTS_RE = re.compile(r"^Artifacts: (?P<path>.+)$")
+from typing import Any
 
 
 @dataclass
@@ -80,48 +74,173 @@ def _publish_latest(run_dir: Path, backend: Path) -> Path | None:
     return latest
 
 
-def _selected_total() -> int:
-    from live_model_contracts import runner
-
-    args = runner._parse_args()
-    cases = runner._select_cases(args)
-    return len(cases) * args.repeat
-
-
 def _clear_progress(last_width: int) -> None:
     if last_width:
         print("\r" + " " * last_width + "\r", end="", flush=True)
 
 
-def _run_child(total: int) -> tuple[int, Path | None]:
-    command = [sys.executable, "-m", "live_model_contracts.runner", *sys.argv[1:]]
-    process = subprocess.Popen(
-        command,
-        cwd=_backend_root(),
-        env=os.environ.copy(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
+def _selection():
+    from live_model_contracts import runner
+
+    args = runner._parse_args()
+    cases = list(runner._select_cases(args))
+    return runner, args, cases
+
+
+def _run_dir(args, backend: Path) -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return (args.output or backend / "data" / "live-model-contracts" / timestamp).resolve()
+
+
+def _child_dir(run_dir: Path, case_id: str, repetition: int) -> Path:
+    return run_dir / "isolated" / case_id / f"run-{repetition}"
+
+
+def _child_command(args, case_id: str, output: Path) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "live_model_contracts.runner",
+        "--narrator-model",
+        args.narrator_model,
+        "--control-model",
+        args.control_model,
+        "--ollama",
+        args.ollama,
+        "--suite",
+        "all",
+        "--case",
+        case_id,
+        "--repeat",
+        "1",
+        "--turn-timeout",
+        str(args.turn_timeout),
+        "--post-turn-timeout",
+        str(args.post_turn_timeout),
+        "--control-timeout",
+        str(args.control_timeout),
+        "--output",
+        str(output),
+    ]
+
+
+def _tail(path: Path, limit: int = 3500) -> str:
+    if not path.exists():
+        return ""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return text[-limit:].strip()
+
+
+def _load_child_payload(
+    child_dir: Path,
+    case,
+    repetition: int,
+    worker_exit_code: int,
+    wall_seconds: float,
+) -> dict[str, Any]:
+    result_path = child_dir / "cases" / case.id / "run-1.json"
+    if result_path.exists():
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+        payload["repetition"] = repetition
+        return payload
+
+    log_path = child_dir / "child.log"
+    tail = _tail(log_path)
+    failures = [
+        f"isolated worker exited with code {worker_exit_code} before producing a case result; "
+        f"see {log_path}",
+    ]
+    if tail:
+        failures.append("worker log tail:\n" + tail)
+    return {
+        "case_id": case.id,
+        "title": case.title,
+        "transitions": list(case.transitions),
+        "repetition": repetition,
+        "passed": False,
+        "failures": failures,
+        "turns": [],
+        "elapsed_seconds": round(wall_seconds, 3),
+        "before": {},
+        "after": {},
+        "delta": {},
+    }
+
+
+def _to_case_run(runner, payload: dict[str, Any]):
+    return runner.CaseRun(
+        case_id=str(payload["case_id"]),
+        title=str(payload["title"]),
+        transitions=tuple(payload.get("transitions") or ()),
+        repetition=int(payload["repetition"]),
+        passed=bool(payload["passed"]),
+        failures=[str(value) for value in payload.get("failures") or []],
+        turns=[],
+        elapsed_seconds=float(payload.get("elapsed_seconds") or 0.0),
+        before=dict(payload.get("before") or {}),
+        after=dict(payload.get("after") or {}),
+        delta=dict(payload.get("delta") or {}),
     )
-    assert process.stdout is not None
 
-    lines: queue.Queue[str | None] = queue.Queue()
 
-    def read_output() -> None:
-        for line in process.stdout:
-            lines.put(line.rstrip("\r\n"))
-        lines.put(None)
+def _model_seconds(payload: dict[str, Any]) -> float:
+    return sum(float(turn.get("latency_seconds") or 0.0) for turn in payload.get("turns") or [])
 
-    reader = threading.Thread(target=read_output, daemon=True)
-    reader.start()
+
+def _run_worker(command: list[str], child_dir: Path, render) -> tuple[int, float]:
+    child_dir.mkdir(parents=True, exist_ok=True)
+    log_path = child_dir / "child.log"
+    started = time.monotonic()
+    with log_path.open("w", encoding="utf-8", errors="replace") as log:
+        process = subprocess.Popen(
+            command,
+            cwd=_backend_root(),
+            env=os.environ.copy(),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        while process.poll() is None:
+            render()
+            time.sleep(1.0)
+        return_code = process.wait()
+    return return_code, time.monotonic() - started
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def main() -> int:
+    runner, args, case_specs = _selection()
+    if args.repeat < 1:
+        print("--repeat must be >= 1", file=sys.stderr)
+        return 2
+
+    if args.list:
+        for case in case_specs:
+            print(f"{case.id:36} [{case.suite}] {', '.join(case.transitions)}")
+        return 0
+
+    total = len(case_specs) * args.repeat
+    if total <= 0:
+        print("No live-model contracts selected.", file=sys.stderr)
+        return 2
+
+    backend = _backend_root()
+    run_dir = _run_dir(args, backend)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Selected contract runs: {total}", flush=True)
+    print("Isolation: one Python process + one SQLite database per contract run", flush=True)
+    print(f"Aggregate artifacts: {run_dir}", flush=True)
 
     state = ProgressState(total=total, started_at=time.monotonic())
     last_width = 0
-    artifacts: Path | None = None
-    stream_done = False
+    runs = []
 
     def render() -> None:
         nonlocal last_width
@@ -130,91 +249,77 @@ def _run_child(total: int) -> tuple[int, Path | None]:
         last_width = max(last_width, len(line))
 
     render()
-    while not stream_done:
-        try:
-            line = lines.get(timeout=1.0)
-        except queue.Empty:
-            render()
-            continue
-        if line is None:
-            stream_done = True
-            break
-
-        start_match = _START_RE.match(line)
-        if start_match:
+    for case in case_specs:
+        for repetition in range(1, args.repeat + 1):
+            index = state.completed + 1
             _clear_progress(last_width)
-            state.current_case = start_match.group("case")
-            state.current_repeat = start_match.group("repeat")
+            print(f"[{index:02d}/{total:02d}] {case.id} (run {repetition}) ...", flush=True)
+            state.current_case = case.id
+            state.current_repeat = str(repetition)
             state.current_started_at = time.monotonic()
-            index = min(state.completed + 1, state.total)
-            print(
-                f"[{index:02d}/{state.total:02d}] {state.current_case} "
-                f"(run {state.current_repeat}) ...",
-                flush=True,
-            )
             render()
-            continue
 
-        done_match = _DONE_RE.match(line)
-        if done_match:
-            now = time.monotonic()
-            wall = (
-                now - state.current_started_at
-                if state.current_started_at is not None
-                else float(done_match.group("model"))
-            )
+            child_dir = _child_dir(run_dir, case.id, repetition)
+            command = _child_command(args, case.id, child_dir)
+            worker_exit_code, wall = _run_worker(command, child_dir, render)
+            payload = _load_child_payload(child_dir, case, repetition, worker_exit_code, wall)
+            run = _to_case_run(runner, payload)
+            runs.append(run)
+
+            aggregate_case = run_dir / "cases" / case.id / f"run-{repetition}.json"
+            _write_json(aggregate_case, payload)
+
             state.completed += 1
             state.completed_wall_seconds.append(max(0.0, wall))
-            if done_match.group("status") == "PASS":
+            if run.passed:
                 state.passed += 1
             else:
                 state.failed += 1
+
+            model_seconds = _model_seconds(payload)
             _clear_progress(last_width)
+            status = "PASS" if run.passed else "FAIL"
             print(
-                f"[{state.completed:02d}/{state.total:02d}] {done_match.group('status')} "
-                f"{done_match.group('case')} "
-                f"({done_match.group('model')}s model, {wall:.1f}s wall)",
+                f"[{state.completed:02d}/{total:02d}] {status} {case.id} "
+                f"({model_seconds:.1f}s model, {wall:.1f}s wall)",
                 flush=True,
             )
+            if not run.passed:
+                for failure in run.failures:
+                    first_line = failure.splitlines()[0]
+                    print(f"  - {first_line}", flush=True)
+
             state.current_case = None
             state.current_repeat = None
             state.current_started_at = None
             render()
-            continue
 
-        artifacts_match = _ARTIFACTS_RE.match(line)
-        if artifacts_match:
-            artifacts = Path(artifacts_match.group("path")).resolve()
-
-        _clear_progress(last_width)
-        print(line, flush=True)
-        render()
-
-    return_code = process.wait()
     _clear_progress(last_width)
-    print(_progress_line(state, width=24), flush=True)
-    return return_code, artifacts
+    print(_progress_line(state), flush=True)
 
+    summary, overall = runner._render_summary(runs, case_specs, args)
+    (run_dir / "report.md").write_text(summary, encoding="utf-8")
+    _write_json(
+        run_dir / "manifest.json",
+        {
+            "narrator_model": args.narrator_model,
+            "control_model": args.control_model,
+            "ollama": args.ollama,
+            "suite": args.suite,
+            "repeat": args.repeat,
+            "cases": [case.id for case in case_specs],
+            "overall": overall,
+            "isolation": "per_contract_process_and_sqlite",
+        },
+    )
 
-def main() -> int:
-    total = _selected_total()
-    if total <= 0:
-        print("No live-model contracts selected.", file=sys.stderr)
-        return 2
-
-    print(f"Selected contract runs: {total}", flush=True)
-    return_code, artifacts = _run_child(total)
-
-    if artifacts is not None:
-        latest = _publish_latest(artifacts, _backend_root())
-        if latest is not None:
-            print(f"Latest report: {latest / 'report.md'}")
-            print(f"Latest manifest: {latest / 'manifest.json'}")
-            print(f"Full artifacts: {artifacts}")
-        else:
-            print(f"Full artifacts: {artifacts}")
-            print("Latest report was not updated because this run did not produce report.md/manifest.json.")
-    return return_code
+    print("\n" + summary)
+    latest = _publish_latest(run_dir, backend)
+    if latest is not None:
+        print(f"Latest report: {latest / 'report.md'}")
+        print(f"Latest manifest: {latest / 'manifest.json'}")
+    print(f"Full artifacts: {run_dir}")
+    return 0 if overall else 1
 
 
 if __name__ == "__main__":
