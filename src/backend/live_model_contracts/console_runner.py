@@ -38,7 +38,7 @@ def _backend_root() -> Path:
 def _format_duration(seconds: float | None) -> str:
     if seconds is None or seconds < 0:
         return "--:--:--"
-    total = int(round(seconds))
+    total = round(seconds)
     hours, remainder = divmod(total, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
@@ -47,7 +47,7 @@ def _format_duration(seconds: float | None) -> str:
 def _progress_line(state: ProgressState, now: float | None = None, width: int = 24) -> str:
     now = time.monotonic() if now is None else now
     ratio = state.completed / state.total if state.total else 1.0
-    filled = min(width, max(0, int(round(width * ratio))))
+    filled = min(width, max(0, round(width * ratio)))
     bar = "#" * filled + "-" * (width - filled)
     elapsed = now - state.started_at
     eta: float | None = None
