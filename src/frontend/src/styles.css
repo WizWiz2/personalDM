@@ -1,6 +1,7 @@
 @import './styles-global.css';
 @import './styles-controls.css';
 @import './styles-play.css';
+@import './styles-generation-errors.css';
 @import './styles-sections.css';
 @import './styles-session-zero.css';
 @import './styles-gallery.css';

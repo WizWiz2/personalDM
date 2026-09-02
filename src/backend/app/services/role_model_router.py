@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from enum import Enum
+from urllib.parse import urlparse
 from uuid import UUID
 
 from app.config import settings
@@ -40,6 +41,8 @@ CONTROL_ROLES = {
     ModelRole.STRUCTURED_REPAIR,
 }
 
+DEFAULT_LOCAL_CONTROL_MODEL = "qwen2.5:7b"
+
 
 @dataclass(frozen=True)
 class RoleModelSelection:
@@ -63,10 +66,11 @@ class RoleModelRouter:
     """Resolve one campaign provider into role-specific model selections.
 
     Narration, session zero, and direct out-of-character game-master dialogue use
-    the campaign's primary model. Control roles stay on the configured control model: a structured
-    schema failure must never silently switch Planner/Validator/Scribe to the narrator model. This
-    preserves the dual-model contract and keeps failures diagnosable instead of changing semantics
-    mid-turn. Non-control explicit overrides may still retain the campaign primary as fallback.
+    the campaign's primary model. A local Ollama campaign keeps the intentional
+    narrator/control split (Gemma plus Qwen by default). A remote/cloud campaign
+    uses its selected campaign model for control roles unless a separate control
+    endpoint or per-role model is explicitly configured. Structured control never
+    silently falls back to a different narrator model after a schema failure.
     """
 
     def __init__(self, config_repo: ProviderConfigRepository):
@@ -83,8 +87,45 @@ class RoleModelRouter:
             ModelRole.PLAYER: settings.PLAYER_LLM_MODEL,
             ModelRole.SCENARIO_BUILDER: settings.SCENARIO_BUILDER_LLM_MODEL,
             ModelRole.CHARACTER_BUILDER: settings.CHARACTER_BUILDER_LLM_MODEL,
-            ModelRole.STRUCTURED_REPAIR: settings.CONTROL_LLM_MODEL,
         }.get(role)
+
+    @staticmethod
+    def _is_local_ollama(base_url: str) -> bool:
+        try:
+            parsed = urlparse(base_url)
+            return parsed.hostname in {"localhost", "127.0.0.1", "::1"} and (
+                parsed.port in {None, 11434}
+            )
+        except ValueError:
+            return False
+
+    @classmethod
+    def _control_model(
+        cls,
+        primary: ProviderConfigRead,
+        explicit_model: str | None,
+    ) -> tuple[str, str]:
+        if explicit_model:
+            return explicit_model, "role_override"
+
+        # A distinct control endpoint is an explicit advanced configuration. Its
+        # configured model is therefore authoritative even for a cloud campaign.
+        if settings.CONTROL_LLM_BASE_URL:
+            return settings.CONTROL_LLM_MODEL or primary.model_name, "control_default"
+
+        # Remote OpenAI-compatible providers generally expose their own model IDs.
+        # Sending the local default name (qwen2.5:7b) to that endpoint is invalid.
+        # Use the campaign-selected model for Planner/Validator/Scribe as well.
+        if not cls._is_local_ollama(primary.base_url):
+            return primary.model_name, "campaign_primary_control"
+
+        # RuntimeProviderService historically persisted the narrator model into
+        # PDM_CONTROL_LLM_MODEL when saving local settings. Treat that legacy
+        # same-model value as unset so the intended local split survives restart.
+        configured = settings.CONTROL_LLM_MODEL
+        if configured and configured != primary.model_name:
+            return configured, "control_default"
+        return DEFAULT_LOCAL_CONTROL_MODEL, "local_control_default"
 
     async def resolve(
         self,
@@ -125,7 +166,7 @@ class RoleModelRouter:
                 source="campaign_primary",
             )
 
-        model_name = explicit_model or settings.CONTROL_LLM_MODEL or primary.model_name
+        model_name, source = self._control_model(primary, explicit_model)
         base_url = settings.CONTROL_LLM_BASE_URL or primary.base_url
         context_window = (
             settings.CONTROL_LLM_CONTEXT_WINDOW or primary.context_window
@@ -137,7 +178,6 @@ class RoleModelRouter:
         else:
             api_key = None
 
-        source = "role_override" if explicit_model else "control_default"
         resolved = primary.model_copy(
             update={
                 "base_url": base_url,
@@ -151,10 +191,9 @@ class RoleModelRouter:
             role=role,
             config=resolved,
             api_key=api_key,
-            # Control-plane correctness depends on a stable model role. If Qwen cannot produce a
-            # usable structured response after its own bounded repair attempts, bubble that failure
-            # to the caller's conservative fallback instead of asking Narrator Gemma to become the
-            # planner/validator mid-turn.
+            # Control-plane correctness depends on a stable role selection. If the
+            # selected control model cannot produce a usable structured response,
+            # bubble that failure instead of changing models mid-turn.
             fallback_config=resolved if strict_control else primary,
             fallback_api_key=api_key if strict_control else primary_key,
             source=source,

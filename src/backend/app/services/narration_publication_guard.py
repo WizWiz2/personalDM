@@ -108,14 +108,18 @@ class NarrationPublicationGuard:
                 "validated_surface": False,
             }
 
-        sanitized = cls._clean(candidate)
-        if sanitized and cls._player_facing_fragment(sanitized) is None:
-            sanitized = ""
-        if sanitized:
-            return sanitized, {
+        # Normalize only for deterministic inspection. If the candidate passes these
+        # hard publication invariants, preserve the narrator's original paragraphing
+        # and punctuation rather than flattening good prose into one line.
+        candidate_surface = candidate.strip()
+        inspected = cls._clean(candidate_surface)
+        if inspected and cls._player_facing_fragment(inspected) is None:
+            inspected = ""
+        if inspected:
+            return candidate_surface, {
                 "mode": "validated_candidate",
                 "candidate_characters": len(candidate),
-                "published_characters": len(sanitized),
+                "published_characters": len(candidate_surface),
                 "error_count": 0,
                 "candidate_discarded": False,
                 "validated_surface": True,

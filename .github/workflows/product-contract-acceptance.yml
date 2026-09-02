@@ -9,13 +9,21 @@ on:
     paths:
       - "src/backend/app/**"
       - "src/backend/tests/**"
+      - "src/backend/live_model_contracts/**"
       - "src/backend/pyproject.toml"
+      - "test-models.bat"
+      - "docs/TESTING-STRATEGY.md"
+      - "docs/TRUTH-TRANSITION-MATRIX.md"
       - ".github/workflows/product-contract-acceptance.yml"
   pull_request:
     paths:
       - "src/backend/app/**"
       - "src/backend/tests/**"
+      - "src/backend/live_model_contracts/**"
       - "src/backend/pyproject.toml"
+      - "test-models.bat"
+      - "docs/TESTING-STRATEGY.md"
+      - "docs/TRUTH-TRANSITION-MATRIX.md"
       - ".github/workflows/product-contract-acceptance.yml"
 
 jobs:
@@ -39,8 +47,10 @@ jobs:
         run: >-
           python -m compileall -q
           src/backend/app
+          src/backend/live_model_contracts
           src/backend/tests/conftest.py
           src/backend/tests/test_product_contract_acceptance.py
+          src/backend/tests/test_live_model_contract_registry.py
           src/backend/tests/test_golden_playthrough.py
           src/backend/tests/test_round42_live_playtest_materialization.py
           src/backend/tests/test_round43_scene_memory_integration.py
@@ -50,6 +60,12 @@ jobs:
           src/backend/tests/test_stabilization_location_presence_identity.py
           src/backend/tests/test_turn_undo_authority.py
           src/backend/tests/test_npc_language_safety.py
+
+      - name: Validate local model contract registry without models
+        working-directory: src/backend
+        run: |
+          python -m live_model_contracts.runner --list --suite all
+          pytest -q tests/test_live_model_contract_registry.py --tb=short
 
       - name: Validate migration chain
         working-directory: src/backend
@@ -80,8 +96,10 @@ jobs:
         working-directory: src/backend
         run: >-
           ruff check
+          live_model_contracts
           tests/conftest.py
           tests/test_product_contract_acceptance.py
+          tests/test_live_model_contract_registry.py
           tests/test_npc_language_safety.py
           app/services/dead_turn_guard.py
           app/services/location_profile_guard.py

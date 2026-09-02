@@ -1,0 +1,98 @@
+name: Deterministic backend coverage
+
+on:
+  push:
+    branches:
+      - main
+      - "agent/**"
+    paths:
+      - "src/backend/app/**"
+      - "src/backend/tests/**"
+      - "src/backend/pyproject.toml"
+      - ".github/workflows/deterministic-coverage.yml"
+  pull_request:
+    paths:
+      - "src/backend/app/**"
+      - "src/backend/tests/**"
+      - "src/backend/pyproject.toml"
+      - ".github/workflows/deterministic-coverage.yml"
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: src/backend/pyproject.toml
+
+      - name: Install backend and deterministic test dependencies
+        run: python -m pip install -e "src/backend[dev]"
+
+      - name: Run deterministic suite with branch coverage
+        working-directory: src/backend
+        run: |
+          mkdir -p data/coverage
+          pytest -q tests \
+            --cov=app \
+            --cov-branch \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=json:data/coverage/coverage.json \
+            --tb=short
+
+      - name: Enforce deterministic coverage ratchet
+        working-directory: src/backend
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          MIN_COMBINED = 72.0
+          MIN_STATEMENTS = 76.0
+          MIN_BRANCHES = 57.0
+
+          payload = json.loads(Path("data/coverage/coverage.json").read_text(encoding="utf-8"))
+          totals = payload["totals"]
+          combined = float(totals["percent_covered"])
+          statements = 100.0 * totals["covered_lines"] / totals["num_statements"]
+          branches = 100.0 * totals["covered_branches"] / totals["num_branches"]
+
+          print(f"Combined statement/branch coverage: {combined:.2f}% (minimum {MIN_COMBINED:.1f}%)")
+          print(
+              f"Statement coverage: {totals['covered_lines']}/{totals['num_statements']} "
+              f"= {statements:.2f}% (minimum {MIN_STATEMENTS:.1f}%)"
+          )
+          print(
+              f"Branch coverage: {totals['covered_branches']}/{totals['num_branches']} "
+              f"= {branches:.2f}% (minimum {MIN_BRANCHES:.1f}%)"
+          )
+          print(
+              "These thresholds cover deterministic Python code only; they are not evidence of "
+              "LLM semantic quality."
+          )
+
+          failures = []
+          if combined < MIN_COMBINED:
+              failures.append(f"combined {combined:.2f}% < {MIN_COMBINED:.1f}%")
+          if statements < MIN_STATEMENTS:
+              failures.append(f"statements {statements:.2f}% < {MIN_STATEMENTS:.1f}%")
+          if branches < MIN_BRANCHES:
+              failures.append(f"branches {branches:.2f}% < {MIN_BRANCHES:.1f}%")
+          if failures:
+              raise SystemExit("Deterministic coverage ratchet failed: " + "; ".join(failures))
+          PY
+
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deterministic-backend-coverage
+          path: src/backend/data/coverage/coverage.json
+          retention-days: 14
