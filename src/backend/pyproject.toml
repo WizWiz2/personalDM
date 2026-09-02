@@ -31,6 +31,7 @@ markers = [
     "narration_validator_enforced: exercise the legacy narration validator instead of the deterministic endpoint-test seam",
     "interagent_contract_enforced: exercise the real authority planner/validator hand-off with deterministic model transport",
     "post_turn_background_enforced: keep post-turn memory asynchronous like production gameplay",
+    "product_contract: exercise a player-visible invariant through application/public boundaries and assert durable outcome rather than implementation details",
 ]
 
 [tool.ruff]

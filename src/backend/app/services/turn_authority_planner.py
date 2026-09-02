@@ -8,13 +8,14 @@ from app.config import settings
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.player_intent_contract import expects_russian
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import (
     present_character_names,
     sanitize_existing_present_npc_introductions,
 )
-from app.services.player_intent_contract import contains_cjk, expects_russian
-from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
+from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
+from app.services.turn_planner import TurnPlan, TurnPlanner, TurnPlanningError
 
 
 class SemanticPlanReview(BaseModel):
@@ -97,7 +98,7 @@ class CoordinatedTurnPlan(TurnPlan):
         return self
 
     @classmethod
-    def conservative_fallback(cls, player_input: str) -> "CoordinatedTurnPlan":
+    def conservative_fallback(cls, player_input: str) -> CoordinatedTurnPlan:
         return cls(
             player_intent=(player_input.strip() or "Продолжить текущую сцену")[:500],
             resolution="uncertain",
@@ -107,13 +108,17 @@ class CoordinatedTurnPlan(TurnPlan):
             observable_consequences=[],
             character_beats=[],
             canon_constraints=[
-                "Планировщик недоступен: не придумывай завершённое перемещение, новых NPC, "
-                "новые предметы, новые факты или добровольные действия протагониста."
+                (
+                    "Планировщик недоступен: не придумывай завершённое перемещение, новых NPC, "
+                    "новые предметы, новые факты или добровольные действия протагониста."
+                )
             ],
             new_fact_candidates=[],
             narration_guidance=[
-                "Опиши только то, что можно безопасно наблюдать в текущей сцене, и оставь "
-                "попытку без нового подтверждённого результата вместо выдумывания исхода."
+                (
+                    "Опиши только то, что можно безопасно наблюдать в текущей сцене, и оставь "
+                    "попытку без нового подтверждённого результата вместо выдумывания исхода."
+                )
             ],
             ending_hook="Попытка пока не приводит к подтверждённому результату.",
         )
@@ -260,26 +265,15 @@ short sentence. Return exactly the NpcContactDecision schema.
 
     @staticmethod
     def _sanitize_npc_names(plan: CoordinatedTurnPlan, player_input: str) -> None:
-        """Keep generated NPC identities readable on a clearly Russian campaign surface."""
+        """Apply the same fail-closed identity sanitation before semantic review and authority."""
         if not expects_russian(player_input):
             return
-        used = {
-            item.canonical_name.casefold()
-            for item in plan.npc_introductions
-            if not contains_cjk(item.canonical_name)
-        }
-        for item in plan.npc_introductions:
-            if not contains_cjk(item.canonical_name):
-                continue
-            base = "Безымянный собеседник"
-            candidate = base
-            index = 2
-            while candidate.casefold() in used:
-                candidate = f"{base} {index}"
-                index += 1
-            item.canonical_name = candidate
-            item.temporary_name = True
-            used.add(candidate.casefold())
+        try:
+            plan.npc_introductions = NpcIntroductionResolver.sanitize_introductions(
+                plan.npc_introductions
+            )
+        except AuthorityResolutionError as exc:
+            raise TurnPlanningError(str(exc)) from exc
 
     @property
     def telemetry(self) -> dict:

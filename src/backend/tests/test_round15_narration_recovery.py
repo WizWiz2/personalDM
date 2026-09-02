@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
-from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narration_publication_guard import (
+    NarrationPublicationError,
+    NarrationPublicationGuard,
+)
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
@@ -54,7 +59,7 @@ def test_ordinary_rejected_narration_projects_authority_even_if_one_bad_segment_
     assert diagnostics["mode"] == "authority_projection"
 
 
-def test_legacy_no_result_stub_is_never_published_from_authority_projection():
+def test_legacy_no_result_stub_makes_authority_projection_fail_closed():
     authority = _authority(
         observable_consequences=[
             "Попытка пока не приводит к подтверждённому результату."
@@ -62,10 +67,8 @@ def test_legacy_no_result_stub_is_never_published_from_authority_projection():
         ending_hook="",
     )
 
-    published = NarrationPublicationGuard.render_authority(authority)
-
-    assert "подтверждённому результату" not in published.casefold()
-    assert published == "Пока ничего заметно не меняется."
+    with pytest.raises(NarrationPublicationError):
+        NarrationPublicationGuard.render_authority(authority)
 
 
 def test_repair_prompt_preserves_rejected_candidate_for_minimal_edit():

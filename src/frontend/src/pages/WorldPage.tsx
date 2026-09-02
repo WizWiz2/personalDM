@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, readableError } from '../api/client'
+import { locationApi, type Location } from '../api/locations'
 import type { Character, CharacterCard, Fact, SceneState } from '../api/types'
 import { visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
@@ -14,6 +15,10 @@ type WorldItem = {
   subtitle: string
   description?: string | null
   appearance?: string | null
+  atmosphere?: string | null
+  notableFeatures?: string | null
+  geography?: string | null
+  current?: boolean
 }
 
 function characterRole(character: Character | undefined): string | null {
@@ -38,6 +43,7 @@ export function WorldPage() {
   const [card, setCard] = useState<CharacterCard | null>(null)
   const [scene, setScene] = useState<SceneState | null>(null)
   const [characters, setCharacters] = useState<Record<string, Character>>({})
+  const [locations, setLocations] = useState<Record<string, Location>>({})
   const [facts, setFacts] = useState<Fact[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [query, setQuery] = useState('')
@@ -48,10 +54,11 @@ export function WorldPage() {
     let active = true
     const run = async () => {
       try {
-        const [heroCard, playerFacts, sceneState] = await Promise.all([
+        const [heroCard, playerFacts, sceneState, campaignLocations] = await Promise.all([
           campaign.player_character_id ? api.getCharacterCard(campaign.player_character_id) : Promise.resolve(null),
           api.listPlayerFacts(campaign.id).catch(() => []),
           campaign.current_scene_id ? api.getSceneState(campaign.id, campaign.current_scene_id) : Promise.resolve(null),
+          locationApi.list(campaign.id).catch(() => []),
         ])
         if (!active) return
 
@@ -70,6 +77,9 @@ export function WorldPage() {
           npcCharacters
             .filter((character): character is Character => character !== null)
             .map((character) => [character.id, character]),
+        ))
+        setLocations(Object.fromEntries(
+          campaignLocations.map((location) => [location.id, location]),
         ))
       } catch (err) { if (active) setError(readableError(err)) }
       finally { if (active) setLoading(false) }
@@ -105,19 +115,34 @@ export function WorldPage() {
 
   const locationItems = useMemo<WorldItem[]>(() => {
     const result: WorldItem[] = []
-    if (scene?.location_id) result.push({
-      id: scene.location_id,
-      name: scene.location_path.at(-1) || 'Текущая локация',
-      subtitle: scene.location_path.slice(0, -1).join(' → ') || 'Текущая локация',
+    if (scene?.location_id) {
+      const location = locations[scene.location_id]
+      result.push({
+        id: scene.location_id,
+        name: location?.canonical_name || scene.location_path.at(-1) || 'Текущая локация',
+        subtitle: 'Текущая локация',
+        description: location?.description,
+        atmosphere: location?.atmosphere,
+        notableFeatures: location?.notable_features,
+        geography: location?.geography,
+        current: true,
+      })
+    }
+    scene?.available_exits.filter((x) => x.discovered && x.active).forEach((exit) => {
+      const location = locations[exit.to_location_id]
+      result.push({
+        id: exit.to_location_id,
+        name: location?.canonical_name || exit.to_location_name,
+        subtitle: exit.travel_time || exit.direction || 'Доступный путь',
+        description: location?.description || exit.label,
+        atmosphere: location?.atmosphere,
+        notableFeatures: location?.notable_features,
+        geography: location?.geography,
+        current: false,
+      })
     })
-    scene?.available_exits.filter((x) => x.discovered && x.active).forEach((exit) => result.push({
-      id: exit.to_location_id,
-      name: exit.to_location_name,
-      subtitle: exit.travel_time || exit.direction || 'Доступный путь',
-      description: exit.label,
-    }))
     return [...new Map(result.map((x) => [x.id, x] as const)).values()]
-  }, [scene])
+  }, [scene, locations])
 
   const knowledgeItems = useMemo<WorldItem[]>(() => facts.filter((f) => f.is_current).map((f) => ({
     id: f.id,
@@ -127,7 +152,7 @@ export function WorldPage() {
   })), [facts])
 
   const source = tab === 'characters' ? characterItems : tab === 'locations' ? locationItems : knowledgeItems
-  const filtered = source.filter((item) => `${item.name} ${item.subtitle}`.toLowerCase().includes(query.toLowerCase()))
+  const filtered = source.filter((item) => `${item.name} ${item.subtitle} ${item.description || ''}`.toLowerCase().includes(query.toLowerCase()))
   const selectedItem = filtered.find((x) => x.id === selected) || filtered[0]
 
   useEffect(() => { setSelected(null) }, [tab, query])
@@ -148,9 +173,12 @@ export function WorldPage() {
             {tab === 'characters' ? <div className="world-portrait"><CharacterPortrait id={selectedItem.id} name={selectedItem.name} /></div> : tab === 'locations' ? <div className="world-scene"><PixelScene seed={selectedItem.name} /></div> : null}
             <span className="eyebrow">{tab === 'characters' ? 'Известный персонаж' : tab === 'locations' ? 'Известное место' : 'Знание'}</span>
             <h2>{selectedItem.name}</h2>
-            <p>{selectedItem.description || selectedItem.subtitle}</p>
+            <p>{selectedItem.description || (tab === 'locations' ? 'Описание этого места пока не было зафиксировано в каноне.' : selectedItem.subtitle)}</p>
             {tab === 'characters' && selectedItem.appearance && selectedItem.appearance !== selectedItem.description && <section className="dossier-section"><h3>Внешность</h3><p>{selectedItem.appearance}</p></section>}
-            {tab === 'locations' && scene?.location_id === selectedItem.id && <section className="dossier-section"><h3>Сейчас здесь</h3><p>{scene.participant_names.join(', ') || 'Никого не указано'}</p></section>}
+            {tab === 'locations' && selectedItem.atmosphere && <section className="dossier-section"><h3>Атмосфера</h3><p>{selectedItem.atmosphere}</p></section>}
+            {tab === 'locations' && selectedItem.notableFeatures && <section className="dossier-section"><h3>Приметы</h3><p>{selectedItem.notableFeatures}</p></section>}
+            {tab === 'locations' && selectedItem.geography && <section className="dossier-section"><h3>Где находится</h3><p>{selectedItem.geography}</p></section>}
+            {tab === 'locations' && selectedItem.current && <section className="dossier-section"><h3>Сейчас здесь</h3><p>{scene?.participant_names.join(', ') || 'Никого не указано'}</p></section>}
             {tab === 'knowledge' && <section className="dossier-section"><h3>Статус</h3><p>Это знание доступно герою.</p></section>}
           </> : <div className="muted-note">Выбери запись слева.</div>}
         </article>
