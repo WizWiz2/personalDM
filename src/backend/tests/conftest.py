@@ -58,7 +58,9 @@ def mock_turn_planner(request):
     those tests continue to assert state semantics rather than an implementation class name.
 
     ``interagent_contract_enforced`` tests keep the real authority planner/hand-off and provide
-    their own deterministic model transport.
+    their own deterministic model transport. ``product_contract`` tests also opt out of the generic
+    authority-plan seam: a player-visible scenario must either exercise the real planner transport or
+    explicitly provide a scenario-specific TurnAuthorityPlanner plan in the test itself.
     """
     legacy_plan = TurnPlan(
         player_intent="Resolve the player's latest action.",
@@ -77,7 +79,10 @@ def mock_turn_planner(request):
         legacy = await TurnPlanner(AsyncMock()).plan(selection, context_messages)
         return _coordinated_from_legacy(legacy)
 
-    authority_enabled = request.node.get_closest_marker("interagent_contract_enforced")
+    authority_enabled = bool(
+        request.node.get_closest_marker("interagent_contract_enforced")
+        or request.node.get_closest_marker("product_contract")
+    )
     with patch(
         "app.services.turn_planner.TurnPlanner.plan",
         new_callable=AsyncMock,
@@ -100,6 +105,8 @@ def deterministic_narration_validator(request):
 
     This lets existing tests keep expressing semantic verdicts while
     ``interagent_contract_enforced`` exercises the real TurnAuthorityValidator transport.
+    Product contracts may still use this deterministic validator seam unless they explicitly opt
+    into the inter-agent marker; their main contract is the externally visible state transition.
     """
     result = NarrationValidationResult(
         verdict="pass",
