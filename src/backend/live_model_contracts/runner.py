@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,13 +51,23 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--control-model", default="qwen2.5:7b")
     parser.add_argument("--ollama", default="http://127.0.0.1:11434")
     parser.add_argument("--suite", choices=("core", "extended", "all"), default="core")
-    parser.add_argument("--case", action="append", dest="cases", help="Run only this case id; repeat the flag for several cases")
+    parser.add_argument(
+        "--case",
+        action="append",
+        dest="cases",
+        help="Run only this case id; repeat the flag for several cases",
+    )
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each case in a fresh campaign")
     parser.add_argument("--turn-timeout", type=float, default=180.0)
     parser.add_argument("--post-turn-timeout", type=float, default=120.0)
     parser.add_argument("--control-timeout", type=float, default=90.0)
     parser.add_argument("--list", action="store_true", help="List contracts without running models")
-    parser.add_argument("--output", type=Path, default=None, help="Artifact directory; defaults to data/live-model-contracts/<timestamp>")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Artifact directory; defaults to data/live-model-contracts/<timestamp>",
+    )
     return parser.parse_args()
 
 
@@ -72,7 +82,7 @@ def _api_base(ollama: str) -> str:
 def _ollama_models(ollama: str) -> set[str]:
     url = ollama.rstrip("/") + "/api/tags"
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:  # noqa: S310 - explicit local endpoint
+        with urllib.request.urlopen(url, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise RuntimeError(
@@ -167,18 +177,27 @@ def _wait_post_turn(db_path: Path, campaign_id: str, timeout: float) -> None:
         db = sqlite3.connect(db_path)
         try:
             last = db.execute(
-                "SELECT job_type, status, attempts, error FROM post_turn_jobs WHERE campaign_id=? ORDER BY created_at",
+                "SELECT job_type, status, attempts, error FROM post_turn_jobs "
+                "WHERE campaign_id=? ORDER BY created_at",
                 (campaign_id,),
             ).fetchall()
         finally:
             db.close()
-        if not last or all(row[1] in {"completed", "failed", "skipped", "cancelled"} for row in last):
+        if not last or all(
+            row[1] in {"completed", "failed", "skipped", "cancelled"} for row in last
+        ):
             return
         time.sleep(0.25)
     raise TimeoutError(f"post-turn jobs did not settle within {timeout:g}s: {last}")
 
 
-def _run_turn(client, db_path: Path, campaign_id: str, text: str, args: argparse.Namespace) -> TurnRun:
+def _run_turn(
+    client,
+    db_path: Path,
+    campaign_id: str,
+    text: str,
+    args: argparse.Namespace,
+) -> TurnRun:
     started = time.monotonic()
     response = client.post(
         f"/api/campaigns/{campaign_id}/turns/async",
@@ -211,7 +230,7 @@ def _run_turn(client, db_path: Path, campaign_id: str, text: str, args: argparse
 
 
 def _select_cases(args: argparse.Namespace):
-    from live_model_contracts.cases import all_cases
+    from live_model_contracts.registry import all_cases
 
     cases = list(all_cases())
     if args.cases:
@@ -229,7 +248,10 @@ def _select_cases(args: argparse.Namespace):
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
 
 
 def _run_case(client, db_path: Path, case, repetition: int, args: argparse.Namespace) -> CaseRun:
@@ -283,7 +305,11 @@ def _run_case(client, db_path: Path, case, repetition: int, args: argparse.Names
     )
 
 
-def _render_summary(runs: list[CaseRun], case_specs, args: argparse.Namespace) -> tuple[str, bool]:
+def _render_summary(
+    runs: list[CaseRun],
+    case_specs,
+    args: argparse.Namespace,
+) -> tuple[str, bool]:
     by_case: dict[str, list[CaseRun]] = {}
     for run in runs:
         by_case.setdefault(run.case_id, []).append(run)
@@ -307,7 +333,8 @@ def _render_summary(runs: list[CaseRun], case_specs, args: argparse.Namespace) -
         ok = rate + 1e-9 >= required
         overall = overall and ok
         lines.append(
-            f"| {case_id} | {passed}/{len(case_runs)} ({rate:.0%}) | {required:.0%} | {total_time:.1f}s |"
+            f"| {case_id} | {passed}/{len(case_runs)} ({rate:.0%}) | "
+            f"{required:.0%} | {total_time:.1f}s |"
         )
     lines.extend(["", f"Overall: **{'PASS' if overall else 'FAIL'}**", ""])
     failed_runs = [run for run in runs if not run.passed]
@@ -344,9 +371,11 @@ def main() -> int:
         print("Available: " + ", ".join(sorted(available)), file=sys.stderr)
         return 2
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backend = _backend_root()
-    run_dir = (args.output or backend / "data" / "live-model-contracts" / timestamp).resolve()
+    run_dir = (
+        args.output or backend / "data" / "live-model-contracts" / timestamp
+    ).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     db_path = _install_isolated_env(args, run_dir)
     _migrate(backend)
