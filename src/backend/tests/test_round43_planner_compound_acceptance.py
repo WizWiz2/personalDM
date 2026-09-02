@@ -84,4 +84,4 @@ async def test_semantic_reviewer_repairs_dropped_compound_movement_step():
     repair_prompt = router.generate_json.await_args_list[2].args[2][-1].content
     assert "COMPOUND ACTION PRESERVATION" in first_prompt
     assert "COMPOUND COVERAGE REVIEW" in review_prompt
-    assert "Потерян второй переход" in repair_prompt
+    assert "второй movement step отсутствует" in repair_prompt
