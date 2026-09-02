@@ -5,6 +5,7 @@ import { CampaignLibraryPage } from './pages/CampaignLibraryPage'
 import { CampaignSettingsPage } from './pages/CampaignSettingsPage'
 import { ChroniclePage } from './pages/ChroniclePage'
 import { GalleryPage } from './pages/GalleryPage'
+import { GlobalSettingsPage } from './pages/GlobalSettingsPage'
 import { HeroPage } from './pages/HeroPage'
 import { PlayPage } from './pages/PlayPage'
 import { SessionZeroPage } from './pages/SessionZeroPage'
@@ -15,6 +16,7 @@ export function App() {
     <Routes>
       <Route path="/" element={<Navigate to="/campaigns" replace />} />
       <Route path="/campaigns" element={<CampaignLibraryPage />} />
+      <Route path="/settings" element={<GlobalSettingsPage />} />
       <Route path="/campaigns/:campaignId/session-zero" element={<SessionZeroPage />} />
       <Route path="/campaign/:campaignId" element={<CampaignWorkspace />}>
         <Route index element={<Navigate to="play" replace />} />
