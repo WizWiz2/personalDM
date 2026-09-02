@@ -1,13 +1,13 @@
 from pathlib import Path
 
-from live_model_contracts.cases import all_cases
+from live_model_contracts.registry import all_cases
 
 
 def test_live_model_contract_ids_and_transition_ownership_are_explicit():
     cases = list(all_cases())
     ids = [case.id for case in cases]
 
-    assert len(cases) >= 16
+    assert len(cases) >= 24
     assert len(ids) == len(set(ids))
     assert all(case.transitions for case in cases)
     assert all(case.turns and all(turn.strip() for turn in case.turns) for case in cases)
@@ -18,12 +18,16 @@ def test_live_model_contract_ids_and_transition_ownership_are_explicit():
         "location",
         "presence",
         "character",
+        "identity",
         "item",
         "time",
         "knowledge",
         "fact",
         "relationship",
         "thesis",
+        "event",
+        "canon",
+        "compound",
         "undo",
         "turn",
     }
@@ -40,6 +44,14 @@ def test_core_live_contracts_are_hard_invariants():
 
     assert core
     assert all(case.min_pass_rate == 1.0 for case in core)
+
+
+def test_contact_contract_enters_scene_before_creating_unknown_npc():
+    case = next(case for case in all_cases() if case.id == "new_npc_direct_contact")
+
+    assert len(case.turns) == 2
+    assert "контор" in case.turns[0].casefold()
+    assert "дежурн" in case.turns[1].casefold()
 
 
 def test_live_runner_is_not_allowed_to_import_pytest_mocks_or_call_itself_a_simulation():
