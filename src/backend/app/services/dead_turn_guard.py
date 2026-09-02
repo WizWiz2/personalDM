@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from functools import wraps
 
 from app.services.narration_publication_guard import NarrationPublicationGuard
@@ -9,16 +8,6 @@ from app.services.turn_planner import TurnPlanningError
 from app.services.turn_saga import TurnSaga
 
 _INSTALLED = False
-
-
-class DeadTurnError(RuntimeError):
-    """Raised when the runtime has no concrete typed result it can honestly publish."""
-
-
-_DEAD_TURN_PATTERN = re.compile(
-    r"^(?:пока\s+)?ничего(?:\s+заметно)?\s+не\s+(?:меняется|происходит)[.!?…]*$",
-    flags=re.IGNORECASE,
-)
 
 
 def _is_empty_plan(plan) -> bool:
@@ -42,7 +31,7 @@ def _is_empty_plan(plan) -> bool:
 
 def _is_dead_surface(value: object) -> bool:
     clean = " ".join(str(value or "").split()).strip()
-    return bool(clean and _DEAD_TURN_PATTERN.fullmatch(clean))
+    return bool(clean and NarrationPublicationGuard.DEAD_TURN_PATTERN.fullmatch(clean))
 
 
 def install() -> None:
@@ -88,29 +77,5 @@ def install() -> None:
 
     TurnAuthorityService.build = strict_authority
 
-    original_fragment = NarrationPublicationGuard._player_facing_fragment.__func__
 
-    @classmethod
-    def strict_fragment(cls, value: object):
-        fragment = original_fragment(cls, value)
-        if fragment and _is_dead_surface(fragment):
-            return None
-        return fragment
-
-    NarrationPublicationGuard._player_facing_fragment = strict_fragment
-
-    original_projection = NarrationPublicationGuard._safe_authority_projection.__func__
-
-    @classmethod
-    def strict_projection(cls, authority):
-        projected = original_projection(cls, authority)
-        if _is_dead_surface(projected):
-            raise DeadTurnError(
-                "TurnAuthority has no player-facing typed outcome; refusing generic no-change fallback"
-            )
-        return projected
-
-    NarrationPublicationGuard._safe_authority_projection = strict_projection
-
-
-__all__ = ["DeadTurnError", "_is_dead_surface", "_is_empty_plan", "install"]
+__all__ = ["_is_dead_surface", "_is_empty_plan", "install"]
