@@ -11,6 +11,26 @@ from app.services.turn_authority_validator import TurnAuthorityValidator
 
 _INSTALLED = False
 
+_COMPLETENESS_CONTRACT = """
+
+[ROUND 43 — COMPLETENESS AND SCENE-BOUND PRESENCE]
+- TURN COMPLETENESS: the candidate must actually resolve the CURRENT player_input to the extent the
+  typed authority already resolved it. If observable_consequences or a completed action sequence
+  contain a current result, prose must communicate that result before moving to an ending hook.
+  A response that only sets up an answer, stops at a cliffhanger, repeats the question, or promises
+  that the result will be known next turn is incomplete and requires repair. Do not demand a result
+  only when authority itself is waiting for pending_player_choice, a blocked prerequisite, or an
+  explicitly unresolved current-world outcome.
+- CONVERSATION COMPLETENESS: when an authorized acting_character owns the current response, the prose
+  must contain that character's meaningful present response or an equally concrete present behavior
+  that is itself the authorized result. A teaser that postpones the answer without authority is not
+  sufficient.
+- SCENE-BOUND NPC PRESENCE: after a location/time/focus boundary, a character who is only in the
+  source scene and is absent from target present_characters/allowed arrivals/new NPCs cannot continue
+  speaking, accompany the player, enter the destination, sit in the new room, or otherwise act there.
+  Mentioning that absent character as memory, report, message, thought-about person, or quoted past
+  speech is legal and does not materialize them.
+"""
 
 _NARRATION_REVIEW_PROMPT = """[SEMANTIC NARRATION AUTHORITY REVIEW]
 You are an independent semantic reviewer of a proposed narration-validator verdict. Do not continue
@@ -42,6 +62,19 @@ World authority rules:
   world outcome still needs typed authority. Literary quality is not permission to mutate canon.
 - Neutral scene texture and sensory staging are allowed when they do not create a significant fact.
 - allowed_new_npcs and allowed_existing_npc_arrivals are authoritative physical permissions.
+- After a scene boundary, source-scene NPCs absent from target presence/allowed arrivals cannot keep
+  talking, follow the protagonist, enter the destination or otherwise physically act there. A remote
+  mention or quotation of past speech is not physical presence.
+
+Turn-completeness rules:
+- The candidate must resolve the current player input to the extent TURN AUTHORITY already resolved
+  it. If observable_consequences or completed action-sequence results exist, prose must communicate
+  them in the current answer before any ending hook.
+- A half-turn that only builds suspense, restates the attempt, or postpones an already-known result to
+  the next response is a concrete violation. Do not demand completion when authority itself requires
+  a pending player choice, is structurally blocked, or explicitly leaves the current outcome unknown.
+- An authorized NPC response must be meaningfully present now; do not accept a fake cliffhanger that
+  withholds an answer the authority has already assigned to this turn.
 
 Player-facing surface rules:
 - The answer must stay inside the fiction. Semantic commentary about an internal action causing no
@@ -108,6 +141,9 @@ def install() -> None:
         return
 
     from app.services.action_sequence_executor import ActionSequenceExecutor
+
+    if _COMPLETENESS_CONTRACT not in TurnAuthorityValidator.SYSTEM_PROMPT:
+        TurnAuthorityValidator.SYSTEM_PROMPT += _COMPLETENESS_CONTRACT
 
     current_validate = TurnAuthorityValidator.validate
 
