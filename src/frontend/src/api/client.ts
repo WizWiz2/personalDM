@@ -1,6 +1,7 @@
 import type {
   Campaign,
   CampaignCreate,
+  Character,
   CharacterCard,
   Fact,
   ProviderConfig,
@@ -197,6 +198,8 @@ export const api = {
   getSceneState: (campaignId: UUID, sceneId: UUID) =>
     request<SceneState>(`/api/campaigns/${campaignId}/scenes/${sceneId}/state`),
 
+  getCharacter: (characterId: UUID) =>
+    request<Character>(`/api/characters/${characterId}`),
   getCharacterCard: (characterId: UUID) =>
     request<CharacterCard>(`/api/characters/${characterId}/card`),
   listPlayerFacts: (campaignId: UUID) =>
