@@ -62,7 +62,6 @@ jobs:
           app/services/action_sequence_executor.py
           app/services/planner_compound_guard.py
           app/services/scene_transition_executor.py
-          app/services/turn_authority_planner.py
           app/services/turn_planner.py
           app/services/turn_undo_service.py
           tests/test_compound_action_sequence.py
