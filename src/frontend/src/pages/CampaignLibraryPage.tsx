@@ -163,7 +163,10 @@ export function CampaignLibraryPage() {
             <p>Твои истории</p>
           </div>
         </div>
-        <button className="btn primary" onClick={() => setModal(true)}><Icons.plus />Новая кампания</button>
+        <div className="session-zero-top-actions">
+          <button className="btn" onClick={() => navigate('/settings')}><Icons.settings />Подключения</button>
+          <button className="btn primary" onClick={() => setModal(true)}><Icons.plus />Новая кампания</button>
+        </div>
       </header>
 
       <div className="global-content campaign-library">
