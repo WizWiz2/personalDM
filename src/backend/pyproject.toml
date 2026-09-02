@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=6",
     "ruff>=0.8",
 ]
 
@@ -33,6 +34,18 @@ markers = [
     "post_turn_background_enforced: keep post-turn memory asynchronous like production gameplay",
     "product_contract: exercise a player-visible invariant through application/public boundaries and assert durable outcome rather than implementation details",
 ]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+omit = [
+    "app/__main__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 1
 
 [tool.ruff]
 target-version = "py312"
