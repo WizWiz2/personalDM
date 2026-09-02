@@ -37,6 +37,10 @@ class PresenceService:
             raise ValueError("Participant must belong to the same campaign as the scene")
         if entity.entity_type != "character":
             raise ValueError("Only character entities may participate in a scene")
+        if entity.status in {"dead", "destroyed"}:
+            raise ValueError(
+                f"Character status {entity.status} cannot participate in a live scene"
+            )
 
         character = await self._session.get(Character, str(entity_id))
         if not character:

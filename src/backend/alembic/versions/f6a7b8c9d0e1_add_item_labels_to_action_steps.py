@@ -15,9 +15,18 @@ def upgrade() -> None:
     existing = {column["name"] for column in inspector.get_columns("action_steps")}
     for name in ("item_name", "item_operation"):
         if name not in existing:
-            op.add_column("action_steps", sa.Column(name, sa.String(length=255 if name == "item_name" else 32), nullable=True))
+            op.add_column(
+                "action_steps",
+                sa.Column(
+                    name,
+                    sa.String(length=255 if name == "item_name" else 32),
+                    nullable=True,
+                ),
+            )
 
 
 def downgrade() -> None:
-    op.drop_column("action_steps", "item_operation")
-    op.drop_column("action_steps", "item_name")
+    # The f5 schema already owns item_name and item_operation. In current migration
+    # history f6 is therefore an idempotent compatibility migration; downgrading to
+    # f5 must preserve those columns so f5 can remove them when it is downgraded.
+    pass

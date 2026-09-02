@@ -65,6 +65,17 @@ class MemoryOperationsService:
         related = ",".join(cls._related_ids(thesis.related_entity_ids))
         return f"{thesis.thesis_type}:{related or 'scene'}"
 
+    @classmethod
+    def thesis_slot(
+        cls,
+        thesis: SceneThesis,
+        profile: ThesisLifecycleProfile | None = None,
+    ) -> str:
+        semantic = cls.semantic_key(
+            profile.semantic_key if profile and profile.semantic_key else thesis.text
+        )
+        return f"{cls.thesis_scope(thesis)}:{semantic}"
+
     async def ensure_thesis_profile(
         self,
         thesis: SceneThesis,
@@ -81,7 +92,7 @@ class MemoryOperationsService:
             )
             self._session.add(row)
         elif semantic_key:
-            row.semantic_key = semantic_key[:160]
+            row.semantic_key = self.semantic_key(semantic_key)
         if reinforced_turn_id:
             row.last_reinforced_turn_id = str(reinforced_turn_id)
             row.closure_reason = None
@@ -102,21 +113,41 @@ class MemoryOperationsService:
                 )
             )
         ).scalars().all()
-        desired_by_scope: dict[str, object] = {}
+
+        profiles: dict[str, ThesisLifecycleProfile] = {}
+        for thesis in active:
+            profiles[thesis.id] = await self.ensure_thesis_profile(thesis)
+
+        desired_by_id: dict[str, object] = {}
+        desired_by_slot: dict[str, object] = {}
         for item in desired:
+            existing_id = getattr(item, "existing_thesis_id", None)
+            if existing_id:
+                desired_by_id[str(existing_id)] = item
+                continue
             thesis_type = getattr(item.thesis_type, "value", item.thesis_type)
-            related = sorted(str(value) for value in item.related_entity_ids)
-            desired_by_scope[f"{thesis_type}:{','.join(related) or 'scene'}"] = item
+            related = ",".join(sorted(str(value) for value in item.related_entity_ids))
+            semantic = self.semantic_key(
+                getattr(item, "semantic_key", None) or getattr(item, "text", "")
+            )
+            desired_by_slot[f"{thesis_type}:{related or 'scene'}:{semantic}"] = item
 
         for thesis in active:
-            item = desired_by_scope.get(self.thesis_scope(thesis))
+            profile = profiles[thesis.id]
+            item = desired_by_id.get(thesis.id)
+            if item is None:
+                item = desired_by_slot.get(self.thesis_slot(thesis, profile))
             if item is None and not thesis.pinned:
                 continue
-            semantic_key = getattr(item, "semantic_key", None) if item else None
+            # Existing IDs own their already-persisted semantic slot. A model may repeat a
+            # slightly different key, but reinforcement must not silently rename the slot.
+            semantic = profile.semantic_key
+            if item is not None and not getattr(item, "existing_thesis_id", None):
+                semantic = getattr(item, "semantic_key", None) or semantic
             await self.ensure_thesis_profile(
                 thesis,
                 reinforced_turn_id=source_turn_id,
-                semantic_key=semantic_key or self.semantic_key(thesis.text),
+                semantic_key=semantic,
             )
 
         rows = (
@@ -354,7 +385,7 @@ class MemoryOperationsService:
         ] = defaultdict(list)
         for thesis, profile in thesis_rows:
             if thesis.status == "active":
-                active_groups[(thesis.scene_id, self.thesis_scope(thesis))].append(
+                active_groups[(thesis.scene_id, self.thesis_slot(thesis, profile))].append(
                     (thesis, profile)
                 )
                 active_by_scene[thesis.scene_id].append((thesis, profile))
@@ -375,7 +406,7 @@ class MemoryOperationsService:
             )
             for thesis, _ in rows:
                 if thesis.id != keeper_thesis.id:
-                    maintenance_reasons[thesis.id] = "duplicate_scope"
+                    maintenance_reasons[thesis.id] = "duplicate_semantic_slot"
 
         for rows in active_by_scene.values():
             candidates = [pair for pair in rows if not pair[0].pinned]

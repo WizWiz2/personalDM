@@ -11,6 +11,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.tables import Character, Turn
 from app.models.turn_authority import ExistingNpcArrival
 from app.services.entity_identity import identity_key, resolve_character_candidates
+from app.services.player_intent_contract import contains_cjk
 
 
 class AuthorityResolutionError(ValueError):
@@ -55,9 +56,68 @@ class NpcIntroductionResolution:
 class NpcIntroductionResolver:
     """Classify planned NPC introductions against structured identity and presence state."""
 
+    SYNTHETIC_PLACEHOLDERS = frozenset(
+        {
+            "безымянный собеседник",
+            "неизвестный собеседник",
+            "безымянный npc",
+            "неизвестный npc",
+            "unnamed interlocutor",
+            "unknown interlocutor",
+            "unnamed npc",
+            "unknown npc",
+        }
+    )
+
     def __init__(self, session: AsyncSession):
         self._session = session
         self._entities = EntityRepository(session)
+
+    @classmethod
+    def sanitize_introductions(cls, introductions: list) -> list:
+        """Keep temporary planner identities readable without canonizing fake placeholders.
+
+        Planner control models occasionally leak CJK names on a Russian surface. Older code replaced
+        those with the literal identity ``Безымянный собеседник``, which then became durable canon.
+        At the authority boundary we instead derive a role identity (``Диспетчер``) when possible;
+        if even the role is unusable, fail closed and let the planner repair the contact.
+        """
+        used: set[str] = set()
+        result = []
+        placeholder_keys = {identity_key(value) for value in cls.SYNTHETIC_PLACEHOLDERS}
+
+        for introduction in introductions:
+            canonical = " ".join(str(introduction.canonical_name or "").split())
+            canonical_key = identity_key(canonical)
+            needs_repair = contains_cjk(canonical) or canonical_key in placeholder_keys
+
+            if needs_repair:
+                role = " ".join(str(introduction.role or "").split())
+                if not role or contains_cjk(role) or identity_key(role) in placeholder_keys:
+                    raise AuthorityResolutionError(
+                        "Planner returned an unreadable temporary NPC identity without a usable role"
+                    )
+                base = role[0].upper() + role[1:] if role else role
+                candidate = base
+                index = 2
+                while identity_key(candidate) in used:
+                    candidate = f"{base} {index}"
+                    index += 1
+                introduction = introduction.model_copy(
+                    update={
+                        "canonical_name": candidate,
+                        "temporary_name": True,
+                    }
+                )
+                canonical_key = identity_key(candidate)
+
+            if canonical_key in used:
+                raise AuthorityResolutionError(
+                    f"Planner returned duplicate NPC identity: {introduction.canonical_name}"
+                )
+            used.add(canonical_key)
+            result.append(introduction)
+        return result
 
     async def resolve(
         self,
@@ -67,6 +127,7 @@ class NpcIntroductionResolver:
         present_names: list[str],
         target_location_id: UUID | None,
     ) -> NpcIntroductionResolution:
+        introductions = self.sanitize_introductions(introductions)
         names = list(present_names)
         present_keys = {identity_key(value) for value in names}
         all_characters = await self._entities.list_by_campaign(

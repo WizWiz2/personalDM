@@ -10,11 +10,14 @@ on:
       - "src/backend/app/models/action_sequence.py"
       - "src/backend/app/services/action_sequence_context.py"
       - "src/backend/app/services/action_sequence_executor.py"
+      - "src/backend/app/services/planner_compound_guard.py"
       - "src/backend/app/services/scene_transition_executor.py"
+      - "src/backend/app/services/turn_authority_planner.py"
       - "src/backend/app/services/turn_planner.py"
       - "src/backend/app/services/turn_undo_service.py"
       - "src/backend/alembic/versions/d8e9f0a1b2c3_add_compound_action_sequences.py"
       - "src/backend/tests/test_compound_action_sequence.py"
+      - "src/backend/tests/test_round43_planner_compound_acceptance.py"
       - ".github/workflows/compound-action-sequences.yml"
 
 jobs:
@@ -43,6 +46,7 @@ jobs:
         run: >-
           pytest -q
           tests/test_compound_action_sequence.py
+          tests/test_round43_planner_compound_acceptance.py
           tests/test_turn_planner.py
           tests/test_scene_transition_executor.py
           tests/test_scene_transition_undo.py
@@ -56,7 +60,9 @@ jobs:
           app/models/action_sequence.py
           app/services/action_sequence_context.py
           app/services/action_sequence_executor.py
+          app/services/planner_compound_guard.py
           app/services/scene_transition_executor.py
           app/services/turn_planner.py
           app/services/turn_undo_service.py
           tests/test_compound_action_sequence.py
+          tests/test_round43_planner_compound_acceptance.py

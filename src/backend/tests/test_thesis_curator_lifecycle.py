@@ -26,6 +26,13 @@ class FakeSceneRepository:
 
     async def create_thesis(self, scene_id, data, source_turn_id=None):
         self.created.append((scene_id, data, source_turn_id))
+        created = thesis(priority=data.priority)
+        created.thesis_type = data.thesis_type.value
+        created.text = data.text
+        created.visibility = data.visibility
+        created.related_entity_ids = data.related_entity_ids
+        self.theses.append(created)
+        return created
 
 
 class FakeSession:
@@ -35,6 +42,14 @@ class FakeSession:
 
 class AuditableFakeSession(FakeSession):
     async def execute(self, *_args, **_kwargs):
+        return None
+
+
+class FullLifecycleFakeSession(AuditableFakeSession):
+    async def get(self, *_args, **_kwargs):
+        return None
+
+    def add(self, *_args, **_kwargs):
         return None
 
 
@@ -64,7 +79,7 @@ def test_russian_paraphrase_similarity_is_stable():
 
 
 @pytest.mark.asyncio
-async def test_existing_duplicate_scope_is_fully_cleaned():
+async def test_existing_duplicate_semantic_slot_is_cleaned_without_resolving_keeper():
     older = thesis(priority=4, created_offset=0)
     newer = thesis(priority=7, created_offset=1)
     repo = FakeSceneRepository([older, newer])
@@ -74,11 +89,26 @@ async def test_existing_duplicate_scope_is_fully_cleaned():
     result = await curator.reconcile(uuid4(), uuid4(), desired=[])
 
     assert older.status == "superseded"
-    assert newer.status == "resolved"
+    assert newer.status == "active"
     assert result.duplicate_scopes == 1
     assert result.superseded == 1
-    assert result.resolved == 1
+    assert result.resolved == 0
+    assert result.kept == 1
     assert repo.created == []
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_working_memory_survives_curator_pass():
+    open_thread = thesis(priority=5)
+    repo = FakeSceneRepository([open_thread])
+    curator = ThesisCurator(FakeSession())
+    curator._scene_repo = repo
+
+    result = await curator.reconcile(uuid4(), uuid4(), desired=[])
+
+    assert open_thread.status == "active"
+    assert result.kept == 1
+    assert result.resolved == 0
 
 
 @pytest.mark.asyncio
@@ -97,26 +127,24 @@ async def test_close_scene_resolves_pinned_and_unpinned_working_memory():
 
 
 @pytest.mark.asyncio
-async def test_curator_records_reconcile_lifecycle_without_runtime_patch(monkeypatch):
+async def test_curator_does_not_call_old_scope_based_record_reconcile(monkeypatch):
     calls = []
 
     async def record_reconcile(self, scene_id, source_turn_id, desired):
         calls.append((scene_id, source_turn_id, desired))
 
     monkeypatch.setattr(MemoryOperationsService, "record_reconcile", record_reconcile)
-    scene_id = uuid4()
-    source_turn_id = uuid4()
     repo = FakeSceneRepository([thesis()])
     curator = ThesisCurator(AuditableFakeSession())
     curator._scene_repo = repo
 
-    await curator.reconcile(scene_id, source_turn_id, desired=[])
+    await curator.reconcile(uuid4(), uuid4(), desired=[])
 
-    assert calls == [(scene_id, source_turn_id, [])]
+    assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_curator_records_scene_closure_without_runtime_patch(monkeypatch):
+async def test_curator_records_scene_closure_when_lifecycle_storage_is_available(monkeypatch):
     calls = []
 
     async def record_closed_scene(self, scene_id):
@@ -125,7 +153,7 @@ async def test_curator_records_scene_closure_without_runtime_patch(monkeypatch):
     monkeypatch.setattr(MemoryOperationsService, "record_closed_scene", record_closed_scene)
     scene_id = uuid4()
     repo = FakeSceneRepository([thesis(pinned=True), thesis()])
-    curator = ThesisCurator(AuditableFakeSession())
+    curator = ThesisCurator(FullLifecycleFakeSession())
     curator._scene_repo = repo
 
     await curator.close_scene(scene_id)

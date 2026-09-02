@@ -110,6 +110,7 @@ class EntityRegistrar:
         known_lines = [
             f"- {entity.canonical_name} [{entity.entity_type}]"
             + (f"; aliases: {', '.join(entity.aliases)}" if entity.aliases else "")
+            + (f"; status: {entity.status}" if entity.status != "active" else "")
             for entity in entities
         ]
         participant_names = {
@@ -142,8 +143,12 @@ class EntityRegistrar:
 - Возвращай персонажа, если он физически появился, заговорил, напрямую взаимодействовал или повлиял на исход хода.
 - Не создавай сущности для толпы, группы, местоимения, безымянного фонового прохожего или человека, которого только упомянули в разговоре.
 - Уже известного персонажа можно вернуть, чтобы отметить его присутствие или уход; используй его точное известное имя.
+- Персонаж со status=dead/destroyed не может снова физически появиться только из-за текста Narrator. Для исторического упоминания используй mentioned_only.
 - Не возвращай персонажа игрока, если он уже есть среди известных сущностей.
-- canonical_name должно быть устойчивым именем. Для пока безымянного важного NPC допустимо точное временное обозначение вроде «бармен Медного Котла»; тогда temporary_name=true.
+- canonical_name должно быть устойчивым именем ИЛИ точным временным обозначением, реально присутствующим в тексте ответа.
+- Не придумывай canonical_name, которого нет в тексте ответа. Запрещены синтетические ярлыки вроде «Городской Диктатор» или «Безымянный собеседник», если Narrator буквально так персонажа не назвал.
+- Для пока безымянного важного NPC допустимо точное временное обозначение вроде «бармен Медного Котла»; тогда temporary_name=true.
+- Если временный NPC позже назван по имени, верни новое имя, ту же role и temporary_name=false: движок сам повысит временную идентичность до постоянной.
 - evidence — короткий точный фрагмент ответа ДМа, доказывающий появление, действие, реплику или уход.
 - presence=present только если персонаж физически находится в сцене к концу ответа.
 - presence=departed только если он явно покинул сцену.
@@ -191,7 +196,13 @@ class EntityRegistrar:
                 continue
 
             entity = index.get(identity_key(name))
+            matched_contextually = False
             if entity is None:
+                # New identities and named reveals must be grounded in the published prose itself.
+                # Evidence support alone is insufficient because the registrar model can quote a
+                # real sentence while inventing a canonical_name in another JSON field.
+                if not self._name_supported_by_text(name, assistant_content):
+                    continue
                 contextual = resolve_character_candidates(
                     character_entities,
                     proposed_name=name,
@@ -223,6 +234,7 @@ class EntityRegistrar:
                     continue
                 if unique_contextual:
                     entity = next(iter(unique_contextual.values()))
+                    matched_contextually = True
 
             if entity and str(entity.id) == campaign.player_character_id:
                 # Mixed-script variants such as Эйdan/Rэт resolve to the real player identity here.
@@ -237,7 +249,46 @@ class EntityRegistrar:
                 )
                 continue
 
+            if entity and entity.status in {"dead", "destroyed"}:
+                if mention.presence != "mentioned_only":
+                    result.conflicts.append(
+                        {
+                            "description": (
+                                f"{entity.canonical_name} имеет статус {entity.status} и не может "
+                                f"быть материализован как присутствующий персонаж без отдельного "
+                                f"авторитетного изменения статуса"
+                            ),
+                            "evidence": mention.evidence,
+                            "error": (
+                                f"Character status {entity.status} cannot be materialized "
+                                "by narrator extraction"
+                            ),
+                        }
+                    )
+                result.resolved_ids.append(entity.id)
+                continue
+
             if entity:
+                if (
+                    matched_contextually
+                    and not mention.temporary_name
+                    and self._is_temporary_identity(entity)
+                    and identity_key(name) != identity_key(entity.canonical_name)
+                ):
+                    promoted = await self._promote_temporary_identity(
+                        entity,
+                        new_name=name,
+                        mention=mention,
+                        source_turn_id=source_turn_id,
+                    )
+                    if promoted is not None:
+                        old_name = entity.canonical_name
+                        entity = promoted
+                        index[identity_key(old_name)] = entity
+                        index[identity_key(name)] = entity
+                        for alias in entity.aliases:
+                            index[identity_key(alias)] = entity
+
                 character = await self._entities.get_character(entity.id)
                 if not character:
                     continue
@@ -303,6 +354,35 @@ class EntityRegistrar:
         await self._session.flush()
         return result
 
+    async def _promote_temporary_identity(
+        self,
+        entity,
+        *,
+        new_name: str,
+        mention: CharacterMention,
+        source_turn_id: UUID,
+    ):
+        old_name = entity.canonical_name
+        aliases = self._clean_aliases(
+            [old_name, *entity.aliases, *mention.aliases],
+            new_name,
+        )
+        custom_fields = dict(entity.custom_fields or {})
+        custom_fields["temporary_name"] = False
+        custom_fields.setdefault("identity_promoted_from", old_name)
+        custom_fields["identity_promoted_turn_id"] = str(source_turn_id)
+        if mention.role:
+            custom_fields["role"] = mention.role
+
+        return await self._entities.update(
+            entity.id,
+            EntityUpdate(
+                canonical_name=new_name,
+                aliases=aliases,
+                custom_fields=custom_fields,
+            ),
+        )
+
     async def _enrich_existing(
         self,
         character,
@@ -362,6 +442,22 @@ class EntityRegistrar:
         return result
 
     @staticmethod
+    def _is_temporary_identity(entity) -> bool:
+        custom_fields = getattr(entity, "custom_fields", None) or {}
+        return bool(
+            isinstance(custom_fields, dict)
+            and custom_fields.get("temporary_name")
+        )
+
+    @staticmethod
+    def _name_supported_by_text(name: str, assistant_content: str) -> bool:
+        name_key = identity_key(name)
+        text_key = identity_key(assistant_content)
+        if not name_key or not text_key:
+            return False
+        return f" {name_key} " in f" {text_key} "
+
+    @staticmethod
     def _clean_name(value: str) -> str | None:
         value = " ".join(value.split()).strip(" .,:;!?—–-")
         if len(value) < 2 or len(value) > 120:
@@ -374,6 +470,10 @@ class EntityRegistrar:
             "они",
             "он",
             "она",
+            "безымянный собеседник",
+            "неизвестный собеседник",
+            "неизвестный npc",
+            "безымянный npc",
         }:
             return None
         return value
