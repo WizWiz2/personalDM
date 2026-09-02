@@ -14,6 +14,7 @@ from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
+from app.db.tables import SceneThesis
 from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
@@ -65,8 +66,9 @@ class ThesisCurator:
 
     @staticmethod
     def _supports_lifecycle(session) -> bool:
-        return callable(getattr(session, "execute", None)) and callable(
-            getattr(session, "flush", None)
+        return all(
+            callable(getattr(session, name, None))
+            for name in ("execute", "flush", "get", "add")
         )
 
     @staticmethod
@@ -114,12 +116,19 @@ class ThesisCurator:
             ),
         )
 
+    async def _lifecycle_thesis(self, thesis):
+        """Use the ORM row for lifecycle FKs; repository DTO ids are UUID objects."""
+        if not self._supports_lifecycle(self._session):
+            return None
+        return await self._session.get(SceneThesis, str(thesis.id))
+
     async def _existing_semantic_key(self, thesis) -> str:
         fallback = self._semantic_key(None, thesis.text)
-        if not self._supports_lifecycle(self._session):
+        db_thesis = await self._lifecycle_thesis(thesis)
+        if db_thesis is None:
             return fallback
         profile = await MemoryOperationsService(self._session).ensure_thesis_profile(
-            thesis,
+            db_thesis,
             semantic_key=None,
         )
         return self._semantic_key(profile.semantic_key, thesis.text)
@@ -130,18 +139,20 @@ class ThesisCurator:
         source_turn_id: UUID,
         semantic_key: str,
     ) -> None:
-        if not self._supports_lifecycle(self._session):
+        db_thesis = await self._lifecycle_thesis(thesis)
+        if db_thesis is None:
             return
         await MemoryOperationsService(self._session).ensure_thesis_profile(
-            thesis,
+            db_thesis,
             reinforced_turn_id=source_turn_id,
             semantic_key=semantic_key,
         )
 
     async def _mark_profile_closed(self, thesis, reason: str) -> None:
-        if not self._supports_lifecycle(self._session):
+        db_thesis = await self._lifecycle_thesis(thesis)
+        if db_thesis is None:
             return
-        profile = await MemoryOperationsService(self._session).ensure_thesis_profile(thesis)
+        profile = await MemoryOperationsService(self._session).ensure_thesis_profile(db_thesis)
         profile.closure_reason = reason
         await self._session.flush()
 
