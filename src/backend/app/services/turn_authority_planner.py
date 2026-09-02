@@ -15,7 +15,7 @@ from app.services.starter_identity import (
     sanitize_existing_present_npc_introductions,
 )
 from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
-from app.services.turn_planner import TurnPlan, TurnPlanningError, TurnPlanner
+from app.services.turn_planner import TurnPlan, TurnPlanner, TurnPlanningError
 
 
 class SemanticPlanReview(BaseModel):
@@ -98,7 +98,7 @@ class CoordinatedTurnPlan(TurnPlan):
         return self
 
     @classmethod
-    def conservative_fallback(cls, player_input: str) -> "CoordinatedTurnPlan":
+    def conservative_fallback(cls, player_input: str) -> CoordinatedTurnPlan:
         return cls(
             player_intent=(player_input.strip() or "Продолжить текущую сцену")[:500],
             resolution="uncertain",
@@ -108,13 +108,17 @@ class CoordinatedTurnPlan(TurnPlan):
             observable_consequences=[],
             character_beats=[],
             canon_constraints=[
-                "Планировщик недоступен: не придумывай завершённое перемещение, новых NPC, "
-                "новые предметы, новые факты или добровольные действия протагониста."
+                (
+                    "Планировщик недоступен: не придумывай завершённое перемещение, новых NPC, "
+                    "новые предметы, новые факты или добровольные действия протагониста."
+                )
             ],
             new_fact_candidates=[],
             narration_guidance=[
-                "Опиши только то, что можно безопасно наблюдать в текущей сцене, и оставь "
-                "попытку без нового подтверждённого результата вместо выдумывания исхода."
+                (
+                    "Опиши только то, что можно безопасно наблюдать в текущей сцене, и оставь "
+                    "попытку без нового подтверждённого результата вместо выдумывания исхода."
+                )
             ],
             ending_hook="Попытка пока не приводит к подтверждённому результату.",
         )
