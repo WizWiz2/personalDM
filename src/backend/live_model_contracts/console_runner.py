@@ -147,8 +147,7 @@ def _load_child_payload(
     log_path = child_dir / "child.log"
     tail = _tail(log_path)
     failures = [
-        f"isolated worker exited with code {worker_exit_code} before producing a case result; "
-        f"see {log_path}",
+        f"isolated worker exited with code {worker_exit_code} before producing a case result; see {log_path}",
     ]
     if tail:
         failures.append("worker log tail:\n" + tail)
