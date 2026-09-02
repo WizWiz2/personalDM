@@ -6,6 +6,10 @@ from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
 
 
+class NarrationPublicationError(RuntimeError):
+    """Raised when typed authority has no honest player-facing projection."""
+
+
 class NarrationPublicationGuard:
     """Publish validated prose or a deterministic projection of typed authority.
 
@@ -44,6 +48,10 @@ class NarrationPublicationGuard:
         r"продвинуться\s+дальше\s+пока\s+не\s+уда[её]тся)",
         flags=re.IGNORECASE,
     )
+    DEAD_TURN_PATTERN = re.compile(
+        r"^(?:пока\s+)?ничего(?:\s+заметно)?\s+не\s+(?:меняется|происходит)[.!?…]*$",
+        flags=re.IGNORECASE,
+    )
     STATE_BREAKING_VIOLATIONS = frozenset(
         {
             "player_agency",
@@ -69,9 +77,9 @@ class NarrationPublicationGuard:
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
         # A conservative Planner fallback is deliberately non-authoritative: it means that
-        # control-plane planning failed and no world outcome was established.  A passing
+        # control-plane planning failed and no world outcome was established. A passing
         # prose-validator verdict must not turn that empty authority into an invented action,
-        # movement, NPC, or clue.  This is a structural state check, not semantic classification.
+        # movement, NPC, or clue. With no typed result there is nothing honest to publish.
         conservative_fallback = (
             authority.resolution == "uncertain"
             and authority.scene_disposition == "stay"
@@ -80,16 +88,9 @@ class NarrationPublicationGuard:
             and authority.acting_character_id is None
         )
         if conservative_fallback:
-            fallback = cls._safe_authority_projection(authority)
-            return fallback, {
-                "mode": "authority_projection",
-                "candidate_characters": len(candidate),
-                "published_characters": len(fallback),
-                "error_count": 0,
-                "candidate_discarded": True,
-                "validated_surface": False,
-                "reason": "conservative_authority_without_observable_outcome",
-            }
+            raise NarrationPublicationError(
+                "Conservative authority has no observable outcome; refusing an empty narrative turn"
+            )
 
         errors = [
             item
@@ -136,7 +137,9 @@ class NarrationPublicationGuard:
         safe = cls._player_facing_fragment(rendered)
         if safe:
             return cls._as_sentence(safe)
-        return "Пока ничего заметно не меняется."
+        raise NarrationPublicationError(
+            "TurnAuthority has no player-facing typed outcome; refusing generic no-change fiction"
+        )
 
     @classmethod
     def surgical_repair_candidate(
@@ -287,7 +290,9 @@ class NarrationPublicationGuard:
                 cls._append_unique(parts, f"{actor or 'Собеседник'} умолкает")
 
         if not parts:
-            cls._append_unique(parts, "Пока ничего заметно не меняется")
+            raise NarrationPublicationError(
+                "TurnAuthority contains no executed player-facing result"
+            )
 
         return " ".join(cls._as_sentence(value) for value in parts if value.strip()).strip()
 
@@ -308,6 +313,8 @@ class NarrationPublicationGuard:
     def _player_facing_fragment(cls, value: object) -> str | None:
         clean = " ".join(str(value or "").split()).strip()
         if not clean:
+            return None
+        if cls.DEAD_TURN_PATTERN.fullmatch(clean):
             return None
         if cls.LEGACY_STUB_PATTERN.search(clean):
             return None
@@ -384,4 +391,4 @@ class NarrationPublicationGuard:
         return clean if clean.endswith((".", "!", "?", "…", "»", '"')) else clean + "."
 
 
-__all__ = ["NarrationPublicationGuard"]
+__all__ = ["NarrationPublicationError", "NarrationPublicationGuard"]
