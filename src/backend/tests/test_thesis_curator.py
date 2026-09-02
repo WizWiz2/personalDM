@@ -21,7 +21,9 @@ async def create_campaign(db_session, name: str):
 
 
 @pytest.mark.asyncio
-async def test_curator_supersedes_same_scope_and_resolves_obsolete(db_session):
+async def test_curator_updates_same_semantic_slot_and_explicitly_resolves_obsolete(
+    db_session,
+):
     campaign = await create_campaign(db_session, "Dynamic theses")
     scene_repo = SceneRepository(db_session)
     scene = await scene_repo.create(campaign.id, SceneCreate(title="Vault"))
@@ -61,8 +63,11 @@ async def test_curator_supersedes_same_scope_and_resolves_obsolete(db_session):
                 text="Liara openly suspects the door is a trap.",
                 priority=5,
                 related_entity_ids=[actor.id],
+                existing_thesis_id=old_tension.id,
+                semantic_key="liara-door-suspicion",
             )
         ],
+        resolve_thesis_ids={obsolete.id},
     )
     await db_session.commit()
 
@@ -78,7 +83,7 @@ async def test_curator_supersedes_same_scope_and_resolves_obsolete(db_session):
 
 
 @pytest.mark.asyncio
-async def test_pinned_thesis_wins_over_conflicting_automatic_candidate(db_session):
+async def test_pinned_thesis_blocks_only_its_semantic_slot(db_session):
     campaign = await create_campaign(db_session, "Pinned truth")
     scene_repo = SceneRepository(db_session)
     scene = await scene_repo.create(campaign.id, SceneCreate(title="Council"))
@@ -100,21 +105,29 @@ async def test_pinned_thesis_wins_over_conflicting_automatic_candidate(db_sessio
                 thesis_type=ThesisType.TENSION,
                 text="The council erupts into open violence.",
                 priority=10,
-            )
+                existing_thesis_id=pinned.id,
+                semantic_key="council-public-composure",
+            ),
+            DesiredThesis(
+                thesis_type=ThesisType.TENSION,
+                text="A storm is closing the mountain pass.",
+                priority=7,
+                semantic_key="approaching-storm",
+            ),
         ],
     )
     await db_session.commit()
 
     active = await scene_repo.list_theses_by_scene(scene.id, active_only=True)
     assert result.pinned_conflicts == 1
-    assert len(active) == 1
-    assert active[0].id == pinned.id
-    assert active[0].text == "The council remains outwardly calm."
+    assert len(active) == 2
+    assert any(item.id == pinned.id for item in active)
+    assert any(item.text == "A storm is closing the mountain pass." for item in active)
 
 
 @pytest.mark.asyncio
-async def test_duplicate_scope_is_reduced_to_one_active_thesis(db_session):
-    campaign = await create_campaign(db_session, "No conflicts")
+async def test_distinct_semantic_slots_survive_same_type_and_scene_scope(db_session):
+    campaign = await create_campaign(db_session, "Independent threads")
     scene_repo = SceneRepository(db_session)
     scene = await scene_repo.create(campaign.id, SceneCreate(title="Bridge"))
     source_turn = UUID("00000000-0000-0000-0000-000000000001")
@@ -124,20 +137,60 @@ async def test_duplicate_scope_is_reduced_to_one_active_thesis(db_session):
         source_turn,
         [
             DesiredThesis(
-                thesis_type=ThesisType.VISUAL_STATE,
-                text="The bridge is intact but shaking.",
+                thesis_type=ThesisType.UNRESOLVED_BEAT,
+                text="Who erased the three tracks?",
                 priority=8,
+                semantic_key="three-erased-tracks",
             ),
             DesiredThesis(
-                thesis_type=ThesisType.VISUAL_STATE,
-                text="The bridge has completely collapsed.",
-                priority=2,
+                thesis_type=ThesisType.UNRESOLVED_BEAT,
+                text="What does the brass key open?",
+                priority=7,
+                semantic_key="brass-key-purpose",
+            ),
+            DesiredThesis(
+                thesis_type=ThesisType.UNRESOLVED_BEAT,
+                text="Why is Vance lying about the mortgage?",
+                priority=6,
+                semantic_key="vance-mortgage-lie",
             ),
         ],
     )
     await db_session.commit()
 
     active = await scene_repo.list_theses_by_scene(scene.id, active_only=True)
-    assert result.duplicate_scopes == 1
+    assert result.created == 3
+    assert result.duplicate_scopes == 0
+    assert len(active) == 3
+
+
+@pytest.mark.asyncio
+async def test_omission_is_not_resolution(db_session):
+    campaign = await create_campaign(db_session, "Omission safety")
+    scene_repo = SceneRepository(db_session)
+    scene = await scene_repo.create(campaign.id, SceneCreate(title="Archive"))
+    first_turn = uuid4()
+    second_turn = uuid4()
+    curator = ThesisCurator(db_session)
+
+    await curator.reconcile(
+        scene.id,
+        first_turn,
+        [
+            DesiredThesis(
+                thesis_type=ThesisType.UNRESOLVED_BEAT,
+                text="The missing ledger is still unaccounted for.",
+                semantic_key="missing-ledger",
+            )
+        ],
+    )
+    await db_session.commit()
+
+    result = await curator.reconcile(scene.id, second_turn, desired=[])
+    await db_session.commit()
+
+    active = await scene_repo.list_theses_by_scene(scene.id, active_only=True)
+    assert result.resolved == 0
+    assert result.kept == 1
     assert len(active) == 1
-    assert active[0].text == "The bridge is intact but shaking."
+    assert active[0].text == "The missing ledger is still unaccounted for."
