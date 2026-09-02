@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 ORACLE_SCHEMA: dict[str, frozenset[str]] = {
     "campaigns": frozenset({"id", "name", "current_scene_id", "player_character_id"}),
     "entities": frozenset(
