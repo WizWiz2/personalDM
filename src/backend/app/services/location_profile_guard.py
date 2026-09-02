@@ -69,7 +69,7 @@ def _usable_profile(value: str | None) -> bool:
     if not value or len(value) < 80:
         return False
     words = value.split()
-    return len(words) >= 10 and len(set(word.casefold() for word in words)) >= 8
+    return len(words) >= 10 and len({word.casefold() for word in words}) >= 8
 
 
 def _location_transitions(plan) -> list:
