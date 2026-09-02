@@ -22,6 +22,8 @@ _GUARDS = (
     "session_zero_finalize",
     "session_zero_placeholder",
     "planner_compound",
+    "location_profile",
+    "dead_turn",
     "semantic_authority",
 )
 
@@ -79,6 +81,8 @@ def install_runtime() -> None:
         install as install_actor_memory_observability,
     )
     from app.services.actor_turn_authority_guard import install as install_actor_turn_authority
+    from app.services.dead_turn_guard import install as install_dead_turn
+    from app.services.location_profile_guard import install as install_location_profile
     from app.services.mixed_actor_response_guard import install as install_mixed_actor_response
     from app.services.narration_failure_containment_guard import (
         install as install_narration_failure_containment,
@@ -105,6 +109,8 @@ def install_runtime() -> None:
     install_session_zero_finalize()
     install_session_zero_placeholder()
     install_planner_compound()
+    install_location_profile()
+    install_dead_turn()
     # This policy intentionally installs last: legacy guards may still expose compatibility helpers,
     # but no lexical/regex semantic decision is allowed to remain authoritative in production.
     install_semantic_authority()
@@ -156,6 +162,7 @@ def runtime_manifest() -> dict[str, Any]:
             "before_prepare": "fail_without_world_compensation",
             "after_prepare_before_publish": "compensate_then_fail",
             "after_publish": "post_turn_is_independent_and_retriable",
+            "empty_control_outcome": "fail_never_publish_generic_no_change",
         },
         "narration_pipeline": [
             "generate_draft",
@@ -174,6 +181,8 @@ def runtime_manifest() -> dict[str, Any]:
             "npc_introduction_semantics": "model",
             "movement_intent_semantics": "model",
             "compound_action_coverage": "model_with_semantic_review",
+            "location_profile": "typed_transition_bridge_profile",
+            "empty_turn_fallback": "forbidden_fail_closed",
             "narrator_memory_attribution": "independent_segment_audit",
             "plot_fact_recovery": "evidence_grounded_second_pass",
             "requires_check": "structurally_forbidden",
