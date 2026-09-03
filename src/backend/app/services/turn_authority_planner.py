@@ -486,6 +486,11 @@ short sentence. Return exactly the NpcContactDecision schema.
         plan: CoordinatedTurnPlan,
         issues: list[str],
     ) -> CoordinatedTurnPlan | None:
+        # Recovery may repair identity authority from a real rejected semantic plan, but it must
+        # never create truth from the empty conservative fallback used when full planning failed.
+        # Require concrete semantic evidence before asking another model to introduce a person.
+        if not plan.observable_consequences and not plan.character_beats:
+            return None
         try:
             decision = await self._recover_npc_contact(
                 selection,
@@ -601,9 +606,8 @@ short sentence. Return exactly the NpcContactDecision schema.
                 return recovered
             raise
         except (LLMProviderError, ValueError, TypeError) as exc:
-            # _generate_plan may surface either a provider error or a schema/repair error.
-            # Both mean the full hand-off is unavailable, but neither should prevent the small
-            # semantic contact recovery from typing a genuinely responding NPC.
+            # _generate_plan may surface either a provider error or a schema/repair error. With no
+            # valid full semantic plan, recovery must fail closed instead of inventing new truth.
             fallback = CoordinatedTurnPlan.conservative_fallback(player_input)
             recovered = await self._apply_npc_contact_recovery(
                 selection,
