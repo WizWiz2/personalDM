@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import get_session
 from app.db.repositories.job_repo import PostTurnJobRepository
 from app.models.memory_ops import MemoryMaintenanceRequest
+from app.runtime import runtime_manifest
 from app.services.debugger_service import DebuggerService
 from app.services.memory_operations import MemoryOperationsService
 from app.services.playtest_trace import PlaytestTraceService
@@ -24,6 +26,17 @@ router = APIRouter(prefix="/api", tags=["debugger"])
 async def debugger_page():
     path = Path(__file__).resolve().parent.parent / "static" / "debugger.html"
     return HTMLResponse(path.read_text(encoding="utf-8"))
+
+
+@router.get("/debugger/runtime")
+async def debugger_runtime_manifest():
+    """Read-only production runtime fingerprint for debugging and docs-drift checks."""
+    manifest = dict(runtime_manifest())
+    manifest["build_commit"] = (
+        os.getenv("PDM_BUILD_COMMIT") or os.getenv("GITHUB_SHA") or "unknown"
+    )
+    manifest["source"] = "runtime_manifest"
+    return manifest
 
 
 @router.get("/memory-ops", response_class=HTMLResponse, include_in_schema=False)
