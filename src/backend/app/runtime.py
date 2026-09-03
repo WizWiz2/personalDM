@@ -92,6 +92,7 @@ def install_runtime() -> None:
         install as install_narrator_quality_recovery,
     )
     from app.services.planner_compound_guard import install as install_planner_compound
+    from app.services.planner_semantic_scope_guard import install as install_planner_semantic_scope
     from app.services.semantic_authority_guard import install as install_semantic_authority
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.session_zero_placeholder_guard import (
@@ -111,9 +112,10 @@ def install_runtime() -> None:
     install_planner_compound()
     install_location_profile()
     install_dead_turn()
-    # This policy intentionally installs last: legacy guards may still expose compatibility helpers,
-    # but no lexical/regex semantic decision is allowed to remain authoritative in production.
+    # Preserve semantic_authority as the public manifest boundary. Internal extensions below narrow
+    # its reviewer scope and identity lifecycle without changing the CLI/API runtime contract.
     install_semantic_authority()
+    install_planner_semantic_scope()
     _INSTALLED = True
 
 
