@@ -6,10 +6,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import app.services.base_context_compiler as base_context_compiler
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn import ChatMessage
+from app.services import base_context_compiler
 from app.services.context_pipeline import (
     ContextPipeline,
     ContextProvider,
@@ -18,7 +18,6 @@ from app.services.context_pipeline import (
     SceneStateContextProvider,
 )
 from app.services.prompt_policy import CURRENT_PROMPT_POLICY, PromptPolicy
-
 
 _SECTION_RE = re.compile(r"(?m)^\[[^\n]+]\s*\n?")
 _SCENE_SECTION_PREFIXES = (
