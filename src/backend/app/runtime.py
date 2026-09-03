@@ -93,6 +93,9 @@ def install_runtime() -> None:
     )
     from app.services.planner_compound_guard import install as install_planner_compound
     from app.services.planner_semantic_scope_guard import install as install_planner_semantic_scope
+    from app.services.post_turn_structured_receipt_guard import (
+        install as install_post_turn_structured_receipt,
+    )
     from app.services.semantic_authority_guard import install as install_semantic_authority
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.session_zero_placeholder_guard import (
@@ -116,6 +119,7 @@ def install_runtime() -> None:
     # its reviewer scope and identity lifecycle without changing the CLI/API runtime contract.
     install_semantic_authority()
     install_planner_semantic_scope()
+    install_post_turn_structured_receipt()
     _INSTALLED = True
 
 
