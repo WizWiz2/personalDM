@@ -1,33 +1,49 @@
 # Карта документации
 
-В репозитории есть документы трёх разных типов: продуктовые принципы, архитектурные решения и описание текущей реализации. Их нельзя смешивать в одну шкалу приоритета.
+Документы PersonalDM делятся на normative product contracts, primary current-state contracts и historical/research material. Для вопроса «что реально делает текущий `main`?» код + persisted evidence имеют приоритет над текстом документа.
 
-## Как читать документы
+## Нормативные продуктовые документы
 
-### 1. Нормативные продуктовые документы
+- [`product-foundation.md`](product-foundation.md) — зачем существует продукт и какие свойства обязательны.
+- [`MVP-SPEC.md`](MVP-SPEC.md) — текущий проверяемый vertical slice / Definition of Playable.
+- принятые ADR — конкретные решения, которые могут уточнять общие правила.
 
-- `product-foundation.md` — зачем существует продукт, какие свойства важны и чего он сознательно не делает.
-- `MVP-SPEC.md` — текущий проверяемый контракт вертикального среза и Definition of Playable.
-- принятые ADR — конкретные архитектурные решения, которые могут уточнять или supersede общие product/MVP правила.
+## Primary current-state map
 
-### 2. Текущая реализация
+У каждой production subsystem есть один основной current-state документ. Остальные документы могут давать детали, но не конкурируют за ownership.
 
-- `runtime-transparency.md` — наиболее подробная актуальная карта production runtime: этапы хода, владельцы authority, модели, persisted evidence и известные пробелы наблюдаемости.
-- `architecture/personal-dm-runtime.md` — current production overview крупными блоками.
-- `architecture/context-pipeline.md` — текущая сборка и budget контекста.
-- `model-role-routing.md` — фактическая маршрутизация model roles.
-- `gemma-narrator-stability.md` — текущие ограничения и recovery-механизмы Narrator.
-- `architecture/interagent-turn-authority.md` — typed `TurnAuthority` contract.
-- `architecture/narration-pipeline.md` — фактический publication pipeline.
+| Production subsystem | Primary current-state document |
+| --- | --- |
+| production turn/runtime causal order, observability | [`runtime-transparency.md`](runtime-transparency.md) |
+| Session Zero + character handoff/opening | [`session-zero.md`](session-zero.md) |
+| Scene / Location / physical presence / movement | [`scene-location-presence.md`](scene-location-presence.md) |
+| NPC identity / reconciliation / materialization | [`npc-identity-and-materialization.md`](npc-identity-and-materialization.md) |
+| `/DM` / `/OOC` meta channel | [`meta-channel.md`](meta-channel.md) |
+| model role/provider routing | [`model-role-routing.md`](model-role-routing.md) |
+| context selection/enrichment/token budget | [`architecture/context-pipeline.md`](architecture/context-pipeline.md) |
+| typed inter-agent outcome authority | [`architecture/interagent-turn-authority.md`](architecture/interagent-turn-authority.md) |
+| Narrator validation/repair/publication | [`architecture/narration-pipeline.md`](architecture/narration-pipeline.md) |
+| facts/beliefs/relationships/theses and memory lifecycle | [`architecture/personal-dm-runtime.md`](architecture/personal-dm-runtime.md) |
+| persistence / migrations / undo / saga recovery | [`persistence-recovery.md`](persistence-recovery.md) |
+| runtime/provider/environment configuration | [`configuration-reference.md`](configuration-reference.md) |
+| visual portrait/cover/scene generation | [`visual-generation.md`](visual-generation.md) |
+| deterministic CI / local real-model tests / soak | [`playtest-protocol.md`](playtest-protocol.md) |
 
-История архитектурной миграции и старые этапы снятия monkeypatch-слоёв остаются в git history; current-state файлы не должны использоваться как дневник прошлых состояний.
+`TESTING-STRATEGY.md` и `TRUTH-TRANSITION-MATRIX.md` являются detailed verification references для `playtest-protocol.md`; `runtime-provider-management.md` — operational detail для configuration/model routing; `gemma-narrator-stability.md` — model-specific note для narration pipeline.
 
-### 3. Исследования
+## Что обязан содержать primary current-state contract
 
-- `docs/amendments/` — исследовательские дополнения; сами по себе не становятся нормативными.
-- предлагаемые ADR — обсуждаемые решения, пока не приняты.
+Каждый такой документ отвечает как минимум на пять вопросов:
 
-## Порядок разрешения противоречий
+1. кто владеет решением;
+2. какие invariants обязательны;
+3. что является persisted evidence;
+4. как выглядит failure semantics;
+5. какими tests/endpoints это проверяется.
+
+Если эти ответы расходятся с текущим кодом/runtime trace, документ считается drifted и должен быть исправлен.
+
+## Разрешение противоречий
 
 Для **продуктового смысла**:
 
@@ -36,51 +52,38 @@
 3. `MVP-SPEC.md`;
 4. proposed ADR / amendments.
 
-Для вопроса **«что реально делает текущая сборка?»**:
+Для **текущего поведения сборки**:
 
-1. persisted evidence и код текущего `main`;
-2. `runtime_manifest()`;
-3. `runtime-transparency.md`;
-4. специализированные current-state docs (`personal-dm-runtime.md`, `context-pipeline.md`, `model-role-routing.md`, `narration-pipeline.md`).
-
-Это различие намеренное: документация не должна притворяться более истинной, чем наблюдаемая система.
+1. persisted evidence и код `main`;
+2. `GET /api/debugger/runtime` / `runtime_manifest()`;
+3. primary current-state документ из таблицы выше;
+4. detailed implementation notes.
 
 ## Текущий продуктовый фокус
 
-PersonalDM сейчас — **systemless narrative RPG engine**, а не CRPG/rules engine.
+PersonalDM — **systemless narrative RPG engine**, не CRPG/rules engine.
 
-Приоритеты текущей стабилизации:
+Главные границы:
 
-- **P0 — playable narration:** качественный связный Narrator без присвоения действий/реплик героя, без систематических safe fallback и с хорошим opening;
-- **P0 — authority correctness:** Scene/Location, movement, presence, NPC identity, direct contact и player agency должны быть структурно истинны до публикации прозы;
-- **P1 — observability:** любой плохой ответ должен раскладываться на routing → plan → authority → execution → draft → validation/repair → publication → memory;
-- **P1 — long-session continuity:** facts, beliefs, relationships, theses и transient narrative detail должны переживать длинную игру без утечек знаний;
-- **P2 — visual atmosphere:** локальные портреты/обложки/сцены через ComfyUI без влияния на truth engine;
-- **P3 — rules layer:** только как отдельный осознанный слой, если появится потребность в конкретной игровой системе.
+- SQLite — canonical production storage локального режима;
+- LLM не является единственным источником истины для placement, movement, NPC identity или structured consequences;
+- Narrative prose публикуется поверх `TurnAuthority`, а не создаёт truth постфактум;
+- недоступные NPC сведения исключаются из actor-scoped context;
+- post-turn memory failure не откатывает опубликованный ход;
+- `/DM` — read-only meta channel с отдельной publication sanitization boundary;
+- visual generation — best-effort derived artifact;
+- deterministic CI проверяет deterministic code, а реальные semantic model transitions проверяет отдельный local model-contract suite.
 
-## Зафиксированные границы
+## Обязательная прозрачность live regression
 
-- SQLite остаётся единственным production-хранилищем локального режима.
-- LLM не является источником истины для placement, movement, participant set или других структурных последствий.
-- Недоступные NPC сведения должны отсутствовать из actor-scoped context, а не только сопровождаться инструкцией «не используй».
-- Narrative prose публикуется только после authority validation/repair или deterministic presentation fallback.
-- Post-turn memory jobs не должны отменять уже опубликованный и закоммиченный игровой ход.
-- Meta `/DM` — read-only канал и не должен сам чинить канон или продолжать сцену.
-- Визуальная генерация best-effort и не является authority.
+Для плохого turn должно быть возможно установить:
 
-## Обязательная прозрачность
+input/channel → actual model role → Planner → structured execution → `TurnAuthority` → raw Narrator → Validator/repair → publication mode/final text → persisted world → post-turn memory.
 
-При расследовании live-regression недостаточно посмотреть только опубликованный текст. Минимальный пакет доказательств должен позволять ответить:
+Primary evidence: `/api/campaigns/{id}/debugger/turns/{assistant_turn_id}`. Runtime fingerprint: `/api/debugger/runtime`. Канонический порядок playtest — [`playtest-protocol.md`](playtest-protocol.md).
 
-1. какой input был принят и в какой channel он попал;
-2. какая модель/роль реально вызывалась;
-3. что решил Planner;
-4. какие structured действия действительно были выполнены;
-5. какой `TurnAuthority` получил Narrator;
-6. какой draft выдал Narrator;
-7. что сказал Validator и был ли repair;
-8. почему был опубликован именно final text;
-9. какие NPC/Location/Scene были материализованы;
-10. что затем попало в память.
+## История и исследования
 
-Текущее состояние и оставшиеся пробелы описаны в [`runtime-transparency.md`](runtime-transparency.md).
+- `docs/amendments/` — исследовательские дополнения, не normative сами по себе;
+- proposed ADR — обсуждаемые решения;
+- старые Round-specific contracts, superseded текущими primary docs/tests, остаются в git history, а не в current-state backlog.
