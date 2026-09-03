@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 from live_model_contracts.cases import CaseSpec
 from live_model_contracts.cases import all_cases as base_cases
+from live_model_contracts.inventory_oracles import undo_item_drop_oracle
 from live_model_contracts.transition_cases import additional_cases, replacement_cases
+
+
+def _with_oracle_overrides(case: CaseSpec) -> CaseSpec:
+    if case.id == "undo_item_drop":
+        return replace(case, oracle=undo_item_drop_oracle)
+    return case
 
 
 def all_cases() -> Sequence[CaseSpec]:
@@ -28,7 +36,7 @@ def all_cases() -> Sequence[CaseSpec]:
         combined.append(case)
         seen.add(case.id)
 
-    return tuple(combined)
+    return tuple(_with_oracle_overrides(case) for case in combined)
 
 
 __all__ = ["all_cases"]

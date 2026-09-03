@@ -85,6 +85,28 @@ class ActionStepPlan(BaseModel):
     inventory_target_id: UUID | None = None
     transition: SceneTransitionPlan = Field(default_factory=SceneTransitionPlan)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_typed_inventory_step(cls, data):
+        """Typed inventory authority wins over a looser semantic action label.
+
+        Small control models sometimes emit the exact item id/operation/target while leaving
+        ``action_type`` as ``interaction``. Those typed fields are already the stronger semantic
+        contract, so normalize them deterministically instead of discarding the mutation.
+        """
+        if not isinstance(data, dict):
+            return data
+        inventory_fields = (
+            data.get("item_id"),
+            data.get("inventory_operation"),
+            data.get("inventory_target_id"),
+        )
+        if not any(value is not None for value in inventory_fields):
+            return data
+        normalized = dict(data)
+        normalized["action_type"] = "inventory"
+        return normalized
+
     @model_validator(mode="after")
     def validate_step(self):
         if self.safe_mundane and self.resolution != "auto_success":
