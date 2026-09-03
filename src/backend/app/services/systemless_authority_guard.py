@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.models.turn import ChatMessage
 from app.services.narration_repetition_guard import (
     NarrationRepetitionGuard,
     RepetitionMatch,
@@ -9,10 +10,15 @@ from app.services.narration_repetition_guard import (
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 from app.services.turn_authority_service import TurnAuthorityService
+from app.services.turn_planner import TurnPlanningError
 from app.services.turn_runner import TurnRunner
 
 _INSTALLED = False
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|[\r\n]+")
+_REFERENCE_ID_RE = re.compile(
+    r"\[id=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\]"
+)
 
 _SYSTEMLESS_PROMPT = """
 
@@ -24,6 +30,8 @@ objects or NPC identity from words, stems, punctuation or capitalization.
 - Mixed input may contain world actions plus speech; only world actions belong in action_sequence.
 - Resolve uncertainty directly into current fiction instead of deferring to a future check.
 - New physical NPCs must be typed in npc_introductions by Planner.
+- Inventory operations must obey the authoritative structured ids: take only an object physically
+  present here; drop/place/give only a player-owned item; give only to a physically present character.
 """
 
 
@@ -49,6 +57,92 @@ def sanitize_player_premise_npc_introductions(
     """Compatibility entrypoint; Planner owns person/object semantics."""
     del player_input
     return plan
+
+
+def _reference_ids(
+    context_messages,
+    prefix: str,
+) -> tuple[bool, set[str]]:
+    """Read exact UUID references from machine-generated authoritative context lines."""
+    found = False
+    ids: set[str] = set()
+    for message in context_messages:
+        for line in message.content.splitlines():
+            if not line.startswith(prefix):
+                continue
+            found = True
+            ids.update(match.casefold() for match in _REFERENCE_ID_RE.findall(line))
+    return found, ids
+
+
+def structured_inventory_contract_issues(
+    plan: CoordinatedTurnPlan,
+    context_messages,
+) -> list[str]:
+    """Reject inventory steps that contradict machine-generated authoritative entity ids.
+
+    This intentionally does not interpret player prose. The context providers serialize database
+    identity into fixed `Player-owned items`, `Objects physically here` and present-character lines;
+    this guard only checks typed plan UUIDs against those exact sets.
+    """
+    has_owned, owned_ids = _reference_ids(context_messages, "Player-owned items:")
+    has_objects, object_ids = _reference_ids(context_messages, "Objects physically here:")
+    has_characters, character_ids = _reference_ids(
+        context_messages,
+        "Physically present characters:",
+    )
+    if not (has_owned and has_objects and has_characters):
+        return []
+
+    issues: list[str] = []
+    for index, step in enumerate(plan.action_sequence.steps, start=1):
+        if (
+            step.action_type != "inventory"
+            or step.resolution != "auto_success"
+            or step.item_id is None
+            or step.inventory_operation is None
+        ):
+            continue
+
+        item_id = str(step.item_id).casefold()
+        operation = step.inventory_operation
+
+        if operation == "take" and item_id not in object_ids:
+            if item_id in owned_ids:
+                reason = (
+                    "item is already player-owned; take is invalid here. "
+                    "Use drop/place/give only if that matches the latest human input"
+                )
+            else:
+                reason = "item is not an object physically present in the current scene"
+            issues.append(
+                f"inventory step {index}: take item_id={item_id} rejected because {reason}"
+            )
+            continue
+
+        if operation in {"drop", "place", "give"} and item_id not in owned_ids:
+            location = (
+                "it is physically present in the scene instead"
+                if item_id in object_ids
+                else "it is not listed as player-owned"
+            )
+            issues.append(
+                f"inventory step {index}: {operation} item_id={item_id} rejected because {location}"
+            )
+
+        if operation == "give":
+            target_id = (
+                str(step.inventory_target_id).casefold()
+                if step.inventory_target_id is not None
+                else ""
+            )
+            if not target_id or target_id not in character_ids:
+                issues.append(
+                    f"inventory step {index}: give target_id={target_id or 'missing'} rejected "
+                    "because the target is not a physically present character"
+                )
+
+    return issues
 
 
 def systemless_contract_issues(
@@ -170,12 +264,51 @@ def install() -> None:
         *,
         latest_user_input=None,
     ):
-        return await original_plan(
+        player_input = latest_user_input or self._latest_user_text(context_messages)
+        plan = await original_plan(
             self,
             selection,
             context_messages,
             latest_user_input=latest_user_input,
         )
+        issues = structured_inventory_contract_issues(plan, context_messages)
+        if not issues:
+            return plan
+
+        repair_context = [
+            *context_messages,
+            ChatMessage(
+                role="user",
+                content=(
+                    "[DETERMINISTIC INVENTORY CONTRACT REJECTION]\n"
+                    "The previous typed plan contradicts machine-generated authoritative inventory "
+                    "ids and was rejected before any world-state mutation. Repair ONLY the listed "
+                    "inventory hand-off problems while preserving the latest human intent. Do not "
+                    "invent a different action merely to satisfy the guard.\n"
+                    "Problems:\n- "
+                    + "\n- ".join(issues)
+                    + "\nRejected plan:\n"
+                    + plan.model_dump_json()
+                    + "\nReturn a complete replacement plan. For the same item, choose take only "
+                    "when its id is in Objects physically here; choose drop/place/give only when "
+                    "its id is in Player-owned items. The actual operation must still match the "
+                    "latest human input semantically."
+                ),
+            ),
+        ]
+        repaired = await original_plan(
+            self,
+            selection,
+            repair_context,
+            latest_user_input=player_input,
+        )
+        remaining = structured_inventory_contract_issues(repaired, context_messages)
+        if remaining:
+            raise TurnPlanningError(
+                "planner hand-off remained structurally invalid after inventory repair: "
+                + "; ".join(remaining)
+            )
+        return repaired
 
     async def reject_same_physical_location(
         self,
@@ -278,5 +411,6 @@ __all__ = [
     "normalize_addressed_conversation",
     "normalize_addressed_response",
     "sanitize_player_premise_npc_introductions",
+    "structured_inventory_contract_issues",
     "systemless_contract_issues",
 ]
