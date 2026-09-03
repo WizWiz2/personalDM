@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn import ChatMessage
-from app.services.base_context_compiler import ContextCompiler as CoreContextCompiler
-from app.services.base_context_compiler import count_tokens
+from app.services.base_context_compiler import (
+    ContextCompiler as CoreContextCompiler,
+    count_tokens,
+)
 from app.services.context_pipeline import (
     ContextPipeline,
     ContextProvider,
@@ -51,8 +53,6 @@ class ContextCompiler:
         NarrativeDetailsContextProvider.name,
     )
 
-    # Compatibility aliases for callers/tests that inspect these contracts directly. Their source
-    # of truth is PromptPolicy, not ContextCompiler.
     NARRATOR_SURFACE_CONTRACT = CURRENT_PROMPT_POLICY.narrator_surface_contract
     PLAYER_CONTROL_CONTRACT = CURRENT_PROMPT_POLICY.player_control_contract
 
@@ -126,12 +126,7 @@ class ContextCompiler:
 
     @staticmethod
     def _system_token_components(content: str) -> dict[str, int]:
-        """Split the rendered system prompt into stable observability buckets.
-
-        This is diagnostic accounting only: the prompt itself remains unchanged. Sections are
-        recognized by the explicit headers emitted by context providers. Unknown/internal policy
-        sections remain in ``system`` instead of being guessed into world state.
-        """
+        """Split the rendered system prompt into stable observability buckets."""
         components = {"system": 0, "scene": 0, "memory": 0}
         matches = list(_SECTION_RE.finditer(content))
         if not matches:
