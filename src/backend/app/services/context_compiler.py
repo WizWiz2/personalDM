@@ -9,12 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn import ChatMessage
-from app.services.base_context_compiler import (
-    ContextCompiler as CoreContextCompiler,
-)
-from app.services.base_context_compiler import (
-    count_tokens,
-)
+from app.services import base_context_compiler
 from app.services.context_pipeline import (
     ContextPipeline,
     ContextProvider,
@@ -24,6 +19,9 @@ from app.services.context_pipeline import (
 )
 from app.services.prompt_policy import CURRENT_PROMPT_POLICY, PromptPolicy
 
+
+CoreContextCompiler = base_context_compiler.ContextCompiler
+count_tokens = base_context_compiler.count_tokens
 
 _SECTION_RE = re.compile(r"(?m)^\[[^\n]+]\s*\n?")
 _SCENE_SECTION_PREFIXES = (
