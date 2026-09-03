@@ -32,12 +32,14 @@ def install() -> None:
     if _INSTALLED:
         return
 
+    from app.services.control_language_guard import install as install_control_language
     from app.services.turn_authority_planner import TurnAuthorityPlanner
 
     if _COMPOUND_AUTHORITY not in TurnAuthorityPlanner.AUTHORITY_ADDENDUM:
         TurnAuthorityPlanner.AUTHORITY_ADDENDUM += _COMPOUND_AUTHORITY
     if _COMPOUND_REVIEW not in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT:
         TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT += _COMPOUND_REVIEW
+    install_control_language()
     _INSTALLED = True
 
 
