@@ -74,10 +74,10 @@ class _ActionReferenceSession:
         self.player_id = player_id
         self.item_id = item_id
 
-    async def get(self, model, key):
+    async def get(self, _model, _key):
         return SimpleNamespace(player_character_id=str(self.player_id))
 
-    async def execute(self, query):
+    async def execute(self, _query):
         return _FakeRows([(str(self.item_id), "Латунный ключ")])
 
 
