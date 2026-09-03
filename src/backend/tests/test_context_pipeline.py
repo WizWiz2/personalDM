@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -9,6 +10,7 @@ from app.services.context_pipeline import (
     CompiledContext,
     ContextPipeline,
     ContextRequest,
+    SceneStateContextProvider,
 )
 
 
@@ -57,3 +59,49 @@ async def test_context_pipeline_applies_providers_in_declared_order() -> None:
     assert metadata["context_pipeline"] == ["scene", "texture"]
     assert original_messages[0].content == "base"
     assert original_metadata == {"included_layers": ["layer_0_system"]}
+
+
+class _FakeRows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+
+class _ActionReferenceSession:
+    def __init__(self, player_id, item_id):
+        self.player_id = player_id
+        self.item_id = item_id
+
+    async def get(self, model, key):
+        return SimpleNamespace(player_character_id=str(self.player_id))
+
+    async def execute(self, query):
+        return _FakeRows([(str(self.item_id), "Латунный ключ")])
+
+
+@pytest.mark.asyncio
+async def test_scene_context_exposes_exact_ids_for_single_inventory_mutation() -> None:
+    campaign_id = uuid4()
+    player_id = uuid4()
+    item_id = uuid4()
+    npc_id = uuid4()
+    provider = SceneStateContextProvider(
+        _ActionReferenceSession(player_id, item_id)  # type: ignore[arg-type]
+    )
+    state = SimpleNamespace(
+        participant_ids=[npc_id],
+        participant_names=["Мартин Вэнс"],
+    )
+
+    contract, owned_ids = await provider._action_reference_contract(
+        ContextRequest(campaign_id=campaign_id),
+        state,
+    )
+
+    assert f"Латунный ключ [id={item_id}]" in contract
+    assert f"Мартин Вэнс [id={npc_id}]" in contract
+    assert "even when it is the only committed world action" in contract
+    assert "never invent, infer, rename or fabricate an id" in contract
+    assert owned_ids == [str(item_id)]
