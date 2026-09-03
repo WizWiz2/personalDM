@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
+from app.models.turn import ChatMessage
 from app.services.context_compiler import ContextCompiler
 from app.services.meta_command_router import sanitize_meta_output
 from app.services.playtest_trace import _quality_classification
@@ -20,9 +23,18 @@ def test_runtime_manifest_is_available_as_read_only_debug_endpoint(client: TestC
     assert "build_commit" in payload
 
 
+def test_campaign_debugger_exposes_publication_trace_ui(client: TestClient) -> None:
+    response = client.get("/api/debugger")
+
+    assert response.status_code == 200
+    assert "Turn publication trace" in response.text
+    assert "RAW / published" in response.text
+    assert "/api/debugger/runtime" in response.text
+
+
 def test_context_token_breakdown_uses_stable_observability_buckets() -> None:
     messages = [
-        __import__("app.models.turn", fromlist=["ChatMessage"]).ChatMessage(
+        ChatMessage(
             role="system",
             content=(
                 "System policy\n"
@@ -31,12 +43,8 @@ def test_context_token_breakdown_uses_stable_observability_buckets() -> None:
                 "[Recent Scene Texture — transient, non-canon]\n- rain on glass\n"
             ),
         ),
-        __import__("app.models.turn", fromlist=["ChatMessage"]).ChatMessage(
-            role="assistant", content="Earlier reply."
-        ),
-        __import__("app.models.turn", fromlist=["ChatMessage"]).ChatMessage(
-            role="user", content="Я проверяю дверь."
-        ),
+        ChatMessage(role="assistant", content="Earlier reply."),
+        ChatMessage(role="user", content="Я проверяю дверь."),
     ]
 
     audited = ContextCompiler._audit_token_breakdown(
@@ -89,3 +97,27 @@ def test_meta_output_sanitizer_preserves_normal_dm_explanation() -> None:
 
     assert published == answer
     assert audit == {"applied": False, "reason": None}
+
+
+def test_primary_current_state_docs_are_present_and_mapped() -> None:
+    backend = Path(__file__).resolve().parents[1]
+    docs = backend.parents[1] / "docs"
+    readme = (docs / "README.md").read_text(encoding="utf-8")
+    required = (
+        "session-zero.md",
+        "scene-location-presence.md",
+        "npc-identity-and-materialization.md",
+        "meta-channel.md",
+        "playtest-protocol.md",
+        "visual-generation.md",
+        "configuration-reference.md",
+        "persistence-recovery.md",
+    )
+
+    for filename in required:
+        path = docs / filename
+        assert path.is_file(), filename
+        content = path.read_text(encoding="utf-8")
+        assert "Статус:" in content
+        assert "Failure" in content or "failure" in content
+        assert filename in readme
