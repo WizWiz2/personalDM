@@ -1,200 +1,131 @@
 # Runtime Transparency
 
-**Статус:** current implementation map  
-**Дата:** 29 августа 2026
+**Статус:** current implementation contract  
+**Дата:** 3 сентября 2026
 
-Этот документ отвечает на вопрос: **почему игрок увидел именно такой ответ и где это можно доказать?**
+Этот документ отвечает на вопрос: **почему игрок увидел именно такой ответ и где это доказать?**
 
 ## 1. Главный принцип
 
-PersonalDM разделяет truth/state и presentation. Scene, Location, physical presence, movement, NPC identity и structured outcome не выводятся из красивой прозы задним числом. LLM не должна быть единственным свидетелем собственного решения.
+PersonalDM разделяет truth/state и presentation. Scene, Location, physical presence, movement, NPC identity и structured outcome не выводятся из прозы задним числом. Если prose расходится с persisted structured state/authority, structured state имеет приоритет.
 
-Если prose расходится с persisted structured state/authority, structured state имеет приоритет.
-
-## 2. Кто чем владеет
+## 2. Владельцы и persisted evidence
 
 | Решение | Владелец | Persisted evidence |
-|---|---|---|
-| raw player input | пользователь | user `turns` row |
-| meta vs narrative routing | `GameApplication` | route/channel + turn snapshot |
+| --- | --- | --- |
+| raw input/channel | пользователь + `GameApplication` | turn row/channel |
 | intended outcome | `TurnAuthorityPlanner` | `context_snapshot.turn_planner` |
 | action sequence | Planner + deterministic executor | `action_sequences` + authority |
-| Scene/Location transition | deterministic transition services | `scene_transitions` |
-| physical presence mutation | `PresenceService` | `scene_participants` + `Character.current_location_id` |
-| allowed new NPC | Planner + materializer | authority + materialization snapshot |
-| final render contract | `TurnAuthority` | `context_snapshot.turn_authority` |
-| prose | Narrator | narration audit + assistant turn |
-| accept/repair/containment | Validator + deterministic guards | `narration_validation_runs` |
+| Scene/Location transition | transition services | `scene_transitions` |
+| physical presence | `PresenceService` | participants + `current_location_id` |
+| NPC materialization | Planner + materializer | authority + materialization snapshot |
+| render contract | `TurnAuthority` | `context_snapshot.turn_authority` |
+| raw/final prose | Narrator/publication pipeline | `NarrationValidationRun` + assistant turn |
+| validation/repair | Validator + deterministic publication guards | `narration_validation_runs` |
 | saga progress | `TurnSaga` | `generation_lifecycles` |
-| durable memory work | post-turn pipeline | jobs + proposals/canon |
+| durable memory | post-turn pipeline | jobs + proposals/canon |
 
-## 3. Фактический narrative turn
+## 3. Narrative turn causal order
 
 ```text
-1. persist user turn / generation run
-2. lifecycle = RECEIVED
-3. compile Planner context
-4. Planner structured decision
-5. lifecycle = PLANNED
-6. deterministic scene/action execution
-7. build TurnAuthority
-8. materialize allowed structured outcomes
-9. commit prepared structured truth
-10. lifecycle = PREPARED
-11. recompile Narrator context from prepared world
-12. Narrator draft
-13. deterministic checks + Validator + optional repair/containment
-14. lifecycle = NARRATED
-15. persist assistant turn / finalize prepared transition/materialization
-16. lifecycle = PUBLISHED; generation status = completed
-17. enqueue post-turn jobs
-18. after durable first processing pass: lifecycle = POST_TURN_DONE
+persist user/generation
+→ RECEIVED
+→ compile Planner context
+→ Planner structured decision
+→ PLANNED
+→ deterministic execution
+→ build TurnAuthority
+→ materialize allowed outcomes
+→ PREPARED + structured commit
+→ recompile Narrator context
+→ Narrator draft
+→ validation / repair / deterministic publication veto
+→ NARRATED
+→ persist assistant + finalize transition/materialization
+→ PUBLISHED
+→ post-turn jobs
+→ POST_TURN_DONE
 ```
 
-Это порядок production code и `runtime_manifest()`. Materialization **не** происходит после Narrator: world truth intentionally prepared before prose.
+Materialization намеренно происходит **до** Narrator: prose описывает подготовленную truth, а не создаёт её.
 
 ## 4. Saga recovery transparency
 
-`GenerationRun.status` отвечает на вопрос «чем закончился run», а `generation_lifecycles.phase` — «до какой causal boundary дошла текущая попытка».
-
-Phases:
+`GenerationRun.status` показывает outcome run, `generation_lifecycles.phase` — последнюю durable causal boundary. Phases:
 
 ```text
 received → planned → prepared → narrated → published → post_turn_done
                               ↘ compensated
 ```
 
-В lifecycle row также сохраняются `attempt` и timestamp каждой фазы.
+На живом failure после PREPARED, но до PUBLISHED, `TurnSaga` компенсирует transition/materialization. Persisted `PREPARED/NARRATED` без terminal phase после hard process death обнаруживаются debugger как dangerous incomplete attempts.
 
-`GenerationLifecycleRepository.list_incomplete()` специально ищет `prepared/narrated` runs без безопасного terminal phase. Это crash-recovery evidence: такие attempts нельзя просто считать обычным failed turn, потому что world mutation могла уже быть durable.
+Automatic startup resolver для hard-crash incomplete attempts пока не является частью transparency contract; это отдельная recovery capability, описанная в `persistence-recovery.md`.
 
-На abort после `PREPARED`, но до `PUBLISHED`, `TurnSaga` компенсирует materialization/transition и фиксирует `COMPENSATED`.
+## 5. Model и context transparency
 
-## 5. Model transparency
+Фактическая модель определяется persisted routing/provider telemetry, а не текущим default. Для каждого model call trace может показать actual model, source, duration, status, requested context/output budget и provider usage.
 
-Campaign primary по default `gemma4:e4b`; control default `qwen2.5:7b`. Фактическое имя модели старого turn определяется persisted routing/provider telemetry, а не текущим default.
+Planner context и Narrator context различаются: после PREPARED Narrator получает свежий world snapshot. Persisted metadata содержит `planner_context_scene_id` и `narrator_context_scene_id`.
 
-Для конкретного model call полезны:
-
-- `model_role`;
-- actual model;
-- role model source;
-- provider status;
-- prompt/completion usage;
-- duration;
-- routing fallback.
-
-## 6. Context transparency
-
-Planner context и Narrator context — разные causal snapshots.
-
-Planner получает world до execution. Если structured execution/materialization меняет scene/presence/NPC state, Narrator context компилируется повторно после `PREPARED`. Поэтому debug analysis должен различать:
+ContextCompiler теперь дополнительно сохраняет deterministic `token_budget_breakdown` по диагностическим buckets:
 
 ```text
-planner_context_scene_id
-narrator_context_scene_id
-```
-
-и смотреть token-budget metadata отдельно для final Narrator context.
-
-## 7. TurnAuthority transparency
-
-Persisted `TurnAuthority` содержит exact player input, player/acting character, source/target location, present/known-absent characters, allowed new NPCs/arrivals, resolution, observable consequences, action sequence, narration guidance и player-control constraints.
-
-Human player владеет voluntary protagonist actions/dialogue. Narrator может только отрендерить authority и не может создать competing world outcome.
-
-## 8. Narration transparency
-
-`NarrationValidationRun` хранит raw draft, validator model, attempts, verdict/violations, telemetry, final text, repair count и failure reason. Это позволяет различать `RAW GOOD/PUBLISHED BAD`, `RAW BAD/PUBLISHED GOOD` и другие классы проблемы.
-
-Publication modes должны анализироваться отдельно: `passed`, `repaired`, `failed_open`, `safe_fallback`, `not_invoked`. `safe_fallback` — degraded presentation, а не художественный успех.
-
-## 9. Physical-state transparency
-
-`PresenceService` является единственным implementation owner для `SceneParticipant`/`Character.current_location_id` mutations. `SceneRepository.add_participant/remove_participant` — compatibility facade и не содержит отдельной mutation policy.
-
-`SceneStateService` остаётся authoritative read/invariant checker.
-
-При movement расследовании проверять минимум:
-
-```text
-scene_transition
-source/target location
-character current_location_id
-scene participant rows
-active scene
-```
-
-Stale participation на другой physical location при structured move удаляется mutation owner'ом.
-
-## 10. Debugger
-
-`GET /api/campaigns/{campaign_id}/debugger` теперь показывает у generation runs:
-
-```text
-status
-phase
-attempt
-received/planned/prepared/narrated/published/post_turn_done/compensated timestamps
-```
-
-Health включает `dangerous_incomplete_generations` для persisted `PREPARED/NARRATED` attempts.
-
-Per-turn investigation должна идти в causal order:
-
-```text
+system
+scene
+memory
+history
 input
-→ routing
-→ Planner context/plan
-→ deterministic execution
-→ TurnAuthority
-→ materialization
-→ Narrator context
-→ raw Narrator
-→ validation/repair/containment
-→ publication
-→ active Scene/Location/presence
-→ post-turn memory
 ```
 
-В отчёте отдельно фиксировать first wrong boundary, cascade и player-visible symptom.
+Per-turn trace добавляет estimated serialized `TurnAuthority`, requested reserves и actual provider prompt/completion usage. Это observability accounting: оно не меняет prompt selection.
 
-## 11. Runtime parity
+## 6. Narration/publication transparency
 
-`runtime_manifest()` — auditable fingerprint для CLI/FastAPI/test harness и содержит:
+`NarrationValidationRun` хранит raw draft, final text, attempts, violations, validator model, repair count и failure reason. `/api/campaigns/{id}/debugger/turns/{assistant_turn_id}` выводит полный matching audit и все runs для turn.
 
-- guards;
-- context providers;
-- actual turn pipeline;
-- generation phases;
-- failure semantics;
-- narration pipeline;
-- implementation identities;
-- post-turn mode.
+Trace отдельно показывает:
 
-Parity test должен падать при drift entrypoints или при возврате скрытой production зависимости от legacy `base_turn_runner`.
+- durable validator status;
+- runtime validator/publication mode;
+- raw draft и final published text;
+- repair count и preservation ratio;
+- provider/model telemetry;
+- deterministic diagnostics;
+- RAW/PUBLISHED classification.
 
-## 12. Что пока остаётся недостаточно прозрачно
+Классы: `RAW GOOD/PUBLISHED GOOD`, `RAW BAD/PUBLISHED GOOD`, `RAW GOOD/PUBLISHED BAD`, `RAW BAD/PUBLISHED BAD`; старые turns без audit маркируются `RAW UNKNOWN/...`.
 
-1. Полный `NarrationValidationRun` audit всё ещё не выведен целиком в обычный debugger snapshot/flight trace.
-2. GUI не показывает debug-only publication mode/model/latency рядом с сообщением.
-3. Нет одной consolidated таблицы prompt-budget breakdown.
-4. `runtime_manifest()` ещё не вынесен в удобный read-only GUI/debug endpoint.
-5. `/DM` нужен отдельный user-facing sanitization boundary против internal prompt/control leakage.
-6. Художественное качество live playtest пока не persisted metric.
-7. Startup recovery пока только **обнаруживает** опасные incomplete attempts через persisted lifecycle; автоматическое decision/compensation при старте процесса ещё не выполняется.
+`safe_fallback`/presentation fallback — degraded publication, а не художественный PASS.
 
-## 13. Минимальный transparency backlog
+## 7. Debugger surfaces
 
-1. P0 — добавить full NarrationValidationRun attempts в per-turn trace;
-2. P0 — automatic startup handling для incomplete `PREPARED/NARRATED` attempts;
-3. P1 — debug publication badge/model/latency;
-4. P1 — `/api/debugger/runtime` поверх `runtime_manifest()`;
-5. P1 — consolidated token-budget breakdown;
-6. P1 — `/DM` sanitization/validation boundary;
-7. P2 — persisted playtest prose-quality evaluation;
-8. P2 — docs/runtime manifest drift test.
+`GET /api/campaigns/{campaign_id}/debugger` — current persisted state/health.  
+`GET /api/campaigns/{campaign_id}/debugger/turns/{assistant_turn_id}` — causal trace одного turn.  
+`GET /api/campaigns/{campaign_id}/debugger/trace` — campaign-level playtest trace/summary.  
+`GET /api/debugger/runtime` — read-only `runtime_manifest()` + build commit/source.
 
-## 14. Определение прозрачного PersonalDM
+Standalone Campaign Debugger показывает debug-only runtime fingerprint и publication timeline: model, publication mode, RAW/PUBLISHED class, validator/repair count, latency и token usage. Normal player UI этим control-plane шумом не загрязняется.
 
-Для любого опубликованного хода должно быть возможно без догадок ответить: что ввёл игрок, что решил Planner, что реально изменил engine, какая authority была подготовлена, что первоначально написал Narrator, что отклонил Validator, был ли repair/fallback, какая модель использовалась, что опубликовано, что записано в world/memory и на какой saga phase произошёл любой failure.
+## 8. `/DM` transparency boundary
+
+`/DM`/`/OOC` может читать structured snapshot и объяснять причинность, но остаётся read-only. После model generation действует deterministic `sanitize_meta_output()`: если provider пытается вывести внутренние prompt/control markers, публикация fail-closed заменяется безопасным публичным объяснением. Факт sanitization сохраняется в meta assistant context snapshot.
+
+## 9. Runtime parity/drift
+
+`runtime_manifest()` является auditable fingerprint CLI/API/test harness и содержит guards, context pipeline, turn/narration pipelines, generation phases, failure semantics и implementation identities. Read-only endpoint делает этот fingerprint доступным без импорта кода вручную.
+
+Current-state documentation map находится в `docs/README.md`; tests проверяют существование обязательных primary docs и runtime observability contracts.
+
+## 10. Что не входит в закрытый observability backlog
+
+Transparency теперь достаточна, чтобы определить first wrong boundary для опубликованного turn. Отдельными будущими улучшениями, а не пробелами #120, остаются:
+
+- automatic startup decision/compensation для hard-crash incomplete attempts;
+- полноценная persisted художественная оценка prose (coherence/dramatic utility) как benchmark metric.
+
+Они не мешают увидеть raw draft, repair/publication и structured truth текущего turn.
+
+## 11. Определение прозрачного PersonalDM
+
+Для опубликованного хода без ручного SQL должно быть возможно ответить: что ввёл игрок, какой channel/model был выбран, что решил Planner, что изменил deterministic engine, какой `TurnAuthority` получил Narrator, какой был raw draft, что отклонил Validator, применялся ли repair/fallback/publication guard, какой final text опубликован, какой world state сохранён и что затем сделала память.
