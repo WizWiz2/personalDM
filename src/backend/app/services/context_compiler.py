@@ -11,6 +11,8 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn import ChatMessage
 from app.services.base_context_compiler import (
     ContextCompiler as CoreContextCompiler,
+)
+from app.services.base_context_compiler import (
     count_tokens,
 )
 from app.services.context_pipeline import (
