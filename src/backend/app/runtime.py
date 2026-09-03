@@ -25,7 +25,6 @@ _GUARDS = (
     "location_profile",
     "dead_turn",
     "semantic_authority",
-    "planner_semantic_scope",
 )
 
 
@@ -113,8 +112,8 @@ def install_runtime() -> None:
     install_planner_compound()
     install_location_profile()
     install_dead_turn()
-    # Semantic authority still replaces legacy lexical ownership decisions first. The final scope
-    # guard then narrows reviewer responsibility and adds transactional NPC identity recovery.
+    # Preserve semantic_authority as the public manifest boundary. Internal extensions below narrow
+    # its reviewer scope and identity lifecycle without changing the CLI/API runtime contract.
     install_semantic_authority()
     install_planner_semantic_scope()
     _INSTALLED = True
