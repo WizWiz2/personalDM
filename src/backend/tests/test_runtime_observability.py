@@ -113,7 +113,15 @@ def test_meta_publication_boundary_persists_only_sanitized_output(client: TestCl
     history = client.get(f"/api/campaigns/{campaign_id}/turns?channel=all").json()
     assistant = next(turn for turn in history if turn["role"] == "meta_assistant")
     assert "PRIVATE INTERNAL STATE" not in assistant["content"]
-    assert assistant["context_snapshot"]["output_sanitization"]["applied"] is True
+    assert "context_snapshot" not in assistant
+
+    debugger = client.get(f"/api/campaigns/{campaign_id}/debugger?turn_limit=20").json()
+    debug_assistant = next(
+        turn for turn in debugger["turns"] if turn["role"] == "meta_assistant"
+    )
+    sanitization = debug_assistant["context_snapshot"]["output_sanitization"]
+    assert sanitization["applied"] is True
+    assert sanitization["reason"] == "internal_prompt_marker"
 
 
 def test_meta_output_sanitizer_preserves_normal_dm_explanation() -> None:
