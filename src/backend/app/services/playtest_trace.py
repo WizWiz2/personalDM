@@ -4,12 +4,14 @@ import json
 import re
 from collections import Counter
 from datetime import datetime
+from difflib import SequenceMatcher
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.narration_validation_table import NarrationValidationRun
+from app.services.context_compiler import count_tokens
 from app.services.debugger_service import DebuggerService
 
 
@@ -35,6 +37,7 @@ _TECHNICAL_RE = re.compile(
     flags=re.IGNORECASE,
 )
 _OBJECTIVE_CHANGE_TYPES = {"fact", "event", "relationship", "movement", "item_transfer"}
+_BAD_PUBLICATION_MODES = {"safe_fallback", "presentation_fallback", "failed_open"}
 
 
 def _elapsed_seconds(start: str | None, end: str | None) -> float | None:
@@ -56,6 +59,66 @@ def _json(value: str | None, fallback):
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return fallback
+
+
+def _repair_preservation_ratio(audit: dict | None) -> float | None:
+    if not audit:
+        return None
+    draft = str(audit.get("draft_text") or "").strip()
+    final = str(audit.get("final_text") or "").strip()
+    if not draft or not final:
+        return None
+    return round(SequenceMatcher(None, draft, final).ratio(), 3)
+
+
+def _quality_classification(
+    audit: dict | None,
+    publication_mode: str,
+    assistant_text: str,
+    diagnostics: list[dict],
+) -> dict:
+    if audit is None:
+        raw = "unknown"
+        raw_basis = "no persisted NarrationValidationRun"
+    else:
+        attempts = audit.get("attempts") or []
+        first = attempts[0] if attempts and isinstance(attempts[0], dict) else {}
+        first_status = str(
+            first.get("status")
+            or first.get("verdict")
+            or first.get("result")
+            or ""
+        ).casefold()
+        raw_bad = bool(audit.get("violation_count")) or first_status in {
+            "fail",
+            "failed",
+            "reject",
+            "rejected",
+            "invalid",
+        }
+        raw = "bad" if raw_bad else "good"
+        raw_basis = "persisted validator first-pass evidence"
+
+    diagnostic_errors = {
+        str(item.get("code"))
+        for item in diagnostics
+        if str(item.get("severity")) == "error"
+    }
+    published_bad = (
+        not assistant_text.strip()
+        or publication_mode in _BAD_PUBLICATION_MODES
+        or "TECHNICAL_LEAK" in diagnostic_errors
+    )
+    published = "bad" if published_bad else "good"
+    label = f"RAW {raw.upper()}/PUBLISHED {published.upper()}"
+    return {
+        "class": label,
+        "raw": raw,
+        "published": published,
+        "raw_basis": raw_basis,
+        "published_basis": "publication mode + deterministic surface diagnostics",
+        "repair_preservation_ratio": _repair_preservation_ratio(audit),
+    }
 
 
 class PlaytestTraceService:
@@ -158,6 +221,9 @@ class PlaytestTraceService:
         publication_modes = Counter(
             str(trace.get("publication", {}).get("mode") or "unknown") for trace in traces
         )
+        quality_classes = Counter(
+            str(trace.get("quality", {}).get("class") or "unknown") for trace in traces
+        )
         return {
             "campaign": snapshot.get("campaign"),
             "health": snapshot.get("health", {}),
@@ -166,6 +232,7 @@ class PlaytestTraceService:
                 "diagnostic_flags": dict(sorted(flags.items())),
                 "validator_statuses": dict(sorted(validator_statuses.items())),
                 "publication_modes": dict(sorted(publication_modes.items())),
+                "raw_published_classes": dict(sorted(quality_classes.items())),
                 "interactive_seconds": {
                     "min": min(latencies) if latencies else None,
                     "max": max(latencies) if latencies else None,
@@ -363,7 +430,7 @@ class PlaytestTraceService:
         if validation_audit is None and audit_runs:
             validation_audit = audit_runs[-1]
 
-        publication_mode = (
+        publication_mode = str(
             protocol.get("validator_status")
             or narration_validation.get("publication_mode")
             or narration_validation.get("status")
@@ -374,6 +441,52 @@ class PlaytestTraceService:
             or narration_validation.get("status")
             or "unknown"
         )
+        quality = _quality_classification(
+            validation_audit,
+            publication_mode,
+            assistant_text,
+            diagnostics,
+        )
+
+        context_breakdown = dict(context.get("token_budget_breakdown") or {})
+        authority_tokens = (
+            count_tokens(json.dumps(authority, ensure_ascii=False, sort_keys=True))
+            if authority
+            else 0
+        )
+        context_breakdown["authority"] = authority_tokens
+        context_breakdown["total_with_authority_estimate"] = (
+            int(context_breakdown.get("total_prompt_estimate") or 0) + authority_tokens
+        )
+        planner_telemetry = planner.get("telemetry") or {}
+        token_budget = {
+            "compiled_max": context.get("token_budget_max"),
+            "compiled_used_before_authority": context.get("token_budget_used"),
+            "components": context_breakdown,
+            "included_layers": context.get("included_layers") or [],
+            "reserves": {
+                "narrator_requested_max_tokens": provider.get("requested_max_tokens"),
+                "narrator_requested_context": provider.get("requested_num_ctx"),
+                "planner_requested_max_tokens": (
+                    planner_telemetry.get("requested_max_tokens")
+                    if isinstance(planner_telemetry, dict)
+                    else None
+                ),
+                "planner_requested_context": (
+                    planner_telemetry.get("requested_num_ctx")
+                    if isinstance(planner_telemetry, dict)
+                    else None
+                ),
+            },
+            "provider_usage": provider.get("usage") or {},
+            "planner_provider_usage": (
+                planner_telemetry.get("usage")
+                if isinstance(planner_telemetry, dict)
+                else {}
+            )
+            or {},
+        }
+
         return {
             "assistant_turn_id": assistant_turn_id,
             "scene": {
@@ -424,6 +537,8 @@ class PlaytestTraceService:
                 "guard": narration_validation.get("publication_guard"),
                 "published_text": assistant_text,
             },
+            "quality": quality,
+            "token_budget": token_budget,
             "memory": {
                 "job": memory_job,
                 "proposal_count": len(proposals),

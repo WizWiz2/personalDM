@@ -19,13 +19,13 @@
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { border-top: 1px solid #303544; padding: 8px; text-align: left; vertical-align: top; }
     th { color: #aeb7ca; }
-    pre { white-space: pre-wrap; max-width: 780px; margin: 0; }
+    pre { white-space: pre-wrap; max-width: 960px; margin: 0; }
     .ok { color: #7fe3a1; } .bad { color: #ff8d8d; } .muted { color: #98a2b8; }
     .tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
-    .hidden { display:none; }
     .scene-card { display:grid; gap:6px; padding:12px; border:1px solid #41495d; border-radius:10px; background:#131620; }
     .issues { margin-top:10px; padding:10px 12px; border:1px solid #713f46; border-radius:8px; background:#28171b; }
     .issues ul { margin:6px 0 0; padding-left:20px; }
+    .trace-good { color:#7fe3a1; } .trace-bad { color:#ff8d8d; } .trace-unknown { color:#d7c27f; }
   </style>
 </head>
 <body>
@@ -37,6 +37,8 @@
 </header>
 <main>
   <div id="health" class="health"></div>
+  <section><h2>Runtime</h2><div id="runtime"></div></section>
+  <section><h2>Turn publication trace</h2><div id="traceSummary"></div><div id="trace"></div></section>
   <section><h2>Нулевая сессия</h2><div id="sessionZero"></div></section>
   <section><h2>Активная сцена</h2><div id="activeScene"></div><div id="sceneIssues"></div></section>
   <section><h2>Все сцены</h2><div id="scenes"></div></section>
@@ -53,7 +55,7 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
-let data = null, activeTab = 'facts';
+let data = null, traceData = null, runtimeData = null, activeTab = 'facts';
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pathText = path => path?.length ? path.join(' → ') : '';
 function table(rows, cols) {
@@ -65,14 +67,45 @@ async function campaigns() {
   $('campaign').innerHTML = rows.map(r=>`<option value="${r.id}">${esc(r.name)}</option>`).join('');
   if (rows.length) await load(); else $('status').textContent='Нет кампаний';
 }
+function renderRuntime() {
+  if (!runtimeData) { $('runtime').innerHTML='<p class="bad">Runtime manifest недоступен</p>'; return; }
+  $('runtime').innerHTML = `<div class="scene-card">
+    <span><span class="muted">Build:</span> ${esc(runtimeData.build_commit || 'unknown')}</span>
+    <span><span class="muted">Guards:</span> ${esc((runtimeData.guards || []).join(' → '))}</span>
+    <span><span class="muted">Turn pipeline:</span> ${esc((runtimeData.turn_pipeline || []).join(' → '))}</span>
+    <span><span class="muted">Narration:</span> ${esc((runtimeData.narration_pipeline || []).join(' → '))}</span>
+    <span><span class="muted">Post-turn:</span> ${esc(runtimeData.post_turn_mode || '')}</span>
+  </div>`;
+}
+function renderTrace() {
+  if (!traceData) { $('trace').innerHTML='<p class="bad">Trace недоступен</p>'; return; }
+  const summary = traceData.summary || {};
+  $('traceSummary').innerHTML = `<div class="scene-card">
+    <span><span class="muted">Assistant turns:</span> ${esc(summary.assistant_turns || 0)}</span>
+    <span><span class="muted">Publication modes:</span> ${esc(JSON.stringify(summary.publication_modes || {}))}</span>
+    <span><span class="muted">RAW/PUBLISHED:</span> ${esc(JSON.stringify(summary.raw_published_classes || {}))}</span>
+  </div>`;
+  $('trace').innerHTML = table(traceData.turns || [],[
+    ['Turn','assistant_turn_id'],
+    ['Model','narrator',(v)=>esc(v?.model || '')],
+    ['Publication','publication',(v)=>esc(v?.mode || 'unknown')],
+    ['RAW / published','quality',(v)=>{
+      const cls=(v?.published==='bad'||v?.raw==='bad')?'trace-bad':(v?.raw==='unknown'?'trace-unknown':'trace-good');
+      return `<span class="${cls}">${esc(v?.class || 'unknown')}</span>`;
+    }],
+    ['Validator','validator',(v)=>esc(v?.status || 'unknown')],
+    ['Repairs','validator',(v)=>esc(v?.audit?.repair_attempts ?? 0)],
+    ['Latency','timing',(v)=>esc(v?.interactive_seconds == null ? '' : `${v.interactive_seconds}s`)],
+    ['Tokens','token_budget',(v)=>{
+      const u=v?.provider_usage || {};
+      return esc(`prompt ${u.prompt_tokens ?? '?'} / completion ${u.completion_tokens ?? '?'} / estimate ${v?.components?.total_with_authority_estimate ?? '?'}`);
+    }]
+  ]);
+}
 function renderSessionZero() {
   const setup = data.session_zero;
-  if (!setup) {
-    $('sessionZero').innerHTML = '<p class="muted">Контракт нулевой сессии отсутствует.</p>';
-    return;
-  }
-  const missing = setup.missing_fields || [];
-  const cardMissing = setup.character_card_missing_fields || [];
+  if (!setup) { $('sessionZero').innerHTML = '<p class="muted">Контракт нулевой сессии отсутствует.</p>'; return; }
+  const missing = setup.missing_fields || [], cardMissing = setup.character_card_missing_fields || [];
   const statusClass = setup.status === 'completed' ? 'ok' : 'bad';
   const summary = `<div class="scene-card">
     <strong class="${statusClass}">${esc(setup.status)}</strong>
@@ -86,121 +119,58 @@ function renderSessionZero() {
     <span><span class="muted">Границы подтверждены:</span> ${setup.boundaries_confirmed ? '<span class="ok">да</span>' : '<span class="bad">нет</span>'}</span>
     <span><span class="muted">Legacy import:</span> ${setup.legacy_imported ? 'да' : 'нет'}</span>
   </div>`;
-  const missingBlock = missing.length
-    ? `<div class="issues bad"><strong>До начала игры не заполнено</strong><ul>${missing.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
-    : '<p class="ok">Нулевая сессия и карточка героя готовы к игре.</p>';
-  const cardBlock = cardMissing.length
-    ? `<h3>Незаполненные поля карточки героя</h3><pre>${esc(JSON.stringify(cardMissing,null,2))}</pre>`
-    : '';
+  const missingBlock = missing.length ? `<div class="issues bad"><strong>До начала игры не заполнено</strong><ul>${missing.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>` : '<p class="ok">Нулевая сессия и карточка героя готовы к игре.</p>';
+  const cardBlock = cardMissing.length ? `<h3>Незаполненные поля карточки героя</h3><pre>${esc(JSON.stringify(cardMissing,null,2))}</pre>` : '';
   $('sessionZero').innerHTML = summary + missingBlock + cardBlock;
 }
 function renderSceneState() {
   const scene = data.active_scene;
-  if (!scene) {
-    $('activeScene').innerHTML = '<p class="muted">Активная сцена не назначена</p>';
-  } else {
+  if (!scene) $('activeScene').innerHTML = '<p class="muted">Активная сцена не назначена</p>';
+  else {
     const participants = scene.participant_names?.length ? scene.participant_names.join(', ') : 'нет';
     const structuredLocation = pathText(scene.location_path) || scene.location_name || 'не привязана';
-    $('activeScene').innerHTML = `<div class="scene-card">
-      <strong>${esc(scene.title)}</strong>
-      <span><span class="muted">ID:</span> ${esc(scene.id)}</span>
-      <span><span class="muted">Статус:</span> ${esc(scene.status)}</span>
+    $('activeScene').innerHTML = `<div class="scene-card"><strong>${esc(scene.title)}</strong>
+      <span><span class="muted">ID:</span> ${esc(scene.id)}</span><span><span class="muted">Статус:</span> ${esc(scene.status)}</span>
       <span><span class="muted">Структурная локация:</span> ${esc(structuredLocation)}</span>
       <span><span class="muted">Описание:</span> ${esc(scene.location_description || 'не задано')}</span>
       <span><span class="muted">Локация героя:</span> ${esc(pathText(data.campaign.player_location_path) || data.campaign.player_location_name || 'не задана')}</span>
-      <span><span class="muted">Участники:</span> ${esc(participants)}</span>
-    </div>`;
+      <span><span class="muted">Участники:</span> ${esc(participants)}</span></div>`;
   }
-  const issues = [
-    ...(data.scene_state_issues || []),
-    ...(data.location_state_issues || []),
-    ...(data.presence_state_issues || [])
-  ];
-  $('sceneIssues').innerHTML = issues.length
-    ? `<div class="issues bad"><strong>Рассинхронизация сцены, локации или присутствия</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
-    : '<p class="ok">Структурное состояние сцены, локации и участников согласовано.</p>';
-  $('scenes').innerHTML = table(data.scenes,[
-    ['Current','is_current',(v)=>v?'<span class="ok">да</span>':''],
-    ['Название','title'],
-    ['Статус','status'],
-    ['Структурный путь','location_path',(v)=>esc(pathText(v) || 'не привязана')],
-    ['Описание','location_description'],
-    ['Участники','participant_names',(v)=>esc((v||[]).join(', '))],
-    ['ID','id']
-  ]);
-  $('transitions').innerHTML = table(data.scene_transitions,[
-    ['Тип','transition_type'],
-    ['Статус','status'],
-    ['Из сцены','source_scene_title'],
-    ['В сцену','target_scene_title'],
-    ['Из локации','source_location_name'],
-    ['В локацию','target_location_name'],
-    ['Время','time_after',(v,r)=>esc(v || r.elapsed_time || '')],
-    ['Причина','reason'],
-    ['Триггер','trigger_turn_id']
-  ]);
-  $('locations').innerHTML = table(data.locations,[
-    ['Путь','path',(v)=>esc(pathText(v))],
-    ['Родитель','parent_location_name'],
-    ['Описание','description'],
-    ['Атмосфера','atmosphere'],
-    ['ID','id']
-  ]);
+  const issues = [...(data.scene_state_issues || []),...(data.location_state_issues || []),...(data.presence_state_issues || [])];
+  $('sceneIssues').innerHTML = issues.length ? `<div class="issues bad"><strong>Рассинхронизация сцены, локации или присутствия</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>` : '<p class="ok">Структурное состояние сцены, локации и участников согласовано.</p>';
+  $('scenes').innerHTML = table(data.scenes,[['Current','is_current',(v)=>v?'<span class="ok">да</span>':''],['Название','title'],['Статус','status'],['Структурный путь','location_path',(v)=>esc(pathText(v) || 'не привязана')],['Описание','location_description'],['Участники','participant_names',(v)=>esc((v||[]).join(', '))],['ID','id']]);
+  $('transitions').innerHTML = table(data.scene_transitions,[['Тип','transition_type'],['Статус','status'],['Из сцены','source_scene_title'],['В сцену','target_scene_title'],['Из локации','source_location_name'],['В локацию','target_location_name'],['Время','time_after',(v,r)=>esc(v || r.elapsed_time || '')],['Причина','reason'],['Триггер','trigger_turn_id']]);
+  $('locations').innerHTML = table(data.locations,[['Путь','path',(v)=>esc(pathText(v))],['Родитель','parent_location_name'],['Описание','description'],['Атмосфера','atmosphere'],['ID','id']]);
 }
 function renderPresence() {
-  const npcTable = table(data.auto_registered_npcs,[
-    ['Имя','name'],
-    ['Роль','role'],
-    ['Важность','importance'],
-    ['Временное имя','temporary_name',(v)=>v?'<span class="bad">да</span>':'нет'],
-    ['Текущая локация','current_location_name'],
-    ['Сцены','scene_titles',(v)=>esc((v||[]).join(', '))],
-    ['Первое появление','first_seen_scene_id'],
-    ['Source turn','source_turn_id'],
-    ['ID','id']
-  ]);
+  const npcTable = table(data.auto_registered_npcs,[['Имя','name'],['Роль','role'],['Важность','importance'],['Временное имя','temporary_name',(v)=>v?'<span class="bad">да</span>':'нет'],['Текущая локация','current_location_name'],['Сцены','scene_titles',(v)=>esc((v||[]).join(', '))],['Первое появление','first_seen_scene_id'],['Source turn','source_turn_id'],['ID','id']]);
   const issues = data.presence_state_issues || [];
-  const issueBlock = issues.length
-    ? `<div class="issues bad"><strong>Ошибки физического присутствия</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`
-    : '<p class="ok">Телепортаций и рассинхронизации участников не обнаружено.</p>';
+  const issueBlock = issues.length ? `<div class="issues bad"><strong>Ошибки физического присутствия</strong><ul>${issues.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>` : '<p class="ok">Телепортаций и рассинхронизации участников не обнаружено.</p>';
   $('npcPresence').innerHTML = issueBlock + '<h3>Автоматически зарегистрированные NPC</h3>' + npcTable;
-
-  const participantTable = table(data.event_participants,[
-    ['Тип события','event_type'],
-    ['Участники','participant_names',(v)=>esc((v||[]).join(', '))],
-    ['Participant IDs','participant_ids',(v)=>`<pre>${esc(JSON.stringify(v||[],null,2))}</pre>`],
-    ['Event ID','event_id']
-  ]);
-  const emptyTable = table(data.events_without_participants,[
-    ['Тип','event_type'],
-    ['Описание','description'],
-    ['Локация','location_name'],
-    ['Event ID','id']
-  ]);
+  const participantTable = table(data.event_participants,[['Тип события','event_type'],['Участники','participant_names',(v)=>esc((v||[]).join(', '))],['Participant IDs','participant_ids',(v)=>`<pre>${esc(JSON.stringify(v||[],null,2))}</pre>`],['Event ID','event_id']]);
+  const emptyTable = table(data.events_without_participants,[['Тип','event_type'],['Описание','description'],['Локация','location_name'],['Event ID','id']]);
   $('eventPresence').innerHTML = '<h3>События и участники</h3>' + participantTable + '<h3>События без участников</h3>' + emptyTable;
 }
 async function load() {
   const id=$('campaign').value; if(!id)return;
   $('status').textContent='Загрузка…';
-  data=await fetch(`/api/campaigns/${id}/debugger?turn_limit=120`).then(r=>r.json());
+  const [snapshot, trace, runtime] = await Promise.all([
+    fetch(`/api/campaigns/${id}/debugger?turn_limit=120`).then(r=>r.json()),
+    fetch(`/api/campaigns/${id}/debugger/trace?turn_limit=120`).then(r=>r.json()),
+    fetch('/api/debugger/runtime').then(r=>r.json())
+  ]);
+  data=snapshot; traceData=trace; runtimeData=runtime;
   const heroLocation = pathText(data.campaign.player_location_path) || data.campaign.player_location_name || 'не задана';
   $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'} · локация: ${heroLocation}`;
   $('health').innerHTML=Object.entries(data.health).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
-  renderSessionZero();
-  renderSceneState();
-  renderPresence();
+  renderRuntime(); renderTrace(); renderSessionZero(); renderSceneState(); renderPresence();
   $('jobs').innerHTML=table(data.post_turn_jobs,[['Тип','job_type'],['Статус','status'],['Попытки','attempts'],['Ошибка','error'],['Действие','id',(v,r)=>r.status==='completed'?'':`<button onclick="retryJob('${v}')">Повторить</button>`]]);
   $('proposals').innerHTML=table(data.proposals,[['Тип','change_type'],['Статус','status'],['Payload / evidence','payload',(v)=>`<pre>${esc(JSON.stringify(v,null,2))}</pre>`],['Ход','turn_content']]);
   renderCanon();
   $('turns').innerHTML=table(data.turns,[['Сцена','scene_title'],['Роль','role'],['Актёр','actor_name'],['Текст','content',(v)=>`<pre>${esc(v)}</pre>`],['Статус','status']]);
 }
 function renderCanon(){
-  const configs={
-    facts:[['Subject','subject'],['Predicate','predicate'],['Value','object_value'],['Current','is_current'],['Source turn','source_turn_id']],
-    beliefs:[['Character','character_name'],['Proposition','proposition'],['Status','status'],['Current','is_current'],['Source turn','source_turn_id']],
-    relationships:[['From','subject_name'],['To','object_name'],['Type','relation_type'],['Description','description'],['Current','is_current']],
-    theses:[['Type','type'],['Text','text'],['Status','status'],['Visibility','visibility'],['Source turn','source_turn_id']]
-  };
+  const configs={facts:[['Subject','subject'],['Predicate','predicate'],['Value','object_value'],['Current','is_current'],['Source turn','source_turn_id']],beliefs:[['Character','character_name'],['Proposition','proposition'],['Status','status'],['Current','is_current'],['Source turn','source_turn_id']],relationships:[['From','subject_name'],['To','object_name'],['Type','relation_type'],['Description','description'],['Current','is_current']],theses:[['Type','type'],['Text','text'],['Status','status'],['Visibility','visibility'],['Source turn','source_turn_id']]};
   $('canon').innerHTML=table(data?.[activeTab]||[],configs[activeTab]);
 }
 async function retryJob(id){ await fetch(`/api/post-turn-jobs/${id}/retry`,{method:'POST'}); await load(); }
