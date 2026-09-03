@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.event_repo import EventRepository
@@ -50,6 +51,40 @@ class CanonApplier:
         value = str(payload.get("cardinality") or canon.get("cardinality") or "single")
         return value if value in {"single", "multi"} else "single"
 
+    async def _structured_item_receipt_exists(
+        self,
+        campaign_id: UUID,
+        source_turn_id: UUID,
+        item_id: str,
+    ) -> bool:
+        """Return whether deterministic execution already owns this same-turn item delta.
+
+        Memory Scribe runs after narration and may describe a transfer correctly while omitting
+        owner/location fields. It is not allowed to reinterpret a structured execution receipt from
+        the parent user turn and overwrite the already committed physical state.
+        """
+        source_turn = await self._session.get(Turn, str(source_turn_id))
+        if (
+            source_turn is None
+            or source_turn.campaign_id != str(campaign_id)
+            or not source_turn.parent_turn_id
+        ):
+            return False
+
+        receipt = await self._session.execute(
+            select(ActionStep.id)
+            .join(ActionSequence, ActionStep.sequence_id == ActionSequence.id)
+            .where(
+                ActionSequence.campaign_id == str(campaign_id),
+                ActionSequence.trigger_turn_id == source_turn.parent_turn_id,
+                ActionSequence.status.in_(("prepared", "applied")),
+                ActionStep.item_id == str(item_id),
+                ActionStep.status == "completed",
+            )
+            .limit(1)
+        )
+        return receipt.scalar_one_or_none() is not None
+
     async def apply(
         self,
         campaign_id: UUID,
@@ -61,6 +96,16 @@ class CanonApplier:
     ) -> None:
         if change_type == ChangeType.CANON_GAP:
             raise ValueError("A canon gap is evidence of a missing delta and cannot be applied")
+
+        if (
+            change_type == ChangeType.ITEM_TRANSFER
+            and await self._structured_item_receipt_exists(
+                campaign_id,
+                source_turn_id,
+                str(payload["item_id"]),
+            )
+        ):
+            return
 
         if change_type in {ChangeType.MOVEMENT, ChangeType.ITEM_TRANSFER}:
             await self._initial_state.ensure_snapshot(
