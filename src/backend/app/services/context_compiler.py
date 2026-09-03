@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -18,6 +19,23 @@ from app.services.context_pipeline import (
     SceneStateContextProvider,
 )
 from app.services.prompt_policy import CURRENT_PROMPT_POLICY, PromptPolicy
+
+
+_SECTION_RE = re.compile(r"(?m)^\[[^\n]+]\s*\n?")
+_SCENE_SECTION_PREFIXES = (
+    "[Current Scene:",
+    "[Progress Watchdog]",
+    "[Scene State",
+    "[Scene Bridge",
+    "[Incoming Scene Bridge",
+    "[Recent Scene Texture",
+)
+_MEMORY_SECTION_PREFIXES = (
+    "[Character Card:",
+    "[Campaign Facts & History]",
+    "[Present Character Cards]",
+    "[Other Present NPCs]",
+)
 
 
 class ContextCompiler:
@@ -104,6 +122,62 @@ class ContextCompiler:
     def _audit_prompt_policy(self, metadata: dict) -> dict:
         audited = dict(metadata)
         audited["prompt_policy_version"] = self._prompt_policy.version
+        return audited
+
+    @staticmethod
+    def _system_token_components(content: str) -> dict[str, int]:
+        """Split the rendered system prompt into stable observability buckets.
+
+        This is diagnostic accounting only: the prompt itself remains unchanged. Sections are
+        recognized by the explicit headers emitted by context providers. Unknown/internal policy
+        sections remain in ``system`` instead of being guessed into world state.
+        """
+        components = {"system": 0, "scene": 0, "memory": 0}
+        matches = list(_SECTION_RE.finditer(content))
+        if not matches:
+            components["system"] = count_tokens(content)
+            return components
+
+        prefix = content[: matches[0].start()]
+        if prefix:
+            components["system"] += count_tokens(prefix)
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+            block = content[match.start() : end]
+            marker = match.group(0).strip()
+            if marker.startswith(_SCENE_SECTION_PREFIXES):
+                bucket = "scene"
+            elif marker.startswith(_MEMORY_SECTION_PREFIXES):
+                bucket = "memory"
+            else:
+                bucket = "system"
+            components[bucket] += count_tokens(block)
+        return components
+
+    @classmethod
+    def _audit_token_breakdown(
+        cls,
+        messages: list[ChatMessage],
+        metadata: dict,
+        current_user_content: str | None,
+    ) -> dict:
+        audited = dict(metadata)
+        components = {"system": 0, "scene": 0, "memory": 0, "history": 0, "input": 0}
+        if messages:
+            system = cls._system_token_components(messages[0].content)
+            components.update(system)
+            for message in messages[1:]:
+                tokens = count_tokens(message.content)
+                if (
+                    current_user_content is not None
+                    and message.role == "user"
+                    and message.content == current_user_content
+                ):
+                    components["input"] += tokens
+                else:
+                    components["history"] += tokens
+        components["total_prompt_estimate"] = sum(components.values())
+        audited["token_budget_breakdown"] = components
         return audited
 
     async def _apply_narrator_surface_contract(
@@ -217,6 +291,7 @@ class ContextCompiler:
             messages,
             metadata,
         )
+        metadata = self._audit_token_breakdown(messages, metadata, current_user_content)
         return messages, self._audit_prompt_policy(metadata)
 
 
