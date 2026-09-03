@@ -17,6 +17,10 @@ from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_planner import ActionSequencePlan
 
 
+class InventoryExecutionError(RuntimeError):
+    """A deterministic typed inventory operation could not be applied safely."""
+
+
 class ActionSequenceExecutor:
     """Apply an ordered player intention before narration.
 
@@ -214,14 +218,14 @@ class ActionSequenceExecutor:
     ) -> None:
         """Apply a planner-resolved item transfer and record a compensating snapshot."""
         if step.item_id is None or step.inventory_operation is None:
-            raise ValueError("Inventory step is missing its typed item operation")
+            raise InventoryExecutionError("Inventory step is missing its typed item operation")
         item = await self._session.get(Item, str(step.item_id))
         entity = await self._session.get(Entity, str(step.item_id))
         campaign = await self._session.get(Campaign, str(campaign_id))
         if not item or not entity or entity.campaign_id != str(campaign_id):
-            raise ValueError("Inventory step references an item outside the campaign")
+            raise InventoryExecutionError("Inventory step references an item outside the campaign")
         if not campaign or not campaign.player_character_id:
-            raise ValueError("Inventory step has no player character")
+            raise InventoryExecutionError("Inventory step has no player character")
 
         location_id = (
             await self._scenes.get_location_id(scene_id) if scene_id else None
@@ -229,16 +233,16 @@ class ActionSequenceExecutor:
         operation = step.inventory_operation
         if operation == "take":
             if item.current_location_id != (str(location_id) if location_id else None):
-                raise ValueError("Item is not physically present in the current scene")
+                raise InventoryExecutionError("Item is not physically present in the current scene")
             result_owner, result_location = str(campaign.player_character_id), None
         elif operation == "drop" or operation == "place":
             if not location_id:
-                raise ValueError("Cannot place an item in a scene without a location")
+                raise InventoryExecutionError("Cannot place an item in a scene without a location")
             result_owner, result_location = None, str(location_id)
         else:  # give
             target = await self._session.get(Entity, str(step.inventory_target_id))
             if not target or target.campaign_id != str(campaign_id):
-                raise ValueError("Inventory transfer target is outside the campaign")
+                raise InventoryExecutionError("Inventory transfer target is outside the campaign")
             result_owner, result_location = str(step.inventory_target_id), None
 
         db_step.item_id = str(step.item_id)
