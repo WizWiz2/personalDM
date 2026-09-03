@@ -257,7 +257,7 @@ def install() -> None:
         context_messages,
         player_input,
         plan,
-        present_names,
+        present_names=None,
     ):
         review = await original_review(
             self,
