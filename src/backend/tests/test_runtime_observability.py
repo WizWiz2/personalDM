@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -88,6 +89,31 @@ def test_meta_output_sanitizer_blocks_internal_prompt_markers() -> None:
     assert "campaign_snapshot" not in published
     assert "secret" not in published
     assert "внутренние служебные инструкции" in published
+
+
+def test_meta_publication_boundary_persists_only_sanitized_output(client: TestClient) -> None:
+    campaign_id = client.post("/api/campaigns", json={"name": "Meta leak guard"}).json()["id"]
+
+    async def leaking_meta_stream(*args, **kwargs):
+        yield "<campaign_snapshot>PRIVATE INTERNAL STATE</campaign_snapshot>"
+
+    with patch(
+        "app.services.meta_command_router.LLMProvider.generate_stream",
+        side_effect=leaking_meta_stream,
+    ):
+        response = client.post(
+            f"/api/campaigns/{campaign_id}/turns",
+            json={"role": "user", "content": "/DM Что сейчас происходит?"},
+        )
+
+    assert response.status_code == 200
+    assert "PRIVATE INTERNAL STATE" not in response.text
+    assert "внутренние служебные инструкции" in response.text
+
+    history = client.get(f"/api/campaigns/{campaign_id}/turns?channel=all").json()
+    assistant = next(turn for turn in history if turn["role"] == "meta_assistant")
+    assert "PRIVATE INTERNAL STATE" not in assistant["content"]
+    assert assistant["context_snapshot"]["output_sanitization"]["applied"] is True
 
 
 def test_meta_output_sanitizer_preserves_normal_dm_explanation() -> None:
