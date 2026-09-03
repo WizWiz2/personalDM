@@ -43,16 +43,19 @@ def review_language_mismatch(review, player_input: str) -> bool:
 
 
 def install() -> None:
-    """Harden control-agent language and distinguish local motion from scene transitions."""
+    """Harden control-agent language without perturbing Planner action classification."""
     global _INSTALLED
     if _INSTALLED:
         return
 
     from app.services.turn_authority_planner import TurnAuthorityPlanner
 
+    # Language is a surface constraint and is safe for every control pass. Movement scope is kept
+    # reviewer-only: repeating movement taxonomy inside the small Planner prompt made qwen2.5:7b
+    # over-classify local hand/item motion as action_type=movement in live contracts.
+    if CONTROL_LANGUAGE_CONTRACT not in TurnAuthorityPlanner.AUTHORITY_ADDENDUM:
+        TurnAuthorityPlanner.AUTHORITY_ADDENDUM += CONTROL_LANGUAGE_CONTRACT
     for contract in (CONTROL_LANGUAGE_CONTRACT, MOVEMENT_SCOPE_CONTRACT):
-        if contract not in TurnAuthorityPlanner.AUTHORITY_ADDENDUM:
-            TurnAuthorityPlanner.AUTHORITY_ADDENDUM += contract
         if contract not in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT:
             TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT += contract
 
