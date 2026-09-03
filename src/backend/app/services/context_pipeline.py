@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.repositories.narrative_detail_repo import NarrativeDetailRepository
+from app.db.tables import Campaign, Entity, Item
 from app.models.turn import ChatMessage
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_state_service import SceneStateService
@@ -69,12 +71,58 @@ class ContextPipeline:
 
 
 class SceneStateContextProvider:
-    """Inject authoritative scene state and the incoming scene bridge."""
+    """Inject authoritative scene state, action references and the incoming scene bridge."""
 
     name = "authoritative_scene_state"
 
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def _action_reference_contract(
+        self,
+        request: ContextRequest,
+        state,
+    ) -> tuple[str, list[str]]:
+        """Expose exact durable ids needed by Planner-owned inventory semantics.
+
+        The executor never guesses entities from prose. Planner therefore needs exact item and
+        character ids in the same authoritative context it uses to decide the semantic action.
+        """
+        campaign = await self._session.get(Campaign, str(request.campaign_id))
+        owned_rows: list[tuple[str, str]] = []
+        if campaign and campaign.player_character_id:
+            result = await self._session.execute(
+                select(Entity.id, Entity.canonical_name)
+                .join(Item, Item.entity_id == Entity.id)
+                .where(
+                    Entity.campaign_id == str(request.campaign_id),
+                    Item.current_owner_id == campaign.player_character_id,
+                )
+                .order_by(Entity.canonical_name)
+            )
+            owned_rows = [(str(entity_id), name) for entity_id, name in result.all()]
+
+        owned = ", ".join(
+            f"{name} [id={entity_id}]" for entity_id, name in owned_rows
+        ) or "none recorded"
+        present = ", ".join(
+            f"{name} [id={entity_id}]"
+            for entity_id, name in zip(state.participant_ids, state.participant_names)
+        ) or "none recorded"
+        section = (
+            "[STRUCTURED ACTION REFERENCES]\n"
+            f"Player-owned items: {owned}\n"
+            f"Physically present characters: {present}\n"
+            "Planner inventory contract:\n"
+            "- Any explicit take/drop/place/give that changes durable item ownership or location "
+            "MUST be emitted as an inventory action_sequence step, even when it is the only "
+            "committed world action in the turn.\n"
+            "- Reuse item_id and inventory_target_id exactly from the authoritative ids above or "
+            "from Objects physically here; never invent, infer, rename or fabricate an id.\n"
+            "- take uses an object physically here; drop/place/give uses a player-owned item.\n"
+            "- give requires inventory_target_id for a physically present character.\n"
+        )
+        return section, [entity_id for entity_id, _ in owned_rows]
 
     async def enrich(
         self,
@@ -96,8 +144,9 @@ class SceneStateContextProvider:
             request.campaign_id,
             request.scene_id,
         )
+        action_references, owned_item_ids = await self._action_reference_contract(request, state)
         first, *rest = context.messages
-        contracts = [SceneStateService.prompt_contract(state)]
+        contracts = [SceneStateService.prompt_contract(state), action_references]
         if bridge:
             contracts.append(SceneBridgeService.prompt_contract(bridge))
         messages = [
@@ -123,11 +172,18 @@ class SceneStateContextProvider:
             ],
             "invariant_errors": state.invariant_errors,
         }
+        included_item_ids = list(metadata.get("included_item_ids") or [])
+        for item_id in owned_item_ids:
+            if item_id not in included_item_ids:
+                included_item_ids.append(item_id)
+        metadata["included_item_ids"] = included_item_ids
         if bridge:
             metadata["scene_bridge"] = bridge.model_dump(mode="json")
         layers = list(metadata.get("included_layers") or [])
         if "layer_1_authoritative_scene_state" not in layers:
             layers.append("layer_1_authoritative_scene_state")
+        if "layer_1_structured_action_references" not in layers:
+            layers.append("layer_1_structured_action_references")
         if bridge and "layer_1_scene_bridge" not in layers:
             layers.append("layer_1_scene_bridge")
         metadata["included_layers"] = layers
