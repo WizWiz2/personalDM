@@ -12,11 +12,18 @@ def test_shadow_report_pairs_te2_residuals_with_legacy_proposals(tmp_path):
     db_path.parent.mkdir(parents=True)
 
     shadow = {
-        "version": 1,
+        "version": 3,
         "mode": "read_only",
         "source_user_turn_id": "user-1",
         "receipt_count": 1,
         "structured_receipts": [{"event_type": "item_transfer"}],
+        "sanitization": {
+            "duplicate_entity_refs_dropped": 0,
+            "dangling_fluents_dropped": 0,
+            "dangling_relations_dropped": 0,
+            "duplicate_fluents_dropped": 0,
+            "duplicate_relations_dropped": 0,
+        },
         "residual": {
             "entities": [
                 {"ref": "keeper", "mention_text": "keeper", "entity_type": "character"}
@@ -32,7 +39,32 @@ def test_shadow_report_pairs_te2_residuals_with_legacy_proposals(tmp_path):
             ],
             "relations": [],
         },
-        "counts": {"entities": 1, "fluents": 1, "relations": 0},
+        "dispositions": [
+            {"atom_key": "mood-state", "disposition": "objective", "reason": None}
+        ],
+        "objective_residual": {
+            "entities": [
+                {"ref": "keeper", "mention_text": "keeper", "entity_type": "character"}
+            ],
+            "fluents": [
+                {
+                    "atom_key": "mood-state",
+                    "subject_ref": "keeper",
+                    "semantic_description": "current outward stance",
+                    "value": "friendly",
+                    "description": "The keeper is friendly.",
+                }
+            ],
+            "relations": [],
+        },
+        "counts": {
+            "entities": 1,
+            "fluents": 1,
+            "relations": 0,
+            "objective_entities": 1,
+            "objective_fluents": 1,
+            "objective_relations": 0,
+        },
     }
 
     with sqlite3.connect(db_path) as db:
@@ -96,21 +128,30 @@ def test_shadow_report_pairs_te2_residuals_with_legacy_proposals(tmp_path):
     assert report["assistant_turn_count"] == 1
     assert report["shadow_turn_count"] == 1
     assert report["counts"]["fluents"] == 1
+    assert report["counts"]["objective_fluents"] == 1
+    assert report["counts"]["disposition_objective"] == 1
     assert report["counts"]["legacy_objective_proposals"] == 1
     assert report["counts"]["receipts"] == 1
     assert report["triage_counts"]["receipt_plus_residual_review"] == 1
+    assert report["triage_counts"]["receipt_plus_objective_review"] == 1
     turn = report["cases"][0]["turns"][0]
     assert turn["te2_shadow"]["residual"]["fluents"][0]["atom_key"] == "mood-state"
+    assert turn["te2_shadow"]["objective_residual"]["fluents"][0]["atom_key"] == "mood-state"
     assert turn["legacy_proposals"][0]["change_type"] == "fact"
     assert turn["legacy_proposals"][0]["payload"]["object_value"] == "friendly"
-    assert turn["triage_flags"] == ["receipt_plus_residual_review"]
+    assert turn["triage_flags"] == [
+        "receipt_plus_residual_review",
+        "receipt_plus_objective_review",
+    ]
 
     markdown = render_markdown(report)
     assert "semantic-case / run-1" in markdown
     assert "## Structural summary" in markdown
     assert "## Triage queue" in markdown
-    assert "receipt_plus_residual_review" in markdown
-    assert "TE2 residual" in markdown
+    assert "receipt_plus_objective_review" in markdown
+    assert "TE2 residual candidates" in markdown
+    assert "Disposition gate" in markdown
+    assert "TE2 writer-equivalent objective residual" in markdown
     assert "Legacy Scribe proposals" in markdown
 
     json_path, markdown_path, written = write_report(run_dir)
