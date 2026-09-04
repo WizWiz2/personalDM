@@ -101,6 +101,26 @@ class EntityResolutionDecision(BaseModel):
         return self
 
 
+class EntityBatchResolutionItem(BaseModel):
+    """One local mention decision inside a jointly evaluated entity batch."""
+
+    observation_key: str = Field(min_length=1, max_length=255)
+    resolution: EntityResolutionDecision
+
+
+class EntityBatchResolutionDecision(BaseModel):
+    """Joint entity-alignment result; one decision is required per ambiguous observation."""
+
+    items: list[EntityBatchResolutionItem] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def validate_unique_observations(self):
+        keys = [item.observation_key for item in self.items]
+        if len(keys) != len(set(keys)):
+            raise ValueError("entity batch resolution observation keys must be unique")
+        return self
+
+
 class NewSemanticTypeDraft(BaseModel):
     canonical_label: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1, max_length=1200)
