@@ -76,11 +76,7 @@ class TurnUndoService:
             if parent:
                 parent.status = "undone"
                 parent.undone_at = datetime.utcnow()
-            await self._reconcile_derived_state(
-                campaign_id,
-                user_turn.id,
-                assistant_turn.id,
-            )
+            await self._reconcile_derived_state(campaign_id, assistant_turn.id)
             await self._session.flush()
             return True
 
@@ -120,31 +116,29 @@ class TurnUndoService:
             transition.undone_at = datetime.utcnow()
             await self._bridges.mark_status(UUID(transition.id), "undone")
 
-        await self._reconcile_derived_state(
-            campaign_id,
-            user_turn.id,
-            assistant_turn.id,
-        )
+        await self._reconcile_derived_state(campaign_id, assistant_turn.id)
         await self._session.flush()
         return True
 
     async def _reconcile_derived_state(
         self,
         campaign_id: UUID,
-        user_turn_id: UUID,
         assistant_turn_id: UUID,
     ) -> None:
-        """Rebuild legacy and TE2 projections after the source turn becomes inactive.
+        """Rebuild legacy and TE2 projections after the source pair becomes inactive.
 
-        TE2 history is append-only: undo changes event inclusion and rebuilds derived temporal
-        assertions. The legacy proposal replay remains only while old world projections still serve
-        production readers during migration.
+        Keep this boundary stable for migration extensions. TE2 derives the source user turn from the
+        persisted assistant-parent relation instead of leaking a new private-method signature into
+        legacy guards. Canonical history is append-only: undo changes event inclusion and rebuilds
+        derived temporal assertions.
         """
-        await CanonicalEventStore(self._session).set_turn_status(
-            campaign_id,
-            user_turn_id,
-            active=False,
-        )
+        assistant = await self._turns.get_by_id(assistant_turn_id)
+        if assistant and assistant.parent_turn_id:
+            await CanonicalEventStore(self._session).set_turn_status(
+                campaign_id,
+                assistant.parent_turn_id,
+                active=False,
+            )
         await ActiveCanonReplayService(self._session).replay(campaign_id)
         await WorldReducer(self._session).rebuild(campaign_id)
         await self._remove_turn_introductions(campaign_id, assistant_turn_id)
