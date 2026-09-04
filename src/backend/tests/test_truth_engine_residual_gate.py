@@ -6,11 +6,12 @@ from uuid import UUID
 import pytest
 
 from app.models.truth_engine_residual import (
+    RawSemanticResidualEnvelope,
     ResidualAtomDisposition,
     ResidualEntityMention,
     ResidualFluentObservation,
     ResidualRelationObservation,
-    SemanticResidualEnvelope,
+    sanitize_semantic_residual,
 )
 from app.services.truth_engine_residual_gate import SemanticResidualDispositionGate
 
@@ -29,7 +30,7 @@ class StubRouter:
 
 
 def _envelope():
-    return SemanticResidualEnvelope(
+    raw = RawSemanticResidualEnvelope(
         entities=[
             ResidualEntityMention(ref="martin", mention_text="Martin", entity_type="character"),
             ResidualEntityMention(ref="warehouse", mention_text="warehouse", entity_type="location"),
@@ -58,6 +59,7 @@ def _envelope():
             )
         ],
     )
+    return sanitize_semantic_residual(raw).envelope
 
 
 @pytest.mark.asyncio
