@@ -61,6 +61,40 @@ class SemanticTurnContextReader:
             structured_receipts=tuple(await self.structured_receipts(user_turn_id)),
         )
 
+    async def pair_is_active(
+        self,
+        assistant_turn_id: UUID,
+        expected_user_turn_id: UUID,
+    ) -> bool:
+        """Check the source pair inside the caller's current transaction.
+
+        Writer mode calls this only after acquiring SQLite's short write lock. Keeping this check
+        free of receipt loading makes the guarded critical section tiny and deterministic.
+        """
+        row = (
+            await self._session.execute(
+                select(Turn.status, Turn.parent_turn_id).where(
+                    Turn.id == str(assistant_turn_id),
+                    Turn.role == "assistant",
+                )
+            )
+        ).one_or_none()
+        if (
+            row is None
+            or row.status != "active"
+            or row.parent_turn_id != str(expected_user_turn_id)
+        ):
+            return False
+        parent_status = (
+            await self._session.execute(
+                select(Turn.status).where(
+                    Turn.id == str(expected_user_turn_id),
+                    Turn.role == "user",
+                )
+            )
+        ).scalar_one_or_none()
+        return parent_status == "active"
+
     async def structured_receipts(self, source_turn_id: UUID) -> list[dict]:
         rows = list(
             (
