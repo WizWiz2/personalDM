@@ -167,6 +167,7 @@ class RelationObservation(BaseModel):
     subject_entity_id: UUID
     object_entity_id: UUID
     semantic_description: str = Field(min_length=1, max_length=1200)
+    present: bool = True
     description: str = Field(min_length=1, max_length=1600)
     source_turn_id: UUID | None = None
     authority: str = Field(default="semantic_compiler", min_length=1, max_length=64)
