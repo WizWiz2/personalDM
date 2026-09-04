@@ -110,3 +110,59 @@ def test_shadow_report_pairs_te2_residuals_with_legacy_proposals(tmp_path):
     assert written["shadow_turn_count"] == 1
     assert json_path.exists()
     assert markdown_path.exists()
+
+
+def test_shadow_report_survives_partial_failed_contract_databases(tmp_path):
+    run_dir = tmp_path / "live-run"
+
+    empty_db = run_dir / "isolated" / "failed-before-schema" / "run-1" / "live-contracts.db"
+    empty_db.parent.mkdir(parents=True)
+    sqlite3.connect(empty_db).close()
+
+    turns_only_db = run_dir / "isolated" / "failed-before-scribe" / "run-1" / "live-contracts.db"
+    turns_only_db.parent.mkdir(parents=True)
+    with sqlite3.connect(turns_only_db) as db:
+        db.executescript(
+            """
+            CREATE TABLE turns (
+                id TEXT PRIMARY KEY,
+                parent_turn_id TEXT,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                context_snapshot TEXT,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
+        db.execute(
+            "INSERT INTO turns VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "assistant-partial",
+                "user-partial",
+                "assistant",
+                "Partial turn.",
+                json.dumps(
+                    {
+                        "te2_semantic_shadow": {
+                            "version": 1,
+                            "mode": "read_only",
+                            "receipt_count": 0,
+                            "residual": {"entities": [], "fluents": [], "relations": []},
+                        }
+                    }
+                ),
+                "active",
+                "2026-09-04T00:00:00",
+            ),
+        )
+        db.commit()
+
+    report = collect_run(run_dir)
+
+    assert report["database_count"] == 2
+    assert report["assistant_turn_count"] == 1
+    assert report["shadow_turn_count"] == 1
+    cases = {case["case_id"]: case for case in report["cases"]}
+    assert cases["failed-before-schema"]["assistant_turn_count"] == 0
+    assert cases["failed-before-scribe"]["turns"][0]["legacy_proposals"] == []
