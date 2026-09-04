@@ -12,10 +12,13 @@ echo =======================================================================
 echo.
 echo Legacy Scribe remains the only semantic writer.
 echo TE2 extracts read-only residual observations and stores them in turn snapshots.
+echo The shadow itself is a durable post-turn job, so the live harness waits for it.
 echo A comparison report is generated after the isolated live-model suite.
 echo.
 
-call "%~dp0test-models.bat" %*
+rem Shadow adds another control-model post-turn job. Give the queue a larger default budget;
+rem a caller-supplied --post-turn-timeout later in %%* overrides this argparse value.
+call "%~dp0test-models.bat" --post-turn-timeout 300 %*
 set "RC=%ERRORLEVEL%"
 
 echo.
