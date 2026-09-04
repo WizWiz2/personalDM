@@ -210,6 +210,13 @@ async def test_turn_undo_reverts_receipt_but_preserves_event_history_and_baselin
             content="You arrive in the room.",
             scene_id=transition.target_scene_id,
             parent_turn_id=user.id,
+            context_snapshot={
+                "scene_transition": {
+                    "status": "applied",
+                    "source_scene_id": str(source.id),
+                    "target_scene_id": str(transition.target_scene_id),
+                }
+            },
         ),
     )
     await db_session.flush()
