@@ -14,10 +14,18 @@ def _table_names() -> set[str]:
     return set(sa.inspect(op.get_bind()).get_table_names())
 
 
-def _ensure_index(table_name: str, index_name: str, columns: list[str]) -> None:
+def _column_names(table_name: str) -> set[str]:
     inspector = sa.inspect(op.get_bind())
-    existing = {item["name"] for item in inspector.get_indexes(table_name)}
-    if index_name not in existing:
+    return {column["name"] for column in inspector.get_columns(table_name)}
+
+
+def _index_names(table_name: str) -> set[str]:
+    inspector = sa.inspect(op.get_bind())
+    return {index["name"] for index in inspector.get_indexes(table_name)}
+
+
+def _ensure_index(table_name: str, index_name: str, columns: list[str]) -> None:
+    if index_name not in _index_names(table_name):
         op.create_index(index_name, table_name, columns)
 
 
@@ -94,6 +102,7 @@ def upgrade() -> None:
             "semantic_types",
             sa.Column("id", sa.String(length=36), nullable=False),
             sa.Column("campaign_id", sa.String(length=36), nullable=False),
+            sa.Column("system_key", sa.String(length=128), nullable=True),
             sa.Column("kind", sa.String(length=32), nullable=False),
             sa.Column("canonical_label", sa.String(length=255), nullable=False),
             sa.Column("description", sa.Text(), nullable=False),
@@ -106,8 +115,20 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("id"),
         )
         tables.add("semantic_types")
+    elif "system_key" not in _column_names("semantic_types"):
+        op.add_column(
+            "semantic_types",
+            sa.Column("system_key", sa.String(length=128), nullable=True),
+        )
     _ensure_index("semantic_types", "ix_semantic_types_campaign_id", ["campaign_id"])
     _ensure_index("semantic_types", "ix_semantic_types_kind", ["kind"])
+    if "uq_semantic_type_campaign_system_key" not in _index_names("semantic_types"):
+        op.create_index(
+            "uq_semantic_type_campaign_system_key",
+            "semantic_types",
+            ["campaign_id", "system_key"],
+            unique=True,
+        )
 
     if "fluent_assertions" not in tables:
         op.create_table(
