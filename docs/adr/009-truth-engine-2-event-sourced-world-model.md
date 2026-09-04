@@ -134,20 +134,25 @@ Compilation is retry-idempotent at the semantic boundary. Before resolving an al
 
 The legacy Scribe is still the runtime semantic writer for generic facts and relationships. TE2 must not become a hidden second writer merely for evaluation.
 
-`SemanticResidualShadowService` therefore runs only as an opt-in, read-only post-turn experiment:
+`SemanticResidualShadowService` therefore runs only as an opt-in, read-only post-turn experiment. When shadow mode is enabled, `PostTurnProcessor.enqueue()` creates a normal durable `te2_semantic_shadow` job in the same transaction that enqueues the legacy post-turn jobs and completes the generation run. This is the completion barrier: the existing live harness already waits until every `post_turn_jobs` row is terminal, so it cannot snapshot the database while the shadow model is still running.
 
-1. legacy post-turn processing commits first;
-2. shadow reads the active user/assistant pair;
-3. it retrieves only active TE2 events whose `source_kind=executor_receipt` and `source_turn_id` is that user turn;
-4. those receipts are supplied to the residual extractor so deterministic effects are excluded;
-5. after the potentially long model read, the transaction is rolled back and turn activity is re-checked so a concurrent undo wins;
-6. the residual envelope is written only to `assistant.context_snapshot["te2_semantic_shadow"]` as diagnostic metadata.
+The shadow job:
+
+1. runs after the legacy memory writer in the ordinary post-turn job ordering;
+2. reads the active user/assistant pair;
+3. retrieves only active TE2 events whose `source_kind=executor_receipt` and `source_turn_id` is that user turn;
+4. supplies those receipts to the residual extractor so deterministic effects are excluded;
+5. after the potentially long model read, rolls the read transaction back and re-checks turn activity so a concurrent undo wins;
+6. writes the residual envelope only to `assistant.context_snapshot["te2_semantic_shadow"]` as diagnostic metadata;
+7. finishes through the same `pending -> running -> completed/failed` protocol as Scribe/Curator, so restart recovery and retries use the existing post-turn infrastructure.
+
+A shadow model failure is diagnostic and terminal (`failed`) rather than an invisible dispatcher tail. It therefore cannot race the live oracle snapshot, and it remains retryable through `PostTurnJobRepository`.
 
 Shadow mode does not create Entities, SemanticTypes, FluentAssertions, WorldRelationAssertions or semantic canonical events.
 
 It is disabled by default and enabled with `PDM_TE2_SEMANTIC_SHADOW_ENABLED=true`.
 
-`test-models-shadow.bat` enables this mode for the isolated real-model contract suite and generates `te2-shadow-report.md` / `te2-shadow-report.json`. The report places TE2 residual observations beside the legacy Scribe proposals from the same assistant turn. It deliberately does not attempt to declare semantic equivalence through string matching.
+`test-models-shadow.bat` enables this mode for the isolated real-model contract suite, gives the additional model job a larger post-turn timeout budget, and generates `te2-shadow-report.md` / `te2-shadow-report.json`. The report places TE2 residual observations beside the legacy Scribe proposals from the same assistant turn. It deliberately does not attempt to declare semantic equivalence through string matching.
 
 ## Layer separation
 
@@ -177,7 +182,7 @@ If future workloads justify a graph server, it should be a rebuildable read inde
 6. Generic facts -> semantic fluents. **Generic compiler and residual contract implemented; legacy Scribe FACT writer still owns runtime.**
 7. Generic relationships -> temporal relations. **Generic add/remove lifecycle implemented; legacy relationship writer still owns runtime.**
 8. NPC identity -> entity mentions / semantic entity resolution. **Name uniqueness removed; `NEW` identity, duplicate display labels and undo-safe active support implemented.**
-9. Read-only residual shadow against real model turns. **Runtime wiring and comparison-report tooling implemented; repeated live-model evaluation still required.**
+9. Read-only residual shadow against real model turns. **Durable runtime job, completion barrier and comparison-report tooling implemented; repeated live-model evaluation still required.**
 10. Promote proven semantic domains from shadow to TE2 single-writer ownership, one domain at a time.
 11. Separate beliefs and narrative theses from objective truth.
 12. Context compiler reads TE2 projections as authoritative state.
@@ -227,7 +232,8 @@ Positive:
 - semantic model failures are constrained to candidate decisions rather than arbitrary DB writes;
 - generic fluents and relations share one compiler path instead of table-specific reconciliation rules;
 - relation termination is a temporal graph operation rather than an action-specific fixer;
-- semantic residual extraction can be evaluated against the existing runtime without becoming a second writer.
+- semantic residual extraction can be evaluated against the existing runtime without becoming a second writer;
+- shadow completion/retry/recovery reuse the durable post-turn job protocol instead of a separate test-only synchronization path.
 
 Costs:
 
