@@ -22,6 +22,7 @@ from app.services.memory_scribe import MemoryScribe
 from app.services.memory_taxonomy import MemoryTaxonomyService
 from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.thesis_curator import ThesisCurator
+from app.services.truth_engine_shadow import SemanticResidualShadowService
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,14 @@ class PostTurnProcessor:
         self._campaigns = CampaignRepository(session)
 
     async def enqueue(self, campaign_id: UUID, assistant_turn_id: UUID) -> None:
-        await self._jobs.enqueue_for_turn(campaign_id, assistant_turn_id)
+        job_types = list(self._jobs.JOB_TYPES)
+        if settings.TE2_SEMANTIC_SHADOW_ENABLED:
+            job_types.append("te2_semantic_shadow")
+        await self._jobs.enqueue_for_turn(
+            campaign_id,
+            assistant_turn_id,
+            job_types=tuple(job_types),
+        )
         await self._session.flush()
 
     async def process_turn(self, assistant_turn_id: UUID) -> None:
@@ -398,6 +406,9 @@ class PostTurnProcessor:
                             "Memory Scribe turn %s: extracted=0 auto_committed=0 staged=0",
                             assistant.id,
                         )
+            elif row.job_type == "te2_semantic_shadow":
+                if settings.TE2_SEMANTIC_SHADOW_ENABLED:
+                    await SemanticResidualShadowService(self._session).capture(assistant.id)
             else:
                 raise ValueError(f"Unknown post-turn job type: {row.job_type}")
 
