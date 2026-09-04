@@ -138,7 +138,7 @@ The legacy Scribe is still the runtime semantic writer for generic facts and rel
 
 The shadow job:
 
-1. runs after the legacy memory writer in the ordinary post-turn job ordering;
+1. participates in the ordinary post-turn job protocol alongside the legacy memory writer and curator;
 2. reads the active user/assistant pair;
 3. retrieves only active TE2 events whose `source_kind=executor_receipt` and `source_turn_id` is that user turn;
 4. supplies those receipts to the residual extractor so deterministic effects are excluded;
