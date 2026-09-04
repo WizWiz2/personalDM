@@ -67,6 +67,46 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
     with sqlite3.connect(database) as connection:
         connection.execute(
             """
+            INSERT INTO campaigns (id, name, created_at, updated_at)
+            VALUES ('identity-campaign', 'Identity migration', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO entities (
+                id,
+                campaign_id,
+                entity_type,
+                canonical_name,
+                aliases,
+                description,
+                status,
+                provenance,
+                version,
+                custom_fields,
+                created_at,
+                updated_at
+            ) VALUES (
+                'legacy-guard',
+                'identity-campaign',
+                'character',
+                'Guard',
+                NULL,
+                'Existing identity must survive the table recreation.',
+                'active',
+                'legacy-runtime',
+                1,
+                NULL,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO characters (entity_id) VALUES ('legacy-guard')"
+        )
+        connection.execute(
+            """
             INSERT INTO scene_transitions (
                 id,
                 campaign_id,
@@ -127,6 +167,51 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
             "SELECT phase, attempt FROM generation_lifecycles "
             "WHERE generation_run_id = 'legacy-generation'"
         ).fetchone()
+        preserved_entity = connection.execute(
+            "SELECT canonical_name, description FROM entities WHERE id = 'legacy-guard'"
+        ).fetchone()
+        preserved_character = connection.execute(
+            "SELECT entity_id FROM characters WHERE entity_id = 'legacy-guard'"
+        ).fetchone()
+
+        # TE2 identity is UUID-based. A second distinct entity is allowed to keep the same
+        # human-facing role label; no synthetic suffix is needed to satisfy persistence.
+        connection.execute(
+            """
+            INSERT INTO entities (
+                id,
+                campaign_id,
+                entity_type,
+                canonical_name,
+                status,
+                provenance,
+                version,
+                created_at,
+                updated_at
+            ) VALUES (
+                'second-guard',
+                'identity-campaign',
+                'character',
+                'Guard',
+                'active',
+                'semantic_compiler',
+                1,
+                CURRENT_TIMESTAMP,
+                CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.commit()
+        duplicate_labels = connection.execute(
+            """
+            SELECT id FROM entities
+            WHERE campaign_id = 'identity-campaign'
+              AND entity_type = 'character'
+              AND canonical_name = 'Guard'
+            ORDER BY id
+            """
+        ).fetchall()
+
         indexes = {
             row[1]
             for row in connection.execute(
@@ -149,6 +234,12 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
     assert revision == ("a7b8c9d0e1f2",)
     assert transition == ("preserve me", "legacy-runtime")
     assert lifecycle == ("received", 1)
+    assert preserved_entity == (
+        "Guard",
+        "Existing identity must survive the table recreation.",
+    )
+    assert preserved_character == ("legacy-guard",)
+    assert duplicate_labels == [("legacy-guard",), ("second-guard",)]
     assert "ix_scene_transitions_campaign_id" in indexes
     assert "system_key" in semantic_columns
     assert {
