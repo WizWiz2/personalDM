@@ -13,6 +13,7 @@ from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
+from app.services.truth_engine import CanonicalEventStore, WorldReducer
 
 
 class TurnUndoService:
@@ -75,7 +76,11 @@ class TurnUndoService:
             if parent:
                 parent.status = "undone"
                 parent.undone_at = datetime.utcnow()
-            await self._reconcile_derived_state(campaign_id, assistant_turn.id)
+            await self._reconcile_derived_state(
+                campaign_id,
+                user_turn.id,
+                assistant_turn.id,
+            )
             await self._session.flush()
             return True
 
@@ -115,22 +120,33 @@ class TurnUndoService:
             transition.undone_at = datetime.utcnow()
             await self._bridges.mark_status(UUID(transition.id), "undone")
 
-        await self._reconcile_derived_state(campaign_id, assistant_turn.id)
+        await self._reconcile_derived_state(
+            campaign_id,
+            user_turn.id,
+            assistant_turn.id,
+        )
         await self._session.flush()
         return True
 
     async def _reconcile_derived_state(
         self,
         campaign_id: UUID,
+        user_turn_id: UUID,
         assistant_turn_id: UUID,
     ) -> None:
-        """Project the world from still-active turns after the pair becomes undone.
+        """Rebuild legacy and TE2 projections after the source turn becomes inactive.
 
-        This deliberately happens after structural scene/action compensation: Turn status decides
-        which extracted canon may survive, while scene/action executors remain the authority for
-        the current physical boundary.
+        TE2 history is append-only: undo changes event inclusion and rebuilds derived temporal
+        assertions. The legacy proposal replay remains only while old world projections still serve
+        production readers during migration.
         """
+        await CanonicalEventStore(self._session).set_turn_status(
+            campaign_id,
+            user_turn_id,
+            active=False,
+        )
         await ActiveCanonReplayService(self._session).replay(campaign_id)
+        await WorldReducer(self._session).rebuild(campaign_id)
         await self._remove_turn_introductions(campaign_id, assistant_turn_id)
         # Curator-created working-memory rows from the undone turn must not remain active.
         # Existing theses changed by a curator are not reconstructed here; unlike durable canon,
