@@ -15,9 +15,12 @@ from app.db.truth_engine_table import (
 )
 from app.models.truth_engine import CanonicalEventCreate
 from app.models.truth_engine_residual import (
+    ResidualAtomDisposition,
+    ResidualClassificationResult,
     ResidualEntityMention,
     ResidualFluentObservation,
     SemanticResidualEnvelope,
+    objective_residual,
 )
 from app.services.truth_engine import WorldReducer
 from app.services.truth_engine_shadow import SemanticResidualShadowService
@@ -31,6 +34,22 @@ class StubExtractor:
     async def extract(self, campaign_id, **kwargs):
         self.calls.append({"campaign_id": campaign_id, **kwargs})
         return self.envelope
+
+
+class StubClassifier:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    async def classify(self, campaign_id, *, envelope, **kwargs):
+        self.calls.append({"campaign_id": campaign_id, "envelope": envelope, **kwargs})
+        decisions = [
+            ResidualAtomDisposition(atom_key=atom.atom_key, disposition="objective")
+            for atom in [*envelope.fluents, *envelope.relations]
+        ]
+        return ResidualClassificationResult(
+            decisions=decisions,
+            objective=objective_residual(envelope, decisions),
+        )
 
 
 @pytest.mark.asyncio
@@ -94,15 +113,17 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
         ],
     )
     extractor = StubExtractor(envelope)
+    classifier = StubClassifier()
     captured = await SemanticResidualShadowService(
         db_session,
         extractor=extractor,
+        classifier=classifier,
     ).capture(assistant_id)
     await db_session.commit()
 
     assert captured is True
     assert len(extractor.calls) == 1
-    assert extractor.calls[0]["structured_receipts"] == [
+    expected_receipts = [
         {
             "event_id": str((await db_session.execute(
                 select(TruthEventRecord.event_id).where(
@@ -117,15 +138,27 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
             },
         }
     ]
+    assert extractor.calls[0]["structured_receipts"] == expected_receipts
+    assert len(classifier.calls) == 1
+    assert classifier.calls[0]["structured_receipts"] == expected_receipts
 
     row = await db_session.get(Turn, str(assistant_id))
     snapshot = json.loads(row.context_snapshot)
     shadow = snapshot[SemanticResidualShadowService.SNAPSHOT_KEY]
     assert snapshot["existing"] == "metadata"
     assert shadow["mode"] == "read_only"
+    assert shadow["version"] == 2
     assert shadow["receipt_count"] == 1
-    assert shadow["counts"] == {"entities": 1, "fluents": 1, "relations": 0}
-    assert shadow["residual"]["fluents"][0]["atom_key"] == "mark-age"
+    assert shadow["counts"] == {
+        "entities": 1,
+        "fluents": 1,
+        "relations": 0,
+        "objective_entities": 1,
+        "objective_fluents": 1,
+        "objective_relations": 0,
+    }
+    assert shadow["dispositions"][0]["disposition"] == "objective"
+    assert len(shadow["objective_residual"]["fluents"]) == 1
 
     # Shadow capture may update only diagnostic Turn metadata. It must not compile semantic state.
     assert (
@@ -186,12 +219,15 @@ async def test_shadow_capture_skips_inactive_source_pair_without_calling_model(d
     await db_session.commit()
 
     extractor = StubExtractor(SemanticResidualEnvelope())
+    classifier = StubClassifier()
     captured = await SemanticResidualShadowService(
         db_session,
         extractor=extractor,
+        classifier=classifier,
     ).capture(assistant_id)
 
     assert captured is False
     assert extractor.calls == []
+    assert classifier.calls == []
     row = await db_session.get(Turn, str(assistant_id))
     assert SemanticResidualShadowService.SNAPSHOT_KEY not in json.loads(row.context_snapshot)
