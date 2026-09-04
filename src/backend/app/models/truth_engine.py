@@ -130,6 +130,21 @@ class SemanticTypeResolutionDecision(BaseModel):
         return self
 
 
+class EntityMentionObservation(BaseModel):
+    """One linguistic entity reference before stable identity is chosen."""
+
+    observation_key: str = Field(min_length=1, max_length=255)
+    mention_text: str = Field(min_length=1, max_length=500)
+    entity_type: str = Field(min_length=1, max_length=50)
+    description: str | None = Field(default=None, max_length=1600)
+    source_turn_id: UUID | None = None
+    scene_id: UUID | None = None
+    mention_kind: str | None = Field(default=None, max_length=64)
+    evidence: str | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    context_entity_ids: list[UUID] = Field(default_factory=list, max_length=16)
+
+
 class FluentObservation(BaseModel):
     """One evidence-backed state observation after entity identity is resolved."""
 
