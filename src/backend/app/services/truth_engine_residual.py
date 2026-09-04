@@ -4,9 +4,11 @@ import json
 from dataclasses import dataclass
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
+from app.db.truth_engine_table import TruthEventRecord
 from app.models.entity import EntityType
 from app.models.truth_engine import (
     EntityMentionObservation,
@@ -17,6 +19,7 @@ from app.models.truth_engine_residual import SemanticResidualEnvelope
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider
 from app.services.role_model_router import ModelRole, RoleModelRouter
+from app.services.truth_engine import WorldReducer
 from app.services.truth_engine_semantics import SemanticObservationCompiler
 
 
@@ -110,7 +113,14 @@ your reasoning."""
 
 
 class SemanticResidualCompiler:
-    """Resolve a local residual graph into stable TE2 identities and canonical events."""
+    """Resolve a local residual graph into stable TE2 identities and canonical events.
+
+    Delivery of one residual envelope is retry-idempotent. Before asking the semantic resolver to
+    canonicalize a fluent/relation again, the compiler checks the stable canonical event key. If an
+    earlier attempt already appended that event, the reducer merely finishes/rechecks projection.
+    This prevents retries from creating unused NEW semantic-type rows before the event store notices
+    the duplicate key.
+    """
 
     def __init__(
         self,
@@ -118,7 +128,9 @@ class SemanticResidualCompiler:
         *,
         observation_compiler: SemanticObservationCompiler | None = None,
     ):
+        self._session = session
         self._observation_compiler = observation_compiler or SemanticObservationCompiler(session)
+        self._reducer = WorldReducer(session)
 
     async def compile(
         self,
@@ -152,47 +164,76 @@ class SemanticResidualCompiler:
 
         fluent_event_ids: list[UUID] = []
         for atom in envelope.fluents:
-            result = await self._observation_compiler.compile_fluent(
+            observation_key = f"{source_key}:fluent:{atom.atom_key}"
+            event_id = await self._replay_existing(
                 campaign_id,
-                FluentObservation(
-                    observation_key=f"{source_key}:fluent:{atom.atom_key}",
-                    subject_entity_id=entity_ids[atom.subject_ref],
-                    semantic_description=atom.semantic_description,
-                    value=atom.value,
-                    description=atom.description,
-                    source_turn_id=source_turn_id,
-                    scene_id=scene_id,
-                    authority="semantic_compiler",
-                    evidence=atom.evidence,
-                    cardinality_hint=atom.cardinality_hint,
-                ),
+                f"semantic_observation:{observation_key}",
             )
-            fluent_event_ids.append(result.event_id)
+            if event_id is None:
+                result = await self._observation_compiler.compile_fluent(
+                    campaign_id,
+                    FluentObservation(
+                        observation_key=observation_key,
+                        subject_entity_id=entity_ids[atom.subject_ref],
+                        semantic_description=atom.semantic_description,
+                        value=atom.value,
+                        description=atom.description,
+                        source_turn_id=source_turn_id,
+                        scene_id=scene_id,
+                        authority="semantic_compiler",
+                        evidence=atom.evidence,
+                        cardinality_hint=atom.cardinality_hint,
+                    ),
+                )
+                event_id = result.event_id
+            fluent_event_ids.append(event_id)
 
         relation_event_ids: list[UUID] = []
         for atom in envelope.relations:
-            result = await self._observation_compiler.compile_relation(
+            observation_key = f"{source_key}:relation:{atom.atom_key}"
+            event_id = await self._replay_existing(
                 campaign_id,
-                RelationObservation(
-                    observation_key=f"{source_key}:relation:{atom.atom_key}",
-                    subject_entity_id=entity_ids[atom.subject_ref],
-                    object_entity_id=entity_ids[atom.object_ref],
-                    semantic_description=atom.semantic_description,
-                    present=atom.present,
-                    description=atom.description,
-                    source_turn_id=source_turn_id,
-                    authority="semantic_compiler",
-                    evidence=atom.evidence,
-                    cardinality_hint=atom.cardinality_hint,
-                ),
+                f"semantic_observation:{observation_key}",
             )
-            relation_event_ids.append(result.event_id)
+            if event_id is None:
+                result = await self._observation_compiler.compile_relation(
+                    campaign_id,
+                    RelationObservation(
+                        observation_key=observation_key,
+                        subject_entity_id=entity_ids[atom.subject_ref],
+                        object_entity_id=entity_ids[atom.object_ref],
+                        semantic_description=atom.semantic_description,
+                        present=atom.present,
+                        description=atom.description,
+                        source_turn_id=source_turn_id,
+                        authority="semantic_compiler",
+                        evidence=atom.evidence,
+                        cardinality_hint=atom.cardinality_hint,
+                    ),
+                )
+                event_id = result.event_id
+            relation_event_ids.append(event_id)
 
         return ResidualCompilationResult(
             entity_ids=entity_ids,
             fluent_event_ids=tuple(fluent_event_ids),
             relation_event_ids=tuple(relation_event_ids),
         )
+
+    async def _replay_existing(self, campaign_id: UUID, event_key: str) -> UUID | None:
+        record = (
+            await self._session.execute(
+                select(TruthEventRecord).where(
+                    TruthEventRecord.campaign_id == str(campaign_id),
+                    TruthEventRecord.event_key == event_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if record is None:
+            return None
+        event_id = UUID(record.event_id)
+        await self._reducer.apply_event(event_id)
+        return event_id
 
 
 __all__ = [
