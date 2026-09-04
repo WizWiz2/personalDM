@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.tables import Event, Turn
-from app.db.truth_engine_table import TruthEventRecord
+from app.db.tables import Turn
 from app.services.truth_engine_residual import SemanticResidualExtractor
+from app.services.truth_engine_turn_context import SemanticTurnContextReader
 
 
 class SemanticResidualShadowService:
@@ -27,53 +26,41 @@ class SemanticResidualShadowService:
         session: AsyncSession,
         *,
         extractor: SemanticResidualExtractor | None = None,
+        context_reader: SemanticTurnContextReader | None = None,
     ):
         self._session = session
         self._extractor = extractor or SemanticResidualExtractor(session)
+        self._context_reader = context_reader or SemanticTurnContextReader(session)
 
     async def capture(self, assistant_turn_id: UUID) -> bool:
-        assistant = await self._session.get(Turn, str(assistant_turn_id))
-        if (
-            assistant is None
-            or assistant.role != "assistant"
-            or assistant.status != "active"
-            or not assistant.parent_turn_id
-        ):
-            return False
-        user_turn = await self._session.get(Turn, assistant.parent_turn_id)
-        if user_turn is None or user_turn.status != "active":
+        context = await self._context_reader.load_active(assistant_turn_id)
+        if context is None:
             return False
 
-        campaign_id = UUID(assistant.campaign_id)
-        receipts = await self._structured_receipts(UUID(user_turn.id))
         envelope = await self._extractor.extract(
-            campaign_id,
-            user_content=user_turn.content,
-            assistant_content=assistant.content,
-            structured_receipts=receipts,
+            context.campaign_id,
+            user_content=context.user_content,
+            assistant_content=context.assistant_content,
+            structured_receipts=list(context.structured_receipts),
         )
 
         # End the long LLM read transaction and re-check source activity. An undo that completed
         # while shadow extraction was running must win before any diagnostic write is persisted.
         await self._session.rollback()
-        assistant = await self._session.get(Turn, str(assistant_turn_id))
-        if (
-            assistant is None
-            or assistant.status != "active"
-            or not assistant.parent_turn_id
-        ):
-            return False
-        user_turn = await self._session.get(Turn, assistant.parent_turn_id)
-        if user_turn is None or user_turn.status != "active":
+        current = await self._context_reader.load_active(assistant_turn_id)
+        if current is None or current.user_turn_id != context.user_turn_id:
             return False
 
+        assistant = await self._session.get(Turn, str(assistant_turn_id))
+        if assistant is None:
+            return False
         snapshot = self._snapshot_dict(assistant.context_snapshot)
         snapshot[self.SNAPSHOT_KEY] = {
             "version": 1,
             "mode": "read_only",
-            "source_user_turn_id": user_turn.id,
-            "receipt_count": len(receipts),
-            "structured_receipts": receipts,
+            "source_user_turn_id": str(current.user_turn_id),
+            "receipt_count": len(context.structured_receipts),
+            "structured_receipts": list(context.structured_receipts),
             "residual": envelope.model_dump(mode="json"),
             "counts": {
                 "entities": len(envelope.entities),
@@ -89,37 +76,6 @@ class SemanticResidualShadowService:
         )
         await self._session.flush()
         return True
-
-    async def _structured_receipts(self, source_turn_id: UUID) -> list[dict]:
-        rows = list(
-            (
-                await self._session.execute(
-                    select(TruthEventRecord, Event)
-                    .join(Event, Event.id == TruthEventRecord.event_id)
-                    .where(
-                        TruthEventRecord.source_turn_id == str(source_turn_id),
-                        TruthEventRecord.source_kind == "executor_receipt",
-                        TruthEventRecord.status == "active",
-                    )
-                    .order_by(TruthEventRecord.sequence, TruthEventRecord.event_id)
-                )
-            ).all()
-        )
-        receipts: list[dict] = []
-        for record, event in rows:
-            try:
-                payload = json.loads(record.payload_json or "{}")
-            except (json.JSONDecodeError, TypeError):
-                payload = {}
-            receipts.append(
-                {
-                    "event_id": record.event_id,
-                    "event_type": event.event_type,
-                    "description": event.description,
-                    "payload": payload if isinstance(payload, dict) else {},
-                }
-            )
-        return receipts
 
     @staticmethod
     def _snapshot_dict(raw: str | dict | None) -> dict:
