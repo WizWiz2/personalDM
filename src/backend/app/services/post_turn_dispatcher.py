@@ -7,10 +7,12 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.config import settings
 from app.db.repositories.generation_lifecycle_repo import GenerationLifecycleRepository
 from app.db.tables import Turn
 from app.models.jobs import GenerationPhase
 from app.services.post_turn_processor import PostTurnProcessor
+from app.services.truth_engine_shadow import SemanticResidualShadowService
 from app.services.visual_generation_dispatcher import VisualGenerationDispatcher
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,26 @@ class PostTurnDispatcher:
                         GenerationPhase.POST_TURN_DONE,
                     )
                     await session.commit()
+
+                    # Experimental TE2 comparison path. It runs only after the legacy post-turn
+                    # writer has committed and stores diagnostics in the turn snapshot; it never
+                    # publishes TE2 semantic events or changes runtime world state.
+                    if settings.TE2_SEMANTIC_SHADOW_ENABLED:
+                        try:
+                            captured = await SemanticResidualShadowService(session).capture(
+                                assistant_turn_id
+                            )
+                            if captured:
+                                await session.commit()
+                            else:
+                                await session.rollback()
+                        except Exception as exc:  # pragma: no cover - live shadow is fail-open
+                            await session.rollback()
+                            logger.info(
+                                "TE2 semantic shadow for %s failed open: %s",
+                                assistant_turn_id,
+                                exc,
+                            )
 
                     row = await session.get(Turn, str(assistant_turn_id))
                     if row and row.context_snapshot:
