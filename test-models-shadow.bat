@@ -2,7 +2,7 @@
 chcp 65001 >nul
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
-set "PDM_TE2_SEMANTIC_SHADOW_ENABLED=true"
+set "PDM_TE2_SEMANTIC_MODE=shadow"
 cd /d "%~dp0"
 title Personal DM - TE2 Semantic Shadow Contracts
 
@@ -32,5 +32,5 @@ if not "%REPORT_RC%"=="0" (
     echo [WARN] TE2 shadow report could not be generated.
 )
 
-set "PDM_TE2_SEMANTIC_SHADOW_ENABLED="
+set "PDM_TE2_SEMANTIC_MODE="
 exit /b %RC%
