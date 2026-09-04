@@ -211,6 +211,7 @@ class TruthCandidateRetriever:
                 cardinality=row.cardinality,
                 value_schema=(json.loads(row.value_schema_json) if row.value_schema_json else None),
                 active_for_subject=row.id in active_type_ids,
+                system_key=row.system_key,
             )
             for row in rows[:limit]
         ]
