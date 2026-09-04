@@ -12,7 +12,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import Event
+from app.db.tables import Entity, Event, Item
 from app.db.truth_engine_table import FluentAssertion, SemanticType, TruthEventRecord
 from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
@@ -25,9 +25,15 @@ from app.services.scene_state_service import SceneStateService
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.truth_engine_receipts import (
     CORE_ENTITY_LOCATION,
+    CORE_ITEM_POSITION,
     StructuredReceiptEventCompiler,
 )
-from app.services.turn_planner import SceneTransitionPlan
+from app.services.turn_planner import (
+    ActionSequencePlan,
+    ActionStepPlan,
+    SceneTransitionPlan,
+    TurnPlan,
+)
 from app.services.turn_undo_service import TurnUndoService
 
 
@@ -88,12 +94,12 @@ async def _movement_world(db_session: AsyncSession):
     return campaign_id, hall, room, hero, source, user
 
 
-async def _current_location_projection(db_session, campaign_id, hero_id):
+async def _current_projection(db_session, campaign_id, subject_id, system_key):
     semantic_type = (
         await db_session.execute(
             select(SemanticType).where(
                 SemanticType.campaign_id == str(campaign_id),
-                SemanticType.system_key == CORE_ENTITY_LOCATION,
+                SemanticType.system_key == system_key,
             )
         )
     ).scalar_one()
@@ -101,13 +107,59 @@ async def _current_location_projection(db_session, campaign_id, hero_id):
         await db_session.execute(
             select(FluentAssertion).where(
                 FluentAssertion.campaign_id == str(campaign_id),
-                FluentAssertion.subject_entity_id == str(hero_id),
+                FluentAssertion.subject_entity_id == str(subject_id),
                 FluentAssertion.semantic_type_id == semantic_type.id,
                 FluentAssertion.is_current.is_(True),
             )
         )
     ).scalar_one()
     return json.loads(assertion.value_json), assertion
+
+
+async def _current_location_projection(db_session, campaign_id, hero_id):
+    return await _current_projection(
+        db_session,
+        campaign_id,
+        hero_id,
+        CORE_ENTITY_LOCATION,
+    )
+
+
+async def _current_item_projection(db_session, campaign_id, item_id):
+    return await _current_projection(
+        db_session,
+        campaign_id,
+        item_id,
+        CORE_ITEM_POSITION,
+    )
+
+
+def _inventory_turn_plan(
+    *,
+    item_id,
+    operation: str,
+    target_id=None,
+    outcome: str,
+) -> TurnPlan:
+    return TurnPlan(
+        player_intent=outcome,
+        resolution="sequence",
+        action_sequence=ActionSequencePlan(
+            summary=outcome,
+            steps=[
+                ActionStepPlan(
+                    action_type="inventory",
+                    intent=outcome,
+                    resolution="auto_success",
+                    safe_mundane=True,
+                    observable_outcome=outcome,
+                    item_id=item_id,
+                    inventory_operation=operation,
+                    inventory_target_id=target_id,
+                )
+            ],
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -259,3 +311,181 @@ async def test_turn_undo_reverts_receipt_but_preserves_event_history_and_baselin
     ).scalar_one()
     assert event_count == 2
     assert assistant.status == "active"  # detached read object; DB status is checked by undo service
+
+
+@pytest.mark.asyncio
+async def test_applied_take_projects_item_position_and_undo_restores_baseline(
+    db_session: AsyncSession,
+):
+    campaign_id, hall, _room, hero, source, user = await _movement_world(db_session)
+    item_id = uuid4()
+    db_session.add(
+        Entity(
+            id=str(item_id),
+            campaign_id=str(campaign_id),
+            entity_type="item",
+            canonical_name="brass key",
+        )
+    )
+    db_session.add(
+        Item(
+            entity_id=str(item_id),
+            current_owner_id=None,
+            current_location_id=str(hall.id),
+        )
+    )
+    await db_session.flush()
+
+    plan = _inventory_turn_plan(
+        item_id=item_id,
+        operation="take",
+        outcome="Take the brass key.",
+    )
+    executor = SceneTransitionExecutor(db_session)
+    applied = await executor.apply(
+        campaign_id,
+        source.id,
+        user.id,
+        plan.scene_transition,
+    )
+    assert applied is not None
+    item = await db_session.get(Item, str(item_id))
+    assert item.current_owner_id == str(hero.id)
+    assert item.current_location_id is None
+
+    # Prepared execution is not canonical truth until publication succeeds.
+    count_before_publish = (
+        await db_session.execute(
+            select(func.count(TruthEventRecord.event_id)).where(
+                TruthEventRecord.campaign_id == str(campaign_id)
+            )
+        )
+    ).scalar_one()
+    assert count_before_publish == 0
+
+    assert await executor.mark_applied(applied.transition_id)
+    current, assertion = await _current_item_projection(db_session, campaign_id, item_id)
+    assert current == {"mode": "owned", "entity_id": str(hero.id)}
+    assert assertion.authority == "executor_receipt"
+
+    records = list(
+        (
+            await db_session.execute(
+                select(TruthEventRecord)
+                .where(TruthEventRecord.campaign_id == str(campaign_id))
+                .order_by(TruthEventRecord.sequence)
+            )
+        ).scalars().all()
+    )
+    assert [row.source_kind for row in records] == ["legacy_baseline", "executor_receipt"]
+    assert records[0].source_turn_id is None
+    assert records[1].source_turn_id == str(user.id)
+
+    await TurnRepository(db_session).create(
+        campaign_id,
+        TurnCreate(
+            role="assistant",
+            content="You take the brass key.",
+            scene_id=source.id,
+            parent_turn_id=user.id,
+            context_snapshot={"turn_authority": {"action_sequence": {"status": "applied"}}},
+        ),
+    )
+    await db_session.flush()
+
+    assert await TurnUndoService(db_session).undo_last_pair(campaign_id)
+
+    restored, restored_assertion = await _current_item_projection(
+        db_session,
+        campaign_id,
+        item_id,
+    )
+    assert restored == {"mode": "located", "entity_id": str(hall.id)}
+    assert restored_assertion.authority == "legacy_baseline"
+    item = await db_session.get(Item, str(item_id))
+    assert item.current_owner_id is None
+    assert item.current_location_id == str(hall.id)
+
+    records = list(
+        (
+            await db_session.execute(
+                select(TruthEventRecord)
+                .where(TruthEventRecord.campaign_id == str(campaign_id))
+                .order_by(TruthEventRecord.sequence)
+            )
+        ).scalars().all()
+    )
+    assert records[0].status == "active"
+    assert records[1].status == "reverted"
+
+
+@pytest.mark.asyncio
+async def test_applied_give_projects_machine_resolved_owner_without_semantic_rewrite(
+    db_session: AsyncSession,
+):
+    campaign_id, hall, _room, hero, source, user = await _movement_world(db_session)
+    entities = EntityRepository(db_session)
+    target = await entities.create_character(
+        campaign_id,
+        CharacterCreate(canonical_name="Recipient", current_location_id=hall.id),
+    )
+    await SceneRepository(db_session).add_participant(source.id, target.id)
+
+    item_id = uuid4()
+    db_session.add(
+        Entity(
+            id=str(item_id),
+            campaign_id=str(campaign_id),
+            entity_type="item",
+            canonical_name="sealed letter",
+        )
+    )
+    db_session.add(
+        Item(
+            entity_id=str(item_id),
+            current_owner_id=str(hero.id),
+            current_location_id=None,
+        )
+    )
+    await db_session.flush()
+
+    plan = _inventory_turn_plan(
+        item_id=item_id,
+        operation="give",
+        target_id=target.id,
+        outcome="Give the sealed letter to the recipient.",
+    )
+    executor = SceneTransitionExecutor(db_session)
+    applied = await executor.apply(
+        campaign_id,
+        source.id,
+        user.id,
+        plan.scene_transition,
+    )
+    assert applied is not None
+    assert await executor.mark_applied(applied.transition_id)
+
+    item = await db_session.get(Item, str(item_id))
+    assert item.current_owner_id == str(target.id)
+    assert item.current_location_id is None
+
+    current, assertion = await _current_item_projection(db_session, campaign_id, item_id)
+    assert current == {"mode": "owned", "entity_id": str(target.id)}
+    assert assertion.authority == "executor_receipt"
+
+    # Publication is idempotent; there is exactly one imported baseline and one receipt event.
+    await StructuredReceiptEventCompiler(db_session).compile_applied_transition(
+        applied.transition_id
+    )
+    records = list(
+        (
+            await db_session.execute(
+                select(TruthEventRecord)
+                .where(TruthEventRecord.campaign_id == str(campaign_id))
+                .order_by(TruthEventRecord.sequence)
+            )
+        ).scalars().all()
+    )
+    assert len(records) == 2
+    assert records[0].source_kind == "legacy_baseline"
+    assert records[1].source_kind == "executor_receipt"
