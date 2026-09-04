@@ -43,7 +43,7 @@ For a single-cardinality fluent, applying a different value closes the previous 
 
 There are no synonym lists, keyword dictionaries, or lexical matching rules in the registry.
 
-Engine-owned keys such as `core.entity.location` and `core.item.position` are ABI identifiers between deterministic executors and the reducer. They are never used to recognize player language. Open-ended world semantics will later use candidate retrieval plus constrained semantic resolution.
+Engine-owned keys such as `core.entity.location` and `core.item.position` are ABI identifiers between deterministic executors and the reducer. They are never used to recognize player language. Open-ended world semantics use candidate retrieval plus constrained semantic resolution.
 
 ### Entity mentions
 
@@ -80,19 +80,37 @@ Undo does not delete canonical history. Events sourced from the undone user turn
 
 ### Semantic residuals
 
-Deterministic receipts must never be re-decided by an LLM. The future Canon Compiler receives only the semantic residual that executors cannot know directly.
+Deterministic receipts must never be re-decided by an LLM. The Canon Compiler receives only semantic residuals that executors cannot know directly.
 
-The intended semantic pipeline is:
+The semantic pipeline is now implemented as an initial vertical slice:
 
-1. retrieve a small candidate set of existing entities and semantic types;
-2. let the model choose only an exact candidate ID or `NEW`;
-3. validate the choice in code;
-4. emit canonical events/effects;
-5. let `WorldReducer` own temporal mutation.
+1. `TruthCandidateRetriever` produces bounded candidates from machine-known structure only;
+2. entity candidates are prioritized by explicit context, scene membership, graph adjacency and prior TE2 mentions;
+3. semantic-type candidates are prioritized by currently active slots for the resolved subject;
+4. engine-owned `system_key` slots are hidden from open-ended semantic resolution by default;
+5. `ConstrainedSemanticResolver` lets the model choose only an exact supplied UUID or `NEW`;
+6. backend validation rejects candidate IDs outside that bounded set;
+7. `SemanticObservationCompiler` turns resolved fluent/relation observations into canonical TE2 events/effects;
+8. `WorldReducer` owns temporal supersession and graph mutation.
 
-The model cannot invent an existing ID and does not directly mutate persistence.
+No word dictionary, synonym map, regex semantic recognizer or string-similarity heuristic is used for identity. Candidate retrieval currently uses structural evidence only. A later embedding ranker may reduce large candidate sets, but it will plug into the same retriever boundary and remain a rebuildable index rather than truth storage.
 
-Candidate retrieval may later use embeddings/vector search, but vector storage is an index, not the source of truth.
+For a genuinely new semantic slot, the model supplies only the proposed label, semantic description, cardinality and optional value schema. The backend creates the stable semantic UUID and attaches the creating canonical event as provenance. A model cannot invent an existing UUID.
+
+The first generic compiler slice supports:
+
+- arbitrary fluent observations -> `set_fluent`;
+- arbitrary entity-to-entity relation observations -> `add_relation`;
+- different natural-language phrasings resolving to the same semantic UUID and therefore the same temporal slot;
+- `NEW` semantic types becoming campaign-local schema elements with event provenance.
+
+The old Scribe is not yet wired through this path. This is intentional: the new semantic contract is being proven independently before legacy FACT/RELATIONSHIP proposal writers are removed.
+
+### Entity identity migration constraint
+
+The existing `entities` schema still treats `(campaign_id, entity_type, canonical_name)` as unique. That is incompatible with TE2 identity: two distinct guards, servants or unnamed strangers must be allowed to share the same human-facing label while retaining different UUIDs.
+
+Full `NEW entity` materialization is therefore blocked until that legacy uniqueness constraint is removed safely. TE2 will not work around it by encoding artificial identity into names. Stable UUIDs own identity; labels and mentions are presentation/linguistic data.
 
 ## Layer separation
 
@@ -118,10 +136,10 @@ If future workloads justify a graph server, it should be a rebuildable read inde
 2. Deterministic movement publication and undo. **Implemented; old movement writer retired.**
 3. Deterministic inventory publication and undo. **Implemented; dedicated end-to-end tests added.**
 4. Complete deterministic time/focus projection decisions where current-state materialization is useful.
-5. Candidate retrieval and constrained Canon Compiler.
-6. Generic facts -> semantic fluents.
-7. Generic relationships -> temporal relations.
-8. NPC identity -> entity mentions / semantic entity resolution.
+5. Candidate retrieval and constrained Canon Compiler. **Initial structural retriever/resolver/compiler slice implemented and deterministic tests green.**
+6. Generic facts -> semantic fluents. **Compiler path implemented; legacy Scribe FACT writer not migrated yet.**
+7. Generic relationships -> temporal relations. **Compiler path implemented; legacy relationship writer not migrated yet.**
+8. Remove legacy entity-name uniqueness and migrate NPC identity -> entity mentions / semantic entity resolution.
 9. Beliefs and narrative theses separated from objective truth.
 10. Context compiler reads TE2 projections as authoritative state.
 11. Remove superseded Scribe fixers and legacy compatibility projections.
@@ -136,6 +154,10 @@ Rejected. Open-ended language produces an unbounded number of paraphrases and do
 ### Regex/string-shape canon identity
 
 Rejected as an authoritative semantic mechanism. Structural parsing of machine-owned protocol fields is acceptable; recognizing world meaning from prose through string shape is not.
+
+### String-similarity retrieval as semantic identity
+
+Rejected. Edit distance or token overlap can be useful for UI search but cannot decide whether two observations describe the same entity or semantic slot. Structural retrieval plus a bounded semantic judge is the minimum acceptable path; embeddings may later improve candidate ranking without becoming authority.
 
 ### A guard per failing live test
 
@@ -155,11 +177,13 @@ Positive:
 - provenance is explicit;
 - historical state remains queryable;
 - entity aliases/mentions do not require duplicate entities;
-- semantic model failures are constrained to candidate decisions rather than arbitrary DB writes.
+- semantic model failures are constrained to candidate decisions rather than arbitrary DB writes;
+- generic fluents and relations now have a common compiler path instead of table-specific reconciliation rules.
 
 Costs:
 
 - migration is incremental and temporarily maintains compatibility projections;
-- semantic candidate retrieval and Canon Compiler still need implementation;
-- current Fact/Relationship/Scribe infrastructure cannot be removed until TE2 context parity is proven;
+- structural candidate retrieval will need an embedding/ranking index before very large campaigns;
+- current Fact/Relationship/Scribe infrastructure cannot be removed until TE2 runtime/context parity is proven;
+- duplicate human-facing entity names require a legacy schema migration before `NEW entity` can be fully enabled;
 - live contracts must ultimately validate world-model invariants rather than implementation-specific proposal shapes.
