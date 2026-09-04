@@ -574,9 +574,14 @@ class SemanticObservationCompiler:
         semantic_type_id, created_new = await self._materialize_type(
             campaign_id, "relation", decision
         )
+        event_key = f"semantic_observation:{observation.observation_key}"
         event = CanonicalEventCreate(
-            event_key=f"semantic_observation:{observation.observation_key}",
-            event_type="semantic_relation_observation",
+            event_key=event_key,
+            event_type=(
+                "semantic_relation_observation"
+                if observation.present
+                else "semantic_relation_retraction"
+            ),
             description=observation.description,
             source_kind="semantic_compiler",
             source_turn_id=observation.source_turn_id,
@@ -584,11 +589,16 @@ class SemanticObservationCompiler:
             payload={
                 "semantic_type_id": str(semantic_type_id),
                 "semantic_description": observation.semantic_description,
+                "present": observation.present,
                 "resolution": "new" if created_new else "existing",
             },
             effects=[
                 TruthEventEffectCreate(
-                    effect_type=TruthEffectType.ADD_RELATION,
+                    effect_type=(
+                        TruthEffectType.ADD_RELATION
+                        if observation.present
+                        else TruthEffectType.REMOVE_RELATION
+                    ),
                     payload={
                         "subject_entity_id": str(observation.subject_entity_id),
                         "semantic_type_id": str(semantic_type_id),
@@ -602,7 +612,7 @@ class SemanticObservationCompiler:
                     evidence_type="narrative_observation",
                     content=observation.evidence,
                     source_turn_id=observation.source_turn_id,
-                    source_ref=f"semantic_observation:{observation.observation_key}",
+                    source_ref=event_key,
                 )
             ],
         )
