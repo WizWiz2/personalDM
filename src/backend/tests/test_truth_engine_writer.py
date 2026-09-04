@@ -103,8 +103,11 @@ async def _turn_pair(db_session, *, actor_scoped: bool = False):
     )
     db_session.add(assistant)
     await db_session.flush()
+    # Capture durable identity before commit. The writer intentionally commits several semantic
+    # boundaries, so tests must not rely on later lazy-loading expired ORM instances.
+    ids = (campaign.id, entity.id, user.id, assistant.id)
     await db_session.commit()
-    return campaign, entity, user, assistant
+    return ids
 
 
 def _envelope() -> SemanticResidualEnvelope:
@@ -133,9 +136,9 @@ def _envelope() -> SemanticResidualEnvelope:
 
 @pytest.mark.asyncio
 async def test_writer_publishes_user_sourced_events_and_is_retry_idempotent(db_session):
-    campaign, entity, user, assistant = await _turn_pair(db_session)
+    campaign_id, entity_id, user_id, assistant_id = await _turn_pair(db_session)
     extractor = StubExtractor(_envelope())
-    entity_resolver = StubJointEntityResolver(UUID(entity.id))
+    entity_resolver = StubJointEntityResolver(UUID(entity_id))
     semantic_resolver = StubSemanticResolver()
     writer = SemanticResidualWriterService(
         db_session,
@@ -144,21 +147,21 @@ async def test_writer_publishes_user_sourced_events_and_is_retry_idempotent(db_s
         semantic_resolver=semantic_resolver,
     )
 
-    assert await writer.write(UUID(assistant.id)) is True
-    assert await writer.write(UUID(assistant.id)) is True
+    assert await writer.write(UUID(assistant_id)) is True
+    assert await writer.write(UUID(assistant_id)) is True
 
     records = list(
         (
             await db_session.execute(
                 select(TruthEventRecord)
-                .where(TruthEventRecord.campaign_id == campaign.id)
+                .where(TruthEventRecord.campaign_id == campaign_id)
                 .order_by(TruthEventRecord.sequence)
             )
         ).scalars().all()
     )
     assert len(records) == 2
     assert {record.source_kind for record in records} == {"semantic_compiler"}
-    assert {record.source_turn_id for record in records} == {user.id}
+    assert {record.source_turn_id for record in records} == {user_id}
     assert entity_resolver.calls == 1
     assert semantic_resolver.calls == 1
 
@@ -166,7 +169,7 @@ async def test_writer_publishes_user_sourced_events_and_is_retry_idempotent(db_s
         (
             await db_session.execute(
                 select(SemanticType).where(
-                    SemanticType.campaign_id == campaign.id,
+                    SemanticType.campaign_id == campaign_id,
                     SemanticType.system_key.is_(None),
                 )
             )
@@ -176,40 +179,43 @@ async def test_writer_publishes_user_sourced_events_and_is_retry_idempotent(db_s
     fluent = (
         await db_session.execute(
             select(FluentAssertion).where(
-                FluentAssertion.campaign_id == campaign.id,
+                FluentAssertion.campaign_id == campaign_id,
                 FluentAssertion.is_current.is_(True),
             )
         )
     ).scalar_one()
-    assert fluent.subject_entity_id == entity.id
+    assert fluent.subject_entity_id == entity_id
     assert json.loads(fluent.value_json) == "wet from rain"
 
-    assistant_row = await db_session.get(Turn, assistant.id)
+    assistant_row = await db_session.get(Turn, assistant_id)
     snapshot = json.loads(assistant_row.context_snapshot)
     audit = snapshot[SemanticResidualWriterService.SNAPSHOT_KEY]
     assert audit["mode"] == "writer"
-    assert audit["source_user_turn_id"] == user.id
+    assert audit["source_user_turn_id"] == user_id
     assert len(audit["event_ids"]["fluents"]) == 1
     assert audit["event_ids"]["relations"] == []
 
 
 @pytest.mark.asyncio
 async def test_writer_refuses_objective_semantics_for_actor_scoped_dialogue(db_session):
-    campaign, entity, _user, assistant = await _turn_pair(db_session, actor_scoped=True)
+    campaign_id, entity_id, _user_id, assistant_id = await _turn_pair(
+        db_session,
+        actor_scoped=True,
+    )
     extractor = StubExtractor(_envelope())
     writer = SemanticResidualWriterService(
         db_session,
         extractor=extractor,
-        entity_resolver=StubJointEntityResolver(UUID(entity.id)),
+        entity_resolver=StubJointEntityResolver(UUID(entity_id)),
         semantic_resolver=StubSemanticResolver(),
     )
 
-    assert await writer.write(UUID(assistant.id)) is False
+    assert await writer.write(UUID(assistant_id)) is False
     assert extractor.calls == 0
     count = (
         await db_session.execute(
             select(func.count(TruthEventRecord.event_id)).where(
-                TruthEventRecord.campaign_id == campaign.id
+                TruthEventRecord.campaign_id == campaign_id
             )
         )
     ).scalar_one()
@@ -218,9 +224,9 @@ async def test_writer_refuses_objective_semantics_for_actor_scoped_dialogue(db_s
 
 @pytest.mark.asyncio
 async def test_writer_activity_barrier_prevents_any_publish_after_undo_wins(db_session):
-    campaign, entity, _user, assistant = await _turn_pair(db_session)
+    campaign_id, entity_id, _user_id, assistant_id = await _turn_pair(db_session)
     extractor = StubExtractor(_envelope())
-    entity_resolver = StubJointEntityResolver(UUID(entity.id))
+    entity_resolver = StubJointEntityResolver(UUID(entity_id))
     semantic_resolver = StubSemanticResolver()
     writer = SemanticResidualWriterService(
         db_session,
@@ -230,7 +236,7 @@ async def test_writer_activity_barrier_prevents_any_publish_after_undo_wins(db_s
         semantic_resolver=semantic_resolver,
     )
 
-    assert await writer.write(UUID(assistant.id)) is False
+    assert await writer.write(UUID(assistant_id)) is False
     assert extractor.calls == 1
     assert entity_resolver.calls == 1
     # The first guarded boundary is entity materialization, so semantic-slot judgement never starts.
@@ -238,14 +244,14 @@ async def test_writer_activity_barrier_prevents_any_publish_after_undo_wins(db_s
     event_count = (
         await db_session.execute(
             select(func.count(TruthEventRecord.event_id)).where(
-                TruthEventRecord.campaign_id == campaign.id
+                TruthEventRecord.campaign_id == campaign_id
             )
         )
     ).scalar_one()
     semantic_type_count = (
         await db_session.execute(
             select(func.count(SemanticType.id)).where(
-                SemanticType.campaign_id == campaign.id
+                SemanticType.campaign_id == campaign_id
             )
         )
     ).scalar_one()
