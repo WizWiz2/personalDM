@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed and under active experimentation on `feat/truth-engine-2-foundation`. Do not merge this architecture into `main` until deterministic testing and repeated live-model shadow evaluation prove the migration path.
+Proposed and under active experimentation on `feat/truth-engine-2-foundation`. Do not merge this architecture into `main`, and do not enable TE2 semantic writer mode, until deterministic testing and repeated live-model shadow evaluation prove the migration path.
 
 ## Context
 
@@ -62,6 +62,8 @@ For an unresolved `NEW` entity:
 
 Undo does not need to destroy and later recreate Entity rows. Reverting the origin event removes the active mention/projection during rebuild, so an unsupported registry shell disappears from future semantic candidate sets without breaking historical foreign-key identity.
 
+Residual entity alignment is joint rather than greedy. Candidate sets for all unresolved local references are collected before any Entity/Mention mutation. Ambiguous references are resolved in one bounded model call over a stable, observation-key-sorted input. Existing canonical entity observations are replayed first, so retries do not repeat entity judgement and the arbitrary order of `entities[]` cannot change the candidate world seen by later references.
+
 ### Structured executor receipts
 
 `StructuredReceiptEventCompiler` consumes only machine-resolved structured executor state. It does not inspect Narrator prose.
@@ -83,6 +85,14 @@ A domain must not retain a second writer once TE2 owns it.
 
 Structured movement is now single-writer: the old post-turn movement proposal/event reconciliation path has been removed. Inventory physical fields remain temporarily as a compatibility read projection because the existing runtime still reads them, but structured inventory canon is written by TE2 from executor receipts. The existing Scribe item-transfer guard prevents same-turn prose extraction from overwriting a structured executor receipt.
 
+Semantic ownership is represented by one setting, never independent booleans:
+
+- `PDM_TE2_SEMANTIC_MODE=legacy`: legacy Scribe owns generic FACT/RELATIONSHIP canon and no TE2 semantic observer/writer job is enqueued;
+- `PDM_TE2_SEMANTIC_MODE=shadow`: legacy ownership remains unchanged and one read-only `te2_semantic_shadow` job is added;
+- `PDM_TE2_SEMANTIC_MODE=writer`: one `te2_semantic_writer` job is added and legacy FACT/RELATIONSHIP proposals are removed before persistence. `_auto_commit_proposals` independently refuses those types as defense in depth, and the temporary structured-receipt relationship reconciler is disabled.
+
+The `writer` mode is implemented as a cutover mechanism but remains operationally gated off until real-model shadow evidence is acceptable. Legacy EVENT, KNOWLEDGE and NARRATIVE_DETAIL handling remains temporarily because those domains have not yet been migrated.
+
 Legacy compatibility projections may remain during migration, but they are not a second semantic authority.
 
 ### Undo and replay
@@ -91,6 +101,20 @@ Undo does not delete canonical history. Events sourced from the undone user turn
 
 `ActiveCanonReplay` must not delete TE2-owned event rows. Legacy physical-state compensation remains temporarily while old context/read paths still depend on legacy tables and fields. It can be removed domain-by-domain after context reads TE2 projections directly.
 
+Semantic writer events use the parent **user turn** as `source_turn_id`, even though their stable event key may include the assistant turn. This keeps semantic observations in the same undo inclusion set as structured executor receipts from that player action.
+
+A semantic LLM call must never hold SQLite's write lock. Conversely, checking source activity before a long LLM call is insufficient because `/undo` can win while the model is thinking. `SemanticResidualWriterService` therefore uses a short guarded publication boundary for every semantic write:
+
+1. run extraction/entity/schema judgement without a write lock;
+2. roll back the model-read transaction;
+3. acquire SQLite `BEGIN IMMEDIATE`;
+4. re-check that the expected user/assistant pair is still active inside that write transaction;
+5. re-check the stable event key under the same lock;
+6. perform only deterministic materialization from the already prepared decision;
+7. commit immediately.
+
+This makes activity-check + canonical write atomic with respect to `/undo` without locking the database around model latency. Partial progress is intentional: each semantic boundary commits independently and is retry-idempotent. If undo wins between boundaries, already published user-sourced events are reverted by normal TE2 replay and no later boundary is allowed to publish.
+
 ### Candidate retrieval and constrained semantic resolution
 
 Deterministic receipts must never be re-decided by an LLM. Open-ended semantic observations are canonicalized through a bounded resolution layer:
@@ -98,7 +122,7 @@ Deterministic receipts must never be re-decided by an LLM. Open-ended semantic o
 1. `TruthCandidateRetriever` produces a small candidate set from machine-known structure only;
 2. entity candidates are prioritized by explicit context, active scene membership, TE2 graph adjacency and prior active mentions;
 3. semantic-type candidates are prioritized by currently active slots for the resolved subject;
-4. engine-owned `system_key` slots are hidden from open-ended semantic resolution by default;
+4. engine-owned `system_key` slots are hidden from open-ended semantic mutation by default;
 5. `ConstrainedSemanticResolver` lets the model choose only an exact supplied UUID or `NEW`;
 6. backend validation rejects IDs outside that bounded set;
 7. `SemanticObservationCompiler` turns the resolved observation into canonical TE2 events/effects;
@@ -118,7 +142,7 @@ The residual extractor emits only an observation graph:
 - fluent observations: one entity, a semantic description, and an observed value;
 - relation observations: two entity references, a semantic description, and whether the relation is present or explicitly absent.
 
-Local references are not database identity. `SemanticResidualCompiler` resolves them through the constrained entity resolver and then routes observations through the generic semantic compiler.
+Local references are not database identity. The same entity inside one envelope must reuse one local ref. `SemanticResidualCompiler` / writer orchestration resolves those refs to stable UUIDs and then routes observations through the generic semantic compiler.
 
 The extractor is explicitly forbidden from emitting:
 
@@ -128,13 +152,17 @@ The extractor is explicitly forbidden from emitting:
 - character claims, rumours or beliefs as objective truth;
 - scene theses, plot hooks, mood or presentation detail.
 
-Compilation is retry-idempotent at the semantic boundary. Before resolving an already-delivered fluent or relation again, the residual compiler checks its stable canonical event key. If the event already exists, it re-applies/rechecks the reducer instead of calling semantic resolution again. This prevents retries from creating orphan `NEW` semantic-type rows before event-store idempotency is reached.
+Player input alone is not objective authority. The completed narration and machine receipts define what was actually established.
+
+Compilation is retry-idempotent at the semantic boundary. Existing canonical event keys are checked before entity or semantic-type resolution. After a long judgement they are checked again inside the guarded write transaction so a stale/retried worker cannot create duplicate identity or schema while another worker completed the same observation.
 
 ### Read-only semantic shadow
 
-The legacy Scribe is still the runtime semantic writer for generic facts and relationships. TE2 must not become a hidden second writer merely for evaluation.
+The legacy Scribe is still the runtime semantic writer for generic facts and relationships until the shadow gate passes. TE2 must not become a hidden second writer merely for evaluation.
 
-`SemanticResidualShadowService` therefore runs only as an opt-in, read-only post-turn experiment. When shadow mode is enabled, `PostTurnProcessor.enqueue()` creates a normal durable `te2_semantic_shadow` job in the same transaction that enqueues the legacy post-turn jobs and completes the generation run. This is the completion barrier: the existing live harness already waits until every `post_turn_jobs` row is terminal, so it cannot snapshot the database while the shadow model is still running.
+`SemanticResidualShadowService` therefore runs only as an opt-in, read-only post-turn experiment. In `shadow` mode, `PostTurnProcessor.enqueue()` creates a normal durable `te2_semantic_shadow` job in the same transaction that enqueues the legacy post-turn jobs and completes the generation run. This is the completion barrier: the existing live harness already waits until every `post_turn_jobs` row is terminal, so it cannot snapshot the database while the shadow model is still running.
+
+Shadow and writer share `SemanticTurnContextReader`, so they use the exact same active user/assistant source pair and the same active `executor_receipt` set. Evaluation therefore cannot silently use a different semantic input boundary from the prepared production cutover.
 
 The shadow job:
 
@@ -150,9 +178,23 @@ A shadow model failure is diagnostic and terminal (`failed`) rather than an invi
 
 Shadow mode does not create Entities, SemanticTypes, FluentAssertions, WorldRelationAssertions or semantic canonical events.
 
-It is disabled by default and enabled with `PDM_TE2_SEMANTIC_SHADOW_ENABLED=true`.
+`test-models-shadow.bat` sets `PDM_TE2_SEMANTIC_MODE=shadow`, gives the additional model job a larger post-turn timeout budget, and generates `te2-shadow-report.md` / `te2-shadow-report.json`. The report places TE2 residual observations beside the legacy Scribe proposals from the same assistant turn. It deliberately does not attempt to declare semantic equivalence through string matching.
 
-`test-models-shadow.bat` enables this mode for the isolated real-model contract suite, gives the additional model job a larger post-turn timeout budget, and generates `te2-shadow-report.md` / `te2-shadow-report.json`. The report places TE2 residual observations beside the legacy Scribe proposals from the same assistant turn. It deliberately does not attempt to declare semantic equivalence through string matching.
+### Prepared writer cutover
+
+`SemanticResidualWriterService` exists so a successful shadow evaluation can transfer FACT/RELATIONSHIP ownership without inventing a second production pipeline afterward. It is intentionally not enabled by default.
+
+The service:
+
+- uses the same `SemanticTurnContextReader` and extractor contract as shadow;
+- skips actor-scoped dialogue, which remains epistemic rather than objective world truth;
+- resolves unresolved local entity refs jointly before mutation;
+- performs semantic-type judgement outside write transactions;
+- publishes only through the guarded `BEGIN IMMEDIATE` boundary described above;
+- uses stable event keys and user-turn provenance for retry/undo;
+- writes only audit metadata to `assistant.context_snapshot["te2_semantic_writer"]` beyond canonical TE2 state.
+
+The existence of this mode is not evidence that it is semantically ready. Promotion still requires repeated real-model shadow review for omissions, false objective facts, duplicate semantic slots, entity mistakes and leakage of receipt-owned state.
 
 ## Layer separation
 
@@ -179,15 +221,16 @@ If future workloads justify a graph server, it should be a rebuildable read inde
 3. Deterministic inventory publication and undo. **Implemented; dedicated end-to-end tests added.**
 4. Complete deterministic time/focus projection decisions where current-state materialization is useful.
 5. Candidate retrieval and constrained Canon Compiler. **Initial structural retriever/resolver/compiler slice implemented and deterministic tests added.**
-6. Generic facts -> semantic fluents. **Generic compiler and residual contract implemented; legacy Scribe FACT writer still owns runtime.**
-7. Generic relationships -> temporal relations. **Generic add/remove lifecycle implemented; legacy relationship writer still owns runtime.**
-8. NPC identity -> entity mentions / semantic entity resolution. **Name uniqueness removed; `NEW` identity, duplicate display labels and undo-safe active support implemented.**
-9. Read-only residual shadow against real model turns. **Durable runtime job, completion barrier and comparison-report tooling implemented; repeated live-model evaluation still required.**
-10. Promote proven semantic domains from shadow to TE2 single-writer ownership, one domain at a time.
+6. Generic facts -> semantic fluents. **Generic compiler and residual contract implemented; legacy Scribe FACT writer still owns default runtime.**
+7. Generic relationships -> temporal relations. **Generic add/remove lifecycle implemented; legacy relationship writer still owns default runtime.**
+8. NPC identity -> entity mentions / semantic entity resolution. **Name uniqueness removed; joint `NEW`/existing resolution, duplicate display labels and undo-safe active support implemented.**
+9. Read-only residual shadow against real model turns. **Durable runtime job, shared source boundary, completion barrier and comparison-report tooling implemented; repeated live-model evaluation still required.**
+10. Promote proven FACT/RELATIONSHIP domains from shadow to TE2 single-writer ownership. **Cutover mode and undo-safe writer orchestration implemented but deliberately disabled pending shadow evidence.**
 11. Separate beliefs and narrative theses from objective truth.
-12. Context compiler reads TE2 projections as authoritative state.
-13. Remove superseded Scribe fixers and legacy compatibility projections.
-14. Repeated full live-model suite before considering merge to `main`.
+12. Migrate remaining generic EVENT/presentation ownership where appropriate.
+13. Context compiler reads TE2 projections as authoritative state.
+14. Remove superseded Scribe fixers and legacy compatibility projections.
+15. Repeated full live-model suite before considering merge to `main`.
 
 ## Rejected approaches
 
@@ -211,6 +254,14 @@ Rejected. Guard accumulation hides architectural ownership problems and creates 
 
 Rejected. Running both legacy Scribe writes and TE2 semantic writes during comparison would create two competing authorities and contaminate the experiment. Shadow evaluation must remain diagnostic-only until a domain is deliberately transferred to TE2 single-writer ownership.
 
+### Long SQLite write transactions around LLM calls
+
+Rejected. They would serialize gameplay/background work around unpredictable model latency and still mix semantic reasoning with persistence ownership. TE2 prepares decisions outside the lock and uses only a short atomic activity-check + write section.
+
+### Activity check before, but not after, semantic model calls
+
+Rejected for writer mode. `/undo` can complete while an entity/schema model call is in flight. The final activity check must be in the same SQLite write transaction as canonical publication.
+
 ### Artificial unique-name suffixes
 
 Rejected. Names are labels, not identity. Encoding identity as `Guard #2` would preserve the old lexical schema bug rather than fixing it.
@@ -233,13 +284,17 @@ Positive:
 - generic fluents and relations share one compiler path instead of table-specific reconciliation rules;
 - relation termination is a temporal graph operation rather than an action-specific fixer;
 - semantic residual extraction can be evaluated against the existing runtime without becoming a second writer;
-- shadow completion/retry/recovery reuse the durable post-turn job protocol instead of a separate test-only synchronization path.
+- shadow and prepared writer use one source/receipt boundary;
+- writer publication is atomic with respect to undo without holding SQLite locks across LLM latency;
+- semantic ownership mode makes dual FACT/RELATIONSHIP writers structurally unavailable at cutover.
 
 Costs:
 
 - migration is incremental and temporarily maintains compatibility projections;
 - structural candidate retrieval will need an embedding/ranking index before very large campaigns;
-- current Fact/Relationship/Scribe infrastructure cannot be removed until TE2 runtime/context parity is proven;
+- current Event/Knowledge/NarrativeDetail/Scribe infrastructure cannot be removed until their domains are migrated or deliberately retained;
 - residual extraction adds an extra control-model call when shadow mode is enabled;
+- writer mode may add entity/schema semantic calls and therefore must remain background/durable;
 - live shadow output requires qualitative/contract-level evaluation before writer ownership can move;
+- semantic leakage into receipt-owned concepts remains an explicit shadow gate rather than something hidden by lexical guards;
 - live contracts must ultimately validate world-model invariants rather than implementation-specific proposal shapes.
