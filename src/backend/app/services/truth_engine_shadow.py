@@ -6,6 +6,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.tables import Turn
+from app.models.truth_engine_residual import ResidualSanitizationAudit
 from app.services.truth_engine_residual import SemanticResidualExtractor
 from app.services.truth_engine_residual_gate import SemanticResidualDispositionGate
 from app.services.truth_engine_turn_context import SemanticTurnContextReader
@@ -14,9 +15,9 @@ from app.services.truth_engine_turn_context import SemanticTurnContextReader
 class SemanticResidualShadowService:
     """Capture TE2 residual observations without mutating canonical world state.
 
-    Shadow records both the recall-oriented extractor output and the bounded disposition result. This
-    keeps false objective candidates visible for evaluation while ensuring the exact path prepared for
-    writer mode can be reviewed before any semantic ownership transfer.
+    Shadow records the recall-oriented extractor output, deterministic sanitation diagnostics, and the
+    bounded disposition result. This keeps extractor mistakes visible while exposing the exact
+    objective residual that writer mode would receive after the truth-classification gate.
     """
 
     SNAPSHOT_KEY = "te2_semantic_shadow"
@@ -45,6 +46,11 @@ class SemanticResidualShadowService:
             assistant_content=context.assistant_content,
             structured_receipts=list(context.structured_receipts),
         )
+        sanitization = getattr(
+            self._extractor,
+            "last_sanitization_audit",
+            ResidualSanitizationAudit(),
+        )
         classification = await self._classifier.classify(
             context.campaign_id,
             envelope=envelope,
@@ -65,16 +71,18 @@ class SemanticResidualShadowService:
             return False
         snapshot = self._snapshot_dict(assistant.context_snapshot)
         objective = classification.objective
+        dispositions = [
+            decision.model_dump(mode="json") for decision in classification.decisions
+        ]
         snapshot[self.SNAPSHOT_KEY] = {
-            "version": 2,
+            "version": 3,
             "mode": "read_only",
             "source_user_turn_id": str(current.user_turn_id),
             "receipt_count": len(context.structured_receipts),
             "structured_receipts": list(context.structured_receipts),
+            "sanitization": sanitization.model_dump(mode="json"),
             "residual": envelope.model_dump(mode="json"),
-            "dispositions": [
-                decision.model_dump(mode="json") for decision in classification.decisions
-            ],
+            "dispositions": dispositions,
             "objective_residual": objective.model_dump(mode="json"),
             "counts": {
                 "entities": len(envelope.entities),
