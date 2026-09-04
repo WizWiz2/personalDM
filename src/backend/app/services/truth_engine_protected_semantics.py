@@ -4,6 +4,10 @@ import json
 from typing import Literal
 from uuid import UUID
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.truth_engine_table import SemanticType
 from app.models.truth_engine import (
     SemanticTypeResolutionCandidate,
     SemanticTypeResolutionDecision,
@@ -25,6 +29,10 @@ class ProtectedAwareSemanticResolver(ConstrainedSemanticResolver):
     responsible for treating that selection as a collision/no-op rather than a mutable target.
     """
 
+    def __init__(self, session: AsyncSession, **kwargs):
+        super().__init__(session, **kwargs)
+        self._protected_session = session
+
     async def resolve_semantic_type(
         self,
         campaign_id: UUID,
@@ -41,6 +49,7 @@ class ProtectedAwareSemanticResolver(ConstrainedSemanticResolver):
             subject_entity_id=subject_entity_id,
             include_system_types=True,
         )
+        candidates = await self._hydrate_system_keys(candidates)
         selection = await self._model_router.resolve(campaign_id, ModelRole.SCRIBE)
         if selection is None:
             raise SemanticResolutionError("no control model is configured for semantic resolution")
@@ -90,6 +99,26 @@ valid), and an optional JSON value schema. Return only the structured decision."
             expected_kind=kind,
         )
         return decision, candidates
+
+    async def _hydrate_system_keys(
+        self,
+        candidates: list[SemanticTypeResolutionCandidate],
+    ) -> list[SemanticTypeResolutionCandidate]:
+        if not candidates:
+            return []
+        ids = [str(candidate.semantic_type_id) for candidate in candidates]
+        rows = (
+            await self._protected_session.execute(
+                select(SemanticType.id, SemanticType.system_key).where(SemanticType.id.in_(ids))
+            )
+        ).all()
+        system_keys = {row.id: row.system_key for row in rows}
+        return [
+            candidate.model_copy(
+                update={"system_key": system_keys.get(str(candidate.semantic_type_id))}
+            )
+            for candidate in candidates
+        ]
 
     @staticmethod
     def protected_collision(
