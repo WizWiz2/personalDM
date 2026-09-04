@@ -54,9 +54,13 @@ def _make_database(tmp_path):
             json.dumps(
                 {
                     "te2_semantic_shadow": {
+                        "version": 3,
                         "receipt_count": 0,
                         "structured_receipts": [],
+                        "sanitization": {},
                         "residual": {"entities": [], "fluents": [], "relations": []},
+                        "dispositions": [],
+                        "objective_residual": {"entities": [], "fluents": [], "relations": []},
                     }
                 }
             ),
@@ -75,6 +79,7 @@ def _make_database(tmp_path):
             json.dumps(
                 {
                     "te2_semantic_shadow": {
+                        "version": 3,
                         "receipt_count": 1,
                         "structured_receipts": [
                             {
@@ -84,6 +89,7 @@ def _make_database(tmp_path):
                                 "payload": {"operation": "give"},
                             }
                         ],
+                        "sanitization": {},
                         "residual": {
                             "entities": [
                                 {
@@ -101,6 +107,14 @@ def _make_database(tmp_path):
                                     "description": "The guard is approving.",
                                 }
                             ],
+                            "relations": [],
+                        },
+                        "dispositions": [
+                            {"atom_key": "stance", "disposition": "epistemic"}
+                        ],
+                        "objective_residual": {
+                            "entities": [],
+                            "fluents": [],
                             "relations": [],
                         },
                     }
@@ -152,6 +166,8 @@ def test_shadow_report_builds_structural_triage_without_semantic_string_matching
     assert report["missing_shadow_turn_count"] == 1
     assert report["counts"]["legacy_objective_proposals"] == 1
     assert report["counts"]["fluents"] == 1
+    assert report["counts"]["objective_atoms"] == 0
+    assert report["counts"]["disposition_epistemic"] == 1
     assert report["counts"]["receipts"] == 1
     assert report["triage_counts"] == {
         "actor_scoped_residual_review": 1,
@@ -159,19 +175,20 @@ def test_shadow_report_builds_structural_triage_without_semantic_string_matching
         "receipt_plus_residual_review": 1,
         "shadow_job_failed": 1,
         "te2_empty_with_legacy_objective": 1,
-        "te2_residual_without_legacy_objective": 1,
     }
 
     turns = report["cases"][0]["turns"]
     assert turns[0]["player_input"] == "Я замечаю, что дверь заперта."
     assert turns[1]["shadow_job"]["error"] == "model unavailable"
     assert turns[2]["counts"]["residual_atoms"] == 1
+    assert turns[2]["counts"]["objective_atoms"] == 0
     assert "receipt_plus_residual_review" in turns[2]["triage_flags"]
 
     markdown = render_markdown(report)
     assert "Structural summary" in markdown
-    assert "Triage queue" in markdown
+    assert "Disposition totals" in markdown
+    assert "writer-equivalent objective" in markdown
     assert "Я замечаю, что дверь заперта." in markdown
     assert "model unavailable" in markdown
     assert "Key transferred." in markdown
-    assert "These flags are review queues, not semantic verdicts." in markdown
+    assert "review queues, not semantic verdicts" in markdown
