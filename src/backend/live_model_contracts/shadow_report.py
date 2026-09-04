@@ -10,6 +10,21 @@ from typing import Any
 SHADOW_KEY = "te2_semantic_shadow"
 OBJECTIVE_LEGACY_TYPES = frozenset({"fact", "relationship"})
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "skipped", "cancelled"})
+DISPOSITIONS = (
+    "objective",
+    "epistemic",
+    "transient",
+    "receipt_owned",
+    "presentation",
+    "unsupported",
+)
+SANITIZATION_FIELDS = (
+    "duplicate_entity_refs_dropped",
+    "dangling_fluents_dropped",
+    "dangling_relations_dropped",
+    "duplicate_fluents_dropped",
+    "duplicate_relations_dropped",
+)
 
 
 def _backend_root() -> Path:
@@ -19,15 +34,18 @@ def _backend_root() -> Path:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Collect read-only TE2 semantic shadow envelopes beside legacy Scribe proposals "
-            "from isolated live-model contract databases."
+            "Collect TE2 semantic shadow candidates, disposition-gate results, writer-equivalent "
+            "objective residuals and legacy Scribe proposals from isolated live-model databases."
         )
     )
     parser.add_argument(
         "--run",
         type=Path,
         default=None,
-        help="Live-contract aggregate run directory. Defaults to data/live-model-contracts/latest/run-path.txt.",
+        help=(
+            "Live-contract aggregate run directory. Defaults to "
+            "data/live-model-contracts/latest/run-path.txt."
+        ),
     )
     return parser.parse_args()
 
@@ -48,10 +66,9 @@ def _loads(raw: object, default: Any) -> Any:
     if raw in (None, ""):
         return default
     try:
-        value = json.loads(str(raw))
+        return json.loads(str(raw))
     except (TypeError, ValueError, json.JSONDecodeError):
         return default
-    return value
 
 
 def _table_exists(db: sqlite3.Connection, name: str) -> bool:
@@ -136,6 +153,65 @@ def _legacy_proposals(
     ]
 
 
+def _graph_counts(graph: dict[str, Any] | None) -> dict[str, int]:
+    graph = graph or {}
+    return {
+        "entities": len(graph.get("entities") or []),
+        "fluents": len(graph.get("fluents") or []),
+        "relations": len(graph.get("relations") or []),
+    }
+
+
+def _shadow_counts(
+    shadow: dict[str, Any] | None,
+    legacy_proposals: list[dict[str, Any]],
+) -> dict[str, int]:
+    shadow = shadow or {}
+    raw = _graph_counts(shadow.get("residual"))
+    objective_graph = shadow.get("objective_residual")
+    # Backward compatibility for pre-gate shadow snapshots: until objective_residual exists, the old
+    # residual is the only available approximation. New runs always persist writer-equivalent input.
+    objective = _graph_counts(objective_graph if isinstance(objective_graph, dict) else shadow.get("residual"))
+    counts = {
+        "entities": raw["entities"],
+        "fluents": raw["fluents"],
+        "relations": raw["relations"],
+        "residual_atoms": raw["fluents"] + raw["relations"],
+        "objective_entities": objective["entities"],
+        "objective_fluents": objective["fluents"],
+        "objective_relations": objective["relations"],
+        "objective_atoms": objective["fluents"] + objective["relations"],
+        "legacy_objective_proposals": sum(
+            str(proposal.get("change_type") or "").casefold() in OBJECTIVE_LEGACY_TYPES
+            for proposal in legacy_proposals
+        ),
+        "receipts": int(shadow.get("receipt_count") or 0),
+    }
+    dispositions = Counter(
+        str(item.get("disposition") or "")
+        for item in (shadow.get("dispositions") or [])
+        if isinstance(item, dict)
+    )
+    for disposition in DISPOSITIONS:
+        counts[f"disposition_{disposition}"] = dispositions.get(disposition, 0)
+
+    sanitation = shadow.get("sanitization") or {}
+    sanitation_total = 0
+    for field in SANITIZATION_FIELDS:
+        value = int(sanitation.get(field) or 0) if isinstance(sanitation, dict) else 0
+        counts[f"sanitization_{field}"] = value
+        sanitation_total += value
+    counts["sanitization_dropped_atoms"] = sanitation_total
+
+    objective_graph = objective_graph if isinstance(objective_graph, dict) else {}
+    counts["objective_relation_retractions"] = sum(
+        atom.get("present") is False
+        for atom in (objective_graph.get("relations") or [])
+        if isinstance(atom, dict)
+    )
+    return counts
+
+
 def _triage_flags(
     *,
     shadow: dict[str, Any] | None,
@@ -143,19 +219,7 @@ def _triage_flags(
     legacy_proposals: list[dict[str, Any]],
     actor_scoped: bool,
 ) -> tuple[list[str], dict[str, int]]:
-    residual = (shadow or {}).get("residual") or {}
-    counts = {
-        "entities": len(residual.get("entities") or []),
-        "fluents": len(residual.get("fluents") or []),
-        "relations": len(residual.get("relations") or []),
-    }
-    counts["residual_atoms"] = counts["fluents"] + counts["relations"]
-    counts["legacy_objective_proposals"] = sum(
-        str(proposal.get("change_type") or "").casefold() in OBJECTIVE_LEGACY_TYPES
-        for proposal in legacy_proposals
-    )
-    counts["receipts"] = int((shadow or {}).get("receipt_count") or 0)
-
+    counts = _shadow_counts(shadow, legacy_proposals)
     flags: list[str] = []
     if shadow is None:
         flags.append("missing_shadow")
@@ -163,14 +227,20 @@ def _triage_flags(
         flags.append("shadow_job_failed")
     if shadow_job and shadow_job.get("status") not in TERMINAL_JOB_STATUSES:
         flags.append("shadow_job_nonterminal")
-    if shadow is not None and counts["residual_atoms"] == 0 and counts["legacy_objective_proposals"]:
+    if shadow is not None and counts["objective_atoms"] == 0 and counts["legacy_objective_proposals"]:
         flags.append("te2_empty_with_legacy_objective")
-    if shadow is not None and counts["residual_atoms"] and not counts["legacy_objective_proposals"]:
+    if shadow is not None and counts["objective_atoms"] and not counts["legacy_objective_proposals"]:
         flags.append("te2_residual_without_legacy_objective")
     if counts["receipts"] and counts["residual_atoms"]:
         flags.append("receipt_plus_residual_review")
+    if counts["receipts"] and counts["objective_atoms"]:
+        flags.append("receipt_plus_objective_review")
     if actor_scoped and counts["residual_atoms"]:
         flags.append("actor_scoped_residual_review")
+    if actor_scoped and counts["objective_atoms"]:
+        flags.append("actor_scoped_objective_blocker")
+    if counts["sanitization_dropped_atoms"]:
+        flags.append("sanitization_repair_review")
     return flags, counts
 
 
@@ -284,6 +354,17 @@ def _code_block(lines: list[str], title: str, value: str | None) -> None:
     lines.extend([title, "", "```text", value or "", "```", ""])
 
 
+def _render_graph(lines: list[str], title: str, graph: dict[str, Any] | None) -> None:
+    graph = graph or {}
+    lines.append(title)
+    for section in ("entities", "fluents", "relations"):
+        atoms = graph.get(section) or []
+        lines.append(f"- **{section}** ({len(atoms)})")
+        for atom in atoms:
+            lines.append(f"  - `{_atom_line(atom)}`")
+    lines.append("")
+
+
 def render_markdown(report: dict[str, Any]) -> str:
     counts = report.get("counts") or {}
     triage = report.get("triage_counts") or {}
@@ -299,15 +380,21 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Structural summary",
         "",
-        f"Residual fluent atoms: **{counts.get('fluents', 0)}**  ",
-        f"Residual relation atoms: **{counts.get('relations', 0)}**  ",
-        f"Residual entity refs: **{counts.get('entities', 0)}**  ",
+        f"Raw residual fluent atoms: **{counts.get('fluents', 0)}**  ",
+        f"Raw residual relation atoms: **{counts.get('relations', 0)}**  ",
+        f"Writer-equivalent objective fluent atoms: **{counts.get('objective_fluents', 0)}**  ",
+        f"Writer-equivalent objective relation atoms: **{counts.get('objective_relations', 0)}**  ",
+        f"Objective relation retractions (`present=false`): **{counts.get('objective_relation_retractions', 0)}**  ",
         f"Legacy objective FACT/RELATIONSHIP proposals: **{counts.get('legacy_objective_proposals', 0)}**  ",
-        f"Structured receipts supplied to shadow: **{counts.get('receipts', 0)}**",
+        f"Structured receipts supplied to shadow: **{counts.get('receipts', 0)}**  ",
+        f"Atoms repaired/dropped by deterministic sanitation: **{counts.get('sanitization_dropped_atoms', 0)}**",
         "",
-        "## Triage queue",
+        "### Disposition totals",
         "",
     ]
+    for disposition in DISPOSITIONS:
+        lines.append(f"- **{disposition}**: {counts.get(f'disposition_{disposition}', 0)}")
+    lines.extend(["", "## Triage queue", ""])
     if not triage:
         lines.append("- no structural review flags")
     else:
@@ -317,8 +404,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         [
             "",
             (
-                "These flags are review queues, not semantic verdicts. This report intentionally "
-                "does not decide equivalence, omissions or receipt leakage through string matching."
+                "These flags are review queues, not semantic verdicts. The report does not decide "
+                "equivalence through lexical matching. `objective_residual` is the exact semantic "
+                "graph that writer mode would receive after the bounded disposition gate."
             ),
             "",
         ]
@@ -335,7 +423,6 @@ def render_markdown(report: dict[str, Any]) -> str:
         )
         for turn in case["turns"]:
             shadow = turn.get("te2_shadow")
-            residual = (shadow or {}).get("residual") or {}
             lines.extend(
                 [
                     f"### Assistant turn `{turn['assistant_turn_id']}`",
@@ -357,27 +444,37 @@ def render_markdown(report: dict[str, Any]) -> str:
             _code_block(lines, "Published narration:", turn.get("assistant_content"))
 
             if shadow is None:
-                lines.extend(["TE2 residual: **missing**", ""])
+                lines.extend(["TE2 shadow: **missing**", ""])
             else:
+                receipts = shadow.get("structured_receipts") or []
                 lines.extend(
                     [
-                        f"Structured receipts supplied to residual extraction: **{shadow.get('receipt_count', 0)}**",
+                        f"Structured receipts supplied to extraction: **{shadow.get('receipt_count', 0)}**",
+                        "",
+                        "Sanitization audit:",
+                        f"- `{json.dumps(shadow.get('sanitization') or {}, ensure_ascii=False, sort_keys=True)}`",
                         "",
                     ]
                 )
-                receipts = shadow.get("structured_receipts") or []
                 if receipts:
                     lines.append("Structured receipts:")
                     for receipt in receipts:
                         lines.append(f"- `{_atom_line(receipt)}`")
                     lines.append("")
-                lines.append("TE2 residual:")
-                for section in ("entities", "fluents", "relations"):
-                    atoms = residual.get(section) or []
-                    lines.append(f"- **{section}** ({len(atoms)})")
-                    for atom in atoms:
-                        lines.append(f"  - `{_atom_line(atom)}`")
+                _render_graph(lines, "TE2 residual candidates:", shadow.get("residual"))
+                lines.append("Disposition gate:")
+                for decision in shadow.get("dispositions") or []:
+                    lines.append(f"- `{_atom_line(decision)}`")
+                if not shadow.get("dispositions"):
+                    lines.append("- none / pre-gate snapshot")
                 lines.append("")
+                _render_graph(
+                    lines,
+                    "TE2 writer-equivalent objective residual:",
+                    shadow.get("objective_residual")
+                    if isinstance(shadow.get("objective_residual"), dict)
+                    else shadow.get("residual"),
+                )
 
             lines.append("Legacy Scribe proposals:")
             if not turn["legacy_proposals"]:
@@ -385,9 +482,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             else:
                 for proposal in turn["legacy_proposals"]:
                     lines.append(
-                        "- `"
-                        + json.dumps(proposal, ensure_ascii=False, sort_keys=True)
-                        + "`"
+                        "- `" + json.dumps(proposal, ensure_ascii=False, sort_keys=True) + "`"
                     )
             lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -411,16 +506,17 @@ def main() -> int:
         run_dir = _resolve_run_dir(args.run)
         json_path, markdown_path, report = write_report(run_dir)
     except (OSError, RuntimeError, sqlite3.Error) as exc:
-        print(f"[TE2 shadow report] ERROR: {exc}")
-        return 2
+        print(f"TE2 shadow report failed: {exc}")
+        return 1
 
+    print(f"TE2 shadow JSON: {json_path}")
+    print(f"TE2 shadow Markdown: {markdown_path}")
     print(
-        "[TE2 shadow report] "
+        "TE2 shadow summary: "
         f"{report['shadow_turn_count']}/{report['assistant_turn_count']} assistant turns captured; "
-        f"{sum(report.get('triage_counts', {}).values())} structural review flags"
+        f"objective atoms={report.get('counts', {}).get('objective_atoms', 0)}; "
+        f"triage flags={sum((report.get('triage_counts') or {}).values())}."
     )
-    print(f"JSON: {json_path}")
-    print(f"Markdown: {markdown_path}")
     return 0
 
 
