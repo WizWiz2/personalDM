@@ -177,6 +177,16 @@ class SceneBridgeService:
         elif status in {"rolled_back", "undone"}:
             row.undone_at = now
         await self._session.flush()
+
+        # SceneTransitionExecutor marks the structured transition/sequence applied before it calls
+        # this boundary. Publishing the bridge therefore means the receipt is now allowed into the
+        # immutable TE2 event log. Compilation is idempotent by event_key and shares this transaction.
+        if status == "applied":
+            from app.services.truth_engine_receipts import StructuredReceiptEventCompiler
+
+            await StructuredReceiptEventCompiler(
+                self._session
+            ).compile_applied_transition(transition_id)
         return True
 
     @staticmethod
