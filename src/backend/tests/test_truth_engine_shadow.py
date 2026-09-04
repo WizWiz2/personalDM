@@ -38,16 +38,19 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
     campaign = Campaign(name="TE2 shadow")
     db_session.add(campaign)
     await db_session.flush()
+    campaign_id = UUID(campaign.id)
+    campaign_id_text = str(campaign_id)
     user = Turn(
-        campaign_id=campaign.id,
+        campaign_id=campaign_id_text,
         role="user",
         content="I take the key and ask the watcher about the mark.",
         status="active",
     )
     db_session.add(user)
     await db_session.flush()
+    user_id = UUID(user.id)
     assistant = Turn(
-        campaign_id=campaign.id,
+        campaign_id=campaign_id_text,
         role="assistant",
         content="You take the key. The watcher reveals that the mark is fresh.",
         parent_turn_id=user.id,
@@ -56,19 +59,20 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
     )
     db_session.add(assistant)
     await db_session.flush()
+    assistant_id = UUID(assistant.id)
 
     receipt = CanonicalEventCreate(
         event_key="receipt:test:key-take",
         event_type="item_transfer",
         description="The structured executor transferred the key.",
         source_kind="executor_receipt",
-        source_turn_id=UUID(user.id),
+        source_turn_id=user_id,
         payload={
             "operation": "take",
             "item_id": "machine-key-id",
         },
     )
-    await WorldReducer(db_session).append_and_reduce(UUID(campaign.id), receipt)
+    await WorldReducer(db_session).append_and_reduce(campaign_id, receipt)
     await db_session.commit()
 
     envelope = SemanticResidualEnvelope(
@@ -93,7 +97,7 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
     captured = await SemanticResidualShadowService(
         db_session,
         extractor=extractor,
-    ).capture(UUID(assistant.id))
+    ).capture(assistant_id)
     await db_session.commit()
 
     assert captured is True
@@ -114,7 +118,7 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
         }
     ]
 
-    row = await db_session.get(Turn, assistant.id)
+    row = await db_session.get(Turn, str(assistant_id))
     snapshot = json.loads(row.context_snapshot)
     shadow = snapshot[SemanticResidualShadowService.SNAPSHOT_KEY]
     assert snapshot["existing"] == "metadata"
@@ -127,26 +131,28 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
     assert (
         await db_session.execute(
             select(func.count(TruthEventRecord.event_id)).where(
-                TruthEventRecord.campaign_id == campaign.id
+                TruthEventRecord.campaign_id == campaign_id_text
             )
         )
     ).scalar_one() == 1
     assert (
         await db_session.execute(
-            select(func.count(SemanticType.id)).where(SemanticType.campaign_id == campaign.id)
+            select(func.count(SemanticType.id)).where(
+                SemanticType.campaign_id == campaign_id_text
+            )
         )
     ).scalar_one() == 0
     assert (
         await db_session.execute(
             select(func.count(FluentAssertion.id)).where(
-                FluentAssertion.campaign_id == campaign.id
+                FluentAssertion.campaign_id == campaign_id_text
             )
         )
     ).scalar_one() == 0
     assert (
         await db_session.execute(
             select(func.count(WorldRelationAssertion.id)).where(
-                WorldRelationAssertion.campaign_id == campaign.id
+                WorldRelationAssertion.campaign_id == campaign_id_text
             )
         )
     ).scalar_one() == 0
@@ -157,8 +163,9 @@ async def test_shadow_capture_skips_inactive_source_pair_without_calling_model(d
     campaign = Campaign(name="TE2 shadow inactive")
     db_session.add(campaign)
     await db_session.flush()
+    campaign_id_text = campaign.id
     user = Turn(
-        campaign_id=campaign.id,
+        campaign_id=campaign_id_text,
         role="user",
         content="old input",
         status="reverted",
@@ -166,7 +173,7 @@ async def test_shadow_capture_skips_inactive_source_pair_without_calling_model(d
     db_session.add(user)
     await db_session.flush()
     assistant = Turn(
-        campaign_id=campaign.id,
+        campaign_id=campaign_id_text,
         role="assistant",
         content="old output",
         parent_turn_id=user.id,
@@ -174,15 +181,17 @@ async def test_shadow_capture_skips_inactive_source_pair_without_calling_model(d
         context_snapshot="{}",
     )
     db_session.add(assistant)
+    await db_session.flush()
+    assistant_id = UUID(assistant.id)
     await db_session.commit()
 
     extractor = StubExtractor(SemanticResidualEnvelope())
     captured = await SemanticResidualShadowService(
         db_session,
         extractor=extractor,
-    ).capture(UUID(assistant.id))
+    ).capture(assistant_id)
 
     assert captured is False
     assert extractor.calls == []
-    row = await db_session.get(Turn, assistant.id)
+    row = await db_session.get(Turn, str(assistant_id))
     assert SemanticResidualShadowService.SNAPSHOT_KEY not in json.loads(row.context_snapshot)
