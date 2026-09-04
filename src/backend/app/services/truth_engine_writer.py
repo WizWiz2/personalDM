@@ -20,6 +20,7 @@ from app.models.truth_engine_residual import (
     ResidualClassificationResult,
     SemanticResidualEnvelope,
 )
+from app.services.truth_engine_protected_semantics import ProtectedAwareSemanticResolver
 from app.services.truth_engine_residual import (
     JointResidualEntityResolver,
     SemanticResidualExtractor,
@@ -68,6 +69,7 @@ class SemanticWriterResult:
     entity_ids: dict[str, UUID]
     fluent_event_ids: tuple[UUID, ...]
     relation_event_ids: tuple[UUID, ...]
+    protected_collision_keys: tuple[str, ...] = ()
 
 
 class SemanticResidualWriterService:
@@ -76,6 +78,11 @@ class SemanticResidualWriterService:
     Extraction and disposition/schema/identity LLM work happens outside SQLite write locks. The
     disposition gate cannot create atoms; it can only classify existing backend-keyed observations.
     Only atoms explicitly marked ``objective`` reach identity/schema materialization.
+
+    Engine-owned semantic types remain visible to the schema judge only as collision candidates. If an
+    open semantic observation resolves to a protected `system_key`, the writer records a diagnostic
+    collision and performs no semantic write instead of creating a duplicate slot or mutating executor
+    state.
 
     After each semantic judgement the service rolls back the read transaction, acquires a short
     ``BEGIN IMMEDIATE`` write lock, re-checks that the source user/assistant pair is still active, and
@@ -99,7 +106,7 @@ class SemanticResidualWriterService:
         self._classifier = classifier or SemanticResidualDispositionGate(session)
         self._context_reader = context_reader or SemanticTurnContextReader(session)
         self._entity_resolver = entity_resolver or JointResidualEntityResolver(session)
-        self._semantic_resolver = semantic_resolver or ConstrainedSemanticResolver(session)
+        self._semantic_resolver = semantic_resolver or ProtectedAwareSemanticResolver(session)
 
     async def write(self, assistant_turn_id: UUID) -> bool:
         context = await self._context_reader.load_active(assistant_turn_id)
@@ -222,6 +229,7 @@ class SemanticResidualWriterService:
                 await self._session.rollback()
                 raise
 
+        protected_collision_keys: list[str] = []
         fluent_event_ids: list[UUID] = []
         for atom in envelope.fluents:
             observation_key = f"{source_key}:fluent:{atom.atom_key}"
@@ -232,7 +240,7 @@ class SemanticResidualWriterService:
                 continue
 
             subject_id = entity_ids[atom.subject_ref]
-            decision, _ = await self._semantic_resolver.resolve_semantic_type(
+            decision, candidates = await self._semantic_resolver.resolve_semantic_type(
                 context.campaign_id,
                 kind="fluent",
                 semantic_description=atom.semantic_description,
@@ -240,6 +248,11 @@ class SemanticResidualWriterService:
                 observed_value=atom.value,
                 cardinality_hint=atom.cardinality_hint,
             )
+            collision = ProtectedAwareSemanticResolver.protected_collision(decision, candidates)
+            if collision is not None:
+                protected_collision_keys.append(str(atom.atom_key))
+                continue
+
             await self._begin_guarded_write(context)
             try:
                 existing = await self._existing_event_id(context.campaign_id, event_key)
@@ -283,7 +296,7 @@ class SemanticResidualWriterService:
 
             subject_id = entity_ids[atom.subject_ref]
             object_id = entity_ids[atom.object_ref]
-            decision, _ = await self._semantic_resolver.resolve_semantic_type(
+            decision, candidates = await self._semantic_resolver.resolve_semantic_type(
                 context.campaign_id,
                 kind="relation",
                 semantic_description=atom.semantic_description,
@@ -291,6 +304,11 @@ class SemanticResidualWriterService:
                 observed_value={"object_entity_id": str(object_id)},
                 cardinality_hint=atom.cardinality_hint,
             )
+            collision = ProtectedAwareSemanticResolver.protected_collision(decision, candidates)
+            if collision is not None:
+                protected_collision_keys.append(str(atom.atom_key))
+                continue
+
             await self._begin_guarded_write(context)
             try:
                 existing = await self._existing_event_id(context.campaign_id, event_key)
@@ -327,6 +345,7 @@ class SemanticResidualWriterService:
             entity_ids=entity_ids,
             fluent_event_ids=tuple(fluent_event_ids),
             relation_event_ids=tuple(relation_event_ids),
+            protected_collision_keys=tuple(protected_collision_keys),
         )
 
     async def _begin_guarded_write(self, context: SemanticTurnContext) -> None:
@@ -403,10 +422,12 @@ class SemanticResidualWriterService:
                     "objective_entities": len(objective.entities),
                     "objective_fluents": len(objective.fluents),
                     "objective_relations": len(objective.relations),
+                    "protected_collisions": len(result.protected_collision_keys),
                 },
                 "dispositions": [
                     decision.model_dump(mode="json") for decision in classification.decisions
                 ],
+                "protected_collision_keys": list(result.protected_collision_keys),
                 "event_ids": {
                     "fluents": [str(value) for value in result.fluent_event_ids],
                     "relations": [str(value) for value in result.relation_event_ids],
