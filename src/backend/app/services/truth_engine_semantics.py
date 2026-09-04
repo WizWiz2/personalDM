@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from typing import Iterable, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,10 +14,13 @@ from app.db.truth_engine_table import (
     EntityMention,
     FluentAssertion,
     SemanticType,
+    TruthEventRecord,
     WorldRelationAssertion,
 )
+from app.models.entity import EntityType
 from app.models.truth_engine import (
     CanonicalEventCreate,
+    EntityMentionObservation,
     EntityResolutionCandidate,
     EntityResolutionDecision,
     FluentObservation,
@@ -31,7 +34,7 @@ from app.models.truth_engine import (
     WorldReductionResult,
 )
 from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.providers.llm_provider import LLMProvider
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.truth_engine import SemanticTypeRegistry, WorldReducer
 
@@ -124,6 +127,18 @@ class TruthCandidateRetriever:
             query = query.where(Entity.entity_type.in_(type_values))
         rows = list((await self._session.execute(query)).scalars().all())
 
+        # TE2-created Entity rows are durable identity-registry entries. Their active-world support
+        # comes from replayable mentions/graph context, not from the mere existence of the UUID row.
+        # After undo/rebuild an unsupported registry shell therefore cannot leak back as a candidate.
+        rows = [
+            row
+            for row in rows
+            if row.provenance != "truth_engine"
+            or row.id in context_ids
+            or row.id in scene_ids
+            or row.id in linked_ids
+            or mention_counts[row.id] > 0
+        ]
         rows.sort(
             key=lambda row: (
                 0 if row.id in context_ids else 1,
@@ -377,6 +392,115 @@ class SemanticObservationCompiler:
         self._registry = SemanticTypeRegistry(session)
         self._reducer = WorldReducer(session)
 
+    async def compile_entity_reference(
+        self,
+        campaign_id: UUID,
+        observation: EntityMentionObservation,
+    ) -> UUID:
+        """Resolve one mention to a stable UUID, creating only a durable registry shell for NEW.
+
+        Entity rows are identity registry entries rather than current-world assertions. The canonical
+        mention event is the replayable support that makes a TE2-created registry shell discoverable.
+        Undo therefore removes its active mention projection without deleting a UUID that later events
+        may still reference.
+        """
+        event_key = f"semantic_entity:{observation.observation_key}"
+        existing_record = (
+            await self._session.execute(
+                select(TruthEventRecord).where(
+                    TruthEventRecord.campaign_id == str(campaign_id),
+                    TruthEventRecord.event_key == event_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_record is not None:
+            payload = json.loads(existing_record.payload_json or "{}")
+            raw_entity_id = payload.get("entity_id")
+            if not raw_entity_id:
+                raise SemanticResolutionError("existing entity observation lost its stable entity_id")
+            await self._reducer.apply_event(UUID(existing_record.event_id))
+            return UUID(str(raw_entity_id))
+
+        try:
+            entity_type = EntityType(observation.entity_type).value
+        except ValueError as exc:
+            raise SemanticResolutionError(
+                f"unsupported entity type for semantic identity: {observation.entity_type}"
+            ) from exc
+
+        decision = await self._resolver.resolve_entity(
+            campaign_id,
+            mention_text=observation.mention_text,
+            expected_types=[entity_type],
+            scene_id=observation.scene_id,
+            context_entity_ids=observation.context_entity_ids,
+        )
+        created_new = decision.decision == "new"
+        if created_new:
+            entity_id = uuid4()
+            entity = Entity(
+                id=str(entity_id),
+                campaign_id=str(campaign_id),
+                entity_type=entity_type,
+                canonical_name=observation.mention_text.strip(),
+                aliases=None,
+                description=observation.description,
+                status="active",
+                provenance="truth_engine",
+                version=1,
+                custom_fields=None,
+            )
+            self._session.add(entity)
+            await self._session.flush()
+        else:
+            entity_id = decision.entity_id
+            if entity_id is None:
+                raise SemanticResolutionError("existing entity decision is missing entity_id")
+            entity = await self._validate_entity(campaign_id, entity_id)
+            if entity.entity_type != entity_type:
+                raise SemanticResolutionError("resolved entity changed the expected entity type")
+
+        event = CanonicalEventCreate(
+            event_key=event_key,
+            event_type="entity_discovered" if created_new else "entity_mention_observed",
+            description=(
+                observation.description
+                or f"Observed entity reference: {observation.mention_text.strip()}"
+            ),
+            source_kind="semantic_compiler",
+            source_turn_id=observation.source_turn_id,
+            participant_ids=[entity_id],
+            payload={
+                "entity_id": str(entity_id),
+                "entity_type": entity_type,
+                "mention_text": observation.mention_text.strip(),
+                "resolution": "new" if created_new else "existing",
+            },
+            effects=[
+                TruthEventEffectCreate(
+                    effect_type=TruthEffectType.RECORD_MENTION,
+                    payload={
+                        "entity_id": str(entity_id),
+                        "mention_text": observation.mention_text.strip(),
+                        "mention_kind": observation.mention_kind,
+                        "scene_id": str(observation.scene_id) if observation.scene_id else None,
+                        "confidence": observation.confidence,
+                        "resolver_kind": "semantic_compiler",
+                    },
+                )
+            ],
+            evidence=[
+                TruthEventEvidenceCreate(
+                    evidence_type="entity_mention",
+                    content=observation.evidence,
+                    source_turn_id=observation.source_turn_id,
+                    source_ref=event_key,
+                )
+            ],
+        )
+        await self._reducer.append_and_reduce(campaign_id, event)
+        return entity_id
+
     async def compile_fluent(
         self,
         campaign_id: UUID,
@@ -522,10 +646,11 @@ class SemanticObservationCompiler:
             semantic_type.created_by_event_id = str(event_id)
             await self._session.flush()
 
-    async def _validate_entity(self, campaign_id: UUID, entity_id: UUID) -> None:
+    async def _validate_entity(self, campaign_id: UUID, entity_id: UUID) -> Entity:
         entity = await self._session.get(Entity, str(entity_id))
         if entity is None or entity.campaign_id != str(campaign_id) or entity.status != "active":
             raise SemanticResolutionError("semantic observation references an invalid entity")
+        return entity
 
 
 __all__ = [
