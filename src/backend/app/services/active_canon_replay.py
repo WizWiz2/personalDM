@@ -16,6 +16,7 @@ from app.db.tables import (
     RelationshipAssertion,
     Turn,
 )
+from app.db.truth_engine_table import TruthEventRecord
 from app.models.proposed_change import ChangeType
 from app.services.canon_applier import CanonApplier
 from app.services.initial_world_state import InitialWorldStateService
@@ -28,11 +29,11 @@ class ActiveCanonReplayResult:
 
 
 class ActiveCanonReplayService:
-    """Rebuild derived canon from accepted proposals whose source turns are still active.
+    """Rebuild legacy derived canon from active accepted proposals.
 
-    Undo changes turn status first, then calls this service. That makes turn status the single
-    inclusion rule for derived memory instead of teaching every Fact/Belief/Event repository a
-    bespoke compensation path.
+    Truth Engine 2 canonical events are immutable source history and are deliberately excluded from
+    this legacy projection cleanup. During migration the old proposal projection and TE2 projection
+    coexist, but only their derived rows may be rebuilt or discarded.
     """
 
     def __init__(self, session: AsyncSession):
@@ -98,7 +99,7 @@ class ActiveCanonReplayService:
         return ActiveCanonReplayResult(replayed=len(replayable), skipped=skipped)
 
     async def _remove_derived_projection(self, campaign_id: UUID) -> None:
-        """Remove only model-extracted/replayable projection, preserving manual baseline canon."""
+        """Remove replayable legacy projection while preserving manual and TE2 source canon."""
         turn_ids = select(Turn.id).where(Turn.campaign_id == str(campaign_id))
 
         extracted_fact_ids = select(Fact.id).where(
@@ -134,10 +135,12 @@ class ActiveCanonReplayService:
             .values(is_current=True, superseded_by=None)
         )
 
-        await self._session.execute(delete(NarrativeDetail).where(
-            NarrativeDetail.campaign_id == str(campaign_id),
-            NarrativeDetail.source_turn_id.in_(turn_ids),
-        ))
+        await self._session.execute(
+            delete(NarrativeDetail).where(
+                NarrativeDetail.campaign_id == str(campaign_id),
+                NarrativeDetail.source_turn_id.in_(turn_ids),
+            )
+        )
         await self._session.execute(delete(Belief).where(Belief.source_turn_id.in_(turn_ids)))
         await self._session.execute(
             delete(RelationshipAssertion).where(
@@ -151,11 +154,16 @@ class ActiveCanonReplayService:
                 Fact.source_turn_id.is_not(None),
             )
         )
+
+        truth_event_ids = select(TruthEventRecord.event_id).where(
+            TruthEventRecord.campaign_id == str(campaign_id)
+        )
         await self._session.execute(
             delete(Event).where(
                 Event.campaign_id == str(campaign_id),
                 Event.source_turns.is_not(None),
                 Event.event_type.not_in(["scene_outcome", "scenario_pulse"]),
+                Event.id.not_in(truth_event_ids),
             )
         )
         await self._session.flush()
