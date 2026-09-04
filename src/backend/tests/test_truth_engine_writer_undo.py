@@ -13,9 +13,12 @@ from app.models.truth_engine import (
     SemanticTypeResolutionDecision,
 )
 from app.models.truth_engine_residual import (
+    ResidualAtomDisposition,
+    ResidualClassificationResult,
     ResidualEntityMention,
     ResidualFluentObservation,
     SemanticResidualEnvelope,
+    objective_residual,
 )
 from app.services.truth_engine_writer import SemanticResidualWriterService
 from app.services.turn_undo_service import TurnUndoService
@@ -43,6 +46,18 @@ class _Extractor:
                     cardinality_hint="single",
                 )
             ],
+        )
+
+
+class _ObjectiveClassifier:
+    async def classify(self, campaign_id, *, envelope, **kwargs):
+        decisions = [
+            ResidualAtomDisposition(atom_key=atom.atom_key, disposition="objective")
+            for atom in [*envelope.fluents, *envelope.relations]
+        ]
+        return ResidualClassificationResult(
+            decisions=decisions,
+            objective=objective_residual(envelope, decisions),
         )
 
 
@@ -117,6 +132,7 @@ async def test_turn_undo_reverts_semantic_writer_history_and_removes_projection(
     writer = SemanticResidualWriterService(
         db_session,
         extractor=_Extractor(),
+        classifier=_ObjectiveClassifier(),
         entity_resolver=_EntityResolver(keeper_id),
         semantic_resolver=_SemanticResolver(),
     )
