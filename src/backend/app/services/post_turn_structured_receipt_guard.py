@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
+from app.config import settings
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.tables import PostTurnJob, RelationshipAssertion
@@ -160,6 +161,11 @@ async def _ensure_relationship_receipts(
 ) -> int:
     """Temporary legacy bridge for relationships not yet migrated to TE2 semantic relations."""
 
+    # Once TE2 owns objective relations this bridge is not a compatibility projection: it would be
+    # a second semantic writer. Refuse to run it even when called directly by an old wrapper/test.
+    if settings.TE2_SEMANTIC_MODE == "writer":
+        return 0
+
     player_id = _player_id(assistant)
     if player_id is None:
         return 0
@@ -276,6 +282,8 @@ async def reconcile_structured_receipts(
     post-turn writer would create two competing sources of truth.
     """
 
+    if settings.TE2_SEMANTIC_MODE == "writer":
+        return
     row = await processor._session.get(PostTurnJob, str(job_id))
     if row is None or row.status != "completed" or row.job_type != "memory_scribe":
         return
