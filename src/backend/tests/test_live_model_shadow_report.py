@@ -95,16 +95,23 @@ def test_shadow_report_pairs_te2_residuals_with_legacy_proposals(tmp_path):
     assert report["database_count"] == 1
     assert report["assistant_turn_count"] == 1
     assert report["shadow_turn_count"] == 1
+    assert report["counts"]["fluents"] == 1
+    assert report["counts"]["legacy_objective_proposals"] == 1
+    assert report["counts"]["receipts"] == 1
+    assert report["triage_counts"]["receipt_plus_residual_review"] == 1
     turn = report["cases"][0]["turns"][0]
     assert turn["te2_shadow"]["residual"]["fluents"][0]["atom_key"] == "mood-state"
     assert turn["legacy_proposals"][0]["change_type"] == "fact"
     assert turn["legacy_proposals"][0]["payload"]["object_value"] == "friendly"
+    assert turn["triage_flags"] == ["receipt_plus_residual_review"]
 
     markdown = render_markdown(report)
     assert "semantic-case / run-1" in markdown
+    assert "## Structural summary" in markdown
+    assert "## Triage queue" in markdown
+    assert "receipt_plus_residual_review" in markdown
     assert "TE2 residual" in markdown
     assert "Legacy Scribe proposals" in markdown
-    assert "semantic equivalence by string matching" in markdown
 
     json_path, markdown_path, written = write_report(run_dir)
     assert written["shadow_turn_count"] == 1
