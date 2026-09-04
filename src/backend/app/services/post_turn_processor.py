@@ -23,6 +23,7 @@ from app.services.memory_taxonomy import MemoryTaxonomyService
 from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.thesis_curator import ThesisCurator
 from app.services.truth_engine_shadow import SemanticResidualShadowService
+from app.services.truth_engine_writer import SemanticResidualWriterService
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,13 @@ AUTO_COMMIT_CHANGE_TYPES = frozenset(
         ChangeType.KNOWLEDGE,
         ChangeType.ITEM_TRANSFER,
         ChangeType.NARRATIVE_DETAIL,
+    }
+)
+
+TE2_WRITER_OWNED_LEGACY_TYPES = frozenset(
+    {
+        ChangeType.FACT,
+        ChangeType.RELATIONSHIP,
     }
 )
 
@@ -55,8 +63,10 @@ class PostTurnProcessor:
 
     async def enqueue(self, campaign_id: UUID, assistant_turn_id: UUID) -> None:
         job_types = list(self._jobs.JOB_TYPES)
-        if settings.TE2_SEMANTIC_SHADOW_ENABLED:
+        if settings.TE2_SEMANTIC_MODE == "shadow":
             job_types.append("te2_semantic_shadow")
+        elif settings.TE2_SEMANTIC_MODE == "writer":
+            job_types.append("te2_semantic_writer")
         await self._jobs.enqueue_for_turn(
             campaign_id,
             assistant_turn_id,
@@ -103,6 +113,17 @@ class PostTurnProcessor:
             and isinstance(protocol, dict)
             and int(protocol.get("version") or 0) >= 1
         )
+
+    @staticmethod
+    def _respect_semantic_ownership(proposals):
+        """Remove legacy objective writes once TE2 owns those semantic domains."""
+        if settings.TE2_SEMANTIC_MODE != "writer":
+            return proposals
+        return [
+            proposal
+            for proposal in proposals
+            if proposal.change_type not in TE2_WRITER_OWNED_LEGACY_TYPES
+        ]
 
     async def _source_pair_is_active(self, assistant_turn_id: UUID) -> bool:
         """Read turn status from a fresh transaction boundary before durable writes."""
@@ -159,6 +180,14 @@ class PostTurnProcessor:
                 staged += 1
                 continue
             if change_type not in AUTO_COMMIT_CHANGE_TYPES:
+                staged += 1
+                continue
+            # Defense in depth: writer mode must never accept legacy objective semantic canon,
+            # even if a future caller bypasses _respect_semantic_ownership before create_batch().
+            if (
+                settings.TE2_SEMANTIC_MODE == "writer"
+                and change_type in TE2_WRITER_OWNED_LEGACY_TYPES
+            ):
                 staged += 1
                 continue
 
@@ -355,6 +384,10 @@ class PostTurnProcessor:
                         assistant.scene_id,
                         proposals,
                     )
+                    # Writer cutover is domain ownership, not just read preference. Once TE2 owns
+                    # objective fluents/relations, legacy FACT/RELATIONSHIP proposals are removed
+                    # before validation/persistence so they cannot later be accepted or replayed.
+                    proposals = self._respect_semantic_ownership(proposals)
                     checker = ContinuityChecker(self._session)
                     for proposal in proposals:
                         valid, warning = await checker.validate_change(
@@ -407,8 +440,11 @@ class PostTurnProcessor:
                             assistant.id,
                         )
             elif row.job_type == "te2_semantic_shadow":
-                if settings.TE2_SEMANTIC_SHADOW_ENABLED:
+                if settings.TE2_SEMANTIC_MODE == "shadow":
                     await SemanticResidualShadowService(self._session).capture(assistant.id)
+            elif row.job_type == "te2_semantic_writer":
+                if settings.TE2_SEMANTIC_MODE == "writer":
+                    await SemanticResidualWriterService(self._session).write(assistant.id)
             else:
                 raise ValueError(f"Unknown post-turn job type: {row.job_type}")
 
