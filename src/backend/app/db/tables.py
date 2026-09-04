@@ -316,15 +316,6 @@ class Entity(Base):
         foreign_keys="Belief.character_id",
     )
 
-    __table_args__ = (
-        UniqueConstraint(
-            "campaign_id",
-            "entity_type",
-            "canonical_name",
-            name="uq_campaign_entity_name",
-        ),
-    )
-
 
 class Character(Base):
     __tablename__ = "characters"
