@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 import pytest
@@ -15,6 +16,8 @@ from app.db.truth_engine_table import (
     WorldRelationAssertion,
 )
 from app.models.truth_engine import (
+    EntityMentionObservation,
+    EntityResolutionCandidate,
     EntityResolutionDecision,
     NewSemanticTypeDraft,
     SemanticTypeCreate,
@@ -27,28 +30,81 @@ from app.models.truth_engine_residual import (
     SemanticResidualEnvelope,
 )
 from app.services.truth_engine import SemanticTypeRegistry
-from app.services.truth_engine_residual import SemanticResidualCompiler
+from app.services.truth_engine_residual import (
+    JointResidualEntityResolver,
+    SemanticResidualCompiler,
+)
 from app.services.truth_engine_semantics import SemanticObservationCompiler
 
 
-class StubResolver:
-    def __init__(self, *, entity_decisions=(), semantic_decisions=()):
-        self.entity_decisions = list(entity_decisions)
+class StubSemanticResolver:
+    def __init__(self, *, semantic_decisions=()):
         self.semantic_decisions = list(semantic_decisions)
-        self.entity_calls = 0
         self.semantic_calls = 0
 
     async def resolve_entity(self, *args, **kwargs):
-        self.entity_calls += 1
-        if not self.entity_decisions:
-            raise AssertionError("unexpected entity semantic-resolution call")
-        return self.entity_decisions.pop(0)
+        raise AssertionError("residual compiler must not use per-entity semantic resolution")
 
     async def resolve_semantic_type(self, *args, **kwargs):
         self.semantic_calls += 1
         if not self.semantic_decisions:
             raise AssertionError("unexpected semantic-type resolution call")
         return self.semantic_decisions.pop(0), []
+
+
+class StubJointEntityResolver:
+    def __init__(self, *decision_batches):
+        self.decision_batches = [list(batch) for batch in decision_batches]
+        self.calls = 0
+        self.observation_orders: list[list[str]] = []
+
+    async def resolve(self, campaign_id, observations, *, local_graph=None):
+        self.calls += 1
+        self.observation_orders.append([observation.observation_key for observation in observations])
+        if not self.decision_batches:
+            raise AssertionError("unexpected joint entity-resolution call")
+        ordered = sorted(observations, key=lambda item: item.observation_key)
+        decisions = self.decision_batches.pop(0)
+        if len(decisions) != len(ordered):
+            raise AssertionError("joint entity-resolution batch size mismatch")
+        return {
+            observation.observation_key: decision
+            for observation, decision in zip(ordered, decisions, strict=True)
+        }
+
+
+class StubCandidateRetriever:
+    def __init__(self, candidate: EntityResolutionCandidate):
+        self.candidate = candidate
+        self.calls: list[str] = []
+
+    async def entity_candidates(self, campaign_id, **kwargs):
+        self.calls.append(str(campaign_id))
+        return [self.candidate]
+
+
+class StubBatchModelRouter:
+    def __init__(self):
+        self.observation_keys: list[str] = []
+
+    async def resolve(self, *args, **kwargs):
+        return object()
+
+    async def generate_json(self, provider, selection, messages, **kwargs):
+        payload = json.loads(messages[1].content)
+        self.observation_keys = [item["observation_key"] for item in payload["observations"]]
+        return {
+            "items": [
+                {
+                    "observation_key": key,
+                    "resolution": {"decision": "existing", "entity_id": str(CANDIDATE_ID)},
+                }
+                for key in self.observation_keys
+            ]
+        }
+
+
+CANDIDATE_ID = UUID("00000000-0000-0000-0000-000000000111")
 
 
 async def _campaign(db_session) -> UUID:
@@ -92,21 +148,62 @@ def test_residual_envelope_rejects_dangling_local_refs():
 
 
 @pytest.mark.asyncio
+async def test_joint_entity_resolver_sorts_batch_before_model_judgement():
+    candidate = EntityResolutionCandidate(
+        entity_id=CANDIDATE_ID,
+        entity_type="character",
+        canonical_name="Known person",
+    )
+    retriever = StubCandidateRetriever(candidate)
+    router = StubBatchModelRouter()
+    resolver = JointResidualEntityResolver(
+        session=None,
+        retriever=retriever,
+        model_router=router,
+        llm_provider=object(),
+    )
+    observations = [
+        EntityMentionObservation(
+            observation_key="turn:entity:zeta",
+            mention_text="second mention",
+            entity_type="character",
+        ),
+        EntityMentionObservation(
+            observation_key="turn:entity:alpha",
+            mention_text="first mention",
+            entity_type="character",
+        ),
+    ]
+
+    decisions = await resolver.resolve(UUID(int=1), observations)
+
+    assert router.observation_keys == ["turn:entity:alpha", "turn:entity:zeta"]
+    assert set(decisions) == {"turn:entity:alpha", "turn:entity:zeta"}
+    assert all(decision.entity_id == CANDIDATE_ID for decision in decisions.values())
+
+
+@pytest.mark.asyncio
 async def test_residual_compiler_resolves_local_graph_to_stable_te2_state(db_session):
     campaign_id = await _campaign(db_session)
-    resolver = StubResolver(
-        entity_decisions=[
-            EntityResolutionDecision(decision="new"),
-            EntityResolutionDecision(decision="new"),
-        ],
+    semantic_resolver = StubSemanticResolver(
         semantic_decisions=[
             _new_type("Current stance"),
             _new_type("Current obligation target"),
-        ],
+        ]
+    )
+    entity_resolver = StubJointEntityResolver(
+        [
+            EntityResolutionDecision(decision="new"),
+            EntityResolutionDecision(decision="new"),
+        ]
     )
     compiler = SemanticResidualCompiler(
         db_session,
-        observation_compiler=SemanticObservationCompiler(db_session, resolver=resolver),
+        observation_compiler=SemanticObservationCompiler(
+            db_session,
+            resolver=semantic_resolver,
+        ),
+        entity_resolver=entity_resolver,
     )
     envelope = SemanticResidualEnvelope(
         entities=[
@@ -156,6 +253,7 @@ async def test_residual_compiler_resolves_local_graph_to_stable_te2_state(db_ses
         envelope=envelope,
     )
 
+    assert entity_resolver.calls == 1
     assert set(result.entity_ids) == {"watcher", "traveller"}
     assert result.entity_ids["watcher"] != result.entity_ids["traveller"]
     assert len(result.fluent_event_ids) == 1
@@ -196,21 +294,97 @@ async def test_residual_compiler_resolves_local_graph_to_stable_te2_state(db_ses
 
 
 @pytest.mark.asyncio
+async def test_residual_entity_materialization_is_independent_of_envelope_order(db_session):
+    campaign_id = await _campaign(db_session)
+    first_id = UUID("00000000-0000-0000-0000-000000000201")
+    second_id = UUID("00000000-0000-0000-0000-000000000202")
+    for entity_id, name in ((first_id, "First"), (second_id, "Second")):
+        db_session.add(
+            Entity(
+                id=str(entity_id),
+                campaign_id=str(campaign_id),
+                entity_type="character",
+                canonical_name=name,
+            )
+        )
+    await db_session.flush()
+
+    class MappingJointResolver:
+        def __init__(self):
+            self.calls = 0
+
+        async def resolve(self, campaign_id, observations, *, local_graph=None):
+            self.calls += 1
+            return {
+                observation.observation_key: EntityResolutionDecision(
+                    decision="existing",
+                    entity_id=(first_id if observation.observation_key.endswith(":a") else second_id),
+                )
+                for observation in observations
+            }
+
+    entity_resolver = MappingJointResolver()
+    semantic_resolver = StubSemanticResolver()
+    compiler = SemanticResidualCompiler(
+        db_session,
+        observation_compiler=SemanticObservationCompiler(
+            db_session,
+            resolver=semantic_resolver,
+        ),
+        entity_resolver=entity_resolver,
+    )
+    envelope = SemanticResidualEnvelope(
+        entities=[
+            ResidualEntityMention(ref="b", mention_text="Second", entity_type="character"),
+            ResidualEntityMention(ref="a", mention_text="First", entity_type="character"),
+        ]
+    )
+
+    result = await compiler.compile(
+        campaign_id,
+        source_key="order-proof",
+        source_turn_id=None,
+        scene_id=None,
+        envelope=envelope,
+    )
+
+    assert entity_resolver.calls == 1
+    assert result.entity_ids == {"a": first_id, "b": second_id}
+    mentions = list(
+        (
+            await db_session.execute(
+                select(EntityMention).where(EntityMention.campaign_id == str(campaign_id))
+            )
+        ).scalars().all()
+    )
+    assert [(mention.mention_text, mention.entity_id) for mention in mentions] == [
+        ("First", str(first_id)),
+        ("Second", str(second_id)),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_residual_retry_does_not_rerun_semantic_resolution_or_duplicate_schema(db_session):
     campaign_id = await _campaign(db_session)
-    resolver = StubResolver(
-        entity_decisions=[
-            EntityResolutionDecision(decision="new"),
-            EntityResolutionDecision(decision="new"),
-        ],
+    semantic_resolver = StubSemanticResolver(
         semantic_decisions=[
             _new_type("Current condition"),
             _new_type("Current affiliation", cardinality="multi"),
-        ],
+        ]
+    )
+    entity_resolver = StubJointEntityResolver(
+        [
+            EntityResolutionDecision(decision="new"),
+            EntityResolutionDecision(decision="new"),
+        ]
     )
     compiler = SemanticResidualCompiler(
         db_session,
-        observation_compiler=SemanticObservationCompiler(db_session, resolver=resolver),
+        observation_compiler=SemanticObservationCompiler(
+            db_session,
+            resolver=semantic_resolver,
+        ),
+        entity_resolver=entity_resolver,
     )
     envelope = SemanticResidualEnvelope(
         entities=[
@@ -253,8 +427,8 @@ async def test_residual_retry_does_not_rerun_semantic_resolution_or_duplicate_sc
     )
 
     assert first == second
-    assert resolver.entity_calls == 2
-    assert resolver.semantic_calls == 2
+    assert entity_resolver.calls == 1
+    assert semantic_resolver.semantic_calls == 2
 
     semantic_types = list(
         (
@@ -316,18 +490,26 @@ async def test_residual_relation_absence_closes_temporal_relation_by_ids(db_sess
         decision="existing",
         semantic_type_id=relation_type_id,
     )
-    resolver = StubResolver(
-        entity_decisions=[
-            EntityResolutionDecision(decision="existing", entity_id=left_id),
-            EntityResolutionDecision(decision="existing", entity_id=right_id),
+    semantic_resolver = StubSemanticResolver(
+        semantic_decisions=[existing_type, existing_type],
+    )
+    entity_resolver = StubJointEntityResolver(
+        [
             EntityResolutionDecision(decision="existing", entity_id=left_id),
             EntityResolutionDecision(decision="existing", entity_id=right_id),
         ],
-        semantic_decisions=[existing_type, existing_type],
+        [
+            EntityResolutionDecision(decision="existing", entity_id=left_id),
+            EntityResolutionDecision(decision="existing", entity_id=right_id),
+        ],
     )
     compiler = SemanticResidualCompiler(
         db_session,
-        observation_compiler=SemanticObservationCompiler(db_session, resolver=resolver),
+        observation_compiler=SemanticObservationCompiler(
+            db_session,
+            resolver=semantic_resolver,
+        ),
+        entity_resolver=entity_resolver,
     )
 
     def envelope(*, present: bool, atom_key: str) -> SemanticResidualEnvelope:
@@ -378,6 +560,7 @@ async def test_residual_relation_absence_closes_temporal_relation_by_ids(db_sess
         )
     ).scalar_one()
 
+    assert entity_resolver.calls == 2
     assert created.relation_event_ids
     assert closed.relation_event_ids
     assert relation.is_current is False
