@@ -84,6 +84,9 @@ class SemanticTypeResolutionCandidate(BaseModel):
     cardinality: Literal["single", "multi"]
     value_schema: dict[str, Any] | None = None
     active_for_subject: bool = False
+    # Non-null means engine-owned ABI. Such candidates are exposed only so the semantic judge can
+    # recognize a collision; open-ended semantic compilation must never mutate them.
+    system_key: str | None = None
 
 
 class EntityResolutionDecision(BaseModel):
