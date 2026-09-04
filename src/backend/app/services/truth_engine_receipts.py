@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from sqlalchemy import select
@@ -8,10 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign
-from app.db.truth_engine_table import SemanticType
+from app.db.truth_engine_table import FluentAssertion, SemanticType
 from app.models.truth_engine import (
     CanonicalEventCreate,
-    SemanticTypeCreate,
     TruthEffectType,
     TruthEventEffectCreate,
     TruthEventEvidenceCreate,
@@ -27,8 +27,7 @@ class StructuredReceiptEventCompiler:
     """Compile authoritative executor receipts into canonical TE2 events.
 
     This compiler never interprets prose. It only consumes IDs and machine states already resolved
-    by the structured executors. The two core semantic slots below are engine protocol, not a
-    vocabulary for recognizing player language.
+    by the structured executors. Core system keys are protocol slots, not lexical dictionaries.
     """
 
     def __init__(self, session: AsyncSession):
@@ -44,6 +43,8 @@ class StructuredReceiptEventCompiler:
 
         if transition.detector == "compound_action_executor":
             return await self._compile_sequence(transition)
+
+        await self._seed_transition_baseline(transition)
         event = await self._transition_event(transition)
         result = await self._reducer.append_and_reduce(UUID(transition.campaign_id), event)
         return [result.event_id]
@@ -71,6 +72,8 @@ class StructuredReceiptEventCompiler:
                 )
             ).scalars().all()
         )
+        await self._seed_sequence_baselines(sequence, steps)
+
         event_ids: list[UUID] = []
         for step in steps:
             if step.status == "skipped":
@@ -80,6 +83,102 @@ class StructuredReceiptEventCompiler:
             event_ids.append(result.event_id)
         return event_ids
 
+    async def _seed_transition_baseline(self, transition: SceneTransition) -> None:
+        if transition.transition_type != "location_transition" or not transition.source_location_id:
+            return
+        campaign_id = UUID(transition.campaign_id)
+        player_id = await self._player_id(campaign_id)
+        if player_id is None:
+            raise ValueError("location transition has no campaign player entity")
+        location_type = await self._location_type(campaign_id)
+        await self._ensure_baseline(
+            campaign_id,
+            semantic_type_id=location_type,
+            subject_entity_id=player_id,
+            value={"entity_id": transition.source_location_id},
+            event_key=f"baseline:entity_location:{player_id}",
+            description="Imported pre-TE2 entity location baseline.",
+            participant_ids=[player_id],
+            location_id=UUID(transition.source_location_id),
+        )
+
+    async def _seed_sequence_baselines(
+        self,
+        sequence: ActionSequence,
+        steps: list[ActionStep],
+    ) -> None:
+        campaign_id = UUID(sequence.campaign_id)
+        player_id = await self._player_id(campaign_id)
+        location_type: UUID | None = None
+        item_type: UUID | None = None
+        seeded_items: set[UUID] = set()
+        player_seeded = False
+
+        for step in steps:
+            if step.status == "skipped":
+                continue
+            transition = (
+                await self._session.get(SceneTransition, step.transition_id)
+                if step.transition_id
+                else None
+            )
+            if (
+                not player_seeded
+                and transition is not None
+                and transition.transition_type == "location_transition"
+                and transition.source_location_id
+            ):
+                if player_id is None:
+                    raise ValueError("movement step has no campaign player entity")
+                location_type = location_type or await self._location_type(campaign_id)
+                await self._ensure_baseline(
+                    campaign_id,
+                    semantic_type_id=location_type,
+                    subject_entity_id=player_id,
+                    value={"entity_id": transition.source_location_id},
+                    event_key=f"baseline:entity_location:{player_id}",
+                    description="Imported pre-TE2 entity location baseline.",
+                    participant_ids=[player_id],
+                    location_id=UUID(transition.source_location_id),
+                )
+                player_seeded = True
+
+            if step.item_id and step.item_operation:
+                item_id = UUID(step.item_id)
+                if item_id in seeded_items:
+                    continue
+                item_type = item_type or await self._item_position_type(campaign_id)
+                if step.item_previous_owner_id:
+                    previous_value = {
+                        "mode": "owned",
+                        "entity_id": step.item_previous_owner_id,
+                    }
+                elif step.item_previous_location_id:
+                    previous_value = {
+                        "mode": "located",
+                        "entity_id": step.item_previous_location_id,
+                    }
+                else:
+                    previous_value = {"mode": "unpositioned"}
+                participants = [item_id]
+                if step.item_previous_owner_id:
+                    participants.append(UUID(step.item_previous_owner_id))
+                await self._ensure_baseline(
+                    campaign_id,
+                    semantic_type_id=item_type,
+                    subject_entity_id=item_id,
+                    value=previous_value,
+                    event_key=f"baseline:item_position:{item_id}",
+                    description="Imported pre-TE2 item position baseline.",
+                    participant_ids=participants,
+                    location_id=(
+                        UUID(step.item_previous_location_id)
+                        if step.item_previous_location_id
+                        else None
+                    ),
+                )
+                seeded_items.add(item_id)
+
     async def _transition_event(self, transition: SceneTransition) -> CanonicalEventCreate:
         campaign_id = UUID(transition.campaign_id)
         player_id = await self._player_id(campaign_id)
@@ -87,22 +186,12 @@ class StructuredReceiptEventCompiler:
         if transition.transition_type == "location_transition" and transition.target_location_id:
             if player_id is None:
                 raise ValueError("location transition has no campaign player entity")
-            semantic_type_id = await self._ensure_core_fluent(
-                campaign_id,
-                system_key=CORE_ENTITY_LOCATION,
-                label="Entity location",
-                description="Current physical location entity for an entity.",
-                value_schema={"type": "entity_ref"},
-            )
+            semantic_type_id = await self._location_type(campaign_id)
             effects.append(
-                TruthEventEffectCreate(
-                    effect_type=TruthEffectType.SET_FLUENT,
-                    payload={
-                        "subject_entity_id": str(player_id),
-                        "semantic_type_id": str(semantic_type_id),
-                        "value": {"entity_id": transition.target_location_id},
-                        "authority": "executor_receipt",
-                    },
+                self._set_fluent_effect(
+                    player_id,
+                    semantic_type_id,
+                    {"entity_id": transition.target_location_id},
                 )
             )
 
@@ -160,40 +249,16 @@ class StructuredReceiptEventCompiler:
         ):
             if player_id is None:
                 raise ValueError("movement step has no campaign player entity")
-            semantic_type_id = await self._ensure_core_fluent(
-                campaign_id,
-                system_key=CORE_ENTITY_LOCATION,
-                label="Entity location",
-                description="Current physical location entity for an entity.",
-                value_schema={"type": "entity_ref"},
-            )
             effects.append(
-                TruthEventEffectCreate(
-                    effect_type=TruthEffectType.SET_FLUENT,
-                    payload={
-                        "subject_entity_id": str(player_id),
-                        "semantic_type_id": str(semantic_type_id),
-                        "value": {"entity_id": transition.target_location_id},
-                        "authority": "executor_receipt",
-                    },
+                self._set_fluent_effect(
+                    player_id,
+                    await self._location_type(campaign_id),
+                    {"entity_id": transition.target_location_id},
                 )
             )
 
         item_id = UUID(step.item_id) if step.item_id else None
         if step.status == "completed" and item_id is not None and step.item_operation:
-            semantic_type_id = await self._ensure_core_fluent(
-                campaign_id,
-                system_key=CORE_ITEM_POSITION,
-                label="Item position",
-                description="Current owner or physical location of an item.",
-                value_schema={
-                    "oneOf": [
-                        {"mode": "owned", "entity_id": "entity_ref"},
-                        {"mode": "located", "entity_id": "entity_ref"},
-                        {"mode": "unpositioned"},
-                    ]
-                },
-            )
             if step.item_result_owner_id:
                 value = {"mode": "owned", "entity_id": step.item_result_owner_id}
             elif step.item_result_location_id:
@@ -201,14 +266,10 @@ class StructuredReceiptEventCompiler:
             else:
                 value = {"mode": "unpositioned"}
             effects.append(
-                TruthEventEffectCreate(
-                    effect_type=TruthEffectType.SET_FLUENT,
-                    payload={
-                        "subject_entity_id": str(item_id),
-                        "semantic_type_id": str(semantic_type_id),
-                        "value": value,
-                        "authority": "executor_receipt",
-                    },
+                self._set_fluent_effect(
+                    item_id,
+                    await self._item_position_type(campaign_id),
+                    value,
                 )
             )
 
@@ -227,17 +288,15 @@ class StructuredReceiptEventCompiler:
         elif step.item_result_location_id:
             location_id = UUID(step.item_result_location_id)
 
-        event_type = self._step_event_type(step, transition)
-        description = (
-            step.observable_outcome
-            or step.blocking_reason
-            or step.intent
-            or f"Structured action step {step.step_index}"
-        )
         return CanonicalEventCreate(
             event_key=f"action_sequence:{sequence.id}:step:{step.step_index}",
-            event_type=event_type,
-            description=description,
+            event_type=self._step_event_type(step, transition),
+            description=(
+                step.observable_outcome
+                or step.blocking_reason
+                or step.intent
+                or f"Structured action step {step.step_index}"
+            ),
             source_kind="executor_receipt",
             source_turn_id=UUID(sequence.trigger_turn_id),
             world_time=(transition.time_after if transition is not None else None),
@@ -272,6 +331,81 @@ class StructuredReceiptEventCompiler:
             ],
         )
 
+    async def _ensure_baseline(
+        self,
+        campaign_id: UUID,
+        *,
+        semantic_type_id: UUID,
+        subject_entity_id: UUID,
+        value: dict,
+        event_key: str,
+        description: str,
+        participant_ids: list[UUID],
+        location_id: UUID | None,
+    ) -> None:
+        current = (
+            await self._session.execute(
+                select(FluentAssertion.id).where(
+                    FluentAssertion.campaign_id == str(campaign_id),
+                    FluentAssertion.subject_entity_id == str(subject_entity_id),
+                    FluentAssertion.semantic_type_id == str(semantic_type_id),
+                    FluentAssertion.is_current.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        if current is not None:
+            return
+        await self._reducer.append_and_reduce(
+            campaign_id,
+            CanonicalEventCreate(
+                event_key=event_key,
+                event_type="state_baseline",
+                description=description,
+                source_kind="legacy_baseline",
+                location_id=location_id,
+                participant_ids=participant_ids,
+                payload={"semantic_type_id": str(semantic_type_id)},
+                effects=[
+                    self._set_fluent_effect(
+                        subject_entity_id,
+                        semantic_type_id,
+                        value,
+                        authority="legacy_baseline",
+                    )
+                ],
+                evidence=[
+                    TruthEventEvidenceCreate(
+                        evidence_type="structured_previous_state",
+                        source_ref=event_key,
+                    )
+                ],
+            ),
+        )
+
+    async def _location_type(self, campaign_id: UUID) -> UUID:
+        return await self._ensure_core_fluent(
+            campaign_id,
+            system_key=CORE_ENTITY_LOCATION,
+            label="Entity location",
+            description="Current physical location entity for an entity.",
+            value_schema={"type": "entity_ref"},
+        )
+
+    async def _item_position_type(self, campaign_id: UUID) -> UUID:
+        return await self._ensure_core_fluent(
+            campaign_id,
+            system_key=CORE_ITEM_POSITION,
+            label="Item position",
+            description="Current owner or physical location of an item.",
+            value_schema={
+                "oneOf": [
+                    {"mode": "owned", "entity_id": "entity_ref"},
+                    {"mode": "located", "entity_id": "entity_ref"},
+                    {"mode": "unpositioned"},
+                ]
+            },
+        )
+
     async def _player_id(self, campaign_id: UUID) -> UUID | None:
         campaign = await self._session.get(Campaign, str(campaign_id))
         if campaign is None or not campaign.player_character_id:
@@ -300,29 +434,42 @@ class StructuredReceiptEventCompiler:
                 raise ValueError(f"core semantic slot has incompatible schema: {system_key}")
             return UUID(row.id)
 
-        data = SemanticTypeCreate(
+        row = SemanticType(
+            campaign_id=str(campaign_id),
+            system_key=system_key,
             kind="fluent",
             canonical_label=label,
             description=description,
             cardinality="single",
-            value_schema=value_schema,
-            system_key=system_key,
-        )
-        row = SemanticType(
-            campaign_id=str(campaign_id),
-            system_key=data.system_key,
-            kind=data.kind,
-            canonical_label=data.canonical_label,
-            description=data.description,
-            cardinality=data.cardinality,
-            value_schema_json=None,
+            value_schema_json=json.dumps(
+                value_schema,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             created_by_event_id=None,
         )
-        # The schema is informational for core protocol types; the reducer is authoritative about
-        # effect structure. Semantic values themselves remain JSON and are not recognized by label.
         self._session.add(row)
         await self._session.flush()
         return UUID(row.id)
+
+    @staticmethod
+    def _set_fluent_effect(
+        subject_entity_id: UUID,
+        semantic_type_id: UUID,
+        value: dict,
+        *,
+        authority: str = "executor_receipt",
+    ) -> TruthEventEffectCreate:
+        return TruthEventEffectCreate(
+            effect_type=TruthEffectType.SET_FLUENT,
+            payload={
+                "subject_entity_id": str(subject_entity_id),
+                "semantic_type_id": str(semantic_type_id),
+                "value": value,
+                "authority": authority,
+            },
+        )
 
     @staticmethod
     def _transition_event_type(transition_type: str) -> str:
