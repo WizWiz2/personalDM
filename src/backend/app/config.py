@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -73,9 +74,10 @@ class Settings(BaseSettings):
     CHARACTER_BUILDER_LLM_MODEL: str | None = None
     NARRATION_VALIDATOR_LLM_MODEL: str | None = None
 
-    # TE2 shadow extraction is intentionally opt-in while legacy Scribe remains the runtime writer.
-    # The shadow path stores observation envelopes for comparison but never mutates TE2 world state.
-    TE2_SEMANTIC_SHADOW_ENABLED: bool = False
+    # Semantic ownership is one mode, never two independent booleans. `shadow` keeps legacy Scribe
+    # as the generic FACT/RELATIONSHIP writer and adds read-only TE2 diagnostics. `writer` transfers
+    # those objective domains to TE2 and forbids the legacy writer from persisting them.
+    TE2_SEMANTIC_MODE: Literal["legacy", "shadow", "writer"] = "legacy"
 
     # Expensive maintenance agents do not need to run after every narrative turn.
     CURATOR_INTERVAL_TURNS: int = 3
