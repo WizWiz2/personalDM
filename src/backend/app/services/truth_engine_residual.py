@@ -17,7 +17,12 @@ from app.models.truth_engine import (
     FluentObservation,
     RelationObservation,
 )
-from app.models.truth_engine_residual import SemanticResidualEnvelope
+from app.models.truth_engine_residual import (
+    RawSemanticResidualEnvelope,
+    ResidualSanitizationAudit,
+    SemanticResidualEnvelope,
+    sanitize_semantic_residual,
+)
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -38,43 +43,48 @@ class ResidualCompilationResult:
 
 
 class SemanticResidualExtractor:
-    """Extract semantic observations without producing persistence operations.
+    """Extract semantic candidates without producing persistence or truth decisions.
 
-    This replaces the old Scribe ownership boundary: the model describes objective observations and
-    local references only. It cannot invent database IDs, choose Fact/Relationship tables, or decide
-    assert/revise/retract persistence operations.
+    The extractor is recall-oriented: it describes potentially meaningful observations and local
+    references. A separate bounded disposition gate decides whether each atom is objective,
+    epistemic, transient, receipt-owned, presentation, or unsupported before writer materialization.
     """
 
     SYSTEM_PROMPT = """[TE2 SEMANTIC RESIDUAL EXTRACTOR]
-Extract only objective world information established by this completed RPG turn that is NOT already
-represented by the supplied STRUCTURED RECEIPTS.
+Extract semantic candidates established or expressed by this completed RPG turn. A separate downstream
+component decides which candidates are objective world truth. Your job is observation recall, not
+persistence and not final truth classification.
 
-Return one structured SemanticResidualEnvelope.
-
-Your output is an observation graph, not a database mutation plan:
-- `entities` declares local references used by the other atoms. `ref` is a short local token only.
-- Use one local entity ref consistently for all mentions of the same entity inside this envelope.
-- `fluents` are state/property observations about one entity. Describe the semantic slot in ordinary
-  language and provide the observed value. Do not invent subject/predicate database keys.
-- `relations` are entity-to-entity relations. `present=false` means the same relation is explicitly
-  established as no longer holding in this turn.
+Return one structured residual observation graph:
+- `entities` declares local references used by other atoms. `ref` is a short local token only.
+- Use one local entity ref consistently for the same entity inside this envelope.
+- `fluents` describe potentially meaningful state/property propositions about one entity.
+- `relations` describe potentially meaningful entity-to-entity relation propositions.
+- `present=false` means the turn explicitly establishes that a previously meaningful relation/state
+  no longer holds.
 - Use only coarse entity_type values from ALLOWED ENTITY TYPES.
+- `atom_key` is optional local bookkeeping. Do not spend reasoning effort making it unique; the backend
+  replaces it with a deterministic content key.
 
-Do NOT emit:
-- player intentions that were not established as outcomes;
-- physical movement, item ownership/placement, time/focus transitions, or other facts already covered
-  by STRUCTURED RECEIPTS;
-- dialogue claims, rumours, suspicions or beliefs as objective truth;
-- goals, plot hooks, scene theses, mood, prose colour or presentation detail;
-- persistence concepts such as FACT, RELATIONSHIP table, assert, revise, retract, supersede, SQL, IDs.
+STRUCTURED RECEIPTS are machine-confirmed physical authority:
+- do not restate physical movement, item ownership/placement, time/focus, or the bare physical action
+  already represented by a receipt;
+- DO include a distinct durable semantic consequence when the completed narration explicitly
+  establishes one, including an ongoing relation becoming present=false. The consequence is not the
+  same atom as the physical receipt that caused it.
 
-Player input is not objective authority by itself. A player-stated world claim belongs here only when
-this completed turn independently establishes it as objective world state.
+You MAY extract a meaningful dialogue claim, report, memory, suspicion or opinion as a candidate when
+it matters semantically; do not silently promote it to objective truth. The downstream disposition gate
+will classify it as epistemic. Player input alone is not evidence that its world claim is objectively
+true.
 
-Every fluent/relation ref must point to exactly one entity declared in `entities`. Mention text is only
-linguistic evidence; stable identity is resolved later by another component. Prefer no atom over an
-unsupported inference. Evidence should quote or tightly paraphrase the exact turn evidence, not explain
-your reasoning."""
+Avoid pure prose colour, mood, scene texture and decorative presentation unless they express a concrete
+semantic proposition. Avoid goals, plot hooks and scene theses. Avoid persistence concepts such as
+FACT, table names, assert/revise/retract/supersede, SQL or database IDs.
+
+Every fluent/relation ref must point to an entity declared in `entities`. Mention text is linguistic
+evidence only; stable identity is resolved later. Evidence should quote or tightly paraphrase the turn,
+not explain hidden reasoning."""
 
     def __init__(
         self,
@@ -85,6 +95,7 @@ your reasoning."""
     ):
         self._model_router = model_router or RoleModelRouter(ProviderConfigRepository(session))
         self._llm_provider = llm_provider or LLMProvider()
+        self.last_sanitization_audit = ResidualSanitizationAudit()
 
     async def extract(
         self,
@@ -94,6 +105,7 @@ your reasoning."""
         assistant_content: str,
         structured_receipts: list[dict] | None = None,
     ) -> SemanticResidualEnvelope:
+        self.last_sanitization_audit = ResidualSanitizationAudit()
         if not user_content.strip() and not assistant_content.strip():
             return SemanticResidualEnvelope()
         selection = await self._model_router.resolve(campaign_id, ModelRole.SCRIBE)
@@ -118,9 +130,12 @@ your reasoning."""
             ],
             max_tokens=1800,
             temperature=0.0,
-            response_model=SemanticResidualEnvelope,
+            response_model=RawSemanticResidualEnvelope,
         )
-        return SemanticResidualEnvelope.model_validate(data)
+        raw = RawSemanticResidualEnvelope.model_validate(data)
+        sanitized = sanitize_semantic_residual(raw)
+        self.last_sanitization_audit = sanitized.audit
+        return sanitized.envelope
 
 
 class JointResidualEntityResolver:
@@ -329,7 +344,7 @@ class SemanticResidualCompiler:
                         "subject_ref": atom.subject_ref,
                         "semantic_description": atom.semantic_description,
                     }
-                    for atom in sorted(envelope.fluents, key=lambda item: item.atom_key)
+                    for atom in sorted(envelope.fluents, key=lambda item: str(item.atom_key))
                 ],
                 "relations": [
                     {
@@ -339,7 +354,7 @@ class SemanticResidualCompiler:
                         "semantic_description": atom.semantic_description,
                         "present": atom.present,
                     }
-                    for atom in sorted(envelope.relations, key=lambda item: item.atom_key)
+                    for atom in sorted(envelope.relations, key=lambda item: str(item.atom_key))
                 ],
             }
             decisions = await self._entity_resolver.resolve(
