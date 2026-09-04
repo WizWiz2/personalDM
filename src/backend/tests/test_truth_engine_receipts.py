@@ -18,8 +18,10 @@ from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate
+from app.models.scene_state import LocationExitCreate
 from app.models.turn import TurnCreate
 from app.services.scene_lifecycle import SceneLifecycleService
+from app.services.scene_state_service import SceneStateService
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.truth_engine_receipts import (
     CORE_ENTITY_LOCATION,
@@ -49,6 +51,16 @@ async def _movement_world(db_session: AsyncSession):
     room = await locations.create(
         campaign_id,
         LocationCreate(canonical_name="Room", parent_location_id=tavern.id),
+    )
+    await SceneStateService(db_session).create_exit(
+        campaign_id,
+        hall.id,
+        LocationExitCreate(
+            to_location_id=room.id,
+            label="Room",
+            bidirectional=True,
+            reverse_label="Hall",
+        ),
     )
     hero = await entities.create_character(
         campaign_id,
