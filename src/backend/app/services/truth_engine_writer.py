@@ -16,11 +16,15 @@ from app.models.truth_engine import (
     RelationObservation,
     SemanticTypeResolutionDecision,
 )
-from app.models.truth_engine_residual import SemanticResidualEnvelope
+from app.models.truth_engine_residual import (
+    ResidualClassificationResult,
+    SemanticResidualEnvelope,
+)
 from app.services.truth_engine_residual import (
     JointResidualEntityResolver,
     SemanticResidualExtractor,
 )
+from app.services.truth_engine_residual_gate import SemanticResidualDispositionGate
 from app.services.truth_engine_semantics import (
     ConstrainedSemanticResolver,
     SemanticObservationCompiler,
@@ -67,18 +71,15 @@ class SemanticWriterResult:
 
 
 class SemanticResidualWriterService:
-    """Publish objective residual semantics with short, undo-safe write transactions.
+    """Publish only disposition-gated objective semantics with undo-safe write transactions.
 
-    All LLM work happens outside SQLite write locks. After each semantic judgement the service rolls
-    back the read transaction, acquires a short ``BEGIN IMMEDIATE`` write lock, re-checks that the
-    source user/assistant pair is still active, and only then materializes canonical TE2 state. This
-    makes the activity check and event write atomic with respect to /undo without holding a database
-    lock while a model is thinking.
+    Extraction and disposition/schema/identity LLM work happens outside SQLite write locks. The
+    disposition gate cannot create atoms; it can only classify existing backend-keyed observations.
+    Only atoms explicitly marked ``objective`` reach identity/schema materialization.
 
-    Partial progress is intentional and retry-safe. Entity mentions and each fluent/relation event are
-    committed at semantic boundaries. A later failure can retry from stable event keys; if /undo wins
-    between boundaries, already committed events are reverted by the normal TE2 turn replay and no
-    further events are published.
+    After each semantic judgement the service rolls back the read transaction, acquires a short
+    ``BEGIN IMMEDIATE`` write lock, re-checks that the source user/assistant pair is still active, and
+    only then materializes canonical TE2 state. Partial progress is retry-safe through stable keys.
     """
 
     SNAPSHOT_KEY = "te2_semantic_writer"
@@ -88,12 +89,14 @@ class SemanticResidualWriterService:
         session: AsyncSession,
         *,
         extractor: SemanticResidualExtractor | None = None,
+        classifier: SemanticResidualDispositionGate | None = None,
         context_reader: SemanticTurnContextReader | None = None,
         entity_resolver: JointResidualEntityResolver | None = None,
         semantic_resolver: ConstrainedSemanticResolver | None = None,
     ):
         self._session = session
         self._extractor = extractor or SemanticResidualExtractor(session)
+        self._classifier = classifier or SemanticResidualDispositionGate(session)
         self._context_reader = context_reader or SemanticTurnContextReader(session)
         self._entity_resolver = entity_resolver or JointResidualEntityResolver(session)
         self._semantic_resolver = semantic_resolver or ConstrainedSemanticResolver(session)
@@ -113,10 +116,17 @@ class SemanticResidualWriterService:
             assistant_content=context.assistant_content,
             structured_receipts=list(context.structured_receipts),
         )
+        classification = await self._classifier.classify(
+            context.campaign_id,
+            envelope=envelope,
+            user_content=context.user_content,
+            assistant_content=context.assistant_content,
+            structured_receipts=list(context.structured_receipts),
+        )
 
         try:
-            result = await self._compile(context, envelope)
-            await self._write_audit(context, envelope, result)
+            result = await self._compile(context, classification.objective)
+            await self._write_audit(context, envelope, classification, result)
         except SemanticSourceInactive:
             await self._session.rollback()
             return False
@@ -161,7 +171,7 @@ class SemanticResidualWriterService:
                         "subject_ref": atom.subject_ref,
                         "semantic_description": atom.semantic_description,
                     }
-                    for atom in sorted(envelope.fluents, key=lambda item: item.atom_key)
+                    for atom in sorted(envelope.fluents, key=lambda item: str(item.atom_key))
                 ],
                 "relations": [
                     {
@@ -171,7 +181,7 @@ class SemanticResidualWriterService:
                         "semantic_description": atom.semantic_description,
                         "present": atom.present,
                     }
-                    for atom in sorted(envelope.relations, key=lambda item: item.atom_key)
+                    for atom in sorted(envelope.relations, key=lambda item: str(item.atom_key))
                 ],
             }
             decisions = await self._entity_resolver.resolve(
@@ -371,6 +381,7 @@ class SemanticResidualWriterService:
         self,
         context: SemanticTurnContext,
         envelope: SemanticResidualEnvelope,
+        classification: ResidualClassificationResult,
         result: SemanticWriterResult,
     ) -> None:
         await self._begin_guarded_write(context)
@@ -379,8 +390,9 @@ class SemanticResidualWriterService:
             if assistant is None:
                 raise SemanticSourceInactive("assistant turn disappeared before semantic audit")
             snapshot = self._snapshot_dict(assistant.context_snapshot)
+            objective = classification.objective
             snapshot[self.SNAPSHOT_KEY] = {
-                "version": 1,
+                "version": 2,
                 "mode": "writer",
                 "source_user_turn_id": str(context.user_turn_id),
                 "receipt_count": len(context.structured_receipts),
@@ -388,7 +400,13 @@ class SemanticResidualWriterService:
                     "entities": len(envelope.entities),
                     "fluents": len(envelope.fluents),
                     "relations": len(envelope.relations),
+                    "objective_entities": len(objective.entities),
+                    "objective_fluents": len(objective.fluents),
+                    "objective_relations": len(objective.relations),
                 },
+                "dispositions": [
+                    decision.model_dump(mode="json") for decision in classification.decisions
+                ],
                 "event_ids": {
                     "fluents": [str(value) for value in result.fluent_event_ids],
                     "relations": [str(value) for value in result.relation_event_ids],
