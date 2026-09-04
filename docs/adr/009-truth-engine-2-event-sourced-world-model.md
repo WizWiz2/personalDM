@@ -1,111 +1,165 @@
-# ADR-009: Truth Engine 2 — event-sourced temporal world model
+# ADR 009: Truth Engine 2 event-sourced world model
 
-Status: Proposed
+## Status
+
+Proposed and under active experimentation on `feat/truth-engine-2-foundation`. Do not merge this architecture into `main` until deterministic and live-model testing prove the migration path.
 
 ## Context
 
-The current canon pipeline asks Memory Scribe to perform several jobs at once: extract outcomes from
-narration, identify entities, invent free-text fact keys, decide assert/revise/retract semantics, and
-emit persistence-specific payloads. Small differences in wording can therefore split one world state
-into several facts or entities. Additional lexical normalization and case-specific guards do not
-scale to an open-ended RPG world.
+The current canon pipeline asks language models to do too many jobs at once: extract outcomes, resolve entity identity, invent free-text fact keys, choose mutation semantics, and emit persistence payloads. This creates semantic drift and makes lexical normalization, synonym lists, regex rules, and case-specific guards tempting. Those techniques do not scale to an open-ended RPG world.
 
-The existing system already has useful foundations: stable Entity IDs, an Event table, temporal
-relationship assertions, typed executor receipts, accepted proposal replay, and provenance fields.
-Truth Engine 2 should evolve those foundations instead of replacing the whole application at once.
+Truth Engine 2 changes the ownership boundary. Machine-confirmed events and their effects are authoritative. Current world state is a temporal projection of those events. Language models may help resolve genuinely semantic ambiguity, but they do not own identity, event ordering, temporal supersession, provenance, undo, or persistence invariants.
 
 ## Decision
 
-Truth Engine 2 uses an event-sourced temporal world model.
+### Canonical history
 
-### 1. Canonical events are primary history
+Reuse the existing `events` table instead of creating a second competing event store. A row in `truth_event_records` marks an event as TE2-canonical and adds:
 
-A durable world change is represented by an immutable canonical event. The existing `events` table
-remains the shared event row. `truth_event_records` marks TE2 events and adds campaign-local sequence,
-idempotency key, source kind, source turn, payload, and active/reverted status.
+- per-campaign sequence ordering;
+- stable idempotency key;
+- source kind and source turn;
+- structured payload;
+- active/reverted inclusion state.
 
-Each canonical event owns zero or more immutable normalized effects. Effects are a small engine
-protocol (`set_fluent`, `add_relation`, `remove_relation`, `record_mention`), not a vocabulary of game
-concepts.
+Canonical event effects are immutable. The effect protocol is deliberately small:
 
-### 2. Current world state is a projection
+- `set_fluent`;
+- `add_relation`;
+- `remove_relation`;
+- `record_mention`.
 
-`fluent_assertions` and `world_relation_assertions` are temporal projections derived from canonical
-event effects. They record the event that opened the assertion and the event that ended it.
+These are engine operations, not a vocabulary of game-world concepts.
 
-For a single-cardinality semantic type, opening a different value/target closes the previous current
-assertion for the same stable semantic slot. Multi-cardinality types keep independent values/edges.
+### Temporal world projection
 
-Replaying active canonical events in sequence must reconstruct the same current TE2 projection.
-This is the basis for future undo integration.
+`fluent_assertions` stores state-like claims with stable semantic type IDs and event validity boundaries. `world_relation_assertions` stores graph-shaped entity-to-entity relations with the same temporal semantics. `assertion_support` records event provenance.
 
-### 3. Semantic identity uses stable IDs, not word lists
+For a single-cardinality fluent, applying a different value closes the previous assertion and opens the new one. Applying the same value adds support rather than duplicating state.
 
-`semantic_types` is a dynamic campaign-local registry. A semantic type has a stable UUID, kind,
-description, cardinality, and optional value schema.
+### Semantic types
 
-There is deliberately no synonyms/keywords table and no domain vocabulary hardcoded in the reducer.
-A later Candidate Retriever may use embeddings and context to retrieve likely semantic/entity IDs;
-a constrained semantic model may select one candidate or `NEW`. Persistence always uses stable IDs.
+`semantic_types` is a dynamic campaign-local registry with stable IDs, descriptions, cardinality, optional value schema, and an optional `system_key` for engine-owned protocol slots.
 
-### 4. Mentions do not define entity identity
+There are no synonym lists, keyword dictionaries, or lexical matching rules in the registry.
 
-`entity_mentions` records how text referred to an entity at a specific point in history. Several
-mentions can point to one Entity ID. A role label, description, alias, and later revealed personal
-name therefore do not require creating and merging duplicate entities.
+Engine-owned keys such as `core.entity.location` and `core.item.position` are ABI identifiers between deterministic executors and the reducer. They are never used to recognize player language. Open-ended world semantics will later use candidate retrieval plus constrained semantic resolution.
 
-Entity resolution is intentionally outside the foundation reducer. It will be introduced as
-candidate retrieval plus constrained semantic selection, not string dictionaries.
+### Entity mentions
 
-### 5. Provenance is first-class
+`entity_mentions` records textual mentions separately from entity identity. Several labels can resolve to one stable entity, so a role label and a later personal name do not require creating two NPCs and merging them afterward.
 
-Canonical events can carry normalized evidence. Derived assertions link back to supporting events.
-The engine can therefore answer not only "what is true now?" but also "which event supports this?".
+### Structured executor receipts
 
-### 6. LLMs do not own deterministic mechanics
+`StructuredReceiptEventCompiler` consumes only machine-resolved structured executor state. It does not inspect Narrator prose.
 
-Typed executor receipts for deterministic domains (movement, inventory, time, scene participation)
-will be compiled into canonical events/effects by code in the next migration phase. A model must not
-re-decide a physical change that the executor already confirmed.
+Publication happens only after a prepared structured transition/action sequence becomes `applied`. A failed or rolled-back prepared action therefore never enters canonical history.
 
-A later Canon Compiler handles only semantic residuals that genuinely require interpretation. It
-selects from machine-provided candidate IDs or proposes `NEW`; it does not write arbitrary database
-mutations.
+Current deterministic coverage includes:
 
-## Storage choice
+- movement -> `core.entity.location`;
+- inventory take/drop/place/give -> `core.item.position`;
+- time/focus/blocked structured steps as canonical historical events;
+- blocked actions without world-state effects.
 
-SQLite remains the sole authoritative database for the local product. Graph-shaped relations are
-stored relationally and can be traversed with SQL. A vector index/embedding model may be added later
-for candidate retrieval, but TE2 correctness must not depend on a vector or graph extension.
+Before the first TE2 mutation of a migrated slot, the compiler imports the previous machine-resolved state as a `legacy_baseline` event. This makes event-sourced undo possible even when the campaign existed before TE2.
 
-A dedicated graph database may be introduced only as a rebuildable read index if real workloads show
-that SQLite graph traversal is insufficient. It must not become a second source of truth.
+### Single-writer migration
 
-## Relationship to ADR-008
+A domain must not retain a second post-turn writer once deterministic receipt compilation owns it.
 
-ADR-008 remains valid for legacy domains while they are not migrated. Its mutable current fields and
-accepted-proposal replay are compatibility projections during the transition.
+Structured movement is now single-writer: the old post-turn movement proposal/event reconciliation path has been removed. Inventory physical fields remain temporarily as a compatibility read projection because the existing runtime still reads them, but structured inventory canon is written by TE2 from executor receipts. The existing Scribe item-transfer guard prevents same-turn prose extraction from overwriting a structured executor receipt.
 
-For a domain migrated to TE2, this ADR supersedes the "mutable current field is source of truth"
-part: canonical events become history, and current fields/cards become projections that must be
-reconstructible from active TE2 events.
+Legacy compatibility projections may remain during migration, but they are not a second semantic authority.
 
-## Migration plan
+### Undo and replay
 
-1. Foundation: storage, canonical event store, temporal reducer, replay tests. No gameplay wiring.
-2. Deterministic domains: movement, inventory, time, and scene participation emit TE2 events/effects.
-3. Semantic compiler: entity candidate retrieval, semantic-type retrieval, observations and relations.
-4. Migrate generic facts, NPC identity, and interpersonal relationships to TE2 projections.
-5. Separate beliefs/claims and narrative theses from objective world truth.
-6. Make context building read TE2 projections and provenance.
-7. Remove superseded Scribe fixers, lexical normalization, and case-specific post-turn guards.
-8. Rewrite live contracts around world invariants and replay equivalence rather than exact model payloads.
+Undo does not delete canonical history. Events sourced from the undone user turn are marked `reverted`, then `WorldReducer.rebuild()` reconstructs TE2 projections from active events.
 
-## Explicit non-goals of the foundation PR
+`ActiveCanonReplay` must not delete TE2-owned event rows. Legacy physical-state compensation remains temporarily while old context/read paths still depend on legacy tables and fields. It can be removed domain-by-domain after context reads TE2 projections directly.
 
-- No synonym dictionaries or keyword maps.
-- No graph database service.
-- No vector dependency yet.
-- No new LLM/agent calls.
-- No change to production turn behavior yet.
-- No deletion of legacy tables/guards until migrated domains are proven equivalent.
+### Semantic residuals
+
+Deterministic receipts must never be re-decided by an LLM. The future Canon Compiler receives only the semantic residual that executors cannot know directly.
+
+The intended semantic pipeline is:
+
+1. retrieve a small candidate set of existing entities and semantic types;
+2. let the model choose only an exact candidate ID or `NEW`;
+3. validate the choice in code;
+4. emit canonical events/effects;
+5. let `WorldReducer` own temporal mutation.
+
+The model cannot invent an existing ID and does not directly mutate persistence.
+
+Candidate retrieval may later use embeddings/vector search, but vector storage is an index, not the source of truth.
+
+## Layer separation
+
+TE2 will keep different epistemic classes separate:
+
+- objective world truth: canonical events, fluents, relations;
+- entity identity: entities and mentions;
+- beliefs/claims: what a specific character believes or reports;
+- narrative layer: theses, goals, unresolved threads;
+- presentation: transient narrative detail.
+
+A thesis is not a world fact, and an NPC belief is not objective truth.
+
+## SQLite and graph representation
+
+SQLite remains the authoritative database. Graph relationships are represented relationally by stable subject/type/object IDs and can be traversed with SQL/recursive CTEs. A separate graph database is not required for this architecture.
+
+If future workloads justify a graph server, it should be a rebuildable read index, not authoritative storage.
+
+## Migration order
+
+1. Event/effect/projection foundation. **Implemented.**
+2. Deterministic movement publication and undo. **Implemented; old movement writer retired.**
+3. Deterministic inventory publication and undo. **Implemented; dedicated end-to-end tests added.**
+4. Complete deterministic time/focus projection decisions where current-state materialization is useful.
+5. Candidate retrieval and constrained Canon Compiler.
+6. Generic facts -> semantic fluents.
+7. Generic relationships -> temporal relations.
+8. NPC identity -> entity mentions / semantic entity resolution.
+9. Beliefs and narrative theses separated from objective truth.
+10. Context compiler reads TE2 projections as authoritative state.
+11. Remove superseded Scribe fixers and legacy compatibility projections.
+12. Repeated full live-model suite before considering merge to `main`.
+
+## Rejected approaches
+
+### Synonym/keyword dictionaries
+
+Rejected. Open-ended language produces an unbounded number of paraphrases and domain concepts. Maintaining lexical equivalence lists would move semantic reasoning into brittle hand-written data.
+
+### Regex/string-shape canon identity
+
+Rejected as an authoritative semantic mechanism. Structural parsing of machine-owned protocol fields is acceptable; recognizing world meaning from prose through string shape is not.
+
+### A guard per failing live test
+
+Rejected. Guard accumulation hides architectural ownership problems and creates whack-a-mole behavior.
+
+### Separate authoritative graph database
+
+Rejected for now. It adds deployment and transactional complexity without solving the semantic identity problem. SQLite is sufficient for the current local single-user workload.
+
+## Consequences
+
+Positive:
+
+- deterministic state changes have one owner;
+- undo/replay becomes event inclusion + rebuild;
+- semantic identity stops depending on free-text fact keys;
+- provenance is explicit;
+- historical state remains queryable;
+- entity aliases/mentions do not require duplicate entities;
+- semantic model failures are constrained to candidate decisions rather than arbitrary DB writes.
+
+Costs:
+
+- migration is incremental and temporarily maintains compatibility projections;
+- semantic candidate retrieval and Canon Compiler still need implementation;
+- current Fact/Relationship/Scribe infrastructure cannot be removed until TE2 context parity is proven;
+- live contracts must ultimately validate world-model invariants rather than implementation-specific proposal shapes.
