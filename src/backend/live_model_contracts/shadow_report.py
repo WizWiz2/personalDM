@@ -6,7 +6,6 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-
 SHADOW_KEY = "te2_semantic_shadow"
 
 
