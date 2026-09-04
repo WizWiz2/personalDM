@@ -3,9 +3,12 @@ from uuid import UUID
 
 import pytest
 
+from app.config import settings
+from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Campaign, PostTurnJob, Scene, Turn
 from app.services.post_turn_processor import PostTurnProcessor
+from app.services.truth_engine_shadow import SemanticResidualShadowService
 
 
 async def create_turn_fixture(db_session):
@@ -126,3 +129,80 @@ async def test_claimed_worker_job_is_processed(db_session, monkeypatch):
     assert calls == 1
     assert job.status == "completed"
     assert job.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_te2_shadow_is_enqueued_as_durable_job_only_when_enabled(db_session, monkeypatch):
+    campaign, assistant = await create_turn_fixture(db_session)
+    processor = PostTurnProcessor(db_session)
+
+    monkeypatch.setattr(settings, "TE2_SEMANTIC_SHADOW_ENABLED", False)
+    await processor.enqueue(UUID(campaign.id), UUID(assistant.id))
+    jobs = await PostTurnJobRepository(db_session).list_for_turn(UUID(assistant.id))
+    assert {job.job_type for job in jobs} == {"memory_scribe", "thesis_curator"}
+
+    monkeypatch.setattr(settings, "TE2_SEMANTIC_SHADOW_ENABLED", True)
+    await processor.enqueue(UUID(campaign.id), UUID(assistant.id))
+    jobs = await PostTurnJobRepository(db_session).list_for_turn(UUID(assistant.id))
+    assert {job.job_type for job in jobs} == {
+        "memory_scribe",
+        "thesis_curator",
+        "te2_semantic_shadow",
+    }
+
+
+@pytest.mark.asyncio
+async def test_te2_shadow_job_stays_nonterminal_until_capture_finishes(db_session, monkeypatch):
+    campaign, assistant = await create_turn_fixture(db_session)
+    monkeypatch.setattr(settings, "TE2_SEMANTIC_SHADOW_ENABLED", True)
+    processor = PostTurnProcessor(db_session)
+    await processor.enqueue(UUID(campaign.id), UUID(assistant.id))
+    await db_session.commit()
+
+    jobs = await PostTurnJobRepository(db_session).list_for_turn(UUID(assistant.id))
+    shadow = next(job for job in jobs if job.job_type == "te2_semantic_shadow")
+    observed_statuses: list[str] = []
+
+    async def capture(self, assistant_turn_id):
+        row = await db_session.get(PostTurnJob, str(shadow.id))
+        await db_session.refresh(row)
+        observed_statuses.append(row.status)
+        assert assistant_turn_id == UUID(assistant.id)
+        return True
+
+    monkeypatch.setattr(SemanticResidualShadowService, "capture", capture)
+    await processor.process_job(shadow.id)
+
+    row = await db_session.get(PostTurnJob, str(shadow.id))
+    await db_session.refresh(row)
+    assert observed_statuses == ["running"]
+    assert row.status == "completed"
+    assert row.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_te2_shadow_failure_is_terminal_and_retryable(db_session, monkeypatch):
+    campaign, assistant = await create_turn_fixture(db_session)
+    monkeypatch.setattr(settings, "TE2_SEMANTIC_SHADOW_ENABLED", True)
+    processor = PostTurnProcessor(db_session)
+    await processor.enqueue(UUID(campaign.id), UUID(assistant.id))
+    await db_session.commit()
+
+    jobs = await PostTurnJobRepository(db_session).list_for_turn(UUID(assistant.id))
+    shadow = next(job for job in jobs if job.job_type == "te2_semantic_shadow")
+
+    async def fail_capture(*args, **kwargs):
+        raise RuntimeError("shadow model unavailable")
+
+    monkeypatch.setattr(SemanticResidualShadowService, "capture", fail_capture)
+    with pytest.raises(RuntimeError, match="shadow model unavailable"):
+        await processor.process_job(shadow.id)
+
+    row = await db_session.get(PostTurnJob, str(shadow.id))
+    await db_session.refresh(row)
+    assert row.status == "failed"
+    assert row.attempts == 1
+
+    retried = await PostTurnJobRepository(db_session).retry(shadow.id)
+    assert retried is not None
+    assert retried.status == "pending"
