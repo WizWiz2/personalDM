@@ -1,0 +1,188 @@
+from __future__ import annotations
+
+import json
+from uuid import UUID
+
+import pytest
+from sqlalchemy import func, select
+
+from app.db.tables import Campaign, Turn
+from app.db.truth_engine_table import (
+    FluentAssertion,
+    SemanticType,
+    TruthEventRecord,
+    WorldRelationAssertion,
+)
+from app.models.truth_engine import CanonicalEventCreate
+from app.models.truth_engine_residual import (
+    ResidualEntityMention,
+    ResidualFluentObservation,
+    SemanticResidualEnvelope,
+)
+from app.services.truth_engine import WorldReducer
+from app.services.truth_engine_shadow import SemanticResidualShadowService
+
+
+class StubExtractor:
+    def __init__(self, envelope: SemanticResidualEnvelope):
+        self.envelope = envelope
+        self.calls: list[dict] = []
+
+    async def extract(self, campaign_id, **kwargs):
+        self.calls.append({"campaign_id": campaign_id, **kwargs})
+        return self.envelope
+
+
+@pytest.mark.asyncio
+async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_world(db_session):
+    campaign = Campaign(name="TE2 shadow")
+    db_session.add(campaign)
+    await db_session.flush()
+    user = Turn(
+        campaign_id=campaign.id,
+        role="user",
+        content="I take the key and ask the watcher about the mark.",
+        status="active",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    assistant = Turn(
+        campaign_id=campaign.id,
+        role="assistant",
+        content="You take the key. The watcher reveals that the mark is fresh.",
+        parent_turn_id=user.id,
+        status="active",
+        context_snapshot=json.dumps({"existing": "metadata"}),
+    )
+    db_session.add(assistant)
+    await db_session.flush()
+
+    receipt = CanonicalEventCreate(
+        event_key="receipt:test:key-take",
+        event_type="item_transfer",
+        description="The structured executor transferred the key.",
+        source_kind="executor_receipt",
+        source_turn_id=UUID(user.id),
+        payload={
+            "operation": "take",
+            "item_id": "machine-key-id",
+        },
+    )
+    await WorldReducer(db_session).append_and_reduce(UUID(campaign.id), receipt)
+    await db_session.commit()
+
+    envelope = SemanticResidualEnvelope(
+        entities=[
+            ResidualEntityMention(
+                ref="watcher",
+                mention_text="the watcher",
+                entity_type="character",
+            )
+        ],
+        fluents=[
+            ResidualFluentObservation(
+                atom_key="mark-age",
+                subject_ref="watcher",
+                semantic_description="the currently established assessment of the mark's age",
+                value="fresh",
+                description="The mark is established as fresh.",
+            )
+        ],
+    )
+    extractor = StubExtractor(envelope)
+    captured = await SemanticResidualShadowService(
+        db_session,
+        extractor=extractor,
+    ).capture(UUID(assistant.id))
+    await db_session.commit()
+
+    assert captured is True
+    assert len(extractor.calls) == 1
+    assert extractor.calls[0]["structured_receipts"] == [
+        {
+            "event_id": str((await db_session.execute(
+                select(TruthEventRecord.event_id).where(
+                    TruthEventRecord.event_key == "receipt:test:key-take"
+                )
+            )).scalar_one()),
+            "event_type": "item_transfer",
+            "description": "The structured executor transferred the key.",
+            "payload": {
+                "item_id": "machine-key-id",
+                "operation": "take",
+            },
+        }
+    ]
+
+    row = await db_session.get(Turn, assistant.id)
+    snapshot = json.loads(row.context_snapshot)
+    shadow = snapshot[SemanticResidualShadowService.SNAPSHOT_KEY]
+    assert snapshot["existing"] == "metadata"
+    assert shadow["mode"] == "read_only"
+    assert shadow["receipt_count"] == 1
+    assert shadow["counts"] == {"entities": 1, "fluents": 1, "relations": 0}
+    assert shadow["residual"]["fluents"][0]["atom_key"] == "mark-age"
+
+    # Shadow capture may update only diagnostic Turn metadata. It must not compile semantic state.
+    assert (
+        await db_session.execute(
+            select(func.count(TruthEventRecord.event_id)).where(
+                TruthEventRecord.campaign_id == campaign.id
+            )
+        )
+    ).scalar_one() == 1
+    assert (
+        await db_session.execute(
+            select(func.count(SemanticType.id)).where(SemanticType.campaign_id == campaign.id)
+        )
+    ).scalar_one() == 0
+    assert (
+        await db_session.execute(
+            select(func.count(FluentAssertion.id)).where(
+                FluentAssertion.campaign_id == campaign.id
+            )
+        )
+    ).scalar_one() == 0
+    assert (
+        await db_session.execute(
+            select(func.count(WorldRelationAssertion.id)).where(
+                WorldRelationAssertion.campaign_id == campaign.id
+            )
+        )
+    ).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+async def test_shadow_capture_skips_inactive_source_pair_without_calling_model(db_session):
+    campaign = Campaign(name="TE2 shadow inactive")
+    db_session.add(campaign)
+    await db_session.flush()
+    user = Turn(
+        campaign_id=campaign.id,
+        role="user",
+        content="old input",
+        status="reverted",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    assistant = Turn(
+        campaign_id=campaign.id,
+        role="assistant",
+        content="old output",
+        parent_turn_id=user.id,
+        status="alternative",
+        context_snapshot="{}",
+    )
+    db_session.add(assistant)
+    await db_session.commit()
+
+    extractor = StubExtractor(SemanticResidualEnvelope())
+    captured = await SemanticResidualShadowService(
+        db_session,
+        extractor=extractor,
+    ).capture(UUID(assistant.id))
+
+    assert captured is False
+    assert extractor.calls == []
+    row = await db_session.get(Turn, assistant.id)
+    assert SemanticResidualShadowService.SNAPSHOT_KEY not in json.loads(row.context_snapshot)
