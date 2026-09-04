@@ -14,9 +14,12 @@ from app.models.truth_engine import (
     SemanticTypeResolutionDecision,
 )
 from app.models.truth_engine_residual import (
+    ResidualAtomDisposition,
+    ResidualClassificationResult,
     ResidualEntityMention,
     ResidualFluentObservation,
     SemanticResidualEnvelope,
+    objective_residual,
 )
 from app.services.truth_engine_turn_context import SemanticTurnContextReader
 from app.services.truth_engine_writer import SemanticResidualWriterService
@@ -30,6 +33,22 @@ class StubExtractor:
     async def extract(self, *args, **kwargs):
         self.calls += 1
         return self.envelope
+
+
+class StubObjectiveClassifier:
+    def __init__(self):
+        self.calls = 0
+
+    async def classify(self, campaign_id, *, envelope, **kwargs):
+        self.calls += 1
+        decisions = [
+            ResidualAtomDisposition(atom_key=atom.atom_key, disposition="objective")
+            for atom in [*envelope.fluents, *envelope.relations]
+        ]
+        return ResidualClassificationResult(
+            decisions=decisions,
+            objective=objective_residual(envelope, decisions),
+        )
 
 
 class StubJointEntityResolver:
@@ -138,11 +157,13 @@ def _envelope() -> SemanticResidualEnvelope:
 async def test_writer_publishes_user_sourced_events_and_is_retry_idempotent(db_session):
     campaign_id, entity_id, user_id, assistant_id = await _turn_pair(db_session)
     extractor = StubExtractor(_envelope())
+    classifier = StubObjectiveClassifier()
     entity_resolver = StubJointEntityResolver(UUID(entity_id))
     semantic_resolver = StubSemanticResolver()
     writer = SemanticResidualWriterService(
         db_session,
         extractor=extractor,
+        classifier=classifier,
         entity_resolver=entity_resolver,
         semantic_resolver=semantic_resolver,
     )
@@ -162,6 +183,7 @@ async def test_writer_publishes_user_sourced_events_and_is_retry_idempotent(db_s
     assert len(records) == 2
     assert {record.source_kind for record in records} == {"semantic_compiler"}
     assert {record.source_turn_id for record in records} == {user_id}
+    assert classifier.calls == 2
     assert entity_resolver.calls == 1
     assert semantic_resolver.calls == 1
 
@@ -192,6 +214,8 @@ async def test_writer_publishes_user_sourced_events_and_is_retry_idempotent(db_s
     audit = snapshot[SemanticResidualWriterService.SNAPSHOT_KEY]
     assert audit["mode"] == "writer"
     assert audit["source_user_turn_id"] == user_id
+    assert audit["counts"]["objective_fluents"] == 1
+    assert audit["dispositions"][0]["disposition"] == "objective"
     assert len(audit["event_ids"]["fluents"]) == 1
     assert audit["event_ids"]["relations"] == []
 
@@ -203,15 +227,18 @@ async def test_writer_refuses_objective_semantics_for_actor_scoped_dialogue(db_s
         actor_scoped=True,
     )
     extractor = StubExtractor(_envelope())
+    classifier = StubObjectiveClassifier()
     writer = SemanticResidualWriterService(
         db_session,
         extractor=extractor,
+        classifier=classifier,
         entity_resolver=StubJointEntityResolver(UUID(entity_id)),
         semantic_resolver=StubSemanticResolver(),
     )
 
     assert await writer.write(UUID(assistant_id)) is False
     assert extractor.calls == 0
+    assert classifier.calls == 0
     count = (
         await db_session.execute(
             select(func.count(TruthEventRecord.event_id)).where(
@@ -226,11 +253,13 @@ async def test_writer_refuses_objective_semantics_for_actor_scoped_dialogue(db_s
 async def test_writer_activity_barrier_prevents_any_publish_after_undo_wins(db_session):
     campaign_id, entity_id, _user_id, assistant_id = await _turn_pair(db_session)
     extractor = StubExtractor(_envelope())
+    classifier = StubObjectiveClassifier()
     entity_resolver = StubJointEntityResolver(UUID(entity_id))
     semantic_resolver = StubSemanticResolver()
     writer = SemanticResidualWriterService(
         db_session,
         extractor=extractor,
+        classifier=classifier,
         context_reader=InactiveBarrierReader(db_session),
         entity_resolver=entity_resolver,
         semantic_resolver=semantic_resolver,
@@ -238,6 +267,7 @@ async def test_writer_activity_barrier_prevents_any_publish_after_undo_wins(db_s
 
     assert await writer.write(UUID(assistant_id)) is False
     assert extractor.calls == 1
+    assert classifier.calls == 1
     assert entity_resolver.calls == 1
     # The first guarded boundary is entity materialization, so semantic-slot judgement never starts.
     assert semantic_resolver.calls == 0
