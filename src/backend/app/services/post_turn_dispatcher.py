@@ -7,12 +7,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.config import settings
 from app.db.repositories.generation_lifecycle_repo import GenerationLifecycleRepository
 from app.db.tables import Turn
 from app.models.jobs import GenerationPhase
 from app.services.post_turn_processor import PostTurnProcessor
-from app.services.truth_engine_shadow import SemanticResidualShadowService
 from app.services.visual_generation_dispatcher import VisualGenerationDispatcher
 
 logger = logging.getLogger(__name__)
@@ -37,34 +35,10 @@ class PostTurnDispatcher:
             )
             try:
                 async with factory() as session:
+                    # Every enabled post-turn observer, including the optional TE2 semantic shadow,
+                    # is represented by a durable PostTurnJob. process_turn() drives those jobs to a
+                    # terminal state before the lifecycle checkpoint is published.
                     await PostTurnProcessor(session).process_turn(assistant_turn_id)
-                    # Commit the legacy writer before the optional long-running semantic shadow.
-                    # Shadow.capture() deliberately rolls its read transaction back before writing
-                    # diagnostics, so legacy canon must already be durable at this boundary.
-                    await session.commit()
-
-                    # Experimental TE2 comparison path. It stores diagnostics in the turn snapshot;
-                    # it never publishes TE2 semantic events or changes runtime world state.
-                    if settings.TE2_SEMANTIC_SHADOW_ENABLED:
-                        try:
-                            captured = await SemanticResidualShadowService(session).capture(
-                                assistant_turn_id
-                            )
-                            if captured:
-                                await session.commit()
-                            else:
-                                await session.rollback()
-                        except Exception as exc:  # pragma: no cover - live shadow is fail-open
-                            await session.rollback()
-                            logger.info(
-                                "TE2 semantic shadow for %s failed open: %s",
-                                assistant_turn_id,
-                                exc,
-                            )
-
-                    # This is the completion barrier for every enabled post-turn observer. In
-                    # particular, live-model snapshots must not treat terminal legacy jobs as proof
-                    # that an enabled semantic shadow has also finished.
                     await GenerationLifecycleRepository(session).set_phase_for_assistant(
                         assistant_turn_id,
                         GenerationPhase.POST_TURN_DONE,
