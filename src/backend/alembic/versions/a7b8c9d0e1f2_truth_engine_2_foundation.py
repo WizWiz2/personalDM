@@ -10,6 +10,9 @@ branch_labels = None
 depends_on = None
 
 
+ENTITY_NAME_UNIQUE = "uq_campaign_entity_name"
+
+
 def _table_names() -> set[str]:
     return set(sa.inspect(op.get_bind()).get_table_names())
 
@@ -24,13 +27,62 @@ def _index_names(table_name: str) -> set[str]:
     return {index["name"] for index in inspector.get_indexes(table_name)}
 
 
+def _unique_constraint_names(table_name: str) -> set[str]:
+    inspector = sa.inspect(op.get_bind())
+    return {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints(table_name)
+        if constraint.get("name")
+    }
+
+
 def _ensure_index(table_name: str, index_name: str, columns: list[str]) -> None:
     if index_name not in _index_names(table_name):
         op.create_index(index_name, table_name, columns)
 
 
+def _drop_legacy_entity_name_identity_constraint(tables: set[str]) -> None:
+    if "entities" not in tables:
+        return
+    if ENTITY_NAME_UNIQUE not in _unique_constraint_names("entities"):
+        return
+    # SQLite cannot ALTER a table-level UNIQUE constraint directly. Alembic batch mode
+    # recreates the table while preserving rows/FKs and drops only this legacy identity rule.
+    with op.batch_alter_table("entities", recreate="always") as batch_op:
+        batch_op.drop_constraint(ENTITY_NAME_UNIQUE, type_="unique")
+
+
+def _restore_legacy_entity_name_identity_constraint(tables: set[str]) -> None:
+    if "entities" not in tables:
+        return
+    if ENTITY_NAME_UNIQUE in _unique_constraint_names("entities"):
+        return
+    duplicate = op.get_bind().execute(
+        sa.text(
+            """
+            SELECT campaign_id, entity_type, canonical_name
+            FROM entities
+            GROUP BY campaign_id, entity_type, canonical_name
+            HAVING COUNT(*) > 1
+            LIMIT 1
+            """
+        )
+    ).first()
+    if duplicate is not None:
+        raise RuntimeError(
+            "Cannot downgrade Truth Engine 2: distinct entities now share a display label; "
+            "restoring uq_campaign_entity_name would destroy valid identity data."
+        )
+    with op.batch_alter_table("entities", recreate="always") as batch_op:
+        batch_op.create_unique_constraint(
+            ENTITY_NAME_UNIQUE,
+            ["campaign_id", "entity_type", "canonical_name"],
+        )
+
+
 def upgrade() -> None:
     tables = _table_names()
+    _drop_legacy_entity_name_identity_constraint(tables)
 
     if "truth_event_records" not in tables:
         op.create_table(
@@ -278,6 +330,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     tables = _table_names()
+    # Refuse an unsafe downgrade before deleting TE2 tables. Once duplicate labels represent
+    # distinct UUID identities, the old uniqueness rule cannot be restored without data loss.
+    _restore_legacy_entity_name_identity_constraint(tables)
     for table_name in (
         "truth_projection_state",
         "truth_effect_applications",
