@@ -133,6 +133,12 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
                 "PRAGMA index_list('scene_transitions')"
             ).fetchall()
         }
+        semantic_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('semantic_types')"
+            ).fetchall()
+        }
         truth_tables = {
             row[0]
             for row in connection.execute(
@@ -140,10 +146,11 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
             ).fetchall()
         }
 
-    assert revision == ("a7b8c9d0e1f2",)
+    assert revision == ("b8c9d0e1f2a3",)
     assert transition == ("preserve me", "legacy-runtime")
     assert lifecycle == ("received", 1)
     assert "ix_scene_transitions_campaign_id" in indexes
+    assert "system_key" in semantic_columns
     assert {
         "truth_event_records",
         "truth_event_effects",
