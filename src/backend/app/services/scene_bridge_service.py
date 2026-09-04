@@ -161,6 +161,17 @@ class SceneBridgeService:
         return self._to_read(row) if row else None
 
     async def mark_status(self, transition_id: UUID, status: str) -> bool:
+        # SceneTransitionExecutor calls this after it has atomically marked the structured
+        # transition/action-sequence applied. Some compound transitions intentionally have no
+        # SceneBridge row, so TE2 publication must not depend on bridge existence. This is a
+        # migration hook at the applied-transition boundary; event keys make repeated calls safe.
+        if status == "applied":
+            from app.services.truth_engine_receipts import StructuredReceiptEventCompiler
+
+            await StructuredReceiptEventCompiler(
+                self._session
+            ).compile_applied_transition(transition_id)
+
         row = (
             await self._session.execute(
                 select(SceneBridge).where(
@@ -177,16 +188,6 @@ class SceneBridgeService:
         elif status in {"rolled_back", "undone"}:
             row.undone_at = now
         await self._session.flush()
-
-        # SceneTransitionExecutor marks the structured transition/sequence applied before it calls
-        # this boundary. Publishing the bridge therefore means the receipt is now allowed into the
-        # immutable TE2 event log. Compilation is idempotent by event_key and shares this transaction.
-        if status == "applied":
-            from app.services.truth_engine_receipts import StructuredReceiptEventCompiler
-
-            await StructuredReceiptEventCompiler(
-                self._session
-            ).compile_applied_transition(transition_id)
         return True
 
     @staticmethod
