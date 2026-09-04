@@ -6,6 +6,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+ResidualDisposition = Literal[
+    "objective",
+    "epistemic",
+    "transient",
+    "receipt_owned",
+    "presentation",
+    "unsupported",
+]
+
 
 class ResidualEntityMention(BaseModel):
     ref: str = Field(min_length=1, max_length=48, pattern=r"^[A-Za-z0-9_-]+$")
@@ -159,7 +168,7 @@ def _sanitize_payload(data: Any) -> tuple[Any, ResidualSanitizationAudit]:
 
 
 class SemanticResidualEnvelope(RawSemanticResidualEnvelope):
-    """Sanitized objective semantic residue ready for identity/schema resolution.
+    """Sanitized semantic candidates ready for bounded disposition classification.
 
     Local refs exist only inside this envelope. They are not persistent IDs and cannot be used as
     database identity. Atom keys are backend-generated exact-content fingerprints; semantic identity
@@ -202,6 +211,23 @@ class SemanticResidualEnvelope(RawSemanticResidualEnvelope):
         return self
 
 
+class ResidualAtomDisposition(BaseModel):
+    """A bounded decision over one already-existing backend atom key."""
+
+    atom_key: str = Field(min_length=1, max_length=64)
+    disposition: ResidualDisposition
+    reason: str | None = Field(default=None, max_length=800)
+
+
+class ResidualDispositionEnvelope(BaseModel):
+    decisions: list[ResidualAtomDisposition] = Field(default_factory=list, max_length=32)
+
+
+class ResidualClassificationResult(BaseModel):
+    decisions: list[ResidualAtomDisposition]
+    objective: SemanticResidualEnvelope
+
+
 def sanitize_semantic_residual(raw: RawSemanticResidualEnvelope) -> SanitizedResidual:
     """Return a sanitized envelope plus bookkeeping diagnostics.
 
@@ -213,6 +239,28 @@ def sanitize_semantic_residual(raw: RawSemanticResidualEnvelope) -> SanitizedRes
     return SanitizedResidual(
         envelope=SemanticResidualEnvelope.model_validate(payload),
         audit=audit,
+    )
+
+
+def objective_residual(
+    envelope: SemanticResidualEnvelope,
+    decisions: list[ResidualAtomDisposition],
+) -> SemanticResidualEnvelope:
+    """Keep only atoms explicitly classified objective and only the entity refs they require."""
+
+    objective_keys = {
+        decision.atom_key for decision in decisions if decision.disposition == "objective"
+    }
+    fluents = [atom for atom in envelope.fluents if atom.atom_key in objective_keys]
+    relations = [atom for atom in envelope.relations if atom.atom_key in objective_keys]
+    required_refs = {atom.subject_ref for atom in fluents}
+    required_refs.update(atom.subject_ref for atom in relations)
+    required_refs.update(atom.object_ref for atom in relations)
+    entities = [entity for entity in envelope.entities if entity.ref in required_refs]
+    return SemanticResidualEnvelope(
+        entities=entities,
+        fluents=fluents,
+        relations=relations,
     )
 
 
