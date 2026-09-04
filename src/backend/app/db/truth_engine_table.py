@@ -81,15 +81,25 @@ class SemanticType(Base):
     """Campaign-local semantic schema element.
 
     Identity is the UUID, not the label. There is deliberately no synonym/keyword list: candidate
-    retrieval and semantic resolution will operate on descriptions/embeddings in a later TE2 phase.
+    retrieval and semantic resolution operate on descriptions/embeddings. ``system_key`` is only
+    for a tiny set of engine-owned protocol slots whose meaning is already known by structured
+    executors; it is never used to recognize prose.
     """
 
     __tablename__ = "semantic_types"
+    __table_args__ = (
+        UniqueConstraint(
+            "campaign_id",
+            "system_key",
+            name="uq_semantic_type_campaign_system_key",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     campaign_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    system_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     canonical_label: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
