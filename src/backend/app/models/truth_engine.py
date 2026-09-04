@@ -63,6 +63,7 @@ class SemanticTypeCreate(BaseModel):
     cardinality: str = "single"
     value_schema: dict[str, Any] | None = None
     created_by_event_id: UUID | None = None
+    system_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class WorldReductionResult(BaseModel):
