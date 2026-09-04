@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 from pathlib import Path
+import sqlite3
 from typing import Any
 
 
@@ -52,6 +52,13 @@ def _loads(raw: object, default: Any) -> Any:
     return value
 
 
+def _table_exists(db: sqlite3.Connection, name: str) -> bool:
+    return db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,),
+    ).fetchone() is not None
+
+
 def _case_identity(db_path: Path, run_dir: Path) -> tuple[str, str]:
     try:
         relative = db_path.relative_to(run_dir)
@@ -74,12 +81,26 @@ def collect_run(run_dir: Path) -> dict[str, Any]:
         db = sqlite3.connect(db_path)
         db.row_factory = sqlite3.Row
         try:
+            if not _table_exists(db, "turns"):
+                cases.append(
+                    {
+                        "case_id": case_id,
+                        "repetition": repetition,
+                        "database": str(db_path),
+                        "assistant_turn_count": 0,
+                        "shadow_turn_count": 0,
+                        "turns": [],
+                    }
+                )
+                continue
+
             turns = db.execute(
                 """SELECT id, parent_turn_id, content, context_snapshot, status
                      FROM turns
                     WHERE role='assistant'
                     ORDER BY created_at, id"""
             ).fetchall()
+            has_proposals = _table_exists(db, "proposed_changes")
             entries: list[dict[str, Any]] = []
             for turn in turns:
                 total_assistant_turns += 1
@@ -88,21 +109,26 @@ def collect_run(run_dir: Path) -> dict[str, Any]:
                 if not isinstance(shadow, dict):
                     continue
                 shadow_turns += 1
-                proposals = []
-                for proposal in db.execute(
-                    """SELECT change_type, payload, status, user_edit
-                         FROM proposed_changes
-                        WHERE turn_id=? ORDER BY created_at, id""",
-                    (turn["id"],),
-                ).fetchall():
-                    proposals.append(
-                        {
-                            "change_type": proposal["change_type"],
-                            "status": proposal["status"],
-                            "payload": _loads(proposal["payload"], proposal["payload"]),
-                            "user_edit": _loads(proposal["user_edit"], proposal["user_edit"]),
-                        }
-                    )
+
+                proposal_rows = (
+                    db.execute(
+                        """SELECT change_type, payload, status, user_edit
+                             FROM proposed_changes
+                            WHERE turn_id=? ORDER BY created_at, id""",
+                        (turn["id"],),
+                    ).fetchall()
+                    if has_proposals
+                    else []
+                )
+                proposals = [
+                    {
+                        "change_type": proposal["change_type"],
+                        "status": proposal["status"],
+                        "payload": _loads(proposal["payload"], proposal["payload"]),
+                        "user_edit": _loads(proposal["user_edit"], proposal["user_edit"]),
+                    }
+                    for proposal in proposal_rows
+                ]
                 entries.append(
                     {
                         "assistant_turn_id": turn["id"],
@@ -151,8 +177,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"Turns with TE2 shadow: **{report['shadow_turn_count']}**  ",
         f"Turns without TE2 shadow: **{report['missing_shadow_turn_count']}**",
         "",
-        "This report intentionally does not decide semantic equivalence by string matching. "
-        "It places the TE2 observation graph beside the legacy persistence proposals for review.",
+        (
+            "This report intentionally does not decide semantic equivalence by string matching. "
+            "It places the TE2 observation graph beside the legacy persistence proposals for review."
+        ),
         "",
     ]
     for case in report["cases"]:
