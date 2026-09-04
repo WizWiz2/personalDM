@@ -18,6 +18,7 @@ import app.db.scene_state_table  # noqa: F401
 import app.db.scene_transition_table  # noqa: F401
 import app.db.tables  # noqa: F401
 import app.db.thesis_lifecycle_table  # noqa: F401
+import app.db.truth_engine_table  # noqa: F401
 from app.config import settings
 from app.db.engine import Base
 
@@ -132,8 +133,22 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
                 "PRAGMA index_list('scene_transitions')"
             ).fetchall()
         }
+        truth_tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
 
-    assert revision == ("f6a7b8c9d0e1",)
+    assert revision == ("a7b8c9d0e1f2",)
     assert transition == ("preserve me", "legacy-runtime")
     assert lifecycle == ("received", 1)
     assert "ix_scene_transitions_campaign_id" in indexes
+    assert {
+        "truth_event_records",
+        "truth_event_effects",
+        "semantic_types",
+        "fluent_assertions",
+        "world_relation_assertions",
+        "entity_mentions",
+    }.issubset(truth_tables)
