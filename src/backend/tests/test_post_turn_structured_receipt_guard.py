@@ -2,8 +2,12 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
+from app.config import settings
 from app.services.post_turn_structured_receipt_guard import (
     RelationshipReceiptDecision,
+    _ensure_relationship_receipts,
     _executed_steps,
     _player_id,
 )
@@ -60,3 +64,10 @@ def test_relationship_reconciler_accepts_only_typed_verdicts():
         reason="Структурированная передача выполнила явное условие долга.",
     )
     assert decision.retract_ids == [relationship_id]
+
+
+@pytest.mark.asyncio
+async def test_writer_mode_disables_legacy_relationship_receipt_writer(monkeypatch):
+    monkeypatch.setattr(settings, "TE2_SEMANTIC_MODE", "writer")
+    # The ownership guard must short-circuit before touching any legacy processor/state.
+    assert await _ensure_relationship_receipts(None, None, None, None) == 0
