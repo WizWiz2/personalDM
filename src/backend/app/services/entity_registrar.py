@@ -33,11 +33,19 @@ class CharacterMention(BaseModel):
     presence: Literal["present", "departed", "mentioned_only"] = "present"
     importance: Literal["incidental", "supporting", "major"] = "incidental"
     temporary_name: bool = False
+    personal_name_evidence: str | None = Field(default=None, max_length=500)
     persistent: bool = True
 
 
 class EntityRegistrationEnvelope(BaseModel):
     characters: list[CharacterMention] = Field(default_factory=list, max_length=12)
+
+
+class PersonalNameRevealDecision(BaseModel):
+    """Semantic confirmation for a named reveal misclassified as temporary by the registrar."""
+
+    is_explicit: bool = False
+    evidence: str | None = Field(default=None, max_length=500)
 
 
 @dataclass
@@ -93,6 +101,8 @@ class EntityRegistrar:
         scene_id: UUID | None,
         source_turn_id: UUID,
         assistant_content: str,
+        *,
+        promotion_only: bool = False,
     ) -> EntityRegistrationResult:
         result = EntityRegistrationResult()
         if not scene_id or not assistant_content.strip():
@@ -149,6 +159,9 @@ class EntityRegistrar:
 - Не придумывай canonical_name, которого нет в тексте ответа. Запрещены синтетические ярлыки вроде «Городской Диктатор» или «Безымянный собеседник», если Narrator буквально так персонажа не назвал.
 - Для пока безымянного важного NPC допустимо точное временное обозначение вроде «бармен Медного Котла»; тогда temporary_name=true.
 - Если временный NPC позже назван по имени, верни новое имя, ту же role и temporary_name=false: движок сам повысит временную идентичность до постоянной.
+- Если персонаж прямо сам сообщает личное имя (например, «Меня зовут Иван»), заполни
+  personal_name_evidence точной цитатой из ответа ДМа. Такое evidence важнее случайного
+  значения temporary_name: движок всё равно проверит цитату и однозначность сцены перед promotion.
 - evidence — короткий точный фрагмент ответа ДМа, доказывающий появление, действие, реплику или уход.
 - presence=present только если персонаж физически находится в сцене к концу ответа.
 - presence=departed только если он явно покинул сцену.
@@ -269,9 +282,26 @@ class EntityRegistrar:
                 continue
 
             if entity:
+                has_personal_name_evidence = bool(
+                    mention.personal_name_evidence
+                    and evidence_supported(mention.personal_name_evidence, assistant_content)
+                )
                 if (
                     matched_contextually
-                    and not mention.temporary_name
+                    and self._is_temporary_identity(entity)
+                    and mention.temporary_name
+                    and not has_personal_name_evidence
+                ):
+                    confirmed_evidence = await self._confirm_personal_name_reveal(
+                        selection,
+                        assistant_content,
+                        entity.canonical_name,
+                        mention,
+                    )
+                    has_personal_name_evidence = bool(confirmed_evidence)
+                if (
+                    matched_contextually
+                    and (not mention.temporary_name or has_personal_name_evidence)
                     and self._is_temporary_identity(entity)
                     and identity_key(name) != identity_key(entity.canonical_name)
                 ):
@@ -295,6 +325,11 @@ class EntityRegistrar:
                 await self._enrich_existing(character, mention, source_turn_id, scene_id)
                 character_id = entity.id
             else:
+                if promotion_only:
+                    # This mode is used after TurnAuthority has already materialized all
+                    # authorized first appearances. It may reconcile a published name with an
+                    # existing temporary identity, but it is never allowed to create a new one.
+                    continue
                 character = await self._entities.create_character(
                     campaign_id,
                     CharacterCreate(
@@ -353,6 +388,52 @@ class EntityRegistrar:
 
         await self._session.flush()
         return result
+
+    async def _confirm_personal_name_reveal(
+        self,
+        selection,
+        assistant_content: str,
+        previous_identity: str,
+        mention: CharacterMention,
+    ) -> str | None:
+        """Confirm a self-identification semantically, without parsing prose lexically."""
+        try:
+            data = await self._router.generate_json(
+                self._provider,
+                selection,
+                [
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "Ты semantic identity verifier. Определи только, устанавливает ли "
+                            "приведённый фрагмент личное имя уже присутствующего временного "
+                            "персонажа. Не считай роль, должность, обращение или имя, названное "
+                            "третьим лицом, self-identification. Верни is_explicit=true только "
+                            "при прямом сообщении самим персонажем; evidence должна быть точной "
+                            "цитатой из текста. Не придумывай и не исправляй цитату."
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            f"ПРЕЖНЯЯ ВРЕМЕННАЯ ИДЕНТИЧНОСТЬ: {previous_identity}\n"
+                            f"УПОМИНАНИЕ REGISTRAR: {mention.model_dump_json()}\n"
+                            f"ОПУБЛИКОВАННЫЙ ОТВЕТ ДМА:\n{assistant_content}"
+                        ),
+                    ),
+                ],
+                max_tokens=250,
+                temperature=0.0,
+                response_model=PersonalNameRevealDecision,
+            )
+            decision = PersonalNameRevealDecision.model_validate(data)
+            if decision.is_explicit and decision.evidence and evidence_supported(
+                decision.evidence, assistant_content
+            ):
+                return decision.evidence
+        except (LLMProviderError, ValidationError, ValueError, TypeError):
+            return None
+        return None
 
     async def _promote_temporary_identity(
         self,

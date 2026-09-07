@@ -35,6 +35,15 @@ def _canon_value(payload: dict, key: str, default: str) -> str:
 def _same_scope(payload: dict, fact: FactRead) -> bool:
     scope = str(payload.get("scope") or "campaign").casefold()
     if scope != fact.scope:
+        # A scene observation may refine a campaign-wide slot. Once semantic slot identity is
+        # established, inheriting the broader scope is required to supersede the old current value.
+        if (
+            scope == "scene"
+            and fact.scope == "campaign"
+            and _norm(payload.get("subject")) == _norm(fact.subject)
+            and _norm(payload.get("predicate")) == _norm(fact.predicate)
+        ):
+            return True
         return False
     if scope == "scene":
         return str(payload.get("scene_id") or "") == str(fact.scene_id or "")
@@ -45,7 +54,8 @@ def _has_exact_slot(payload: dict, facts: list[FactRead]) -> bool:
     subject = _norm(payload.get("subject"))
     predicate = _norm(payload.get("predicate"))
     return any(
-        _same_scope(payload, fact)
+        _norm(payload.get("scope") or "campaign") == fact.scope
+        and _same_scope(payload, fact)
         and _norm(fact.subject) == subject
         and _norm(fact.predicate) == predicate
         for fact in facts
@@ -184,7 +194,9 @@ async def reconcile_fact_slots(
 slot, если оба описывают текущее освещение той же комнаты.
 
 Не склеивай просто связанные, причинно связанные или тематически похожие факты. Два независимых
-свойства должны остаться разными. Scope и scene должны совпадать.
+свойства должны остаться разными. Если новый scene-факт уточняет тот же campaign-слот, сопоставь
+его с campaign-фактом: движок унаследует более широкий scope и заменит старое текущее значение.
+Разные scene-слоты не склеивай.
 
 Верни только JSON вида {"matches":[{"proposal_index":0,"current_fact_id":"uuid-or-null"}]}.
 current_fact_id может быть только точным id из CURRENT FACTS или null. Для каждого proposal_index

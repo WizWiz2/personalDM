@@ -146,6 +146,7 @@ class TruthCandidateRetriever:
                 0 if row.id in linked_ids else 1,
                 -mention_counts[row.id],
                 row.created_at,
+                row.canonical_name.casefold(),
                 row.id,
             )
         )

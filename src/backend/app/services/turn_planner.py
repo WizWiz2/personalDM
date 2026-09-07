@@ -255,6 +255,11 @@ Authoritative scene state:
 - A completed change of room/building/district/journey endpoint requires structured transition.
 - Explicit player-selected plausible movement may create/discover a destination/route only through
   the transition executor; never hide travel in prose fields.
+- A sentence that explicitly names departure and destination (including return language such as
+  “возвращаюсь из текущего места в свою комнату”) is a movement commitment even when the route is
+  ordinary and no interaction is requested. Do not reinterpret such a sentence as observation or
+  interaction; put the location_transition on the movement step and resolve its destination from
+  the authoritative current scene and available exits.
 - World time advances only through an approved time transition.
 
 Dramatic discipline:

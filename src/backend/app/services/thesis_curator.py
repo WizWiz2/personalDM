@@ -357,11 +357,56 @@ visual_state, music_mood
         )
         if envelope is None:
             raise LLMProviderError("Thesis Curator returned invalid structured output")
+        # Structured item-transfer events are executable evidence, so they can close a
+        # matching unresolved beat even when the curator model conservatively omits the
+        # resolution id. Match the durable item semantics against the thesis text; do not
+        # infer closure from a paraphrase in narration alone.
+        # A model-produced resolution is only a proposal.  Requiring lexical
+        # evidence from the current turn prevents a fluent curator from closing
+        # every unresolved beat merely because one of them was discussed.  The
+        # durable structured evidence below remains authoritative and can close
+        # a thesis even when the model omitted its id.
+        current_window_text = self._normalized_text(
+            f"{user_content} {assistant_content}"
+        )
+        window_tokens = {
+            token for token in current_window_text.split() if len(token) >= 4
+        }
+        evidenced_model_resolutions: set[UUID] = set()
+        for thesis in active:
+            thesis_tokens = {
+                token
+                for token in self._normalized_text(thesis.text).split()
+                if len(token) >= 4
+            }
+            if len(thesis_tokens & window_tokens) >= 2 and thesis.id in {
+                UUID(str(value)) for value in envelope.resolve_thesis_ids
+            }:
+                evidenced_model_resolutions.add(thesis.id)
+        structured_resolutions: set[UUID] = set(evidenced_model_resolutions)
+        transfer_texts = [
+            self._normalized_text(event.description)
+            for event in events
+            if event.event_type == "item_transfer"
+        ]
+        if transfer_texts:
+            for thesis in active:
+                if thesis.thesis_type != ThesisType.UNRESOLVED_BEAT:
+                    continue
+                thesis_tokens = set(self._normalized_text(thesis.text).split())
+                if len(thesis_tokens) < 2:
+                    continue
+                if any(
+                    len(thesis_tokens & set(event_text.split())) >= 2
+                    for event_text in transfer_texts
+                ):
+                    structured_resolutions.add(thesis.id)
+
         return await self.reconcile(
             scene_id,
             source_turn_id,
             envelope.desired_active,
-            resolve_thesis_ids=set(envelope.resolve_thesis_ids),
+            resolve_thesis_ids=structured_resolutions,
         )
 
     @staticmethod
@@ -533,6 +578,19 @@ visual_state, music_mood
             new, semantic_key = pair
             same_identity = new.existing_thesis_id in {None, old.id}
             similarity = self._similarity(old.text, new.text)
+            if (
+                old.thesis_type == ThesisType.UNRESOLVED_BEAT
+                and similarity < self.PARAPHRASE_SIMILARITY
+            ):
+                # An open plot thread is not replaceable by a low-similarity proposal,
+                # even when the model copied this thread's id.  Content identity is
+                # stronger than an LLM-supplied foreign key; otherwise one malformed
+                # batch can silently erase an independent unresolved beat.
+                # Explicit resolution is handled above; otherwise lifecycle omission
+                # semantics preserve the existing beat until a typed continuation arrives.
+                desired_by_slot.pop(slot, None)
+                result.kept += 1
+                continue
             semantically_same = same_identity and similarity >= self.PARAPHRASE_SIMILARITY
             if semantically_same:
                 changes = {}

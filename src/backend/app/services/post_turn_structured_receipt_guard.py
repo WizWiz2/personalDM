@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Literal
 from uuid import UUID
 
@@ -29,6 +30,43 @@ class RelationshipReceiptDecision(BaseModel):
     verdict: Literal["no_change", "retract"] = "no_change"
     retract_ids: list[UUID] = Field(default_factory=list)
     reason: str = ""
+
+
+def _explicit_item_debt_fulfillments(receipt: dict, relationships) -> set[UUID]:
+    """Return debts whose own text names the item in a confirmed give receipt.
+
+    The receipt is already an authoritative executor result.  For a debt, an exact
+    item match is enough to close only when the current assertion itself names that
+    item; generic obligations and unrelated transfers remain delegated to the
+    semantic reconciler below.
+    """
+    if receipt.get("operation") != "give":
+        return set()
+    item_text = str(receipt.get("item_name") or "")
+    from_id = str(receipt.get("from_character_id") or "")
+    to_id = str(receipt.get("to_character_id") or "")
+    if not item_text or not from_id or not to_id:
+        return set()
+    item_tokens = {
+        token.casefold()
+        for token in re.findall(r"[\w-]{3,}", item_text, flags=re.UNICODE)
+    }
+    if not item_tokens:
+        return set()
+    result: set[UUID] = set()
+    for row in relationships:
+        if str(row.relation_type or "").casefold() != "debt":
+            continue
+        if {str(row.subject_id), str(row.object_id)} != {from_id, to_id}:
+            continue
+        description_tokens = {
+            token.casefold()
+            for token in re.findall(r"[\w-]{3,}", str(row.description or ""), flags=re.UNICODE)
+        }
+        overlap = len(item_tokens & description_tokens)
+        if overlap >= min(2, len(item_tokens)):
+            result.add(UUID(str(row.id)))
+    return result
 
 
 def _snapshot_dict(turn) -> dict:
@@ -128,7 +166,7 @@ The player's prose can clarify intent, but it cannot override the machine-confir
 Schema:
 {"verdict":"no_change|retract","retract_ids":["uuid"],"reason":"brief Russian reason"}
 """
-    return await router.generate_json(
+    data = await router.generate_json(
         LLMProvider(),
         selection,
         [
@@ -151,6 +189,10 @@ Schema:
         temperature=0.0,
         response_model=RelationshipReceiptDecision,
     )
+    # Provider adapters return JSON-compatible mappings even when a response_model
+    # was supplied. Re-validate at this boundary so callers always receive the typed
+    # decision contract and cannot accidentally treat a dict as an object.
+    return RelationshipReceiptDecision.model_validate(data)
 
 
 async def _ensure_relationship_receipts(
@@ -215,11 +257,14 @@ async def _ensure_relationship_receipts(
             user_turn.content,
             assistant.content,
         )
-        if decision.verdict != "retract" or not decision.retract_ids:
+        deterministic_retract_ids = _explicit_item_debt_fulfillments(receipt, relationships)
+        retract_ids = set(decision.retract_ids) if decision.verdict == "retract" else set()
+        retract_ids.update(deterministic_retract_ids)
+        if not retract_ids:
             continue
 
         by_id = {UUID(row.id): row for row in relationships}
-        for relationship_id in decision.retract_ids:
+        for relationship_id in retract_ids:
             row = by_id.get(relationship_id)
             if row is None:
                 continue

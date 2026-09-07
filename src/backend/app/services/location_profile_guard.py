@@ -3,9 +3,18 @@ from __future__ import annotations
 from functools import wraps
 from uuid import UUID
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.provider_config_repo import ProviderConfigRepository
+from app.db.scene_transition_table import SceneTransition
+from app.db.tables import Entity
 from app.models.location import LocationUpdate
+from app.models.turn import ChatMessage
 from app.services.location_identity import display_location_name, same_location_reference
+from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_authority_planner import TurnAuthorityPlanner
 from app.services.turn_planner import TurnPlanningError
@@ -14,6 +23,88 @@ from app.services.turn_saga import TurnSaga
 _INSTALLED = False
 _PROFILE_MARKER = "DESTINATION PROFILE:"
 _TRANSITION_MARKER = "TRANSITION:"
+
+
+async def enrich_new_location_profiles(
+    session: AsyncSession,
+    *,
+    campaign_id: UUID,
+    trigger_turn_id: UUID,
+    assistant_content: str,
+) -> None:
+    """Fill empty profiles after publication using a bounded typed descriptive pass.
+
+    This is deliberately post-publication and only targets locations created by this turn. It
+    cannot alter destination identity, route topology, or any action; it closes the durable-card
+    invariant when the pre-materialization Planner patch was unavailable.
+    """
+    transitions = (
+        await session.execute(
+            select(SceneTransition).where(
+                SceneTransition.campaign_id == str(campaign_id),
+                SceneTransition.trigger_turn_id == str(trigger_turn_id),
+                SceneTransition.transition_type == "location_transition",
+                SceneTransition.status.in_(("prepared", "applied")),
+            )
+        )
+    ).scalars().all()
+    if not transitions:
+        return
+    locations = LocationRepository(session)
+    configs = ProviderConfigRepository(session)
+    router = RoleModelRouter(configs)
+    selection = await router.resolve(campaign_id, ModelRole.PLANNER)
+    if selection is None:
+        return
+
+    from app.services.turn_authority_planner import LocationProfilePatchSet
+
+    for transition in transitions:
+        location = await locations.get_by_id(UUID(transition.target_location_id))
+        if location is None or location.description:
+            continue
+        prompt = (
+            "Заполни durable-профиль только что открытой локации. Верни JSON строго по схеме "
+            "LocationProfilePatchSet с одним patch и transition_index=0. Профиль на русском, "
+            "2-4 предложения, минимум 80 символов; опиши наблюдаемые физические признаки, "
+            "обычное назначение и атмосферу без скрытых фактов и событий одного хода.\n"
+            f"Локация: {location.canonical_name}\n"
+            f"Опубликованная narration:\n{assistant_content[:4000]}"
+        )
+        try:
+            data = await RoleModelRouter(configs).generate_json(
+                LLMProvider(),
+                selection,
+                [
+                    ChatMessage(
+                        role="system",
+                        content="Верни только валидный LocationProfilePatchSet JSON.",
+                    ),
+                    ChatMessage(role="user", content=prompt),
+                ],
+                max_tokens=600,
+                temperature=0.0,
+                response_model=LocationProfilePatchSet,
+            )
+            decision = LocationProfilePatchSet.model_validate(data)
+        except (LLMProviderError, ValueError, TypeError):
+            continue
+        profile = next(
+            (
+                item.profile.strip()
+                for item in decision.patches
+                if item.transition_index == 0 and _usable_profile(item.profile.strip())
+            ),
+            None,
+        )
+        if profile:
+            custom = dict(location.custom_fields or {})
+            custom["profile_source"] = "turn_planner_destination_profile"
+            await locations.update(
+                UUID(location.id),
+                LocationUpdate(description=profile, custom_fields=custom),
+            )
+    await session.flush()
 
 _LOCATION_PLANNING_CONTRACT = f"""
 
@@ -29,6 +120,9 @@ and its ordinary function/feel. It must be useful later when the player revisits
 future illustration prompt. Do not put hidden secrets, undiscovered threats, the protagonist's
 feelings, or one-turn actions into the profile. Do not use generic filler such as "a location" or
 repeat only the destination name. Existing canonical place facts outrank new description text.
+The destination must be the final place the player committed to. Do not promote a counter, desk,
+doorway, room corner, or other incidental scene detail into a separate location transition unless
+the player explicitly chose that place as a destination or explicitly moved there.
 """
 
 _LOCATION_REVIEW_CONTRACT = f"""
@@ -41,6 +135,13 @@ LOCATION PROFILE REVIEW:
   information, or is too vague to identify the environment on a later revisit.
 - Revisiting an already-known durable location does not require the Planner to restate its complete
   profile; existing canonical place facts remain authoritative.
+- Do not turn route topology into action-sequence requirements: stairs, floors, corridors, doors
+  passed on the way, and similar traversal details are not separate player actions unless the input
+  explicitly commits to stopping, inspecting, or interacting with that element. One transition to
+  the final destination plus its profile covers continuous travel.
+- A person or object encountered inside the destination is not itself a destination. Reject a
+  transition to an incidental sub-place when the player's committed destination is its containing
+  location; keep the contact/action in that scene instead.
 """
 
 

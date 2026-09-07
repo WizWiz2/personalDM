@@ -10,6 +10,22 @@ _SEMANTIC_BOUNDARY_CONTRACT = """
 - SAME-SCENE CONTACT IS NOT A SCENE TRANSITION. Talking to, listening to, looking at, turning toward,
   approaching within the current scene, or shifting attention to a present character does NOT require
   focus_transition or location_transition merely because attention changed.
+- Asking or addressing a character already present in the current scene does not imply a physical
+  approach or focus change; do not require a focus_transition or movement step unless the human
+  explicitly commits to moving toward that character.
+- One simple physical move may be represented by the top-level location_transition alone. Do not
+  require a duplicate action_sequence movement step when that transition already covers the move.
+- A greeting, question, or ordinary spoken address is not a world action for action_sequence
+  coverage. If response ownership and the current conversational consequence are typed, do not
+  require a separate action step for the greeting or address.
+- Entering a destination scene is covered by its structured location_transition and, when needed,
+  bridge_summary/location profile; do not require a second prose-only step describing the entrance.
+- An NPC's reply is an external current consequence, not an unresolved player choice and not a
+  reason to block the turn. Do not require a blocked step merely because an NPC response could have
+  been different; judge the typed response that the plan actually authorizes.
+- Saying that the player addresses a person at a counter/desk or otherwise contacts someone already
+  in the current scene does not authorize an additional approach step. Require such a step only
+  when the human explicitly commits to walking/crossing/moving toward that person.
 - A blocked movement/action step is already structurally represented when resolution=blocked and its
   blocking_reason states the current obstacle. Do not require a transition for an action that did not
   complete, and do not call that committed attempt "missing" merely because it has no transition.

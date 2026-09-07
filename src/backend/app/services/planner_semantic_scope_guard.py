@@ -314,6 +314,14 @@ def install() -> None:
 
         arrivals = {arrival.entity_id: arrival for arrival in result.existing_arrivals}
         arrivals.update(promotions)
+        promoted_keys = {
+            identity_key(arrival.canonical_name) for arrival in promotions.values()
+        }
+        new_introductions = [
+            introduction
+            for introduction in result.new_introductions
+            if identity_key(introduction.canonical_name) not in promoted_keys
+        ]
         names = list(result.present_names)
         all_characters = await self._entities.list_by_campaign(
             campaign_id,
@@ -334,7 +342,7 @@ def install() -> None:
                 names.append(arrival.canonical_name)
 
         return NpcIntroductionResolution(
-            new_introductions=result.new_introductions,
+            new_introductions=new_introductions,
             existing_arrivals=list(arrivals.values()),
             present_names=names,
         )

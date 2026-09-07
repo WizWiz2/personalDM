@@ -351,6 +351,55 @@ class PlayerDestinationAuthorizer:
             destination_exists=target_exists,
         )
 
+    async def ordered_travel_destinations(self, trigger_turn_id: UUID) -> list[str]:
+        """Extract named travel destinations in the human clause order.
+
+        This only reconciles a compound typed plan. Each returned destination still passes
+        through ``authorize`` and the structural graph executor; this method never authorizes
+        travel or creates a route. The last location mention after a travel anchor is selected
+        so an origin in a phrase such as "из комнаты в коридор" is not mistaken for its target.
+        """
+        turn = await self._session.get(Turn, str(trigger_turn_id))
+        if not turn or turn.role != "user":
+            return []
+        locations = await self._locations.list_by_campaign(UUID(turn.campaign_id))
+        result: list[str] = []
+        for clause in self._clauses(turn.content or ""):
+            if not clause.travel:
+                continue
+            anchors = [
+                anchor
+                for anchor in self.TRAVEL_ANCHOR_RE.finditer(clause.text)
+                if not self._anchor_is_negated(clause.text, anchor)
+            ]
+            if not anchors:
+                continue
+            suffix_tokens = self.TOKEN_RE.findall(
+                clause.text[anchors[-1].end() :].casefold()
+            )
+            best: tuple[int, int, str] | None = None
+            for location in locations:
+                location_tokens = self.TOKEN_RE.findall(
+                    location.canonical_name.casefold()
+                )
+                if not location_tokens or len(location_tokens) > len(suffix_tokens):
+                    continue
+                for start in range(len(suffix_tokens) - len(location_tokens) + 1):
+                    if not all(
+                        self._tokens_match(expected, actual)
+                        for expected, actual in zip(
+                            location_tokens,
+                            suffix_tokens[start : start + len(location_tokens)],
+                        )
+                    ):
+                        continue
+                    candidate = (len(location_tokens), start, location.canonical_name)
+                    if best is None or candidate[:2] >= best[:2]:
+                        best = candidate
+            if best and (not result or result[-1] != best[2]):
+                result.append(best[2])
+        return result
+
     @classmethod
     def _is_return_exit(cls, exit_row) -> bool:
         label = " ".join(str(getattr(exit_row, "label", "") or "").split())
@@ -621,7 +670,15 @@ class PlayerDestinationAuthorizer:
         result: list[_InputClause] = []
         previous_was_travel = False
         for part in parts:
-            explicit = bool(cls.TRAVEL_ANCHOR_RE.search(part))
+            anchors = list(cls.TRAVEL_ANCHOR_RE.finditer(part))
+            # A negated travel verb is a constraint on the world-action parser, not a
+            # committed movement.  Inspect the local token window rather than adding
+            # case-specific phrases: this handles coordinated prose such as
+            # "I do not go to the warehouse" and Russian "к складу не иду" while
+            # preserving a real travel clause elsewhere in the same input.
+            explicit = bool(anchors) and any(
+                not cls._anchor_is_negated(part, anchor) for anchor in anchors
+            )
             elliptical = previous_was_travel and bool(
                 cls.ELLIPTICAL_TRAVEL_RE.search(part)
             )
@@ -629,6 +686,17 @@ class PlayerDestinationAuthorizer:
             result.append(_InputClause(text=part, travel=travel))
             previous_was_travel = travel
         return result
+
+    @staticmethod
+    def _anchor_is_negated(clause: str, anchor: re.Match[str]) -> bool:
+        prefix = clause[: anchor.start()].casefold()
+        tokens = re.findall(r"[a-zа-яё0-9']+", prefix)
+        if not tokens:
+            return False
+        # Keep the window deliberately local. A negation in an earlier independent
+        # clause must not suppress a later committed movement.
+        window = tokens[-3:]
+        return any(token in {"не", "not", "never", "dont", "don't", "won't"} for token in window)
 
     @classmethod
     def _destination_reference(

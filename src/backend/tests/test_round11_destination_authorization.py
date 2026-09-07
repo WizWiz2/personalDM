@@ -184,6 +184,29 @@ async def test_natural_travel_forms_authorize_named_destination(
 
 
 @pytest.mark.asyncio
+async def test_ordered_travel_destinations_preserve_compound_endpoint_order(
+    db_session: AsyncSession,
+):
+    world = await _world(db_session)
+    turn = await TurnRepository(db_session).create(
+        world["campaign_id"],
+        TurnCreate(
+            role="user",
+            content="I leave the Detective Office for Lower City Street and then go to Cybercrime Department.",
+        ),
+    )
+
+    destinations = await PlayerDestinationAuthorizer(db_session).ordered_travel_destinations(
+        turn.id
+    )
+
+    assert destinations == [
+        world["street"].canonical_name,
+        world["cyber"].canonical_name,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_compound_travel_and_observation_reaches_named_department(
     db_session: AsyncSession,
 ):
