@@ -226,6 +226,7 @@ class ResidualDispositionEnvelope(BaseModel):
 class ResidualClassificationResult(BaseModel):
     decisions: list[ResidualAtomDisposition]
     objective: SemanticResidualEnvelope
+    admission_audit: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def sanitize_semantic_residual(raw: RawSemanticResidualEnvelope) -> SanitizedResidual:

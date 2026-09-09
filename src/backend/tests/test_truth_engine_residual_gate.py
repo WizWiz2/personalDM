@@ -25,6 +25,14 @@ class StubRouter:
         return object()
 
     async def generate_json(self, provider, selection, messages, **kwargs):
+        if kwargs['response_model'].__name__ == 'AtomAdmissionEnvelope':
+            payload = json.loads(messages[1].content)
+            return {'admissions': [{
+                'atom_key': atom['atom_key'], 'source_quote': 'The lamp comes on.',
+                'proposition_entailed': True, 'arguments_faithful': True,
+                'holds_after_turn': True, 'authority': 'world', 'represented_by_effect_id': None,
+                'reason': 'Directly observed resulting light state, not a movement receipt.',
+            } for atom in payload['atoms']]}
         self.payload = json.loads(messages[1].content)
         return {"decisions": self.decisions}
 
@@ -127,3 +135,25 @@ def test_gate_fails_closed_for_missing_or_duplicated_decisions():
         "b": "epistemic",
         "c": "unsupported",
     }
+
+
+@pytest.mark.asyncio
+async def test_objective_classification_without_admission_cannot_reach_writer():
+    envelope = _envelope()
+    class MissingAdmissionRouter(StubRouter):
+        async def generate_json(self, provider, selection, messages, **kwargs):
+            if kwargs['response_model'].__name__ == 'AtomAdmissionEnvelope':
+                return {'admissions': []}
+            return await super().generate_json(provider, selection, messages, **kwargs)
+
+    router = MissingAdmissionRouter([
+        {'atom_key': a.atom_key, 'disposition': 'objective'}
+        for a in [*envelope.fluents, *envelope.relations]
+    ])
+    result = await SemanticResidualDispositionGate(
+        None, model_router=router, llm_provider=object(),
+    ).classify(UUID(int=1), envelope=envelope, user_content='', assistant_content='The lamp comes on.')
+    assert not result.objective.entities
+    assert not result.objective.fluents
+    assert not result.objective.relations
+    assert all(d.disposition == 'unsupported' for d in result.decisions)

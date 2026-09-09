@@ -406,7 +406,12 @@ class PostTurnProcessor:
                             )
                             return
 
-                    scribe = MemoryScribe(self._session)
+                    from app.services.truth_engine_turn_context import SemanticTurnContextReader
+
+                    receipts = await SemanticTurnContextReader(self._session).structured_receipts(
+                        user_turn.id
+                    )
+                    scribe = MemoryScribe(self._session, structured_receipts=receipts)
                     if (
                         assistant.acting_character_id is not None
                         and campaign is not None

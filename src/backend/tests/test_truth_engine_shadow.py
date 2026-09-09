@@ -136,6 +136,7 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
                 "item_id": "machine-key-id",
                 "operation": "take",
             },
+            "effects": [],
         }
     ]
     assert extractor.calls[0]["structured_receipts"] == expected_receipts
@@ -147,7 +148,8 @@ async def test_shadow_capture_uses_executor_receipts_and_does_not_mutate_te2_wor
     shadow = snapshot[SemanticResidualShadowService.SNAPSHOT_KEY]
     assert snapshot["existing"] == "metadata"
     assert shadow["mode"] == "read_only"
-    assert shadow["version"] == 3
+    assert shadow["version"] == 4
+    assert shadow["admission_audit"] == []
     assert shadow["receipt_count"] == 1
     assert shadow["sanitization"] == {
         "duplicate_entity_refs_dropped": 0,

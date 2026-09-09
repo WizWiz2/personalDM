@@ -15,6 +15,7 @@ from app.services.actor_turn_authority_guard import (
 )
 from app.services.canon_semantics import CanonEnvelope
 from app.services.role_model_router import ModelRole
+from app.services.semantic_receipt_context import memory_evidence
 
 _INSTALLED = False
 _WORD_RE = re.compile(r"[\w-]+", flags=re.UNICODE)
@@ -62,6 +63,10 @@ Hard boundaries:
   explicit durable world-state change may be recoverable when directly described by the narrator.
 - If EXISTING SCRIBE PROPOSALS already cover an objective outcome, do not duplicate it in recovery.
 - Evidence in recovery must be an exact short fragment of PUBLISHED RESPONSE.
+- EXECUTED WORLD RESULTS, when supplied in the response evidence, are authoritative completed
+  outcomes. Check coverage of their changed state before decorative narrative properties.
+  A fact about color, atmosphere or an effect does not cover the object's changed operational
+  state. Recover missing states with their actual state bearer, property and resulting value.
 - For claims, return only segment_id + speaker_name; never rewrite the claim text.
 - All human-readable recovery fields must be Russian.
 
@@ -231,6 +236,10 @@ async def enrich_narrator_memory(
     """Audit speaker ownership and recover missed durable objective outcomes."""
     if not assistant_content.strip() or player_character_id is None:
         return base_proposals
+
+    assistant_content = memory_evidence(
+        assistant_content, getattr(scribe, "structured_receipts", ())
+    )
 
     segments = segment_actor_response(assistant_content)
     if not segments:

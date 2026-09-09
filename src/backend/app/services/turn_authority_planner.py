@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Collection
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, model_validator
 
 from app.config import settings
 from app.models.turn import ChatMessage
@@ -35,6 +36,8 @@ class SemanticPlanReview(BaseModel):
     verdict: Literal["pass", "repair_required"]
     summary: str = Field(default="", max_length=1000)
     issues: list[str] = Field(default_factory=list, max_length=10)
+    # Runtime provenance, never accepted from model JSON or serialized into its schema.
+    _engine_authored: bool = PrivateAttr(default=False)
 
 
 class NpcContactDecision(BaseModel):
@@ -49,14 +52,6 @@ class NpcContactDecision(BaseModel):
     )
     observable_consequence: str | None = Field(default=None, max_length=1000)
     response_ownership_reason: str | None = Field(default=None, max_length=500)
-
-
-class NpcIdentityStabilityDecision(BaseModel):
-    """Typed semantic verdict for whether an introduction has a stable personal identity."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    temporary_indices: list[int] = Field(default_factory=list, max_length=4)
 
 
 class NpcIdentityPromotionDecision(BaseModel):
@@ -422,25 +417,10 @@ If outcome is `introduce`, observable_consequence must state the current contact
 short sentence. Return exactly the NpcContactDecision schema.
 """
 
-    NPC_IDENTITY_STABILITY_PROMPT = """
-[NPC IDENTITY STABILITY GATE]
-You are the semantic gate for a typed RPG turn plan. Inspect only the proposed npc_introductions
-and the latest human input. Return zero-based indices of introductions that must be marked
-temporary_name=true because their identity is only a role, title, unknown-person description, or
-other non-personal designation. A role is a valid temporary identity, but it is not a stable
-personal name.
-
-Return an index only when the current evidence does not establish a real personal name for that
-NPC. A stable personal name may be a normal personal name or an explicitly established canonical
-name in the current campaign context. Do not downgrade a stable named character merely because a
-role is also present. Judge meaning and context, not a string blacklist. Do not change any field
-other than temporary_name through this verdict. Return an empty list when all identities are
-stable. Return exactly the NpcIdentityStabilityDecision schema.
-"""
-
     def __init__(self, router: RoleModelRouter):
         self._router = router
         self._provider = LLMProvider()
+        self._review_audit: list[dict] = []
 
     @staticmethod
     def _sanitize_npc_names(plan: CoordinatedTurnPlan, player_input: str) -> None:
@@ -602,7 +582,8 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
 
     @property
     def telemetry(self) -> dict:
-        return dict(self._provider.last_telemetry or {})
+        return {**dict(self._provider.last_telemetry or {}),
+                "semantic_reviews": list(self._review_audit)}
 
     @classmethod
     def planning_messages(
@@ -683,6 +664,8 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
         issues: list[str],
         rejected_plan: CoordinatedTurnPlan,
     ) -> list[ChatMessage]:
+        from app.services.control_language_guard import CONTROL_LANGUAGE_CONTRACT
+
         # Repair is a control-plane correction, not a second full narration pass. Older prose can
         # contain untyped people and stale choices, so keep only the authoritative campaign-state
         # system message and the explicit latest-input anchor before presenting the rejected JSON.
@@ -691,6 +674,30 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
             if len(base_messages) > 1
             else list(base_messages)
         )
+        if authoritative_messages:
+            # planning_messages owns this section delimiter. Reuse the campaign state,
+            # not the full initial-generation protocol: appending both that protocol and
+            # a complete rejected plan can exhaust the model context before the answer.
+            _, marker, campaign_context = authoritative_messages[0].content.partition(
+                "[CAMPAIGN CONTEXT]\n"
+            )
+            if marker:
+                authoritative_messages[0] = ChatMessage(
+                    role="system",
+                    content=(
+                        "You repair one typed RPG turn plan, not narrative prose. Return the "
+                        "complete CoordinatedTurnPlan JSON. The supplied plan is a candidate, "
+                        "not canon. Campaign state and the latest human input are authoritative. "
+                        "Preserve player agency, identity, physical presence, action order and "
+                        "all unaffected commitments. Only the listed defects may be repaired; "
+                        "do not manufacture actions, participants or facts to appease a reviewer. "
+                        "Use typed transitions for movement/time, typed introductions for new "
+                        "physical participants and response ownership for dialogue. A claim is "
+                        "not an established world fact. The result will be independently reviewed."
+                        + CONTROL_LANGUAGE_CONTRACT
+                        + "\n\n[CAMPAIGN CONTEXT]\n" + campaign_context
+                    ),
+                )
         return [
             *authoritative_messages,
             ChatMessage(
@@ -760,67 +767,15 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
             for index, item in enumerate(plan.npc_introductions)
             if not item.temporary_name
         ]
-        proposed = json.dumps(
-            [{"index": index, **item.model_dump(mode="json")} for index, item in candidates],
-            ensure_ascii=False,
-        )
-        prompt = (
-            "[NPC IDENTITY STABILITY CHECK]\nLatest human input:\n"
-            + player_input
-            + "\n\nProposed introductions (only these indices may be returned):\n"
-            + proposed
-            + "\n\nReturn indices whose identity is role/title/unknown-only and therefore must remain "
-            "temporary until a personal name is established. A named NPC with a role must not be "
-            "returned."
-        )
-        allowed = {index for index, _ in candidates}
         gated = plan.model_copy(deep=True)
         indices: set[int] = set()
         if candidates:
-            gate_messages = [
-                base_messages[0],
-                ChatMessage(role="system", content=self.NPC_IDENTITY_STABILITY_PROMPT),
-                ChatMessage(role="user", content=prompt),
-            ]
-            # A control model can under-call a conservative verdict on the first structured
-            # response. One bounded semantic re-check improves recall while remaining fail-closed:
-            # the retry can only select indices already present in the typed plan.
-            for attempt in range(2):
-                try:
-                    data = await self._router.generate_json(
-                        self._provider,
-                        selection,
-                        gate_messages,
-                        max_tokens=300,
-                        temperature=0.0,
-                        response_model=NpcIdentityStabilityDecision,
-                    )
-                    decision = NpcIdentityStabilityDecision.model_validate(data)
-                    indices = {
-                        index for index in decision.temporary_indices if index in allowed
-                    }
-                    if indices or attempt == 1:
-                        break
-                    gate_messages.append(
-                        ChatMessage(
-                            role="user",
-                            content=(
-                                "Re-check the semantics. A descriptive occupational/title phrase "
-                                "or unknown-person designation is not a personal name; mark that "
-                                "typed introduction temporary. Do not use a lexical blacklist and "
-                                "do not mark an explicitly established personal name."
-                            ),
-                        )
-                    )
-                except (LLMProviderError, ValueError, TypeError):
-                    if attempt == 1:
-                        break
             # Stable identity is an actor-authority claim, not a narrator-side fact. A newly
             # introduced character must carry typed provenance for the personal name; a canonical
             # label that merely appears in prose/input can still be an occupational designation.
             # This is evidence-based and language-agnostic, not a name blacklist.
             for index, item in candidates:
-                if not item.personal_name_evidence and not gated.personal_name_revealed:
+                if not item.personal_name_evidence:
                     indices.add(index)
             for index in indices:
                 gated.npc_introductions[index].temporary_name = True
@@ -908,11 +863,45 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
         context_messages: list[ChatMessage],
         player_input: str,
         plan: CoordinatedTurnPlan,
-        present_names: list[str] | None = None,
+        present_names: Collection[str] | None = None,
     ) -> SemanticPlanReview:
         context = "\n\n".join(
             f"[{message.role.upper()}]\n{message.content}" for message in context_messages
         )
+        if plan.npc_introductions:
+            from app.services.npc_identity_binding import (
+                assess_bindings,
+            )
+            # Neither a proposed label nor its generated profile may certify that label.
+            # Current event descriptions are a separate evidence source from introductions.
+            sources = {
+                "player_input": player_input,
+                "planned_outcome": "\n".join([
+                    *plan.observable_consequences, *plan.character_beats,
+                    *(step.observable_outcome or "" for step in plan.action_sequence.steps),
+                ]),
+            }
+            identity_audit = {"identity_binding": None}
+            self._review_audit.append(identity_audit)
+            try:
+                identity_issues = await assess_bindings(
+                    self._router, self._provider, selection,
+                    {**sources, "introductions": [
+                        {"index": index, "canonical_name": item.canonical_name,
+                         "temporary_name": item.temporary_name}
+                        for index, item in enumerate(plan.npc_introductions)
+                    ]}, identity_audit,
+                )
+            except (LLMProviderError, ValueError, TypeError) as exc:
+                identity_audit["identity_binding_error"] = type(exc).__name__
+                raise TurnPlanningError('Identity checker unavailable or invalid; no semantic verdict obtained.') from exc
+            if identity_issues:
+                rejection = SemanticPlanReview(
+                    verdict="repair_required", issues=identity_issues,
+                    summary="Resolve participant identity before accepting the plan.",
+                )
+                rejection._engine_authored = True
+                return rejection
         data = await self._router.generate_json(
             self._provider,
             selection,
@@ -932,6 +921,13 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
                         "[PROPOSED PLAN]\n"
                         + plan.model_dump_json()
                         + "\n\n[FINAL ADJUDICATION RULE]\n"
+                        "Action types classify changes to engine state, not words in the input. "
+                        "movement means a change of canonical location. interaction includes "
+                        "physical activity within the current location. Judge each commitment "
+                        "against the step intent AND observable_outcome, not action_type alone. "
+                        "If local movement is covered by an interaction intent/outcome, it is "
+                        "already represented: do not require a location or focus transition. "
+                        "A person or position within a room is not a new canonical location. "
                         "A greeting, question, report, or spoken address is dialogue, not a "
                         "world-action commit. If response ownership and the current exchange are "
                         "typed, do not report a missing action_sequence step for the speech. "
@@ -945,6 +941,49 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
             response_model=SemanticPlanReview,
         )
         review = SemanticPlanReview.model_validate(data)
+        audit = {"review": review.model_dump(mode="json"), "adjudication": None}
+        self._review_audit.append(audit)
+        if review.verdict == "repair_required":
+            from app.services.planner_review_adjudication import (
+                PROMPT, PlanReviewAdjudication, all_objections_disproved, certified_assessments,
+            )
+            objections = review.issues or [review.summary]
+            candidate = plan.model_dump(mode="json")
+            try:
+                assessment = await self._router.generate_json(
+                    self._provider, selection,
+                    [ChatMessage(role="system", content=PROMPT), ChatMessage(
+                        role="user", content=json.dumps({
+                            "latest_input": player_input,
+                            "campaign_context": context,
+                            "present_names": sorted(present_names or []),
+                            "plan": candidate,
+                            "objections": dict(enumerate(objections)),
+                        }, ensure_ascii=False),
+                    )],
+                    max_tokens=900, temperature=0.0,
+                    response_model=PlanReviewAdjudication,
+                )
+                audit["adjudication"] = assessment
+                if all_objections_disproved(assessment, candidate, len(objections)):
+                    review = SemanticPlanReview(
+                        verdict="pass", issues=[],
+                        summary="All reviewer objections were independently disproved against plan fields.",
+                    )
+                else:
+                    certified = certified_assessments(assessment, candidate, len(objections))
+                    if certified:
+                        remaining = [objections[item.issue_index] for item in certified.assessments
+                                     if item.verdict != "unsupported"]
+                        remaining.extend(issue for issue in certified.remaining_issues if issue.strip())
+                        if remaining:
+                            review = SemanticPlanReview(
+                                verdict="repair_required", issues=remaining[:10],
+                                summary="Repair the independently substantiated remaining defects.",
+                            )
+            except (LLMProviderError, ValueError, TypeError) as exc:
+                # Failed adjudication leaves the original rejection intact.
+                audit["adjudication_error"] = type(exc).__name__
         # A committed travel clause cannot be downgraded to conversation merely because a small
         # control model latched onto an addressed responder. Reuse the same clause parser as the
         # destination authorizer so this boundary follows the shared travel grammar rather than a
@@ -993,31 +1032,12 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
             for destination in available_location_refs
         )
         has_committed_travel = has_committed_travel or has_allowlisted_location_reference
-        has_stationary_constraint = bool(
-            re.search(
-                r"\b(?:stay(?:ing)?|remain(?:ing)?|остаюсь|остаёмся|остаемся|"
-                r"не\s+предпринимаю|не\s+двигаюсь|не\s+иду)\b",
-                player_input,
-                re.IGNORECASE,
-            )
-        )
         has_location_transition = (
             plan.scene_transition.required
             and plan.scene_transition.transition_type == "location_transition"
         ) or any(
             step.transition.required
             and step.transition.transition_type == "location_transition"
-            for step in plan.action_sequence.steps
-        )
-        has_typed_outcome = bool(plan.observable_consequences) or any(
-            (
-                step.resolution == "blocked"
-                and bool(step.blocking_reason)
-            )
-            or (
-                step.resolution == "auto_success"
-                and (bool(step.observable_outcome) or step.transition.required)
-            )
             for step in plan.action_sequence.steps
         )
         current_location = next(
@@ -1074,122 +1094,9 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
                     "no-op location_transition and preserve the local interaction/dialogue."
                 ],
             )
-        # The reviewer is advisory over an already typed authority hand-off.  A dialogue-only
-        # turn that has response ownership, a concrete exchange consequence, and no physical
-        # action is structurally complete: requiring an approach/focus step here would contradict
-        # the inter-agent contract and manufacture player movement.  This uses typed plan state,
-        # never lexical inspection of the review's free-form issue text.
-        if (
-            review.verdict == "repair_required"
-            and plan.addressed_response_requested
-            and all(
-                step.action_type in {"interaction", "focus"}
-                for step in plan.action_sequence.steps
-            )
-            and has_typed_outcome
-            and (
-                not plan.scene_transition.required
-                or plan.scene_transition.transition_type != "location_transition"
-            )
-        ):
-            return SemanticPlanReview(
-                verdict="pass",
-                summary="Typed dialogue exchange is complete without a physical approach step.",
-                issues=[],
-            )
-        if (
-            review.verdict == "repair_required"
-            and not has_committed_travel
-            and not has_location_transition
-            and has_typed_outcome
-            and (plan.action_sequence.steps or plan.resolution != "observation")
-            and all(
-                step.action_type
-                in {"interaction", "observation", "inventory", "rest", "wait", "focus"}
-                for step in plan.action_sequence.steps
-            )
-            and all(
-                step.resolution in {"auto_success", "blocked"}
-                for step in plan.action_sequence.steps
-            )
-        ):
-            # A completed current-scene interaction is already a typed world action.
-            # Focus is not an independent physical commitment unless the player made one;
-            # do not manufacture a second step for touching/using an object in hand.
-            return SemanticPlanReview(
-                verdict="pass",
-                summary="Typed current-scene interaction has a concrete outcome.",
-                issues=[],
-            )
-        if (
-            review.verdict == "repair_required"
-            and plan.addressed_response_requested
-            and has_location_transition
-            and has_typed_outcome
-            and all(
-                step.action_type in {"movement", "interaction", "focus"}
-                for step in plan.action_sequence.steps
-            )
-        ):
-            # A mixed move + dialogue turn has two typed ownership channels: the
-            # location transition executes the physical commitment and response ownership
-            # authorizes the addressed NPC's reply. Do not force a synthetic second
-            # movement/focus step merely to represent the speech.
-            return SemanticPlanReview(
-                verdict="pass",
-                summary="Typed mixed movement and dialogue hand-off is complete.",
-                issues=[],
-            )
-        if (
-            review.verdict == "repair_required"
-            and has_stationary_constraint
-            and has_typed_outcome
-            and all(
-                step.action_type in {"interaction", "focus"}
-                for step in plan.action_sequence.steps
-            )
-            and not has_location_transition
-        ):
-            return SemanticPlanReview(
-                verdict="pass",
-                summary="Typed stationary dialogue is complete without a focus transition.",
-                issues=[],
-            )
-        if (
-            review.verdict == "repair_required"
-            and plan.npc_introductions
-            and has_typed_outcome
-            and all(
-                step.action_type in {"interaction", "focus"}
-                for step in plan.action_sequence.steps
-            )
-            and not has_location_transition
-            and not has_committed_travel
-        ):
-            return SemanticPlanReview(
-                verdict="pass",
-                summary="Typed NPC contact is complete without requiring extra literary beats.",
-                issues=[],
-            )
-        if (
-            review.verdict == "repair_required"
-            and plan.addressed_response_requested
-            and plan.npc_introductions
-            and all(
-                step.action_type in {"interaction", "focus"}
-                for step in plan.action_sequence.steps
-            )
-            and has_typed_outcome
-            and (
-                not plan.scene_transition.required
-                or plan.scene_transition.transition_type != "location_transition"
-            )
-        ):
-            return SemanticPlanReview(
-                verdict="pass",
-                summary="Typed NPC contact is complete in the current target scene.",
-                issues=[],
-            )
+        # Structural completeness does not establish semantic correctness. Preserve every
+        # rejected review for the bounded repair loop; typed outcomes cannot discharge
+        # unrelated identity, presence, ownership or canon obligations.
         return review
 
     async def _recover_npc_contact(
@@ -1271,19 +1178,26 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
         patched = plan.model_copy(deep=True)
         original_count = len(patched.action_sequence.steps)
         accepted = list(sorted(patch_set.patches, key=lambda value: value.insert_at))
-        accepted = [
-            item
-            for offset, item in enumerate(accepted)
-            if item.insert_at <= original_count + offset
-        ]
-        if not accepted or len(accepted) + original_count > 8:
+        # Every index addresses the original candidate, never the growing result.
+        # Reject the patch transaction as a whole when any reference is invalid.
+        if (
+            not accepted
+            or any(item.insert_at > original_count for item in accepted)
+            or len(accepted) + original_count > 8
+        ):
             return plan
         offset = 0
         for item in accepted:
-            index = min(item.insert_at + offset, len(patched.action_sequence.steps))
+            index = item.insert_at + offset
             patched.action_sequence.steps.insert(index, item.step)
             offset += 1
-        return patched
+        # Recompile derived execution fields and validate the complete candidate.
+        # model_copy/list mutation alone leaves sequence_payload pointing at the old plan.
+        try:
+            return CoordinatedTurnPlan.model_validate(patched.model_dump(mode="json"))
+        except ValueError:
+            # A structurally invalid patch is rejected atomically, not a new broken candidate.
+            return plan
 
     async def _apply_npc_profile_patch(
         self,
@@ -1534,26 +1448,14 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
         plan: CoordinatedTurnPlan,
         issues: list[str],
     ) -> CoordinatedTurnPlan | None:
-        # The latest human input is itself the semantic evidence supplied to the scoped recovery
-        # agent.  Do not suppress recovery merely because the primary planner returned an empty
-        # fallback: that is precisely the case where an explicit contact can otherwise be lost.
-        # The recovery schema still decides introduce/no_contact and remains fail-closed on errors.
-        explicit_contact = bool(
-            re.search(
-                r"\b(?:обращаюсь|обратился|обратилась|спрашиваю|спросил|спросила|"
-                r"подхожу|подошел|подошла|говорю|сказал|сказала|адресуюсь|"
-                r"ask|asks|asked|approach|approaches|approached|address|addresses)\b",
-                player_input,
-                flags=re.IGNORECASE,
-            )
-        )
+        # This is a patch to a candidate plan, not an alternate planner selected by
+        # player vocabulary. Empty/error fallbacks provide no candidate to repair.
         if (
             not player_input.strip()
             or (
                 not plan.observable_consequences
                 and not plan.character_beats
                 and not plan.action_sequence.steps
-                and not explicit_contact
             )
         ):
             return None
@@ -1816,52 +1718,24 @@ stable. Return exactly the NpcIdentityStabilityDecision schema.
                     recovered = await self._apply_identity_stability_gate(
                         selection, base_messages, player_input, recovered
                     )
-                    # The contact recovery agent is a scoped authority decision, not a prose
-                    # completion pass: it has already validated the only missing boundary
-                    # (whether the explicitly contacted unknown person may be typed). Running
-                    # the broad reviewer again here can reject the same decision because the
-                    # newly introduced person is, by definition, absent from its pre-turn
-                    # allowlist. Keep the recovered plan's other typed fields intact and let the
-                    # normal authority/materialization validators perform their deterministic
-                    # schema and identity checks.
-                    return recovered
+                    # A scoped patch cannot discharge unrelated outstanding obligations.
+                    # Review the resulting whole plan against the original input and state.
+                    recovery_review = await self._semantic_review(
+                        selection, context_messages, player_input, recovered, present_names
+                    )
+                    if recovery_review.verdict == "pass":
+                        return recovered
+                    remaining = recovery_review.issues or [recovery_review.summary]
                 raise TurnPlanningError(
                     "planner hand-off remained semantically invalid after repair: "
                     + "; ".join(remaining)
                 )
             return repaired
-        except TurnPlanningError as exc:
-            fallback = CoordinatedTurnPlan.conservative_fallback(player_input)
-            recovered = await self._apply_npc_contact_recovery(
-                selection,
-                player_input,
-                present_names,
-                fallback,
-                [str(exc)[:1000]],
-            )
-            if recovered is not None:
-                self._sanitize_npc_names(recovered, player_input)
-                self._mark_identity_request(recovered, player_input, present_names)
-                recovered = await self._apply_identity_stability_gate(
-                    selection, base_messages, player_input, recovered
-                )
-                return recovered
+        except TurnPlanningError:
             raise
         except (LLMProviderError, ValueError, TypeError) as exc:
             # _generate_plan may surface either a provider error or a schema/repair error. With no
             # valid full semantic plan, recovery must fail closed instead of inventing new truth.
-            fallback = CoordinatedTurnPlan.conservative_fallback(player_input)
-            recovered = await self._apply_npc_contact_recovery(
-                selection,
-                player_input,
-                present_names,
-                fallback,
-                [str(exc)[:1000]],
-            )
-            if recovered is not None:
-                self._sanitize_npc_names(recovered, player_input)
-                self._mark_identity_request(recovered, player_input, present_names)
-                return recovered
             raise TurnPlanningError(str(exc)) from exc
 
 

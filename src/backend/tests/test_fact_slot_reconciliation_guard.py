@@ -112,7 +112,7 @@ def test_unknown_fact_id_cannot_rewrite_proposal():
 
 def test_scope_mismatch_cannot_rewrite_proposal():
     scene_id = uuid4()
-    current = _fact(scope="campaign")
+    current = _fact(scene_id=uuid4())
     proposal = _proposal(scene_id)
 
     result = apply_fact_slot_matches(
@@ -124,6 +124,23 @@ def test_scope_mismatch_cannot_rewrite_proposal():
     )
 
     assert result[0] == proposal
+
+
+def test_semantically_matched_scene_observation_revises_campaign_slot_and_value():
+    current = _fact(scope="campaign")
+    proposal = _proposal(uuid4(), predicate="свет включен", object_value="true")
+    result = apply_fact_slot_matches(
+        [proposal], [current], FactSlotReview(matches=[FactSlotMatch(
+            proposal_index=0, current_fact_id=str(current.id), object_value="включен",
+        )]),
+    )
+    payload = result[0].payload
+    assert payload["scope"] == "campaign"
+    assert "scene_id" not in payload
+    assert payload["subject"] == current.subject
+    assert payload["predicate"] == current.predicate
+    assert payload["object_value"] == "включен"
+    assert payload["operation"] == "revise"
 
 
 def test_exact_structural_slot_skips_extra_semantic_call():

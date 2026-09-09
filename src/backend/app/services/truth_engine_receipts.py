@@ -291,12 +291,7 @@ class StructuredReceiptEventCompiler:
         return CanonicalEventCreate(
             event_key=f"action_sequence:{sequence.id}:step:{step.step_index}",
             event_type=self._step_event_type(step, transition),
-            description=(
-                step.observable_outcome
-                or step.blocking_reason
-                or step.intent
-                or f"Structured action step {step.step_index}"
-            ),
+            description=self._observed_step_outcome(step),
             source_kind="executor_receipt",
             source_turn_id=UUID(sequence.trigger_turn_id),
             world_time=(transition.time_after if transition is not None else None),
@@ -326,10 +321,18 @@ class StructuredReceiptEventCompiler:
                     evidence_type="structured_receipt",
                     source_ref=f"action_step:{step.id}",
                     source_turn_id=UUID(sequence.trigger_turn_id),
-                    content=step.observable_outcome or step.blocking_reason,
+                    content=self._observed_step_outcome(step),
                 )
             ],
         )
+
+    @staticmethod
+    def _observed_step_outcome(step: ActionStep) -> str:
+        # A planned successful outcome is not evidence when execution blocked that step.
+        # All downstream semantic readers must see the execution verdict, not the stale plan.
+        if step.status != "completed":
+            return f"{step.status.upper()}: {step.blocking_reason or 'Action did not complete.'}"
+        return step.observable_outcome or step.intent or f"Structured action step {step.step_index}"
 
     async def _ensure_baseline(
         self,

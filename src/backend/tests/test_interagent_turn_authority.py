@@ -21,6 +21,7 @@ from app.providers.llm_provider import LLMProviderTruncatedError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.context_compiler import ContextCompiler
 from app.services.role_model_router import ModelRole, RoleModelSelection
+from app.services.npc_identity_binding import NpcIdentityBindingReview
 from app.services.turn_authority_planner import (
     CoordinatedTurnPlan,
     SemanticPlanReview,
@@ -50,6 +51,16 @@ class FakeControlRouter:
             return self.plan.model_dump(mode="json")
         if response_model is SemanticPlanReview:
             return {"verdict": "pass", "summary": "План согласован.", "issues": []}
+        if response_model is NpcIdentityBindingReview:
+            return {'assessments': [{
+                'introduction_index': 0, 'participation': 'encountered',
+                'designation': 'role_reference',
+                'encounter_source': 'planned_outcome',
+                'encounter_evidence': self.plan.observable_consequences[0],
+                'designation_source': 'planned_outcome',
+                'designation_evidence': self.plan.observable_consequences[0],
+                'reason': 'The role designation refers to the person opening the door.',
+            }]}
         if response_model is NarrationValidationResult:
             npc_name = self.plan.npc_introductions[0].canonical_name
             return {

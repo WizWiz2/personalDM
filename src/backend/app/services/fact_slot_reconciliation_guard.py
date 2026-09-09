@@ -17,6 +17,7 @@ _INSTALLED = False
 class FactSlotMatch(BaseModel):
     proposal_index: int = Field(ge=0)
     current_fact_id: str | None = None
+    object_value: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class FactSlotReview(BaseModel):
@@ -37,12 +38,7 @@ def _same_scope(payload: dict, fact: FactRead) -> bool:
     if scope != fact.scope:
         # A scene observation may refine a campaign-wide slot. Once semantic slot identity is
         # established, inheriting the broader scope is required to supersede the old current value.
-        if (
-            scope == "scene"
-            and fact.scope == "campaign"
-            and _norm(payload.get("subject")) == _norm(fact.subject)
-            and _norm(payload.get("predicate")) == _norm(fact.predicate)
-        ):
+        if scope == "scene" and fact.scope == "campaign":
             return True
         return False
     if scope == "scene":
@@ -126,6 +122,11 @@ def apply_fact_slot_matches(
         if fact.subject_entity_id:
             payload["subject_entity_id"] = str(fact.subject_entity_id)
         payload["previous_object_value"] = fact.object_value
+        # A proposal may encode a whole proposition in its predicate ("valve closed | yes").
+        # When rebasing onto an existing property ("valve | position"), the semantic matcher
+        # must also translate its value; copying only the keys would erase the new state.
+        if match.object_value is not None:
+            payload["object_value"] = match.object_value
 
         operation = _canon_value(payload, "operation", "assert")
         same_value = (
@@ -198,7 +199,14 @@ slot, если оба описывают текущее освещение то�
 его с campaign-фактом: движок унаследует более широкий scope и заменит старое текущее значение.
 Разные scene-слоты не склеивай.
 
-Верни только JSON вида {"matches":[{"proposal_index":0,"current_fact_id":"uuid-or-null"}]}.
+Для сопоставленного слота верни также object_value: новое значение, выраженное в терминах
+predicate текущего факта. Не копируй старое значение. Если новый факт записан целой пропозицией
+в predicate и значением «да/true», перенеси утверждаемое состояние в object_value. Например,
+«клапан | закрыт | да» относительно «клапан | положение | открыт» даёт object_value="закрыт".
+Сохраняй полярность и не добавляй смысл, отсутствующий в новом факте. Несвязанный атрибут
+(например цвет вместо рабочего состояния) не является тем же слотом.
+
+Верни только JSON вида {"matches":[{"proposal_index":0,"current_fact_id":"uuid-or-null","object_value":"новое значение или null"}]}.
 current_fact_id может быть только точным id из CURRENT FACTS или null. Для каждого proposal_index
 верни ровно одну запись.
 """

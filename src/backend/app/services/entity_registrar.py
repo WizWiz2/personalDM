@@ -282,37 +282,36 @@ class EntityRegistrar:
                 continue
 
             if entity:
-                has_personal_name_evidence = bool(
-                    mention.personal_name_evidence
-                    and evidence_supported(mention.personal_name_evidence, assistant_content)
-                )
                 if (
                     matched_contextually
-                    and self._is_temporary_identity(entity)
-                    and mention.temporary_name
-                    and not has_personal_name_evidence
-                ):
-                    confirmed_evidence = await self._confirm_personal_name_reveal(
-                        selection,
-                        assistant_content,
-                        entity.canonical_name,
-                        mention,
-                    )
-                    has_personal_name_evidence = bool(confirmed_evidence)
-                if (
-                    matched_contextually
-                    and (not mention.temporary_name or has_personal_name_evidence)
                     and self._is_temporary_identity(entity)
                     and identity_key(name) != identity_key(entity.canonical_name)
                 ):
+                    # Role/location similarity proposes a candidate, not an identity binding.
+                    # Neither an extractor's temporary flag nor a real but unrelated quotation
+                    # authorizes merging a discourse referent into this physical participant.
+                    confirmed_evidence = None
+                    if mention.presence != "mentioned_only":
+                        confirmed_evidence = await self._confirm_personal_name_reveal(
+                            selection, assistant_content, entity.canonical_name, mention,
+                        )
+                    if not confirmed_evidence:
+                        result.conflicts.append({
+                            "description": f"Name {name} is not bound to {entity.canonical_name}.",
+                            "evidence": mention.evidence,
+                            "error": "Unconfirmed contextual identity binding",
+                        })
+                        # Do not enrich aliases/profile or mark the candidate resolved either.
+                        continue
+                    old_name = entity.canonical_name
                     promoted = await self._promote_temporary_identity(
                         entity,
                         new_name=name,
                         mention=mention,
                         source_turn_id=source_turn_id,
+                        binding_evidence=confirmed_evidence,
                     )
                     if promoted is not None:
-                        old_name = entity.canonical_name
                         entity = promoted
                         index[identity_key(old_name)] = entity
                         index[identity_key(name)] = entity
@@ -427,8 +426,10 @@ class EntityRegistrar:
                 response_model=PersonalNameRevealDecision,
             )
             decision = PersonalNameRevealDecision.model_validate(data)
-            if decision.is_explicit and decision.evidence and evidence_supported(
-                decision.evidence, assistant_content
+            if (
+                decision.is_explicit and decision.evidence
+                and decision.evidence in assistant_content
+                and self._name_supported_by_text(mention.canonical_name, decision.evidence)
             ):
                 return decision.evidence
         except (LLMProviderError, ValidationError, ValueError, TypeError):
@@ -442,6 +443,7 @@ class EntityRegistrar:
         new_name: str,
         mention: CharacterMention,
         source_turn_id: UUID,
+        binding_evidence: str,
     ):
         old_name = entity.canonical_name
         aliases = self._clean_aliases(
@@ -452,6 +454,11 @@ class EntityRegistrar:
         custom_fields["temporary_name"] = False
         custom_fields.setdefault("identity_promoted_from", old_name)
         custom_fields["identity_promoted_turn_id"] = str(source_turn_id)
+        custom_fields["identity_binding"] = {
+            "entity_id": str(entity.id), "previous_designation": old_name,
+            "personal_name": new_name, "evidence": binding_evidence,
+            "source_turn_id": str(source_turn_id), "source": "published_self_identification",
+        }
         if mention.role:
             custom_fields["role"] = mention.role
 

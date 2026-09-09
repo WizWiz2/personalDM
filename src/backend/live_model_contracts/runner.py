@@ -8,6 +8,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from live_model_contracts.transport import open_endpoint
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -82,7 +83,7 @@ def _api_base(ollama: str) -> str:
 def _ollama_models(ollama: str) -> set[str]:
     url = ollama.rstrip("/") + "/api/tags"
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with open_endpoint(url, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise RuntimeError(

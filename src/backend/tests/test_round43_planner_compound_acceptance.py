@@ -57,6 +57,7 @@ async def test_semantic_reviewer_repairs_dropped_compound_movement_step():
                     "Игрок после холла явно идёт в контору, но второй movement step отсутствует."
                 ],
             },
+            {'plan_valid': False, 'assessments': []},
             _plan("Холл", "Контора"),
             {"verdict": "pass", "summary": "", "issues": []},
         ]
@@ -77,11 +78,11 @@ async def test_semantic_reviewer_repairs_dropped_compound_movement_step():
     assert [
         step.transition.destination_location for step in result.action_sequence.steps
     ] == ["Холл", "Контора"]
-    assert router.generate_json.await_count == 4
+    assert router.generate_json.await_count == 5
 
     first_prompt = router.generate_json.await_args_list[0].args[2][0].content
     review_prompt = router.generate_json.await_args_list[1].args[2][0].content
-    repair_prompt = router.generate_json.await_args_list[2].args[2][-1].content
+    repair_prompt = router.generate_json.await_args_list[3].args[2][-1].content
     assert "COMPOUND ACTION PRESERVATION" in first_prompt
     assert "COMPOUND COVERAGE REVIEW" in review_prompt
     assert "второй movement step отсутствует" in repair_prompt

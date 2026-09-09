@@ -210,6 +210,15 @@ async def test_applied_movement_publishes_receipt_once_and_seeds_baseline(
     assert records[0].source_turn_id is None
     assert records[1].source_turn_id == str(user.id)
 
+    from app.services.truth_engine_turn_context import SemanticTurnContextReader
+    receipts = await SemanticTurnContextReader(db_session).structured_receipts(user.id)
+    assert len(receipts) == 1
+    effect = receipts[0]["effects"][0]
+    assert effect["effect_id"]
+    assert effect["semantic_slot"]["system_key"] == CORE_ENTITY_LOCATION
+    assert effect["payload"]["subject_entity_id"] == str(hero.id)
+    assert effect["payload"]["value"] == {"entity_id": str(room.id)}
+
     current, assertion = await _current_location_projection(
         db_session,
         campaign_id,

@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.providers.llm_provider import LLMProviderError
+from app.services.turn_authority_service import TurnAuthorityError
 from app.services.turn_planner import SceneTransitionPlan, TurnPlan
 
 
@@ -78,6 +79,25 @@ def test_public_turn_endpoint_rejects_non_user_roles(client: TestClient):
     )
     assert response.status_code == 400
     assert "only role='user'" in response.json()["detail"]
+
+
+def test_rejected_authority_preserves_cause_and_publishes_no_empty_turn(client: TestClient):
+    campaign_id = client.post(
+        "/api/campaigns", json={"name": "Authority rejection"},
+    ).json()["id"]
+    with patch(
+        "app.services.turn_authority_service.TurnAuthorityService.build",
+        new_callable=AsyncMock,
+        side_effect=TurnAuthorityError("NPC identity is ambiguous"),
+    ) as build:
+        response = client.post(
+            f"/api/campaigns/{campaign_id}/turns",
+            json={"role": "user", "content": "I address the attendant."},
+        )
+
+    assert "NPC identity is ambiguous" in response.text
+    assert build.await_count == 1
+    assert not client.get(f"/api/campaigns/{campaign_id}/turns").json()
 
 
 def test_failed_generation_after_authority_is_contained(client: TestClient):

@@ -14,7 +14,7 @@ from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
 from app.models.provider_config import ProviderConfigCreate
 from app.models.scene import SceneCreate
-from app.services.entity_registrar import EntityRegistrar
+from app.services.entity_registrar import CharacterMention, EntityRegistrar
 from app.services.scene_lifecycle import SceneLifecycleService
 
 
@@ -59,6 +59,84 @@ async def _campaign_state(db_session: AsyncSession):
     await scenes.add_participant(scene.id, hero.id)
     await SceneLifecycleService(db_session).activate(campaign_id, scene.id)
     return campaign_id, tavern, guild, hero, scene
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('evidence', ['Меня зовут Лев', 'Меня зовут Роэн!'])
+async def test_name_verifier_requires_exact_quote_of_the_proposed_name(db_session, evidence):
+    text = 'Первый говорит: «Меня зовут Роэн». Второй говорит: «Меня зовут Лев».'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.generate_json = AsyncMock(return_value={'is_explicit': True, 'evidence': evidence})
+    result = await registrar._confirm_personal_name_reveal(
+        object(), text, 'Бармен', CharacterMention(canonical_name='Роэн', evidence=text),
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('presence', ['mentioned_only', 'present'])
+@pytest.mark.parametrize('claimed_evidence', [False, True])
+async def test_role_similarity_cannot_bind_a_third_person_to_present_npc(
+    db_session: AsyncSession, presence, claimed_evidence,
+):
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    attendant = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name='Бармен у стойки', current_location_id=tavern.id,
+        custom_fields={'temporary_name': True, 'role': 'бармен'},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, attendant.id)
+    text = 'Бармен у стойки говорит: «За архивом следит Роэн, другой бармен».'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(return_value={'characters': [{
+        'canonical_name': 'Роэн', 'role': 'бармен', 'temporary_name': False,
+        'presence': presence, 'evidence': text, 'aliases': ['Смотритель архива'],
+        'personal_name_evidence': text if claimed_evidence else None,
+        'description': 'Смотритель архива, другой человек.',
+    }]})
+    registrar._confirm_personal_name_reveal = AsyncMock(return_value=None)
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, promotion_only=True,
+    )
+    unchanged = await entities.get_character(attendant.id)
+    assert unchanged.canonical_name == 'Бармен у стойки'
+    assert unchanged.custom_fields['temporary_name'] is True
+    assert unchanged.aliases == []
+    assert not unchanged.description
+    assert not result.created_ids
+    assert attendant.id not in result.resolved_ids
+
+
+@pytest.mark.asyncio
+async def test_confirmed_name_reveal_preserves_entity_id_and_records_binding(db_session: AsyncSession):
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    attendant = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name='Бармен у стойки', current_location_id=tavern.id,
+        custom_fields={'temporary_name': True, 'role': 'бармен'},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, attendant.id)
+    text = 'Бармен у стойки представляется: «Меня зовут Роэн».'
+    source_turn = uuid4()
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(return_value={'characters': [{
+        'canonical_name': 'Роэн', 'role': 'бармен', 'temporary_name': False,
+        'presence': 'present', 'evidence': text,
+    }]})
+    registrar._confirm_personal_name_reveal = AsyncMock(return_value='Меня зовут Роэн')
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, source_turn, text, promotion_only=True,
+    )
+    renamed = await entities.get_character(attendant.id)
+    assert renamed.canonical_name == 'Роэн'
+    assert 'Бармен у стойки' in renamed.aliases
+    assert not renamed.custom_fields['temporary_name']
+    assert renamed.custom_fields['identity_binding']['evidence'] == 'Меня зовут Роэн'
+    assert renamed.custom_fields['identity_binding']['source_turn_id'] == str(source_turn)
+    assert result.created_ids == []
+    assert attendant.id in result.resolved_ids
 
 
 @pytest.mark.asyncio

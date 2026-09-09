@@ -6,6 +6,7 @@ import pytest
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.services.role_model_router import ModelRole, RoleModelSelection
+from app.services.npc_identity_binding import NpcIdentityBindingReview
 from app.services.turn_authority_planner import (
     CoordinatedTurnPlan,
     SemanticPlanReview,
@@ -21,6 +22,17 @@ class _RepairingPlannerRouter:
         self.review_calls = 0
 
     async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+        if response_model is NpcIdentityBindingReview:
+            return {'assessments': [{
+                'introduction_index': 0, 'participation': 'encountered',
+                'designation': 'role_reference', 'encounter_source': 'planned_outcome',
+                'encounter_evidence': 'На стук дверь открывает Дежурный фабрики.',
+                'designation_source': 'planned_outcome',
+                'designation_evidence': 'Дежурный фабрики',
+                'reason': 'Роль относится к открывшему дверь человеку.',
+            }]}
+        if response_model.__name__ == 'PlanReviewAdjudication':
+            return {'plan_valid': False, 'assessments': []}
         if response_model is SemanticPlanReview:
             self.review_calls += 1
             if self.review_calls == 1:

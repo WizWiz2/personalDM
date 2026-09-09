@@ -427,6 +427,7 @@ class SemanticResidualWriterService:
                 "dispositions": [
                     decision.model_dump(mode="json") for decision in classification.decisions
                 ],
+                "admission_audit": classification.admission_audit,
                 "protected_collision_keys": list(result.protected_collision_keys),
                 "event_ids": {
                     "fluents": [str(value) for value in result.fluent_event_ids],

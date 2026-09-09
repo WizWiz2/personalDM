@@ -7,8 +7,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.tables import Event, Turn
-from app.db.truth_engine_table import TruthEventRecord
+from app.db.tables import Entity, Event, Turn
+from app.db.truth_engine_table import SemanticType, TruthEventEffect, TruthEventRecord
 
 
 @dataclass(frozen=True)
@@ -111,6 +111,34 @@ class SemanticTurnContextReader:
             ).all()
         )
         receipts: list[dict] = []
+        effects_by_event: dict[str, list[dict]] = {}
+        event_ids = [record.event_id for record, _ in rows]
+        if event_ids:
+            effects = (await self._session.execute(
+                select(TruthEventEffect).where(TruthEventEffect.event_id.in_(event_ids))
+                .order_by(TruthEventEffect.event_id, TruthEventEffect.effect_index)
+            )).scalars().all()
+            for effect in effects:
+                data = json.loads(effect.payload_json)
+                # Hydrate schema identity from the registry, never infer ownership from words.
+                semantic_type = (
+                    await self._session.get(SemanticType, data['semantic_type_id'])
+                    if data.get('semantic_type_id') else None
+                )
+                subject = (
+                    await self._session.get(Entity, data['subject_entity_id'])
+                    if data.get('subject_entity_id') else None
+                )
+                effects_by_event.setdefault(effect.event_id, []).append({
+                    'effect_id': effect.id,
+                    'effect_type': effect.effect_type,
+                    'payload': data,
+                    'subject_name': subject.canonical_name if subject else None,
+                    'semantic_slot': {
+                        'id': semantic_type.id, 'system_key': semantic_type.system_key,
+                        'description': semantic_type.description,
+                    } if semantic_type else None,
+                })
         for record, event in rows:
             try:
                 payload = json.loads(record.payload_json or "{}")
@@ -122,6 +150,7 @@ class SemanticTurnContextReader:
                     "event_type": event.event_type,
                     "description": event.description,
                     "payload": payload if isinstance(payload, dict) else {},
+                    "effects": effects_by_event.get(record.event_id, []),
                 }
             )
         return receipts

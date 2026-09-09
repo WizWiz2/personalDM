@@ -420,46 +420,13 @@ class SceneTransitionExecutor:
             and step.transition.required
             and step.transition.transition_type == "location_transition"
         ]
-        if len(movement_indices) == 0 or len(movement_indices) != len(sequence_plan.steps):
+        if len(movement_indices) < 2 or len(movement_indices) != len(sequence_plan.steps):
             return sequence_plan
 
-        # Preserve the ordered destinations explicitly committed by the player when the
-        # planner duplicated an intermediate location or lost the final one. This is a
-        # graph-backed reconciliation only: each corrected step is still authorized and
-        # executed normally below, so an impossible hop remains blocked.
-        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
-
-        ordered_destinations = await PlayerDestinationAuthorizer(
-            self._session
-        ).ordered_travel_destinations(trigger_turn_id)
-        if len(ordered_destinations) > len(movement_indices):
-            # A weak control-model parse can collapse an explicitly compound human route to its
-            # final hop. Reconstruct only the missing typed movement nodes from the human-ordered
-            # destinations; the normal executor still resolves each identity and applies the
-            # graph/authorization checks, so this cannot manufacture a legal route.
-            template = sequence_plan.steps[movement_indices[0]]
-            steps = [
-                template.model_copy(
-                    update={
-                        "transition": template.transition.model_copy(
-                            update={"destination_location": destination}
-                        )
-                    }
-                )
-                for destination in ordered_destinations
-            ]
-            return sequence_plan.model_copy(update={"steps": steps})
-        if len(ordered_destinations) == len(movement_indices):
-            steps = list(sequence_plan.steps)
-            for index, destination in zip(movement_indices, ordered_destinations):
-                steps[index] = steps[index].model_copy(
-                    update={
-                        "transition": steps[index].transition.model_copy(
-                            update={"destination_location": destination}
-                        )
-                    }
-                )
-            return sequence_plan.model_copy(update={"steps": steps})
+        # Missing actions and destination repair belong to semantic planning. Never infer
+        # replacement endpoints here: a lexical mention may be an origin, an alias, or an
+        # unrelated place. Reusing a step with another endpoint also invalidates its outcome,
+        # preconditions and destination profile. This boundary can only filter route media.
 
         decisions = []
         for index in movement_indices:

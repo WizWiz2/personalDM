@@ -75,7 +75,7 @@ class SemanticResidualShadowService:
             decision.model_dump(mode="json") for decision in classification.decisions
         ]
         snapshot[self.SNAPSHOT_KEY] = {
-            "version": 3,
+            "version": 4,
             "mode": "read_only",
             "source_user_turn_id": str(current.user_turn_id),
             "receipt_count": len(context.structured_receipts),
@@ -83,6 +83,7 @@ class SemanticResidualShadowService:
             "sanitization": sanitization.model_dump(mode="json"),
             "residual": envelope.model_dump(mode="json"),
             "dispositions": dispositions,
+            "admission_audit": classification.admission_audit,
             "objective_residual": objective.model_dump(mode="json"),
             "counts": {
                 "entities": len(envelope.entities),

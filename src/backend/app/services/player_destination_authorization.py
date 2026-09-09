@@ -351,55 +351,6 @@ class PlayerDestinationAuthorizer:
             destination_exists=target_exists,
         )
 
-    async def ordered_travel_destinations(self, trigger_turn_id: UUID) -> list[str]:
-        """Extract named travel destinations in the human clause order.
-
-        This only reconciles a compound typed plan. Each returned destination still passes
-        through ``authorize`` and the structural graph executor; this method never authorizes
-        travel or creates a route. The last location mention after a travel anchor is selected
-        so an origin in a phrase such as "из комнаты в коридор" is not mistaken for its target.
-        """
-        turn = await self._session.get(Turn, str(trigger_turn_id))
-        if not turn or turn.role != "user":
-            return []
-        locations = await self._locations.list_by_campaign(UUID(turn.campaign_id))
-        result: list[str] = []
-        for clause in self._clauses(turn.content or ""):
-            if not clause.travel:
-                continue
-            anchors = [
-                anchor
-                for anchor in self.TRAVEL_ANCHOR_RE.finditer(clause.text)
-                if not self._anchor_is_negated(clause.text, anchor)
-            ]
-            if not anchors:
-                continue
-            suffix_tokens = self.TOKEN_RE.findall(
-                clause.text[anchors[-1].end() :].casefold()
-            )
-            best: tuple[int, int, str] | None = None
-            for location in locations:
-                location_tokens = self.TOKEN_RE.findall(
-                    location.canonical_name.casefold()
-                )
-                if not location_tokens or len(location_tokens) > len(suffix_tokens):
-                    continue
-                for start in range(len(suffix_tokens) - len(location_tokens) + 1):
-                    if not all(
-                        self._tokens_match(expected, actual)
-                        for expected, actual in zip(
-                            location_tokens,
-                            suffix_tokens[start : start + len(location_tokens)],
-                        )
-                    ):
-                        continue
-                    candidate = (len(location_tokens), start, location.canonical_name)
-                    if best is None or candidate[:2] >= best[:2]:
-                        best = candidate
-            if best and (not result or result[-1] != best[2]):
-                result.append(best[2])
-        return result
-
     @classmethod
     def _is_return_exit(cls, exit_row) -> bool:
         label = " ".join(str(getattr(exit_row, "label", "") or "").split())

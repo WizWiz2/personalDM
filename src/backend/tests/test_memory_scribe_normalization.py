@@ -1,5 +1,27 @@
+import pytest
+
 from app.models.proposed_change import ChangeType
 from app.services.memory_scribe import MemoryScribe
+
+
+@pytest.mark.parametrize(
+    ("subject", "predicate", "value", "evidence"),
+    [
+        ("Комната", "освещение", "освещена солнцем", "Комната освещена солнцем."),
+        ("Лампа", "состояние", "выключена", "Ты пробуешь включить лампу, но она остаётся выключена."),
+        ("Светильник", "цвет", "синий", "Светильник синий."),
+    ],
+)
+def test_fact_normalization_preserves_evidence_backed_state(subject, predicate, value, evidence):
+    payload = MemoryScribe(None)._normalize_payload(
+        ChangeType.FACT,
+        {"subject": subject, "predicate": predicate, "object_value": value},
+        {}, set(), None, None, [], authoritative_text=evidence,
+    )
+
+    assert payload["subject"] == subject
+    assert payload["predicate"] == predicate
+    assert payload["object_value"] == value
 
 
 def test_supported_outcome_with_unknown_entity_becomes_canon_gap():

@@ -17,6 +17,9 @@ from app.models.truth_engine_residual import (
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider
 from app.services.role_model_router import ModelRole, RoleModelRouter
+from app.services.truth_engine_admission import (
+    ADMISSION_PROMPT, AtomAdmissionEnvelope, admission_failures, admission_response_model,
+)
 
 
 class SemanticResidualDispositionGate:
@@ -124,9 +127,43 @@ Return only decisions over the supplied atom_key values. Never invent an atom_ke
         )
         returned = ResidualDispositionEnvelope.model_validate(data).decisions
         decisions = self._normalize_decisions(returned, allowed_keys)
+        proposed = {item.atom_key for item in decisions if item.disposition == "objective"}
+        admission_audit = []
+        if proposed:
+            effect_ids = {effect['effect_id'] for receipt in (structured_receipts or [])
+                          for effect in receipt.get('effects', []) if effect.get('effect_id')}
+            # Classification proposes; an independent evidence audit admits. The auditor receives
+            # no previous verdicts/reasons, so it cannot simply endorse the classifier's rationale.
+            audit_data = await self._model_router.generate_json(
+                self._llm_provider, selection,
+                [
+                    ChatMessage(role="system", content=ADMISSION_PROMPT),
+                    ChatMessage(role="user", content=json.dumps({
+                        "completed_narration": assistant_content,
+                        "structured_receipts": structured_receipts or [],
+                        "entities": [entity.model_dump(mode="json") for entity in envelope.entities],
+                        # Recheck the actual encoded proposition, not the extractor's prose
+                        # gloss (which can contradict its endpoints or value).
+                        "atoms": [{key: value for key, value in atom.items()
+                                   if key not in {"description", "evidence"}}
+                                  for atom in atoms if atom["atom_key"] in proposed],
+                    }, ensure_ascii=False)),
+                ],
+                max_tokens=max(700, 240 * len(proposed)), temperature=0.0,
+                response_model=admission_response_model(effect_ids),
+            )
+            audit = AtomAdmissionEnvelope.model_validate(audit_data)
+            admission_audit = [item.model_dump(mode="json") for item in audit.admissions]
+            failures = admission_failures(audit.admissions, proposed, assistant_content, effect_ids)
+            decisions = [
+                item.model_copy(update={"disposition": "unsupported", "reason": failures[item.atom_key][:800]})
+                if item.atom_key in failures else item
+                for item in decisions
+            ]
         return ResidualClassificationResult(
             decisions=decisions,
             objective=objective_residual(envelope, decisions),
+            admission_audit=admission_audit,
         )
 
     @staticmethod

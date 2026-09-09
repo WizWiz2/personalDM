@@ -14,6 +14,7 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import CanonAudit, CanonEnvelope, proposals_from_envelope
 from app.services.role_model_router import ModelRole, RoleModelRouter
+from app.services.semantic_receipt_context import memory_evidence
 
 PLACEHOLDER_SELF = {"self", "speaker", "acting_character", "acting_character_id"}
 PLACEHOLDER_PLAYER = {
@@ -36,7 +37,7 @@ HTML_PATTERN = re.compile(r"<[^>]+>")
 class MemoryScribe:
     """Extract evidence-backed durable canon candidates from one authoritative turn."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, *, structured_receipts: list[dict] | None = None):
         self._session = session
         self._entity_repo = EntityRepository(session)
         self._scene_repo = SceneRepository(session)
@@ -45,6 +46,7 @@ class MemoryScribe:
         self._model_router = RoleModelRouter(self._config_repo)
         self._llm_provider = LLMProvider()
         self.last_audit: dict = CanonAudit().model_dump()
+        self.structured_receipts = structured_receipts or []
 
     async def extract_proposals(
         self,
@@ -61,6 +63,8 @@ class MemoryScribe:
             return []
         if "[generation interrupted]" in assistant_content:
             return []
+
+        assistant_content = memory_evidence(assistant_content, self.structured_receipts)
 
         selection = await self._model_router.resolve(campaign_id, ModelRole.SCRIBE)
         if selection is None:
@@ -128,6 +132,10 @@ class MemoryScribe:
 {chr(10).join(relationship_lines) or '- нет'}
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
+- EXECUTED WORLD RESULTS — подтверждённые исполнителем результаты, а не намерения игрока.
+  В первую очередь сохрани каждое явное устойчивое изменение состояния из этого блока.
+  Декоративные свойства из narration не заменяют изменённое состояние. Если результат
+  уже отражён текущим фактом, не дублируй его; если это новое значение — сохрани его.
 - Сообщение игрока является попыткой, вопросом или гипотезой, но не доказательством результата.
 - Авторитетным источником результата является только ответ ДМа.
 - Реплика NPC является character_claim: она создаёт knowledge слушателя, но не объективный fact.
@@ -153,8 +161,13 @@ class MemoryScribe:
   не создавай второй параллельный current fact для single-кардинальности.
 - object_value всегда является короткой строкой на русском, даже если состояние логически
   истинно или ложно: не помещай boolean true/false в object_value. Boolean-аспект уже
-  выражается наличием факта и truth_status="true" или "false". Например, для лампы,
-  которая загорелась: subject="свет", predicate="состояние", object_value="включён".
+  выражается наличием факта и truth_status="true" или "false".
+- При изменении состояния запиши именно результирующее состояние изменённого объекта:
+  subject = носитель изменённого свойства, predicate = это свойство, object_value = его новое
+  значение. Не заменяй состояние атмосферой, цветом, впечатлением или описанием эффекта.
+  Сохраняй отрицания и различай действие, его причину и наблюдаемый результат. Если результат
+  не подтверждён, не утверждай желаемое состояние из попытки игрока. Для уже известного
+  свойства сохраняй его subject/predicate и сопоставимое краткое значение.
 - subject и object_value факта — текстовые понятия, а не ссылки на известные сущности;
   не отбрасывай новый предмет только потому, что его ещё нет в списке сущностей.
 - Не создавай canon_gap proposal и не оставляй durable outcome без конкретного fact/event/relationship
@@ -640,46 +653,6 @@ FACT SEMANTICS:
                 resolved["scope"] = "campaign"
                 resolved.pop("scene_id", None)
 
-            # Keep equivalent state descriptions in the canonical value vocabulary used by
-            # downstream slot reconciliation. This is semantic normalization, not a case
-            # fixture: a state adjective such as "освещена" is represented by the same
-            # observable on-value as "лампа включена".
-            predicate = str(resolved.get("predicate") or "").casefold()
-            subject_hint = str(resolved.get("subject") or "").casefold()
-            object_value = str(resolved.get("object_value") or "").casefold()
-            lighting_state = any(
-                token in predicate or token in subject_hint
-                for token in ("освещ", "свет", "ламп", "lighting", "light", "lamp")
-            )
-            if (
-                lighting_state
-                and any(
-                    token in object_value
-                    for token in ("освещ", "lit", "illuminated")
-                )
-            ):
-                resolved["object_value"] = "включён"
-            # A scribe can copy the previous current value even when the DM has just shown the
-            # opposite state. Reconcile that polarity only against explicit public evidence and
-            # keep negated evidence from being promoted. This is a domain ontology invariant, not
-            # a fixture-specific rewrite.
-            evidence = " ".join(str(authoritative_text or "").split()).casefold()
-            if (
-                lighting_state
-                and any(token in object_value for token in ("выключ", "off", "dark"))
-                and not re.search(r"не\s+(?:включ|зажиг)|не\s+загор", evidence)
-                and re.search(
-                    r"(?:включ|зажиг)|свет[^.]{0,80}(?:залива|освещ|горит)",
-                    evidence,
-                )
-            ):
-                resolved["object_value"] = "включён"
-            if lighting_state:
-                subject = str(resolved.get("subject") or "").strip()
-                if subject and not any(
-                    token in subject.casefold() for token in ("свет", "ламп", "light", "lamp")
-                ):
-                    resolved["subject"] = f"свет в {subject}"
 
         if canon_meta:
             resolved["_canon"] = canon_meta

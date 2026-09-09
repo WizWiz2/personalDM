@@ -32,6 +32,8 @@ action, not a location or time transition.
 
 def review_language_mismatch(review, player_input: str) -> bool:
     """Check only reviewer-authored human-readable fields, never schema keys or enum literals."""
+    if getattr(review, '_engine_authored', False):
+        return False
     surface = "\n".join(
         [
             str(getattr(review, "summary", "") or ""),
