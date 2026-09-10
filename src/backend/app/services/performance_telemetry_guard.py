@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
 import time
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -56,6 +58,11 @@ def _performance_log_path() -> Path:
     return Path(settings.DATA_DIR).resolve().parent / "llm-performance.jsonl"
 
 
+def _performance_report_path() -> Path:
+    log = _performance_log_path()
+    return log.with_name("llm-performance.md")
+
+
 def _task_id() -> str | None:
     try:
         task = asyncio.current_task()
@@ -74,6 +81,31 @@ def _message_stats(messages: object) -> tuple[int, int]:
             content = message.get("content")
         characters += len(str(content or ""))
     return len(messages), characters
+
+
+def _attempt_summaries(telemetry: dict[str, Any]) -> list[dict[str, Any]]:
+    attempts = telemetry.get("attempts")
+    if not isinstance(attempts, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in attempts:
+        if not isinstance(item, dict):
+            continue
+        usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
+        summary = {
+            "attempt": item.get("attempt"),
+            "status": item.get("status") or ("completed" if usage else None),
+            "requested_max_tokens": item.get("requested_max_tokens"),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "ollama_total_ms": usage.get("ollama_total_ms"),
+            "ollama_load_ms": usage.get("ollama_load_ms"),
+            "ollama_prompt_eval_ms": usage.get("ollama_prompt_eval_ms"),
+            "ollama_eval_ms": usage.get("ollama_eval_ms"),
+            "error": item.get("error"),
+        }
+        result.append({key: value for key, value in summary.items() if value is not None})
+    return result
 
 
 def _append_record(record: dict[str, Any]) -> None:
@@ -106,6 +138,7 @@ def _flatten_telemetry(telemetry: dict[str, Any]) -> dict[str, Any]:
         "provider_duration_ms": telemetry.get("duration_ms"),
         "attempt": telemetry.get("attempt"),
         "attempt_count": len(attempts) or (1 if telemetry else 0),
+        "attempts": _attempt_summaries(telemetry) or None,
         "prompt_tokens": usage.get("prompt_tokens"),
         "completion_tokens": usage.get("completion_tokens"),
         "total_tokens": usage.get("total_tokens"),
@@ -122,6 +155,143 @@ def _flatten_telemetry(telemetry: dict[str, Any]) -> dict[str, Any]:
         "thinking_disabled": telemetry.get("thinking_disabled"),
     }
     return {key: value for key, value in result.items() if value is not None}
+
+
+def _number(record: dict[str, Any], key: str) -> float:
+    value = record.get(key)
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _load_records(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if not path.exists():
+        return records
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                records.append(value)
+    except OSError:
+        return []
+    return records
+
+
+def _render_report(records: list[dict[str, Any]]) -> str:
+    groups: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    for record in records:
+        key = (str(record.get("stage") or "unknown"), str(record.get("model") or "unknown"))
+        bucket = groups[key]
+        bucket["calls"] += 1
+        for field in (
+            "wall_ms",
+            "ollama_total_ms",
+            "ollama_load_ms",
+            "ollama_prompt_eval_ms",
+            "ollama_eval_ms",
+            "prompt_tokens",
+            "completion_tokens",
+        ):
+            bucket[field] += _number(record, field)
+        bucket["retries"] += max(0.0, _number(record, "attempt_count") - 1.0)
+        if record.get("error") or str(record.get("status") or "").endswith("error"):
+            bucket["errors"] += 1
+
+    total_wall = sum(_number(record, "wall_ms") for record in records)
+    total_load = sum(_number(record, "ollama_load_ms") for record in records)
+    total_prompt = sum(_number(record, "ollama_prompt_eval_ms") for record in records)
+    total_eval = sum(_number(record, "ollama_eval_ms") for record in records)
+    total_provider = sum(_number(record, "ollama_total_ms") for record in records)
+    slow_loads = sum(1 for record in records if _number(record, "ollama_load_ms") >= 500.0)
+    retries = sum(max(0, int(_number(record, "attempt_count")) - 1) for record in records)
+
+    model_switches = 0
+    previous_model: str | None = None
+    for record in records:
+        model = str(record.get("model") or "")
+        if model and previous_model and model != previous_model:
+            model_switches += 1
+        if model:
+            previous_model = model
+
+    lines = [
+        "# PersonalDM LLM performance",
+        "",
+        f"Calls: **{len(records)}**  ",
+        f"Summed call wall time: **{total_wall / 1000.0:.1f}s**  ",
+        f"Ollama reported total: **{total_provider / 1000.0:.1f}s**  ",
+        f"Model load: **{total_load / 1000.0:.1f}s**  ",
+        f"Prompt evaluation: **{total_prompt / 1000.0:.1f}s**  ",
+        f"Token generation: **{total_eval / 1000.0:.1f}s**  ",
+        f"Structured retries: **{retries}**  ",
+        f"Model changes between consecutive calls: **{model_switches}**  ",
+        f"Calls with load >= 500ms: **{slow_loads}**",
+        "",
+        "Times are summed per LLM call; background/concurrent work can make this larger than user-visible elapsed time.",
+        "",
+        "## By stage and model",
+        "",
+        "| Stage | Model | Calls | Wall | Load | Prompt | Eval | Prompt tok/s | Gen tok/s | Retries | Errors |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+
+    ordered = sorted(groups.items(), key=lambda item: item[1]["wall_ms"], reverse=True)
+    for (stage, model), bucket in ordered:
+        prompt_tps = (
+            bucket["prompt_tokens"] / (bucket["ollama_prompt_eval_ms"] / 1000.0)
+            if bucket["ollama_prompt_eval_ms"] > 0
+            else 0.0
+        )
+        generation_tps = (
+            bucket["completion_tokens"] / (bucket["ollama_eval_ms"] / 1000.0)
+            if bucket["ollama_eval_ms"] > 0
+            else 0.0
+        )
+        lines.append(
+            f"| {stage} | {model} | {int(bucket['calls'])} | "
+            f"{bucket['wall_ms'] / 1000.0:.1f}s | {bucket['ollama_load_ms'] / 1000.0:.1f}s | "
+            f"{bucket['ollama_prompt_eval_ms'] / 1000.0:.1f}s | {bucket['ollama_eval_ms'] / 1000.0:.1f}s | "
+            f"{prompt_tps:.1f} | {generation_tps:.1f} | {int(bucket['retries'])} | {int(bucket['errors'])} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Slowest calls",
+            "",
+            "| # | Stage | Model | Wall | Load | Prompt | Eval | Attempts | Status |",
+            "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+    )
+    slowest = sorted(records, key=lambda item: _number(item, "wall_ms"), reverse=True)[:10]
+    for index, record in enumerate(slowest, start=1):
+        lines.append(
+            f"| {index} | {record.get('stage') or 'unknown'} | {record.get('model') or 'unknown'} | "
+            f"{_number(record, 'wall_ms') / 1000.0:.1f}s | "
+            f"{_number(record, 'ollama_load_ms') / 1000.0:.1f}s | "
+            f"{_number(record, 'ollama_prompt_eval_ms') / 1000.0:.1f}s | "
+            f"{_number(record, 'ollama_eval_ms') / 1000.0:.1f}s | "
+            f"{int(_number(record, 'attempt_count'))} | {record.get('status') or ''} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _write_report() -> None:
+    """Write one human-readable summary beside the raw trace at clean process exit."""
+    try:
+        records = _load_records(_performance_log_path())
+        if not records:
+            return
+        report = _performance_report_path()
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(_render_report(records), encoding="utf-8")
+    except Exception:
+        return
 
 
 def install() -> None:
@@ -218,7 +388,13 @@ def install() -> None:
             )
 
     LLMProvider.generate_stream = measured_generate_stream
+    atexit.register(_write_report)
     _INSTALLED = True
 
 
-__all__ = ["_duration_ms", "_ollama_timing_usage", "install"]
+__all__ = [
+    "_duration_ms",
+    "_ollama_timing_usage",
+    "_render_report",
+    "install",
+]
