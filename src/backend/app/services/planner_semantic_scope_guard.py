@@ -25,6 +25,10 @@ beyond the actions the human actually committed to.
 - Negative/stationary clauses such as `остаюсь на месте`, `не иду`, `не трогаю`, `не проверяю`, or
   equivalent constraints are boundaries on what must NOT happen; they are not separate committed
   world actions and do not require action_sequence steps.
+- A review that claims a movement/focus action is missing must be grounded in an affirmative physical
+  commitment in the latest human input. A social addressee, selected listener, question target, or
+  stationary clause is not evidence for movement. Never repair a stationary conversation by adding
+  travel, approach, or focus_transition that the human did not commit to.
 - A blocked action step is semantically complete when resolution=blocked and blocking_reason states
   the concrete current obstacle. A blocked step does NOT require observable_outcome and must not be
   rejected merely because the attempted action did not occur.
@@ -50,6 +54,64 @@ def _unique_presence_keys(messages: list[ChatMessage]) -> set[str]:
         for key in (_clean_presence_name(value) for value in present_character_names(messages))
         if key
     }
+
+
+def _normalize_unproven_npc_introductions(plan):
+    """Downgrade unsupported stable names to role-grounded temporary identities.
+
+    This is an authority normalization, not a prose/name classifier. The planner already typed both
+    the role and whether it claims a stable personal identity. A stable identity without explicit
+    personal_name_evidence has no pre-publication authority, so preserving the role while marking it
+    temporary is strictly less permissive than accepting the model-authored personal name. If no
+    usable role exists, leave the introduction untouched so the semantic reviewer can fail closed.
+    """
+
+    normalized = []
+    used: set[str] = set()
+    changed = False
+
+    for introduction in plan.npc_introductions:
+        canonical = " ".join(str(introduction.canonical_name or "").split())
+        evidence = " ".join(str(introduction.personal_name_evidence or "").split())
+        canonical_key = identity_key(canonical)
+
+        if introduction.temporary_name or evidence:
+            normalized.append(introduction)
+            if canonical_key:
+                used.add(canonical_key)
+            continue
+
+        role = " ".join(str(introduction.role or "").split())
+        if not role:
+            normalized.append(introduction)
+            if canonical_key:
+                used.add(canonical_key)
+            continue
+
+        base = role[0].upper() + role[1:] if role else role
+        candidate = base
+        index = 2
+        while identity_key(candidate) in used:
+            candidate = f"{base} {index}"
+            index += 1
+
+        normalized.append(
+            introduction.model_copy(
+                update={
+                    "canonical_name": candidate,
+                    "temporary_name": True,
+                    "personal_name_evidence": None,
+                }
+            )
+        )
+        used.add(identity_key(candidate))
+        changed = True
+
+    if changed:
+        # CoordinatedTurnPlan is intentionally mutable during pre-execution normalization. Mutating
+        # the same instance matters here: the planner state machine keeps this object after review.
+        plan.npc_introductions = normalized
+    return plan
 
 
 def _temporary_fields(entity) -> dict:
@@ -149,6 +211,7 @@ def install() -> None:
         plan,
         present_names=None,
     ):
+        _normalize_unproven_npc_introductions(plan)
         review = await original_review(
             self,
             selection,
@@ -227,6 +290,7 @@ __all__ = [
     "GuardedMaterializedTurnOutcome",
     "IdentityPromotionSnapshot",
     "_SEMANTIC_SCOPE_CONTRACT",
+    "_normalize_unproven_npc_introductions",
     "_unique_presence_keys",
     "install",
 ]
