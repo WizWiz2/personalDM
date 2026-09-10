@@ -3,6 +3,7 @@ from app.services.live_contract_stabilization_guard import (
     _NPC_RECOVERY_BOUNDARY_CONTRACT,
     _SEMANTIC_BOUNDARY_CONTRACT,
 )
+from app.services.planner_compound_guard import _COMPOUND_AUTHORITY, _COMPOUND_REVIEW
 from app.services.planner_semantic_scope_guard import (
     _normalize_unproven_npc_introductions,
 )
@@ -105,3 +106,13 @@ def test_live_semantic_contract_distinguishes_person_transfer_from_drop() -> Non
     assert "drop means deliberately relinquishing" in _SEMANTIC_BOUNDARY_CONTRACT
     assert "stationary/negative constraint" in _SEMANTIC_BOUNDARY_CONTRACT
     assert "temporary_name=true" in _NPC_RECOVERY_BOUNDARY_CONTRACT
+
+
+def test_compound_contract_preserves_explicit_intermediate_destination_and_tail() -> None:
+    example = "выхожу из комнаты в коридор и иду в контору"
+
+    assert example in _COMPOUND_AUTHORITY
+    assert example in _COMPOUND_REVIEW
+    assert "silently stop at" in _COMPOUND_AUTHORITY
+    assert "lost the tail" in _COMPOUND_REVIEW
+    assert "Incidental path" in _COMPOUND_REVIEW
