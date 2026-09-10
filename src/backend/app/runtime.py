@@ -25,6 +25,7 @@ _GUARDS = (
     "location_profile",
     "dead_turn",
     "semantic_authority",
+    "performance_telemetry",
 )
 
 
@@ -91,6 +92,7 @@ def install_runtime() -> None:
     from app.services.narrator_quality_recovery_guard import (
         install as install_narrator_quality_recovery,
     )
+    from app.services.performance_telemetry_guard import install as install_performance_telemetry
     from app.services.planner_compound_guard import install as install_planner_compound
     from app.services.planner_semantic_scope_guard import install as install_planner_semantic_scope
     from app.services.post_turn_structured_receipt_guard import (
@@ -103,6 +105,9 @@ def install_runtime() -> None:
     )
     from app.services.systemless_authority_guard import install as install_systemless_authority
 
+    # Performance instrumentation wraps provider/router calls only. Install it before the semantic
+    # guards so every later control/narration call is visible without changing their behavior.
+    install_performance_telemetry()
     install_actor_turn_authority()
     install_systemless_authority()
     install_mixed_actor_response()
@@ -199,6 +204,12 @@ def runtime_manifest() -> dict[str, Any]:
                 "PDM_CRASH_LOG",
                 "data/personal-dm-crash.log",
             ),
+        },
+        "performance_telemetry": {
+            "enabled": True,
+            "format": "jsonl",
+            "default_path": "parent(DATA_DIR)/llm-performance.jsonl",
+            "override_env": "PDM_PERFORMANCE_LOG",
         },
         "turn_stream": identity(TurnRunner.run_turn_stream),
         "turn_saga": identity(TurnSaga.run_turn_stream),
