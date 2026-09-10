@@ -54,14 +54,6 @@ class NpcContactDecision(BaseModel):
     response_ownership_reason: str | None = Field(default=None, max_length=500)
 
 
-class NpcIdentityPromotionDecision(BaseModel):
-    """Typed identity reveal extracted from an explicit current-turn self-identification."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    promotion: PlannedNpcIntroduction | None = None
-
-
 class CompoundActionPatch(BaseModel):
     """One model-authorized atomic action to insert into an existing ordered plan."""
 
@@ -205,11 +197,14 @@ consequence of this turn. Each item contains canonical_name, role, description, 
 - personal_name_revealed: true only when the typed current-turn exchange explicitly establishes a
   present character's personal name (for example, that character answers a question about their
   name). Keep it false for greetings, ordinary replies, role/title descriptions, or a name merely
-  invented in narration. This flag authorizes the separate identity-promotion resolver.
+  invented in narration. This flag does not authorize pre-publication identity promotion.
 - identity_reveal_requested: true when the current semantic turn explicitly asks a present
   character for their personal name or otherwise requests a name reveal. It authorizes the
   post-turn promotion-only registrar to verify the published response; it does not itself establish
   a name and must not create or rename an entity before publication.
+  Keep the existing participant's designation and ID in this plan. A name question is NOT a
+  new physical participant: do not put the answer's future name in npc_introductions.
+  The published response and its verified self-identification own the later name binding.
 - response_ownership_reason: one concise semantic reason for addressed_response_requested.
 
 SYSTEMLESS RESOLUTION IS ABSOLUTE:
@@ -693,7 +688,12 @@ short sentence. Return exactly the NpcContactDecision schema.
                         "do not manufacture actions, participants or facts to appease a reviewer. "
                         "Use typed transitions for movement/time, typed introductions for new "
                         "physical participants and response ownership for dialogue. A claim is "
-                        "not an established world fact. The result will be independently reviewed."
+                        "not an established world fact. Asking an existing participant's name "
+                        "sets identity_reveal_requested and retains that participant's current "
+                        "designation/ID; it never creates a named duplicate in npc_introductions. "
+                        "A future answer is not evidence from the player's input. The published "
+                        "response owns name revelation and subsequent verified name binding. "
+                        "The result will be independently reviewed."
                         + CONTROL_LANGUAGE_CONTRACT
                         + "\n\n[CAMPAIGN CONTEXT]\n" + campaign_context
                     ),
@@ -780,79 +780,9 @@ short sentence. Return exactly the NpcContactDecision schema.
             for index in indices:
                 gated.npc_introductions[index].temporary_name = True
 
-        # Promotion extraction is only meaningful when the typed plan says that the
-        # current turn owns a response from a present character.  Running it on every
-        # movement/ambient turn adds an unnecessary control-model round trip and, more
-        # importantly, gives a model an opportunity to invent a reveal unrelated to the
-        # current exchange.  The gate remains semantic: `addressed_response_requested`
-        # comes from the planner's typed interpretation, not from string matching.
-        if (
-            (plan.personal_name_revealed or plan.identity_reveal_requested)
-            and not any(not item.temporary_name for item in gated.npc_introductions)
-            and present_character_names(base_messages)
-        ):
-            try:
-                data = await self._router.generate_json(
-                    self._provider,
-                    selection,
-                    [
-                        base_messages[0],
-                        ChatMessage(
-                            role="system",
-                            content=(
-                                "[NPC IDENTITY REVEAL]\n"
-                                "Return a promotion only when the latest human input and the "
-                                "proposed typed outcome explicitly establish a present NPC's "
-                                "personal name, such as that NPC answering a question about their "
-                                "name. The NPC must already be a physically present temporary or "
-                                "role-only character in the campaign context. Return null when "
-                                "there is no explicit self-identification. Never invent a name "
-                                "from narration alone. Set personal_name_evidence to the exact "
-                                "self-identification sentence. Copy the existing temporary character's "
-                                "public description and appearance from the campaign context when "
-                                "available; do not leave those fields null, do not invent hidden "
-                                "facts, and do not alter their public meaning. The returned "
-                                "introduction is used only for existing-identity resolution, not "
-                                "new-character creation. "
-                                "Return exactly the NpcIdentityPromotionDecision schema."
-                            ),
-                        ),
-                        ChatMessage(
-                            role="user",
-                            content=(
-                                "LATEST INPUT:\n"
-                                + player_input
-                                + "\n\nPROPOSED TYPED OUTCOME:\n"
-                                + plan.model_dump_json()
-                            ),
-                        ),
-                    ],
-                    max_tokens=350,
-                    temperature=0.0,
-                    response_model=NpcIdentityPromotionDecision,
-                )
-                promotion = NpcIdentityPromotionDecision.model_validate(data).promotion
-            except (LLMProviderError, ValueError, TypeError):
-                promotion = None
-            if (
-                promotion is not None
-                and not promotion.temporary_name
-                and promotion.personal_name_evidence
-            ):
-                duplicate_index = next(
-                    (
-                        index
-                        for index, existing in enumerate(gated.npc_introductions)
-                        if identity_key(existing.canonical_name)
-                        == identity_key(promotion.canonical_name)
-                    ),
-                    None,
-                )
-                if duplicate_index is None:
-                    gated.npc_introductions.append(promotion)
-                elif gated.npc_introductions[duplicate_index].temporary_name:
-                    gated.npc_introductions[duplicate_index] = promotion
-
+        # A requested response is not a published identity assertion. Only the
+        # post-publication registrar may extract and verify that self-identification;
+        # converting a speculative answer into an introduction creates a second actor.
         if not indices and gated.npc_introductions == plan.npc_introductions:
             return plan
         return gated

@@ -73,22 +73,9 @@ class TurnOutcomeMaterializer:
             authority.campaign_id,
             entity_type="character",
         )
-        # Identity reveal is a two-phase boundary: the planner authorizes the question, while the
-        # published narrator text supplies the personal-name evidence.  Do not materialize a new
-        # temporary shell when exactly one temporary participant is already present; otherwise a
-        # later registrar promotion can be shadowed by the shell's exact new name and split one
-        # character into two entities.  If the narrator does not actually name the character, the
-        # existing temporary identity remains untouched.
-        temporary_identity_reveal_target = (
-            authority.identity_reveal_requested
-            and sum(
-                1
-                for entity in known
-                if entity.id in existing_participants
-                and bool((getattr(entity, "custom_fields", None) or {}).get("temporary_name"))
-            )
-            == 1
-        )
+        # Introductions and identity revelation are independent effects. Authority
+        # resolves which actors are new; a name question cannot suppress another
+        # authorized arrival based on how many temporary participants are present.
         known_names: set[str] = set()
         for entity in known:
             known_names.add(identity_key(entity.canonical_name))
@@ -96,8 +83,6 @@ class TurnOutcomeMaterializer:
 
         created_ids: list[UUID] = []
         for introduction in authority.allowed_new_npcs:
-            if temporary_identity_reveal_target:
-                continue
             key = identity_key(introduction.canonical_name)
             if key in known_names:
                 raise ValueError(

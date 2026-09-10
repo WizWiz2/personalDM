@@ -11,7 +11,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.campaign import CampaignCreate, CampaignUpdate
-from app.models.character import CharacterCreate
+from app.models.character import CharacterCreate, CharacterUpdate
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate
 from app.models.turn import TurnRead
@@ -96,6 +96,67 @@ def test_identity_key_normalizes_qwen_mixed_script_names():
     assert identity_key("Эйдан") == identity_key("Эйdan")
     assert identity_key("Рэт Уайтмоур") == identity_key("Rэт Уайтмоур")
     assert identity_key("Хозяин   таверны") == identity_key("хозяин таверны")
+
+
+@pytest.mark.asyncio
+async def test_planned_name_cannot_promote_a_role_matched_existing_actor(db_session):
+    campaign_id, _location, _player, owner, scene = await _identity_campaign(db_session)
+    entities = EntityRepository(db_session)
+    await entities.update_character(owner.id, CharacterUpdate(custom_fields={
+        'temporary_name': True, 'role': 'трактирщик',
+    }))
+    await SceneRepository(db_session).add_participant(scene.id, owner.id, allow_movement=False)
+    plan = CoordinatedTurnPlan(
+        player_intent='Спросить имя хозяина.', resolution='conversation',
+        identity_reveal_requested=True,
+        character_beats=['Хозяин отвечает на вопрос об имени.'],
+        npc_introductions=[PlannedNpcIntroduction(
+            canonical_name='Авери', role='трактирщик', temporary_name=False,
+            personal_name_evidence='Меня зовут Авери.', reason='Proposed future answer.',
+        )],
+    )
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=campaign_id, trigger_turn_id=uuid4(), player_input=plan.player_intent,
+        source_scene_id=scene.id, target_scene_id=scene.id, plan=plan, acting_character_id=None,
+    )
+    assert 'Авери' not in authority.present_character_names
+    await TurnOutcomeMaterializer(db_session).materialize(authority, source_turn_id=uuid4())
+    persisted = await entities.get_character(owner.id)
+    assert persisted.canonical_name == owner.canonical_name
+    assert persisted.custom_fields['temporary_name'] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('temporary_count', [1, 2])
+async def test_name_question_does_not_suppress_an_independent_authorized_arrival(
+    db_session, temporary_count,
+):
+    campaign_id, location, _player, owner, scene = await _identity_campaign(db_session)
+    entities = EntityRepository(db_session)
+    scenes = SceneRepository(db_session)
+    await entities.update_character(owner.id, CharacterUpdate(custom_fields={
+        'temporary_name': True, 'role': 'трактирщик',
+    }))
+    await scenes.add_participant(scene.id, owner.id, allow_movement=False)
+    if temporary_count == 2:
+        other = await entities.create_character(campaign_id, CharacterCreate(
+            canonical_name='Посетитель у окна', current_location_id=location.id,
+            custom_fields={'temporary_name': True, 'role': 'посетитель'},
+        ))
+        await scenes.add_participant(scene.id, other.id, allow_movement=False)
+    plan = _temporary_contact('Курьер у двери', 'курьер')
+    plan.identity_reveal_requested = True
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=campaign_id, trigger_turn_id=uuid4(),
+        player_input='Спрашиваю имя хозяина, пока курьер входит в таверну.',
+        source_scene_id=scene.id, target_scene_id=scene.id, plan=plan, acting_character_id=None,
+    )
+    assert len(authority.allowed_new_npcs) == 1
+    result = await TurnOutcomeMaterializer(db_session).materialize(authority, source_turn_id=uuid4())
+    assert len(result.introduced_character_ids) == 1
+    newcomer = await entities.get_character(result.introduced_character_ids[0])
+    assert newcomer.canonical_name == 'Курьер у двери'
+    assert newcomer.id != owner.id
 
 
 def test_turn_read_keeps_internal_authority_snapshot_without_serializing_it():

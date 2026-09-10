@@ -3,18 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import select
-
-from app.db.tables import Character
 from app.models.character import CharacterUpdate
 from app.models.turn import ChatMessage
-from app.models.turn_authority import ExistingNpcArrival
-from app.services.entity_identity import identity_key, resolve_character_candidates
+from app.services.entity_identity import identity_key
 from app.services.starter_identity import present_character_names
-from app.services.turn_authority_resolvers import (
-    NpcIntroductionResolution,
-    NpcIntroductionResolver,
-)
 from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
 from app.services.turn_undo_service import TurnUndoService
 
@@ -65,63 +57,6 @@ def _temporary_fields(entity) -> dict:
     return dict(fields) if isinstance(fields, dict) else {}
 
 
-async def _promotion_arrivals(
-    resolver: NpcIntroductionResolver,
-    *,
-    campaign_id: UUID,
-    introductions: list,
-    target_location_id: UUID | None,
-) -> dict[UUID, ExistingNpcArrival]:
-    """Find exact temporary-role identities whose explicit name has just been revealed."""
-
-    if target_location_id is None:
-        return {}
-    all_characters = await resolver._entities.list_by_campaign(
-        campaign_id,
-        entity_type="character",
-    )
-    ids = [str(entity.id) for entity in all_characters]
-    rows = []
-    if ids:
-        rows = (
-            await resolver._session.execute(
-                select(Character).where(Character.entity_id.in_(ids))
-            )
-        ).scalars().all()
-    locations = {
-        UUID(row.entity_id): UUID(row.current_location_id) if row.current_location_id else None
-        for row in rows
-    }
-
-    promotions: dict[UUID, ExistingNpcArrival] = {}
-    for introduction in introductions:
-        if getattr(introduction, "temporary_name", False):
-            continue
-        matches = resolve_character_candidates(
-            all_characters,
-            proposed_name=introduction.canonical_name,
-            proposed_role=introduction.role,
-            temporary_name=False,
-            target_location_id=target_location_id,
-            character_locations=locations,
-        )
-        unique = {UUID(str(entity.id)): entity for entity in matches}
-        if len(unique) != 1:
-            continue
-        entity_id, entity = next(iter(unique.items()))
-        fields = _temporary_fields(entity)
-        if not fields.get("temporary_name"):
-            continue
-        if identity_key(entity.canonical_name) == identity_key(introduction.canonical_name):
-            continue
-        promotions[entity_id] = ExistingNpcArrival(
-            entity_id=entity_id,
-            canonical_name=introduction.canonical_name,
-            reason=introduction.reason,
-        )
-    return promotions
-
-
 @dataclass(frozen=True)
 class IdentityPromotionSnapshot:
     entity_id: UUID
@@ -147,51 +82,6 @@ class GuardedMaterializedTurnOutcome:
             or self.arrived_existing_participants
             or self.identity_promotions
         )
-
-
-async def _promote_authorized_temporary_identities(
-    materializer: TurnOutcomeMaterializer,
-    authority,
-    source_turn_id: UUID,
-) -> tuple[IdentityPromotionSnapshot, ...]:
-    snapshots: list[IdentityPromotionSnapshot] = []
-    for arrival in authority.allowed_existing_npc_arrivals:
-        character = await materializer._entities.get_character(arrival.entity_id)
-        if character is None:
-            continue
-        fields = _temporary_fields(character)
-        if not fields.get("temporary_name"):
-            continue
-        if identity_key(character.canonical_name) == identity_key(arrival.canonical_name):
-            continue
-
-        snapshot = IdentityPromotionSnapshot(
-            entity_id=character.id,
-            canonical_name=character.canonical_name,
-            aliases=tuple(character.aliases),
-            custom_fields=dict(fields),
-        )
-        aliases = list(character.aliases)
-        if character.canonical_name not in aliases:
-            aliases.append(character.canonical_name)
-        promoted_fields = dict(fields)
-        promoted_fields["temporary_name"] = False
-        promoted_fields[_PROMOTION_KEY] = {
-            "source_turn_id": str(source_turn_id),
-            "previous_canonical_name": character.canonical_name,
-            "previous_aliases": list(character.aliases),
-            "previous_custom_fields": dict(fields),
-        }
-        await materializer._entities.update_character(
-            character.id,
-            CharacterUpdate(
-                canonical_name=arrival.canonical_name,
-                aliases=aliases,
-                custom_fields=promoted_fields,
-            ),
-        )
-        snapshots.append(snapshot)
-    return tuple(snapshots)
 
 
 async def _restore_promotion_snapshots(materializer, snapshots) -> None:
@@ -286,89 +176,10 @@ def install() -> None:
 
     TurnAuthorityPlanner._semantic_review = presence_scoped_review
 
-    original_resolve = NpcIntroductionResolver.resolve
-
-    async def promotion_aware_resolve(
-        self,
-        *,
-        campaign_id,
-        introductions,
-        present_names,
-        target_location_id,
-    ):
-        result = await original_resolve(
-            self,
-            campaign_id=campaign_id,
-            introductions=introductions,
-            present_names=present_names,
-            target_location_id=target_location_id,
-        )
-        promotions = await _promotion_arrivals(
-            self,
-            campaign_id=campaign_id,
-            introductions=introductions,
-            target_location_id=target_location_id,
-        )
-        if not promotions:
-            return result
-
-        arrivals = {arrival.entity_id: arrival for arrival in result.existing_arrivals}
-        arrivals.update(promotions)
-        promoted_keys = {
-            identity_key(arrival.canonical_name) for arrival in promotions.values()
-        }
-        new_introductions = [
-            introduction
-            for introduction in result.new_introductions
-            if identity_key(introduction.canonical_name) not in promoted_keys
-        ]
-        names = list(result.present_names)
-        all_characters = await self._entities.list_by_campaign(
-            campaign_id,
-            entity_type="character",
-        )
-        by_id = {UUID(str(entity.id)): entity for entity in all_characters}
-        for entity_id, arrival in promotions.items():
-            old = by_id.get(entity_id)
-            old_key = identity_key(old.canonical_name) if old else ""
-            replaced = False
-            for index, name in enumerate(names):
-                if old_key and identity_key(name) == old_key:
-                    names[index] = arrival.canonical_name
-                    replaced = True
-            if not replaced and identity_key(arrival.canonical_name) not in {
-                identity_key(name) for name in names
-            }:
-                names.append(arrival.canonical_name)
-
-        return NpcIntroductionResolution(
-            new_introductions=new_introductions,
-            existing_arrivals=list(arrivals.values()),
-            present_names=names,
-        )
-
-    NpcIntroductionResolver.resolve = promotion_aware_resolve
-
-    original_materialize = TurnOutcomeMaterializer.materialize
+    # Compatibility for undoing historical promotions; new name bindings are owned
+    # exclusively by the registrar after publication, never by role/location matches.
     original_bind = TurnOutcomeMaterializer.bind_to_assistant
     original_rollback = TurnOutcomeMaterializer.rollback
-
-    async def promotion_aware_materialize(self, authority, *, source_turn_id):
-        promotions = await _promote_authorized_temporary_identities(
-            self,
-            authority,
-            source_turn_id,
-        )
-        outcome = await original_materialize(
-            self,
-            authority,
-            source_turn_id=source_turn_id,
-        )
-        return GuardedMaterializedTurnOutcome(
-            introduced_character_ids=tuple(outcome.introduced_character_ids),
-            arrived_existing_participants=tuple(outcome.arrived_existing_participants),
-            identity_promotions=promotions,
-        )
 
     async def promotion_aware_bind(self, outcome, assistant_turn_id):
         await original_bind(self, outcome, assistant_turn_id)
@@ -395,7 +206,6 @@ def install() -> None:
             getattr(outcome, "identity_promotions", ()),
         )
 
-    TurnOutcomeMaterializer.materialize = promotion_aware_materialize
     TurnOutcomeMaterializer.bind_to_assistant = promotion_aware_bind
     TurnOutcomeMaterializer.rollback = promotion_aware_rollback
 

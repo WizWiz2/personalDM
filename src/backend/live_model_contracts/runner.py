@@ -51,7 +51,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--narrator-model", default="gemma4:e4b")
     parser.add_argument("--control-model", default="qwen2.5:7b")
     parser.add_argument("--ollama", default="http://127.0.0.1:11434")
-    parser.add_argument("--suite", choices=("core", "extended", "all"), default="core")
+    parser.add_argument("--suite", choices=("core", "extended", "all"), default="all")
     parser.add_argument(
         "--case",
         action="append",
