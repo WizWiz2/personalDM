@@ -26,6 +26,7 @@ _GUARDS = (
     "dead_turn",
     "semantic_authority",
     "performance_telemetry",
+    "quality_stabilization",
 )
 
 
@@ -98,6 +99,7 @@ def install_runtime() -> None:
     from app.services.post_turn_structured_receipt_guard import (
         install as install_post_turn_structured_receipt,
     )
+    from app.services.quality_stabilization_guard import install as install_quality_stabilization
     from app.services.semantic_authority_guard import install as install_semantic_authority
     from app.services.session_zero_finalize_guard import install as install_session_zero_finalize
     from app.services.session_zero_placeholder_guard import (
@@ -125,6 +127,10 @@ def install_runtime() -> None:
     install_semantic_authority()
     install_planner_semantic_scope()
     install_post_turn_structured_receipt()
+    # Install the final quality boundary after all broad semantic wrappers.  It narrows provenance,
+    # bounds composed Planner retries, and provides receipt-backed fallbacks without becoming a
+    # second semantic writer.
+    install_quality_stabilization()
     _INSTALLED = True
 
 
