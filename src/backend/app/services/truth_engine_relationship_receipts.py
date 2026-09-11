@@ -52,6 +52,24 @@ def _completed_give(receipt: dict) -> dict | None:
     return payload
 
 
+def _projection_markers(proposals: list[object]) -> set[str]:
+    """Return debt projection markers without depending on compatibility type wrappers.
+
+    The marker itself is the idempotency key. Older/reloaded enum wrappers or migrated rows may expose
+    the surrounding proposal type differently, but a persisted TE2 marker must still prevent a retry
+    from applying the same relationship revision twice.
+    """
+    markers: set[str] = set()
+    for proposal in proposals:
+        payload = getattr(proposal, "payload", None) or {}
+        if not isinstance(payload, dict):
+            continue
+        marker = str(payload.get(_PROJECTION_MARKER) or "").strip()
+        if marker:
+            markers.add(marker)
+    return markers
+
+
 class StructuredRelationshipReceiptProjector:
     """Project machine-confirmed relationship consequences into legacy read models.
 
@@ -79,11 +97,7 @@ class StructuredRelationshipReceiptProjector:
         structured_receipts: tuple[dict, ...] | list[dict],
     ) -> int:
         existing = await self._proposals.get_for_turn(assistant_turn_id)
-        existing_markers = {
-            str((proposal.payload or {}).get(_PROJECTION_MARKER) or "")
-            for proposal in existing
-            if proposal.change_type == ChangeType.RELATIONSHIP.value
-        }
+        existing_markers = _projection_markers(existing)
 
         applied = 0
         for receipt in structured_receipts:
@@ -190,4 +204,5 @@ __all__ = [
     "StructuredRelationshipReceiptProjector",
     "_completed_give",
     "_item_matches_debt",
+    "_projection_markers",
 ]
