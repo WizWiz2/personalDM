@@ -54,7 +54,7 @@ async def test_semantic_reviewer_repairs_dropped_compound_movement_step():
                 "verdict": "repair_required",
                 "summary": "Потерян второй переход.",
                 "issues": [
-                    "Игрок после холла явно идёт в контору, но второй movement step отсутствует."
+                    "Игрок после холла явно идёт в контору, но второй шаг перемещения отсутствует."
                 ],
             },
             {'plan_valid': False, 'assessments': []},
@@ -85,4 +85,4 @@ async def test_semantic_reviewer_repairs_dropped_compound_movement_step():
     repair_prompt = router.generate_json.await_args_list[3].args[2][-1].content
     assert "COMPOUND ACTION PRESERVATION" in first_prompt
     assert "COMPOUND COVERAGE REVIEW" in review_prompt
-    assert "второй movement step отсутствует" in repair_prompt
+    assert "второй шаг перемещения отсутствует" in repair_prompt
