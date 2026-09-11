@@ -115,7 +115,14 @@ async def test_semantic_reviewer_repairs_dropped_compound_movement_step():
     planner = TurnAuthorityPlanner(router)
     user_input = "Выхожу из комнаты, спускаюсь в холл, потом иду в контору."
     context = [
-        ChatMessage(role="system", content="Текущая сцена: комната над трактиром."),
+        ChatMessage(
+            role="system",
+            content=(
+                "Текущая сцена: комната над трактиром.\n"
+                "Location path: Комната над трактиром\n"
+                "Available exits: лестница -> Холл, проход -> Контора"
+            ),
+        ),
         ChatMessage(role="user", content=user_input),
     ]
 
