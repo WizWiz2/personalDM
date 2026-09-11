@@ -9,11 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Entity
 from app.models.location import LocationUpdate
 from app.models.turn import ChatMessage
-from app.services.location_identity import display_location_name, same_location_reference
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.location_identity import display_location_name, same_location_reference
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_authority_planner import TurnAuthorityPlanner
@@ -105,6 +104,7 @@ async def enrich_new_location_profiles(
                 LocationUpdate(description=profile, custom_fields=custom),
             )
     await session.flush()
+
 
 _LOCATION_PLANNING_CONTRACT = f"""
 
