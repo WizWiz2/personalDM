@@ -6,7 +6,6 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
-from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Campaign
 from app.models.player_intent import PlayerActionIntent, PlayerIntentContract, TurnOutcomeDecision
 from app.models.turn_authority import PlannedNpcIntroduction
@@ -31,15 +30,14 @@ class MissingDestinationProfile:
 class ActionPlanCompiler:
     """Compile frozen human intent + external outcomes into executable engine structures.
 
-    This class owns route topology.  It never parses the human sentence.  Every movement hop is
-    checked against the virtual location reached by the previous compiled hop, which makes compound
-    movement a normal graph compilation problem instead of repeated NLP.
+    This class owns route topology. It never parses the human sentence. Every movement hop is
+    checked against the virtual location reached by the previous *successful* compiled hop, which
+    makes compound movement a graph compilation problem instead of repeated NLP.
     """
 
     def __init__(self, session: AsyncSession):
         self._session = session
         self._locations = LocationRepository(session)
-        self._scenes = SceneRepository(session)
         self._state = SceneStateService(session)
 
     @staticmethod
@@ -112,17 +110,19 @@ class ActionPlanCompiler:
         contract: PlayerIntentContract,
         decision: TurnOutcomeDecision,
     ) -> list[MissingDestinationProfile]:
-        """Profiles are enrichment of explicit new destinations, never route authority."""
+        """Profiles are enrichment of successful explicit new destinations, never route authority."""
         _scene_id, _state, locations = await self._world(campaign_id)
         outcome_by_index = self._outcome_map(contract, decision)
         missing: list[MissingDestinationProfile] = []
         for index, action in enumerate(contract.actions):
             if action.action_type != "movement" or not action.allow_route_discovery:
                 continue
+            outcome = outcome_by_index[index]
+            if outcome.resolution != "auto_success":
+                continue
             destination = " ".join(str(action.destination_location or "").split())
             if not destination or self._matching_locations(destination, locations):
                 continue
-            outcome = outcome_by_index[index]
             profile = " ".join(str(outcome.destination_profile or "").split())
             if len(profile) < 80:
                 missing.append(MissingDestinationProfile(index, destination))
@@ -204,14 +204,13 @@ class ActionPlanCompiler:
                 raise TurnPlanningError("route points to a missing target location")
             if not exit_row.active:
                 detail = f" ({exit_row.access_rule})" if exit_row.access_rule else ""
-                reason = "Destination route is currently inactive" + detail
                 return (
                     ActionStepPlan(
                         action_type="movement",
                         intent=action.intent,
                         resolution="blocked",
                         safe_mundane=False,
-                        blocking_reason=reason,
+                        blocking_reason="Destination route is currently inactive" + detail,
                     ),
                     current_location_id,
                     False,
@@ -234,10 +233,12 @@ class ActionPlanCompiler:
                 destination_location=target.canonical_name,
                 reason=action.intent,
                 bridge_summary=(
-                    "DESTINATION PROFILE: "
-                    + " ".join(str(outcome.destination_profile or "").split())
-                    + "\nTRANSITION: "
-                    + (outcome.observable_outcome or action.intent)
+                    (
+                        "DESTINATION PROFILE: "
+                        + " ".join(str(outcome.destination_profile or "").split())
+                        + "\nTRANSITION: "
+                        + (outcome.observable_outcome or action.intent)
+                    )
                     if outcome.destination_profile
                     else outcome.observable_outcome or action.intent
                 ),
@@ -316,8 +317,8 @@ class ActionPlanCompiler:
             ),
         )
         # The location does not have an ID until the executor creates it. A later movement in the
-        # same turn therefore cannot be safely compiled against its exits; keep virtual location
-        # unknown so a following hop fails closed instead of inventing topology.
+        # same turn therefore cannot be safely compiled against its exits; virtual topology becomes
+        # unknown until execution materializes the new place.
         return (
             ActionStepPlan(
                 action_type="movement",
@@ -371,17 +372,9 @@ class ActionPlanCompiler:
         current_location_id = state.location_id
         steps: list[ActionStepPlan] = []
         discovery_steps: list[int] = []
-        prior_blocked = False
 
         for index, action in enumerate(contract.actions):
             outcome = outcome_by_index[index]
-            if prior_blocked:
-                # Preserve the frozen tail in the plan. ActionSequenceExecutor will record it as
-                # skipped; do not re-resolve or mutate its meaning here.
-                step = self._compile_nonmovement(action, outcome)
-                steps.append(step)
-                continue
-
             if action.action_type == "movement":
                 step, next_location_id, discovery = await self._compile_movement(
                     campaign_id=campaign_id,
@@ -392,14 +385,16 @@ class ActionPlanCompiler:
                     locations=locations,
                     by_id=by_id,
                 )
-                current_location_id = next_location_id
+                # Only a successful compiled hop advances virtual topology. A blocked hop leaves the
+                # cursor at its prior place, so the frozen tail stays structurally valid even though
+                # the executor will later record it as skipped.
+                if step.resolution == "auto_success":
+                    current_location_id = next_location_id
                 if discovery and step.resolution == "auto_success":
                     discovery_steps.append(index)
             else:
                 step = self._compile_nonmovement(action, outcome)
             steps.append(step)
-            if step.resolution != "auto_success":
-                prior_blocked = True
 
         introductions = [
             PlannedNpcIntroduction(
@@ -415,15 +410,7 @@ class ActionPlanCompiler:
             for item in decision.npc_introductions
         ]
 
-        # Route-discovery indices are engine metadata, not narrator semantics. Store them alongside
-        # the serialized action sequence in the top-level transition payload under reserved keys.
-        # Existing ActionSequencePlan ignores unknown keys; the migration adapter consumes them
-        # before legacy execution. This keeps old plan readers compatible while the compiler becomes
-        # the production owner.
-        sequence = ActionSequencePlan(
-            summary=contract.summary,
-            steps=steps,
-        )
+        sequence = ActionSequencePlan(summary=contract.summary, steps=steps)
         plan = CoordinatedTurnPlan(
             player_intent=contract.summary,
             resolution=decision.resolution,
