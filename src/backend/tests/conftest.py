@@ -52,20 +52,17 @@ def _coordinated_from_legacy(plan: TurnPlan) -> CoordinatedTurnPlan:
 
 @pytest.fixture(autouse=True)
 def mock_turn_planner(request):
-    """Keep unrelated endpoint tests offline without pretending this is acceptance coverage.
+    """Keep old deterministic tests meaningful while production uses frozen-intent planning.
 
-    Existing invariant tests often patch legacy ``TurnPlanner.plan`` with a precise transition or
-    compound plan. The test-only bridges below convert that exact plan into the typed public shape,
-    so those tests continue to assert state semantics rather than an implementation class name.
+    Unmarked endpoint tests historically patched ``TurnPlanner.plan``. They still get that exact
+    deterministic plan, but through the current ``TurnIntentPlanningPipeline`` entry point.
 
-    Production gameplay now enters through ``TurnIntentPlanningPipeline``. Keep the legacy
-    ``TurnAuthorityPlanner`` bridge as well because focused planner/unit tests still exercise that
-    compatibility surface directly during the strangler migration.
+    ``interagent_contract_enforced`` means the old typed Planner→Authority→Validator hand-off is the
+    thing under test. Those tests therefore route a real/explicitly patched ``TurnAuthorityPlanner``
+    through the current production entry point instead of bypassing it. This preserves the contract
+    during the strangler migration without making the retired planner the production owner again.
 
-    ``interagent_contract_enforced`` tests keep the real authority planner/hand-off and provide
-    their own deterministic model transport. ``product_contract`` tests also opt out of the generic
-    planning seams: a player-visible scenario must either exercise the real production transport or
-    explicitly provide a scenario-specific frozen-intent pipeline result in the test itself.
+    ``product_contract`` tests own their planning seam explicitly and receive no generic bridge.
     """
     legacy_plan = TurnPlan(
         player_intent="Resolve the player's latest action.",
@@ -92,23 +89,47 @@ def mock_turn_planner(request):
         context_messages,
         selection,
     ):
-        # Preserve the same deterministic fixture at the current production entry point. The
-        # surrounding TurnSaga boundary still performs gameplay invariants before world mutation.
         legacy = await TurnPlanner(AsyncMock()).plan(selection, context_messages)
         plan = _coordinated_from_legacy(legacy)
         return plan, {"architecture": "legacy_test_bridge"}
 
-    authority_enabled = bool(
+    async def bridge_interagent_pipeline(
+        _self,
+        *,
+        campaign_id,
+        user_input,
+        context_messages,
+        selection,
+    ):
+        # Respect a test's own patch of TurnAuthorityPlanner.plan (golden playthrough does this), or
+        # otherwise exercise the real legacy typed planner with the pipeline's control router.
+        planner = TurnAuthorityPlanner(_self._router)
+        plan = await planner.plan(
+            selection,
+            context_messages,
+            latest_user_input=user_input,
+        )
+        return plan, {"architecture": "legacy_interagent_test_bridge"}
+
+    interagent_enabled = bool(
         request.node.get_closest_marker("interagent_contract_enforced")
-        or request.node.get_closest_marker("product_contract")
     )
+    product_enabled = bool(request.node.get_closest_marker("product_contract"))
+
     with patch(
         "app.services.turn_planner.TurnPlanner.plan",
         new_callable=AsyncMock,
         return_value=legacy_plan,
     ):
-        if authority_enabled:
+        if product_enabled:
             yield
+        elif interagent_enabled:
+            with patch.object(
+                TurnIntentPlanningPipeline,
+                "plan",
+                new=bridge_interagent_pipeline,
+            ):
+                yield
         else:
             with patch.object(
                 TurnAuthorityPlanner,
