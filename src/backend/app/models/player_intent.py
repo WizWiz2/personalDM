@@ -21,8 +21,8 @@ IntentActionType = Literal[
 class PlayerActionIntent(BaseModel):
     """One atomic action the human actually committed to in the latest turn.
 
-    This is player authority, not a world result.  It intentionally contains no success/failure
-    decision and no executable scene transition.  Those belong to later phases.
+    This is player authority, not a world result. It intentionally contains no success/failure,
+    route policy or executable scene transition. Those belong to later phases.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -30,18 +30,15 @@ class PlayerActionIntent(BaseModel):
     action_type: IntentActionType
     intent: str = Field(min_length=2, max_length=500)
 
-    # Movement authority.  destination_location is the human-selected endpoint, not a route path.
-    # allow_route_discovery means the human explicitly selected a plausible destination that is not
-    # required to exist in the current graph yet.  It does not mean the move succeeds.
+    # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
-    allow_route_discovery: bool = False
 
-    # Inventory authority is identity based.  IDs must come from authoritative context.
+    # Inventory authority is identity based. IDs must come from authoritative context.
     item_id: UUID | None = None
     inventory_operation: Literal["take", "drop", "give", "place"] | None = None
     inventory_target_id: UUID | None = None
 
-    # Time authority.  These fields describe what the player committed to waiting/resting through;
+    # Time authority. These fields describe what the player committed to waiting/resting through;
     # the compiler later turns them into a time transition when the outcome permits it.
     elapsed_time: str | None = Field(default=None, max_length=255)
     time_after: str | None = Field(default=None, max_length=255)
@@ -51,7 +48,7 @@ class PlayerActionIntent(BaseModel):
         if self.action_type == "movement":
             if not self.destination_location:
                 raise ValueError("movement intent requires destination_location")
-        elif self.destination_location is not None or self.allow_route_discovery:
+        elif self.destination_location is not None:
             raise ValueError("only movement intent may carry destination authority")
 
         inventory_values = (
