@@ -173,7 +173,11 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
     knowledge = [item for item in proposals if item.change_type == ChangeType.KNOWLEDGE]
     facts = [item for item in proposals if item.change_type == ChangeType.FACT]
 
-    assert len(knowledge) == 1
+    assert len(knowledge) == 1, {
+        "audit": scribe.last_audit,
+        "segments": segments,
+        "proposals": [item.model_dump(mode="json") for item in proposals],
+    }
     assert knowledge[0].payload["source_character_id"] == str(martin.id)
     assert knowledge[0].payload["recipient_id"] == str(hero.id)
     assert knowledge[0].payload["proposition"] == claim
