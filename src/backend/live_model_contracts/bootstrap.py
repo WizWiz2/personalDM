@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
 from live_model_contracts.transport import open_endpoint
 
 DEFAULT_OLLAMA = "http://127.0.0.1:11434"
