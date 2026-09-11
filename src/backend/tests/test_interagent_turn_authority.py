@@ -36,6 +36,13 @@ from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
 class FakeControlRouter:
     def __init__(self, plan: CoordinatedTurnPlan):
         self.plan = plan
+        self.narration_validation_calls = 0
+
+    async def resolve(self, campaign_id, role):
+        # The semantic narration guard may ask for a dedicated evaluator. Returning None exercises
+        # its documented fallback to the validator selection supplied by the caller.
+        assert role == ModelRole.EVALUATOR
+        return None
 
     async def generate_json(
         self,
@@ -65,6 +72,13 @@ class FakeControlRouter:
                 "reason": "The role designation refers to the person opening the door.",
             }
         if response_model is NarrationValidationResult:
+            self.narration_validation_calls += 1
+            if self.narration_validation_calls >= 2:
+                return {
+                    "verdict": "pass",
+                    "summary": "Повторная семантическая проверка подтверждает допустимую реплику.",
+                    "violations": [],
+                }
             npc_name = self.plan.npc_introductions[0].canonical_name
             return {
                 "verdict": "repair_required",
@@ -204,6 +218,7 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
     )
     assert verdict.verdict == "pass"
     assert verdict.violations == []
+    assert router.narration_validation_calls == 2
 
     materialized = await TurnOutcomeMaterializer(db_session).materialize(
         authority,
