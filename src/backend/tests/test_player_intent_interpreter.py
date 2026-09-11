@@ -33,7 +33,6 @@ class _Router:
                         "action_type": "movement",
                         "intent": "Выйти в коридор.",
                         "destination_location": "Коридор",
-                        "allow_route_discovery": False,
                     }
                 ],
             }
