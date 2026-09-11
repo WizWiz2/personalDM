@@ -26,7 +26,6 @@ from app.services.context_compiler import ContextCompiler
 from app.services.memory_scribe import MemoryScribe
 from app.services.thesis_curator import ThesisCurator
 from app.services.turn_authority_planner import TurnAuthorityPlanner
-from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
 from app.services.turn_runner import TurnRunner
 from app.services.turn_saga import TurnSaga
 
@@ -154,7 +153,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     )
     assert "quality_stabilization_guard" in cli_manifest["legacy_authority_planner"]
     assert cli_manifest["legacy_authority_planner"].endswith("budgeted_plan")
-    assert cli_manifest["provider_stream"].endswith("LLMProvider.generate_stream")
+    assert "performance_telemetry_guard" in cli_manifest["provider_stream"]
+    assert cli_manifest["provider_stream"].endswith("measured_generate_stream")
     assert cli_manifest["narration_pipeline_impl"].endswith(
         "AuthorityNarrationPipeline.generate"
     )
@@ -199,10 +199,9 @@ def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
     assert LLMProvider.generate_stream is raw_provider_method
     assert BaseTurnRunner.run_turn_stream is legacy_turn_method
 
-    # Production planning is the one-way frozen-intent pipeline. The old Planner remains installed
-    # only as a compatibility fallback; its outer budget wrapper must still close over the earlier
-    # systemless authority wrapper rather than replacing those semantics.
-    assert TurnIntentPlanningPipeline.plan.__module__ == "app.services.turn_intent_pipeline"
+    # The cold manifest proves the production planner implementation itself. In the warm pytest
+    # process conftest deliberately replaces TurnIntentPlanningPipeline.plan with a compatibility
+    # bridge, so assert the stable TurnSaga wiring here instead of the patched class method.
     assert TurnSaga._plan.__module__ == "app.services.turn_intent_pipeline"
     assert TurnAuthorityPlanner.plan.__module__ == "app.services.quality_stabilization_guard"
     wrapped_modules = {
