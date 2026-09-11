@@ -110,12 +110,12 @@ class ActionPlanCompiler:
         contract: PlayerIntentContract,
         decision: TurnOutcomeDecision,
     ) -> list[MissingDestinationProfile]:
-        """Profiles are enrichment of successful explicit new destinations, never route authority."""
+        """Profiles enrich successful explicit destinations unknown to the campaign graph."""
         _scene_id, _state, locations = await self._world(campaign_id)
         outcome_by_index = self._outcome_map(contract, decision)
         missing: list[MissingDestinationProfile] = []
         for index, action in enumerate(contract.actions):
-            if action.action_type != "movement" or not action.allow_route_discovery:
+            if action.action_type != "movement":
                 continue
             outcome = outcome_by_index[index]
             if outcome.resolution != "auto_success":
@@ -215,7 +215,7 @@ class ActionPlanCompiler:
                     current_location_id,
                     False,
                 )
-            if not exit_row.discovered and not action.allow_route_discovery:
+            if not exit_row.discovered:
                 return (
                     ActionStepPlan(
                         action_type="movement",
@@ -253,7 +253,7 @@ class ActionPlanCompiler:
                     transition=transition,
                 ),
                 target.id,
-                not exit_row.discovered,
+                False,
             )
 
         global_matches = self._matching_locations(destination, locations)
@@ -284,19 +284,10 @@ class ActionPlanCompiler:
                 False,
             )
 
-        if not action.allow_route_discovery:
-            return (
-                ActionStepPlan(
-                    action_type="movement",
-                    intent=action.intent,
-                    resolution="blocked",
-                    safe_mundane=False,
-                    blocking_reason="Player destination is unresolved; route discovery was not authorized.",
-                ),
-                current_location_id,
-                False,
-            )
-
+        # An unknown endpoint may become a new route only because two independent conditions are
+        # already true: frozen human intent selected this endpoint and the outcome resolver permitted
+        # the action to auto-succeed. Execution performs one final raw-input provenance check before
+        # materializing new topology.
         profile = " ".join(str(outcome.destination_profile or "").split())
         if len(profile) < 80:
             raise TurnPlanningError(
@@ -346,6 +337,14 @@ class ActionPlanCompiler:
                 elapsed_time=action.elapsed_time,
                 time_after=action.time_after,
                 reason=action.intent,
+            )
+        if (
+            outcome.resolution == "auto_success"
+            and not transition.required
+            and not outcome.observable_outcome
+        ):
+            raise TurnPlanningError(
+                "auto-success non-movement outcome needs a concrete observable result"
             )
         return ActionStepPlan(
             action_type=action.action_type,
