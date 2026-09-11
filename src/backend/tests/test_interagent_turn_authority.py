@@ -20,8 +20,8 @@ from app.models.turn_authority import PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProviderTruncatedError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.context_compiler import ContextCompiler
-from app.services.role_model_router import ModelRole, RoleModelSelection
 from app.services.npc_identity_binding import IdentityBindingDecision
+from app.services.role_model_router import ModelRole, RoleModelSelection
 from app.services.turn_authority_planner import (
     CoordinatedTurnPlan,
     SemanticPlanReview,
@@ -53,14 +53,16 @@ class FakeControlRouter:
             return {"verdict": "pass", "summary": "План согласован.", "issues": []}
         if response_model is IdentityBindingDecision:
             return {
-                'designation_kind': 'description', 'binding_source': 'planned_outcome',
-                'introduction_index': 0, 'participation': 'encountered',
-                'designation': 'role_reference',
-                'encounter_source': 'planned_outcome',
-                'encounter_evidence': self.plan.observable_consequences[0],
-                'designation_source': 'planned_outcome',
-                'designation_evidence': self.plan.observable_consequences[0],
-                'reason': 'The role designation refers to the person opening the door.',
+                "designation_kind": "description",
+                "binding_source": "planned_outcome",
+                "introduction_index": 0,
+                "participation": "encountered",
+                "designation": "role_reference",
+                "encounter_source": "planned_outcome",
+                "encounter_evidence": self.plan.observable_consequences[0],
+                "designation_source": "planned_outcome",
+                "designation_evidence": self.plan.observable_consequences[0],
+                "reason": "The role designation refers to the person opening the door.",
             }
         if response_model is NarrationValidationResult:
             npc_name = self.plan.npc_introductions[0].canonical_name
@@ -169,6 +171,9 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
             ChatMessage(role="user", content="Стучу в фабрику"),
         ],
     )
+    # The model may propose a descriptive designation, but without personal-name evidence the
+    # authority boundary owns canonicalization and collapses it to the grounded temporary role.
+    assert plan.npc_introductions[0].canonical_name == "Дежурный фабрики"
     authority = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,
         trigger_turn_id=uuid4(),
@@ -179,7 +184,8 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
         acting_character_id=None,
     )
 
-    assert authority.allowed_new_npc_names == ["Дежурный фабрики"]
+    assert authority.allowed_new_npc_names == ["Ночной дежурный"]
+    assert authority.allowed_new_npcs[0].temporary_name is True
     assert "Шептун" in authority.known_absent_character_names
 
     validator_selection = RoleModelSelection(
@@ -193,7 +199,7 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
     verdict = await TurnAuthorityValidator(router).validate(
         validator_selection,
         authority,
-        "На стук дверь открывает Дежурный фабрики и смотрит на Рэта.",
+        "На стук дверь открывает Ночной дежурный и смотрит на Рэта.",
     )
     assert verdict.verdict == "pass"
     assert verdict.violations == []
@@ -203,8 +209,14 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
         source_turn_id=uuid4(),
     )
     assert len(materialized.introduced_character_ids) == 1
+    introduced_id = materialized.introduced_character_ids[0]
+    introduced = await EntityRepository(db_session).get_character(introduced_id)
+    assert introduced is not None
+    assert introduced.canonical_name == "Ночной дежурный"
+    assert introduced.custom_fields["temporary_name"] is True
+    assert introduced.custom_fields["role"] == "ночной дежурный"
     participants = await SceneRepository(db_session).get_participants(scene.id)
-    assert materialized.introduced_character_ids[0] in participants
+    assert introduced_id in participants
 
 
 @pytest.mark.interagent_contract_enforced
