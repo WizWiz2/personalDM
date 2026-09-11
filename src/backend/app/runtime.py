@@ -98,7 +98,9 @@ def install_runtime() -> None:
     from app.services.performance_telemetry_guard import install as install_performance_telemetry
     from app.services.planner_compound_guard import install as install_planner_compound
     from app.services.planner_semantic_scope_guard import install as install_planner_semantic_scope
-    from app.services.player_quote_provenance_guard import install as install_player_quote_provenance
+    from app.services.player_quote_provenance_guard import (
+        install as install_player_quote_provenance,
+    )
     from app.services.post_turn_structured_receipt_guard import (
         install as install_post_turn_structured_receipt,
     )
