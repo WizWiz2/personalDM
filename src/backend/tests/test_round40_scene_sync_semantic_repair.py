@@ -117,7 +117,8 @@ async def test_committed_physical_travel_hidden_as_stay_is_repaired_before_narra
             content=(
                 "[AUTHORITATIVE SCENE STATE]\n"
                 "Scene: Промышленный комплекс (active)\n"
-                "Location: Промышленный комплекс\n"
+                "Location path: Город > Промышленный комплекс\n"
+                "Available exits: набережная -> Старая Марина\n"
             ),
         ),
         ChatMessage(role="user", content="Иду в город, на Старую Марину."),
