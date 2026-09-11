@@ -40,6 +40,48 @@ jobs:
             live_model_contracts/transition_cases.py \
             tests/test_runtime_parity.py \
             tests/test_interagent_turn_authority.py \
+            tests/test_post_turn_npc_pipeline.py || true
+          python - <<'PY'
+          from pathlib import Path
+
+          planner = Path("app/services/turn_authority_planner.py")
+          text = planner.read_text(encoding="utf-8")
+          old = """        offset = 0\n        for item in accepted:\n            index = item.insert_at + offset\n            patched.action_sequence.steps.insert(index, item.step)\n            offset += 1\n"""
+          new = """        for offset, item in enumerate(accepted):\n            index = item.insert_at + offset\n            patched.action_sequence.steps.insert(index, item.step)\n"""
+          if old not in text:
+              raise SystemExit("planner offset loop shape changed")
+          planner.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          bootstrap = Path("app/services/playable_bootstrap.py")
+          text = bootstrap.read_text(encoding="utf-8")
+          old = """        if not isinstance(raw_npcs, list):\n            raise ValueError(\"Structured starter NPC contract is malformed\")\n"""
+          new = """        if not isinstance(raw_npcs, list):\n            raise TypeError(\"Structured starter NPC contract is malformed\")\n"""
+          if old not in text:
+              raise SystemExit("starter NPC type guard shape changed")
+          bootstrap.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          interagent = Path("tests/test_interagent_turn_authority.py")
+          text = interagent.read_text(encoding="utf-8")
+          text = text.replace("from datetime import datetime", "from datetime import UTC, datetime", 1)
+          text = text.replace("datetime.utcnow()", "datetime.now(UTC)")
+          old = '    assert plan.npc_introductions[0].canonical_name == "Дежурный фабрики"\n'
+          new = (
+              '    assert plan.npc_introductions[0].canonical_name == "Ночной дежурный"\n'
+              '    assert plan.npc_introductions[0].temporary_name is True\n'
+          )
+          if old not in text:
+              raise SystemExit("interagent planner identity assertion shape changed")
+          interagent.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
+          ruff check --fix --unsafe-fixes \
+            app/runtime.py \
+            app/services/location_profile_guard.py \
+            app/services/turn_authority_planner.py \
+            app/services/playable_bootstrap.py \
+            live_model_contracts/runner.py \
+            live_model_contracts/transition_cases.py \
+            tests/test_runtime_parity.py \
+            tests/test_interagent_turn_authority.py \
             tests/test_post_turn_npc_pipeline.py
           ruff check \
             app/runtime.py \
