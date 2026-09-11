@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from app.config import settings
 from app.models.player_intent import PlayerIntentContract, PlayerIntentReview
 from app.models.turn import ChatMessage
@@ -24,13 +22,13 @@ The contract contains only what the HUMAN actually committed to now:
   protected_player_decisions instead of choosing a branch.
 - movement means changing canonical physical location. Moving/turning/approaching within the current
   room/scene is interaction, not movement.
-- For movement, destination_location is only the committed endpoint for that atomic move, never a
-  prose route path. Preserve two movement actions only when the human actually commits to reaching
-  two distinct location boundaries in order. Route media such as stairs/corridor/courtyard are not
-  promoted to actions when they merely describe the path to one final destination.
-- allow_route_discovery=true only when the human explicitly chooses a plausible destination that is
-  not already represented as a known/available location in AUTHORITATIVE CONTEXT. It grants the
-  later compiler permission to discover a route; it does not grant success.
+- For movement, destination_location is only the human-selected endpoint for that atomic move, never
+  a route policy or prose route path. Preserve two movement actions only when the human actually
+  commits to reaching two distinct location boundaries in order. Route media such as stairs,
+  corridor or courtyard are not promoted to actions when they merely describe the path to one final
+  destination.
+- Do not decide whether a destination already exists, whether a route may be discovered, or whether
+  the move is possible. The deterministic world compiler owns all of that after this contract freezes.
 - Inventory fields must use IDs supplied by AUTHORITATIVE CONTEXT. Never invent IDs. give requires
   the recipient entity id. drop means release into the current place; place means a named
   surface/container/position.
