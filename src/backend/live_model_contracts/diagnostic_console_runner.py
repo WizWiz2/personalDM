@@ -13,21 +13,36 @@ CASCADE_WARNING_REQUESTS = 10
 
 
 @dataclass(frozen=True)
-class RunDiagnostics:
-    case_id: str
-    repetition: int
-    passed: bool
+class PlannerTurnDiagnostics:
+    turn_index: int
+    task_id: str
     planner_stages: int
     planner_requests: int
     planner_wall_seconds: float
-    total_llm_stages: int
-    total_llm_requests: int
     trace: str
-    failure: str
 
     @property
     def repair_cascade(self) -> bool:
         return self.planner_requests >= CASCADE_WARNING_REQUESTS
+
+
+@dataclass(frozen=True)
+class RunDiagnostics:
+    case_id: str
+    repetition: int
+    passed: bool
+    turns: tuple[PlannerTurnDiagnostics, ...]
+    total_llm_stages: int
+    total_llm_requests: int
+    failure: str
+
+    @property
+    def repair_cascade(self) -> bool:
+        return any(turn.repair_cascade for turn in self.turns)
+
+    @property
+    def worst_turn_requests(self) -> int:
+        return max((turn.planner_requests for turn in self.turns), default=0)
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -88,6 +103,42 @@ def _collapsed_trace(records: list[dict[str, Any]], *, role: str = "planner") ->
     return " -> ".join(parts) if parts else "-"
 
 
+def _planner_turns(records: list[dict[str, Any]]) -> tuple[PlannerTurnDiagnostics, ...]:
+    """Group Planner work by asyncio task, which is one live-contract turn boundary.
+
+    The live runner executes each user turn under its own timeout task. Performance telemetry records
+    that asyncio task id, so grouping by task avoids falsely treating a multi-turn contract as one
+    enormous repair cascade.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    first_sequence: dict[str, float] = {}
+    for record in records:
+        if str(record.get("role") or "") != "planner":
+            continue
+        task_id = str(record.get("task_id") or "unknown")
+        grouped.setdefault(task_id, []).append(record)
+        sequence = _number(record, "sequence")
+        first_sequence[task_id] = min(first_sequence.get(task_id, sequence), sequence)
+
+    ordered_ids = sorted(grouped, key=lambda task_id: first_sequence.get(task_id, 0.0))
+    turns: list[PlannerTurnDiagnostics] = []
+    for index, task_id in enumerate(ordered_ids, start=1):
+        planner = grouped[task_id]
+        turns.append(
+            PlannerTurnDiagnostics(
+                turn_index=index,
+                task_id=task_id,
+                planner_stages=len(planner),
+                planner_requests=sum(_attempt_count(record) for record in planner),
+                planner_wall_seconds=(
+                    sum(_number(record, "wall_ms") for record in planner) / 1000.0
+                ),
+                trace=_collapsed_trace(planner),
+            )
+        )
+    return tuple(turns)
+
+
 def _case_payload(run_dir: Path, case_id: str, repetition: int) -> dict[str, Any]:
     path = run_dir / "cases" / case_id / f"run-{repetition}.json"
     if not path.exists():
@@ -118,30 +169,25 @@ def _diagnose_child(run_dir: Path, child_dir: Path) -> tuple[RunDiagnostics, lis
     case_id, repetition = identity
     records = _load_jsonl(child_dir / "llm-performance.jsonl")
     payload = _case_payload(run_dir, case_id, repetition)
-    planner = [record for record in records if str(record.get("role") or "") == "planner"]
     failures = payload.get("failures") if isinstance(payload.get("failures"), list) else []
     failure = str(failures[0]).splitlines()[0] if failures else ""
     diagnostic = RunDiagnostics(
         case_id=case_id,
         repetition=repetition,
         passed=bool(payload.get("passed")),
-        planner_stages=len(planner),
-        planner_requests=sum(_attempt_count(record) for record in planner),
-        planner_wall_seconds=sum(_number(record, "wall_ms") for record in planner) / 1000.0,
+        turns=_planner_turns(records),
         total_llm_stages=len(records),
         total_llm_requests=sum(_attempt_count(record) for record in records),
-        trace=_collapsed_trace(records),
         failure=failure,
     )
-    enriched: list[dict[str, Any]] = []
-    for record in records:
-        enriched.append(
-            {
-                "case_id": case_id,
-                "repetition": repetition,
-                **record,
-            }
-        )
+    enriched = [
+        {
+            "case_id": case_id,
+            "repetition": repetition,
+            **record,
+        }
+        for record in records
+    ]
     return diagnostic, enriched
 
 
@@ -168,47 +214,61 @@ def _short(text: str, limit: int = 180) -> str:
     return clean[: limit - 1] + "…"
 
 
+def _cascade_rows(diagnostics: list[RunDiagnostics]) -> list[tuple[RunDiagnostics, PlannerTurnDiagnostics]]:
+    rows = [
+        (run, turn)
+        for run in diagnostics
+        for turn in run.turns
+        if turn.repair_cascade
+    ]
+    return sorted(
+        rows,
+        key=lambda item: (item[1].planner_requests, item[1].planner_wall_seconds),
+        reverse=True,
+    )
+
+
 def _diagnostic_markdown(diagnostics: list[RunDiagnostics]) -> str:
     if not diagnostics:
         return "\n\n## Control-plane cascade diagnostics\n\nNo LLM performance traces were found.\n"
-    cascades = [item for item in diagnostics if item.repair_cascade]
-    failed = [item for item in diagnostics if not item.passed]
-    ordered = sorted(
-        diagnostics,
-        key=lambda item: (item.planner_requests, item.planner_wall_seconds),
-        reverse=True,
-    )
+    cascades = _cascade_rows(diagnostics)
+    failed_runs = [item for item in diagnostics if not item.passed]
+    failed_with_cascade = [item for item in failed_runs if item.repair_cascade]
+    total_turns = sum(len(item.turns) for item in diagnostics)
     lines = [
         "",
         "## Control-plane cascade diagnostics",
         "",
         (
             f"Repair-cascade warning threshold: **{CASCADE_WARNING_REQUESTS} planner provider "
-            "requests per isolated contract run**. This is diagnostic only and does not change "
-            "PASS/FAIL semantics."
+            "requests in one user turn**. This is diagnostic only and does not change PASS/FAIL semantics."
         ),
         "",
-        f"Runs with repair cascade: **{len(cascades)}/{len(diagnostics)}**  ",
-        f"Failed runs with repair cascade: **{sum(1 for item in failed if item.repair_cascade)}/{len(failed)}**",
+        f"Turns with repair cascade: **{len(cascades)}/{total_turns}**  ",
+        f"Failed contract runs containing a cascade: **{len(failed_with_cascade)}/{len(failed_runs)}**",
         "",
-        "| Case | Run | Result | Planner stages | Planner requests | Planner wall | Trace |",
-        "| --- | ---: | --- | ---: | ---: | ---: | --- |",
+        "| Case | Run | Turn | Result | Planner stages | Planner requests | Planner wall | Trace |",
+        "| --- | ---: | ---: | --- | ---: | ---: | ---: | --- |",
     ]
-    for item in ordered[:30]:
-        result = "PASS" if item.passed else "FAIL"
-        cascade = " ⚠ cascade" if item.repair_cascade else ""
+    for run, turn in cascades[:40]:
+        result = "PASS" if run.passed else "FAIL"
         lines.append(
-            f"| {item.case_id} | {item.repetition} | {result}{cascade} | "
-            f"{item.planner_stages} | {item.planner_requests} | "
-            f"{item.planner_wall_seconds:.1f}s | {_short(item.trace, 260)} |"
+            f"| {run.case_id} | {run.repetition} | {turn.turn_index} | {result} ⚠ cascade | "
+            f"{turn.planner_stages} | {turn.planner_requests} | "
+            f"{turn.planner_wall_seconds:.1f}s | {_short(turn.trace, 280)} |"
         )
-    worst_failures = [item for item in ordered if not item.passed and item.failure]
-    if worst_failures:
-        lines.extend(["", "### Failure endpoints for the worst cascades", ""])
-        for item in worst_failures[:15]:
+
+    worst_runs = sorted(
+        (item for item in failed_runs if item.failure),
+        key=lambda item: item.worst_turn_requests,
+        reverse=True,
+    )
+    if worst_runs:
+        lines.extend(["", "### Failure endpoints for failed runs", ""])
+        for item in worst_runs[:20]:
             lines.append(
-                f"- `{item.case_id}` run {item.repetition}: {item.planner_requests} planner requests; "
-                f"{_short(item.failure)}"
+                f"- `{item.case_id}` run {item.repetition}: worst turn "
+                f"{item.worst_turn_requests} planner requests; {_short(item.failure)}"
             )
     lines.append("")
     return "\n".join(lines)
@@ -225,10 +285,14 @@ def _write_aggregate_performance(run_dir: Path, records: list[dict[str, Any]]) -
     (run_dir / "llm-performance.md").write_text(_render_report(records), encoding="utf-8")
 
 
+def _latest_dir() -> Path:
+    backend = Path(__file__).resolve().parents[1]
+    return backend / "data" / "live-model-contracts" / "latest"
+
+
 def _publish_updated_artifacts(run_dir: Path) -> None:
-    latest = run_dir.parent / "latest"
-    if not latest.exists():
-        return
+    latest = _latest_dir()
+    latest.mkdir(parents=True, exist_ok=True)
     for name in ("report.md", "llm-performance.md", "llm-performance.jsonl"):
         source = run_dir / name
         if source.exists():
@@ -236,33 +300,29 @@ def _publish_updated_artifacts(run_dir: Path) -> None:
 
 
 def _print_diagnostics(diagnostics: list[RunDiagnostics], run_dir: Path) -> None:
-    cascades = sorted(
-        (item for item in diagnostics if item.repair_cascade),
-        key=lambda item: item.planner_requests,
-        reverse=True,
-    )
+    cascades = _cascade_rows(diagnostics)
+    total_turns = sum(len(item.turns) for item in diagnostics)
     print("\n=======================================================================")
     print("                 CONTROL-PLANE CASCADE DIAGNOSTICS")
     print("=======================================================================")
     print(
-        f"Repair cascades (>= {CASCADE_WARNING_REQUESTS} planner requests): "
-        f"{len(cascades)}/{len(diagnostics)}"
+        f"Repair cascades (>= {CASCADE_WARNING_REQUESTS} planner requests in one turn): "
+        f"{len(cascades)}/{total_turns}"
     )
-    for item in cascades:
-        status = "PASS" if item.passed else "FAIL"
+    for run, turn in cascades:
+        status = "PASS" if run.passed else "FAIL"
         print(
-            f"[CASCADE] {status} {item.case_id} run {item.repetition}: "
-            f"{item.planner_requests} planner requests in {item.planner_stages} stages, "
-            f"{item.planner_wall_seconds:.1f}s planner wall"
+            f"[CASCADE] {status} {run.case_id} run {run.repetition} turn {turn.turn_index}: "
+            f"{turn.planner_requests} planner requests in {turn.planner_stages} stages, "
+            f"{turn.planner_wall_seconds:.1f}s planner wall"
         )
-        print(f"          {_short(item.trace, 420)}")
+        print(f"          {_short(turn.trace, 440)}")
     print(f"Aggregate performance: {run_dir / 'llm-performance.md'}")
     print(f"Raw LLM trace:          {run_dir / 'llm-performance.jsonl'}")
 
 
 def _latest_run_dir() -> Path | None:
-    backend = Path(__file__).resolve().parents[1]
-    pointer = backend / "data" / "live-model-contracts" / "latest" / "run-path.txt"
+    pointer = _latest_dir() / "run-path.txt"
     if not pointer.exists():
         return None
     try:
@@ -285,7 +345,10 @@ def main() -> int:
     report = run_dir / "report.md"
     if report.exists():
         original = report.read_text(encoding="utf-8", errors="replace")
-        report.write_text(original.rstrip() + "\n" + _diagnostic_markdown(diagnostics), encoding="utf-8")
+        report.write_text(
+            original.rstrip() + "\n" + _diagnostic_markdown(diagnostics),
+            encoding="utf-8",
+        )
 
     _publish_updated_artifacts(run_dir)
     _print_diagnostics(diagnostics, run_dir)
