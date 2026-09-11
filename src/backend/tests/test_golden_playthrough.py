@@ -51,6 +51,7 @@ REPAIRED_SEQUENCE_TEXT = (
     "гостевая комната, восемь часов сна и спокойная утренняя дорога. "
     "Теперь Эйдан стоит у служебного входа Купцов; площадь вокруг тиха."
 )
+BARTENDER_IDENTITY = "Бармен таверны «Медный Котёл»"
 
 
 def _full_character_draft(name: str) -> dict:
@@ -427,12 +428,12 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     assert snapshot["health"]["failed_jobs"] == 0
     assert set(snapshot["active_scene"]["participant_names"]) == {
         "Эйдан",
-        "Бармен Роэн",
+        BARTENDER_IDENTITY,
     }
     bartender_entity, bartender_state = await _character_state(
         db_session,
         campaign_id,
-        "Бармен Роэн",
+        BARTENDER_IDENTITY,
     )
     assert bartender_state.current_location_id == world["hall"]["id"]
     fields = json.loads(bartender_entity.custom_fields or "{}")
@@ -534,7 +535,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     _bartender_entity, bartender_after = await _character_state(
         db_session,
         campaign_id,
-        "Бармен Роэн",
+        BARTENDER_IDENTITY,
     )
     assert bartender_after.current_location_id == world["hall"]["id"]
     final_membership = (
@@ -589,7 +590,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
         for bridge in bridges
         for fact in json.loads(bridge.negative_placement_facts or "[]")
     ]
-    assert any("Бармен Роэн remained" in fact for fact in negative_facts)
+    assert any(f"{BARTENDER_IDENTITY} remained" in fact for fact in negative_facts)
 
     validation = (
         await db_session.execute(
