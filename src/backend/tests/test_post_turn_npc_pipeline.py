@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.models.turn_authority import PlannedNpcIntroduction
@@ -8,8 +9,9 @@ from app.services.role_model_router import ModelRole
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 
 
+BARTENDER_IDENTITY = "Бармен таверны «Медный Котёл»"
 NARRATION = (
-    "Бармен Роэн ставит перед тобой кружку и говорит: «Комната наверху свободна»."
+    "Бармен ставит перед тобой кружку и говорит: «Комната наверху свободна»."
 )
 
 
@@ -23,14 +25,16 @@ def authority_plan() -> CoordinatedTurnPlan:
         resolution="conversation",
         npc_introductions=[
             PlannedNpcIntroduction(
+                # Deliberately unsupported stable personal label: the production identity boundary
+                # must collapse it to the grounded temporary role before materialization.
                 canonical_name="Бармен Роэн",
-                role="бармен",
+                role="бармен таверны «Медный Котёл»",
                 description="Бармен Медного Котла.",
                 reason="Игрок напрямую обращается к бармену в текущей таверне.",
             )
         ],
         observable_consequences=[
-            "Бармен Роэн отвечает, что комната наверху свободна."
+            "Бармен отвечает, что комната наверху свободна."
         ],
         ending_hook="Ответ бармена получен.",
     )
@@ -49,8 +53,8 @@ async def role_json(self, provider, selection, messages, **kwargs):
                 {
                     "id": "o1",
                     "kind": "event",
-                    "description": "Бармен Роэн обслужил героя и сообщил о комнате.",
-                    "evidence": "Бармен Роэн ставит перед тобой кружку",
+                    "description": "Бармен обслужил героя и сообщил о комнате.",
+                    "evidence": "Бармен ставит перед тобой кружку",
                     "authority": "dm_confirmed",
                     "durable": True,
                 }
@@ -63,9 +67,9 @@ async def role_json(self, provider, selection, messages, **kwargs):
                     "cardinality": "single",
                     "payload": {
                         "event_type": "conversation",
-                        "description": "Бармен Роэн сообщил, что комната наверху свободна.",
+                        "description": "Бармен сообщил, что комната наверху свободна.",
                         "location_id": "Медный Котёл",
-                        "participant_ids": ["Бармен Роэн"],
+                        "participant_ids": [BARTENDER_IDENTITY],
                     },
                 }
             ],
@@ -73,6 +77,7 @@ async def role_json(self, provider, selection, messages, **kwargs):
     raise AssertionError(f"Unexpected structured role: {selection.role}")
 
 
+@pytest.mark.interagent_contract_enforced
 def test_authority_materializes_npc_before_scribe_resolves_event_participant(
     client: TestClient,
 ):
@@ -133,7 +138,7 @@ def test_authority_materializes_npc_before_scribe_resolves_event_participant(
     assert snapshot["health"]["auto_registered_npcs"] == 0
     assert set(snapshot["active_scene"]["participant_names"]) == {
         "Эйдан",
-        "Бармен Роэн",
+        BARTENDER_IDENTITY,
     }
 
     event_proposal = next(
@@ -143,5 +148,5 @@ def test_authority_materializes_npc_before_scribe_resolves_event_participant(
     )
     participant_ids = event_proposal["payload"]["participant_ids"]
     assert len(participant_ids) == 1
-    UUID(participant_ids[0])  # ProposalPresenceResolver replaced the model-authored name with ID.
+    UUID(participant_ids[0])  # ProposalPresenceResolver replaced the model-authored role with ID.
     assert event_proposal["payload"]["location_id"] == tavern["id"]
