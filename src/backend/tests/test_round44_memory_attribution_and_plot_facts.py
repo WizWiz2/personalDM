@@ -170,8 +170,16 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
         base_proposals=[_base_wrong_claim_fact(claim)],
     )
 
-    knowledge = [item for item in proposals if item.change_type == ChangeType.KNOWLEDGE]
-    facts = [item for item in proposals if item.change_type == ChangeType.FACT]
+    knowledge = [
+        item
+        for item in proposals
+        if item.change_type.value == ChangeType.KNOWLEDGE.value
+    ]
+    facts = [
+        item
+        for item in proposals
+        if item.change_type.value == ChangeType.FACT.value
+    ]
     audit = scribe.last_audit
 
     assert audit["present_npcs"] == ["Мартин Вэнс"], audit
