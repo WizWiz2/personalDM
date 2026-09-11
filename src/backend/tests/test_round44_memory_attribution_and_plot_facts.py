@@ -172,9 +172,13 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
 
     knowledge = [item for item in proposals if item.change_type == ChangeType.KNOWLEDGE]
     facts = [item for item in proposals if item.change_type == ChangeType.FACT]
+    audit = scribe.last_audit
 
+    assert audit["present_npcs"] == ["Мартин Вэнс"], audit
+    assert audit["narrator_claim_count"] == 1, audit
+    assert audit["resolved_claim_speakers"] == ["Мартин Вэнс"], audit
     assert len(knowledge) == 1, {
-        "audit": scribe.last_audit,
+        "audit": audit,
         "segments": segments,
         "proposals": [item.model_dump(mode="json") for item in proposals],
     }
@@ -188,9 +192,7 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
     assert all(item.payload.get("scene_id") == str(scene.id) for item in facts)
     assert not any(item.payload.get("subject") == "Ипотека" for item in facts)
 
-    audit = scribe.last_audit
     assert audit["narrator_memory_auditor"] == "completed"
-    assert audit["narrator_claim_count"] == 1
     assert audit["objective_recovery_count"] == 2
     assert audit["claim_promotions_removed"] == 1
 
