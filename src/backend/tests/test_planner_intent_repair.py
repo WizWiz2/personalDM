@@ -116,5 +116,7 @@ async def test_ambiguous_contact_plan_gets_targeted_semantic_repair():
 
     assert router.plan_calls == 2
     assert router.review_calls == 2
-    assert [npc.canonical_name for npc in plan.npc_introductions] == ["Дежурный фабрики"]
+    assert [npc.canonical_name for npc in plan.npc_introductions] == ["Дежурный"]
+    assert plan.npc_introductions[0].role == "дежурный"
+    assert plan.npc_introductions[0].temporary_name is True
     assert "открывает" in plan.observable_consequences[0]
