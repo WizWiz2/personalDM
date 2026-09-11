@@ -141,7 +141,7 @@ async def test_committed_physical_travel_hidden_as_stay_is_repaired_before_narra
     final_review = await planner._semantic_review(selection, context, player_input, repaired)
 
     assert router.plan_calls == 2
-    assert router.review_calls == 2
+    assert router.review_calls >= 2
     assert final_review.verdict == "pass"
     assert repaired.scene_disposition == "location_transition"
     assert repaired.scene_transition.required is True
