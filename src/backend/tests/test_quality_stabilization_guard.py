@@ -64,6 +64,28 @@ def test_objective_fact_backed_only_by_npc_quote_is_dropped() -> None:
     assert _stabilize_narrator_proposals([fact], [quote]) == []
 
 
+def test_broad_actor_segment_is_dropped_even_when_it_selected_a_real_quote() -> None:
+    player_quote = "Я полностью выполняю условие нашего долга"
+    wrongly_attributed = _proposal(
+        ChangeType.KNOWLEDGE,
+        evidence=player_quote,
+        outcome_id="actor-segment-5",
+    )
+
+    assert _stabilize_narrator_proposals([wrongly_attributed], [player_quote]) == []
+
+
+def test_narrow_quoted_claim_provenance_survives_filter() -> None:
+    npc_quote = "По моему мнению, склад принадлежит компании Север"
+    knowledge = _proposal(
+        ChangeType.KNOWLEDGE,
+        evidence=npc_quote,
+        outcome_id="quoted-claim-1",
+    )
+
+    assert _stabilize_narrator_proposals([knowledge], [npc_quote]) == [knowledge]
+
+
 def test_nonquoted_actor_segment_knowledge_is_dropped() -> None:
     narrator_prose = "Голос выходит низким и ровным, лишенным лишних интонаций."
     knowledge = _proposal(
