@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -12,6 +13,7 @@ from app.services.truth_engine_relationship_receipts import (
     StructuredRelationshipReceiptProjector,
     _completed_give,
     _item_matches_debt,
+    _projection_markers,
 )
 from app.services.turn_undo_service import TurnUndoService
 
@@ -62,6 +64,17 @@ def test_completed_give_rejects_blocked_or_incomplete_receipts() -> None:
     assert _completed_give(completed) is completed["payload"]
     assert _completed_give(blocked) is None
     assert _completed_give(missing_owner) is None
+
+
+def test_projection_marker_is_idempotency_key_independent_of_type_wrapper() -> None:
+    marker = "00000000-0000-4000-8000-000000000123"
+    proposals = [
+        SimpleNamespace(
+            change_type="legacy-or-reloaded-wrapper",
+            payload={"_te2_receipt_debt_projection_id": marker},
+        )
+    ]
+    assert _projection_markers(proposals) == {marker}
 
 
 @pytest.mark.asyncio
