@@ -25,7 +25,7 @@ def _plan(*destinations: str) -> dict:
         for destination in destinations
     ]
     return {
-        "player_intent": "Выйти из комнаты, спуститься в холл и затем пойти в контору.",
+        "player_intent": "Выйти из комнаты в холл и затем пойти в контору.",
         "resolution": "sequence",
         "action_sequence": {
             "summary": "Последовательное перемещение по трём точкам.",
@@ -113,7 +113,7 @@ async def test_semantic_reviewer_repairs_dropped_compound_movement_step():
     install_compound_guard()
     router = _CompoundRepairRouter()
     planner = TurnAuthorityPlanner(router)
-    user_input = "Выхожу из комнаты, спускаюсь в холл, потом иду в контору."
+    user_input = "Выхожу из комнаты в холл, потом иду в контору."
     context = [
         ChatMessage(
             role="system",
