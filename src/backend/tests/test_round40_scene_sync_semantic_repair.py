@@ -15,6 +15,14 @@ class _SceneSyncRouter:
         self.review_calls = 0
 
     async def generate_json(self, provider, selection, messages, **kwargs):
+        response_model = kwargs.get("response_model")
+        if getattr(response_model, "__name__", "") == "PlanReviewAdjudication":
+            return {
+                "plan_valid": False,
+                "assessments": [],
+                "remaining_issues": [],
+            }
+
         system = messages[0].content
         if "[TURN PLAN SEMANTIC REVIEWER]" in system:
             self.review_calls += 1
