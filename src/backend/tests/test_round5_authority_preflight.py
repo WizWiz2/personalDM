@@ -82,6 +82,10 @@ def _misclassified_known_npc(name: str, *, reason: str) -> CoordinatedTurnPlan:
             PlannedNpcIntroduction(
                 canonical_name=name,
                 role="известный персонаж",
+                # These fixtures represent an already-persisted campaign character. Supply explicit
+                # identity provenance so the final sanitizer tests arrival/teleport rules instead of
+                # correctly downgrading an unsupported stable label to a temporary role.
+                personal_name_evidence=name,
                 reason=reason,
             )
         ],
