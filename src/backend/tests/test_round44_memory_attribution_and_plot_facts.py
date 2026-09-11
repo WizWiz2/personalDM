@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.proposed_change_repo import _persisted_change_type
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
@@ -171,8 +172,8 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
     )
 
     serialized = [item.model_dump(mode="json") for item in proposals]
-    knowledge = [item for item, raw in zip(proposals, serialized) if raw["change_type"] == "knowledge"]
-    facts = [item for item, raw in zip(proposals, serialized) if raw["change_type"] == "fact"]
+    knowledge = [item for item in proposals if _persisted_change_type(item) == "knowledge"]
+    facts = [item for item in proposals if _persisted_change_type(item) == "fact"]
     audit = scribe.last_audit
 
     assert audit["present_npcs"] == ["Мартин Вэнс"], audit
@@ -183,6 +184,7 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
         "audit": audit,
         "segments": segments,
         "proposals": serialized,
+        "persisted_types": [_persisted_change_type(item) for item in proposals],
     }
     assert knowledge[0].payload["source_character_id"] == str(martin.id)
     assert knowledge[0].payload["recipient_id"] == str(hero.id)
