@@ -152,10 +152,14 @@ async def test_name_question_does_not_suppress_an_independent_authorized_arrival
         source_scene_id=scene.id, target_scene_id=scene.id, plan=plan, acting_character_id=None,
     )
     assert len(authority.allowed_new_npcs) == 1
+    assert authority.allowed_new_npcs[0].canonical_name == 'Курьер'
+    assert authority.allowed_new_npcs[0].temporary_name is True
     result = await TurnOutcomeMaterializer(db_session).materialize(authority, source_turn_id=uuid4())
     assert len(result.introduced_character_ids) == 1
     newcomer = await entities.get_character(result.introduced_character_ids[0])
-    assert newcomer.canonical_name == 'Курьер у двери'
+    assert newcomer.canonical_name == 'Курьер'
+    assert newcomer.custom_fields['temporary_name'] is True
+    assert newcomer.custom_fields['role'] == 'курьер'
     assert newcomer.id != owner.id
 
 
