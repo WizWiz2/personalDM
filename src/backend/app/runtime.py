@@ -28,6 +28,7 @@ _GUARDS = (
     "performance_telemetry",
     "quality_stabilization",
     "player_quote_provenance",
+    "truth_engine_relationship_receipts",
 )
 
 
@@ -108,6 +109,9 @@ def install_runtime() -> None:
         install as install_session_zero_placeholder,
     )
     from app.services.systemless_authority_guard import install as install_systemless_authority
+    from app.services.truth_engine_relationship_receipt_guard import (
+        install as install_truth_engine_relationship_receipts,
+    )
     from app.services.turn_intent_pipeline import install as install_turn_intent_pipeline
 
     # Performance instrumentation wraps provider/router calls only. Install it before the semantic
@@ -135,6 +139,10 @@ def install_runtime() -> None:
     # The outermost memory wrapper has access to the immutable user turn as well as the final
     # proposals, so narrator echoes of player speech cannot be re-attributed to an NPC claim.
     install_player_quote_provenance()
+    # Writer mode keeps the generic legacy receipt reconciler disabled. Only this narrow projection
+    # maps a machine-confirmed item transfer onto an already-existing item-backed debt, with accepted
+    # proposal provenance so ActiveCanonReplay and /undo remain lossless.
+    install_truth_engine_relationship_receipts()
 
     # Strangler migration boundary: ordinary production turns now use one-way semantic phases
     # (human intent -> outcome -> deterministic compiler). No rejected executable plan is fed back
@@ -215,6 +223,7 @@ def runtime_manifest() -> dict[str, Any]:
             "addressed_response": "player_intent_ir",
             "npc_introduction_semantics": "outcome_resolver",
             "location_profile": "scoped_new_destination_enrichment",
+            "relationship_receipt_resolution": "machine_receipt_undo_safe_projection",
             "empty_turn_fallback": "forbidden_fail_closed",
             "narrator_memory_attribution": "independent_segment_audit",
             "plot_fact_recovery": "evidence_grounded_second_pass",
