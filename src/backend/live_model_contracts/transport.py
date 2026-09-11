@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import urllib.parse
 import urllib.request
-from typing import BinaryIO
 
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
