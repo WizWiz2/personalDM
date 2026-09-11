@@ -18,6 +18,7 @@ from app.services.turn_authority_planner import (
     TurnAuthorityPlanner,
 )
 from app.services.turn_authority_validator import TurnAuthorityValidator
+from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
 from app.services.turn_planner import TurnPlan, TurnPlanner
 
 # Use in-memory SQLite database for testing
@@ -54,13 +55,17 @@ def mock_turn_planner(request):
     """Keep unrelated endpoint tests offline without pretending this is acceptance coverage.
 
     Existing invariant tests often patch legacy ``TurnPlanner.plan`` with a precise transition or
-    compound plan. The test-only bridge below converts that exact plan into the new typed shape, so
-    those tests continue to assert state semantics rather than an implementation class name.
+    compound plan. The test-only bridges below convert that exact plan into the typed public shape,
+    so those tests continue to assert state semantics rather than an implementation class name.
+
+    Production gameplay now enters through ``TurnIntentPlanningPipeline``. Keep the legacy
+    ``TurnAuthorityPlanner`` bridge as well because focused planner/unit tests still exercise that
+    compatibility surface directly during the strangler migration.
 
     ``interagent_contract_enforced`` tests keep the real authority planner/hand-off and provide
     their own deterministic model transport. ``product_contract`` tests also opt out of the generic
-    authority-plan seam: a player-visible scenario must either exercise the real planner transport or
-    explicitly provide a scenario-specific TurnAuthorityPlanner plan in the test itself.
+    planning seams: a player-visible scenario must either exercise the real production transport or
+    explicitly provide a scenario-specific frozen-intent pipeline result in the test itself.
     """
     legacy_plan = TurnPlan(
         player_intent="Resolve the player's latest action.",
@@ -79,6 +84,20 @@ def mock_turn_planner(request):
         legacy = await TurnPlanner(AsyncMock()).plan(selection, context_messages)
         return _coordinated_from_legacy(legacy)
 
+    async def bridge_intent_pipeline(
+        _self,
+        *,
+        campaign_id,
+        user_input,
+        context_messages,
+        selection,
+    ):
+        # Preserve the same deterministic fixture at the current production entry point. The
+        # surrounding TurnSaga boundary still performs gameplay invariants before world mutation.
+        legacy = await TurnPlanner(AsyncMock()).plan(selection, context_messages)
+        plan = _coordinated_from_legacy(legacy)
+        return plan, {"architecture": "legacy_test_bridge"}
+
     authority_enabled = bool(
         request.node.get_closest_marker("interagent_contract_enforced")
         or request.node.get_closest_marker("product_contract")
@@ -95,6 +114,10 @@ def mock_turn_planner(request):
                 TurnAuthorityPlanner,
                 "plan",
                 new=bridge_authority_plan,
+            ), patch.object(
+                TurnIntentPlanningPipeline,
+                "plan",
+                new=bridge_intent_pipeline,
             ):
                 yield
 
