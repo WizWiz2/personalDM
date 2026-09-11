@@ -119,6 +119,14 @@ def install() -> None:
                 context_messages=messages,
                 selection=selection,
             )
+            # The strangler install replaces TurnSaga._plan after compatibility guards were
+            # installed. Re-assert the gameplay-only location-card invariant at the new production
+            # boundary so a malformed/precompiled plan still cannot create a label-only Location.
+            # Keep this above SceneTransitionExecutor: admin/replay callers intentionally retain
+            # their low-level semantics.
+            from app.services.location_profile_guard import _require_gameplay_profiles
+
+            await _require_gameplay_profiles(self._session, campaign_id, plan)
             return plan, {
                 "status": "completed",
                 "model_name": selection.config.model_name,
