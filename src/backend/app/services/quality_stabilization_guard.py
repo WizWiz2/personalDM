@@ -13,7 +13,9 @@ from app.models.proposed_change import ChangeType, ProposalAction, ProposedChang
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
 from app.services.canon_applier import CanonApplier
+from app.services.canon_semantics import CanonEnvelope
 from app.services.role_model_router import ModelRole, RoleModelRouter
+from app.services.semantic_receipt_context import memory_evidence
 
 _INSTALLED = False
 _QUOTE_RE = re.compile(r"«([^»]{2,1600})»|“([^”]{2,1600})”|\"([^\"]{2,1600})\"")
@@ -261,6 +263,105 @@ async def _quoted_claim_proposals(
     return result
 
 
+async def _recover_interaction_facts(
+    scribe,
+    *,
+    campaign_id: UUID,
+    scene_id: UUID | None,
+    assistant_content: str,
+    player_character_id: UUID | None,
+    existing_proposals: list[ProposedChangeCreate],
+) -> list[ProposedChangeCreate]:
+    """One narrow fact-recall pass for a completed non-dialogue interaction receipt."""
+    if player_character_id is None:
+        return []
+
+    receipts = list(getattr(scribe, "structured_receipts", ()) or ())
+    if not _has_completed_interaction_receipt(receipts):
+        return []
+
+    from app.services.narrator_memory_audit_guard import _memory_state
+
+    (
+        known_entities,
+        known_ids,
+        participant_ids,
+        _speaker_names,
+        _display_by_id,
+        _present_npc_names,
+    ) = await _memory_state(
+        scribe,
+        campaign_id,
+        scene_id,
+        player_character_id,
+    )
+    selection = await scribe._model_router.resolve(campaign_id, ModelRole.SCRIBE)  # noqa: SLF001
+    if selection is None:
+        return []
+
+    evidence_text = memory_evidence(assistant_content, receipts)
+    existing = [
+        {
+            "change_type": proposal.change_type.value,
+            "payload": {
+                key: value
+                for key, value in proposal.payload.items()
+                if key not in {"_canon", "_memory"}
+            },
+        }
+        for proposal in existing_proposals
+        if proposal.change_type != ChangeType.CANON_GAP
+    ]
+    data = await scribe._model_router.generate_json(  # noqa: SLF001
+        scribe._llm_provider,  # noqa: SLF001
+        selection,
+        [
+            ChatMessage(
+                role="system",
+                content=(
+                    "[EXECUTED INTERACTION FACT RECOVERY]\n"
+                    "Recover only a missing durable OBJECTIVE world-state fact from one completed "
+                    "RPG turn. EXECUTED WORLD RESULTS are machine-confirmed outcomes. The published "
+                    "narrator text may make the resulting stable state explicit. Return CanonEnvelope "
+                    "with zero or more FACT proposals only; do not return knowledge, relationships, "
+                    "events, movement, item transfer, theses or narrative details. Never turn quoted "
+                    "speech, opinions, claims, questions, player intent, mood or decorative prose into "
+                    "objective truth. Do not duplicate EXISTING PROPOSALS. If the executor result and "
+                    "narration do not explicitly establish a durable resulting property/state, return "
+                    "empty outcomes and proposals. Evidence must be an exact short span from the "
+                    "supplied authoritative text. For a changed state, use the actual state-bearing "
+                    "subject, a stable predicate, the resulting value, operation=assert/revise, and "
+                    "cardinality=single. Human-readable fields must be Russian."
+                ),
+            ),
+            ChatMessage(
+                role="user",
+                content=(
+                    "AUTHORITATIVE TURN RESULT:\n"
+                    + evidence_text
+                    + "\n\nEXISTING PROPOSALS:\n"
+                    + json.dumps(existing, ensure_ascii=False)
+                ),
+            ),
+        ],
+        max_tokens=700,
+        temperature=0.0,
+        response_model=CanonEnvelope,
+    )
+    envelope = CanonEnvelope.model_validate(data)
+    scribe._current_scene_id = scene_id  # noqa: SLF001
+    recovered = scribe._parse_data(  # noqa: SLF001
+        envelope.model_dump(mode="json"),
+        authoritative_text=evidence_text,
+        known_entities=known_entities,
+        known_ids=known_ids,
+        acting_character_id=None,
+        player_character_id=player_character_id,
+        scene_participant_ids=participant_ids,
+    )
+    return [proposal for proposal in recovered if proposal.change_type == ChangeType.FACT]
+
+
 async def _stabilized_narrator_memory(
     original,
     scribe,
@@ -298,26 +399,27 @@ async def _stabilized_narrator_memory(
             claims = []
         result = _dedupe([*result, *claims])
 
-    # A missed durable state after a completed interaction is a recall dropout, not evidence that
-    # nothing changed. Give the existing independent auditor exactly one retry. The retry still uses
-    # immutable narration + executor receipts and the same CanonEnvelope validator, so it cannot
-    # bypass evidence or schema checks.
+    # Do not repeat the broad auditor at temperature=0. A missed stable state is repaired by a
+    # different, much narrower task with no dialogue-attribution responsibility. Skip quoted turns
+    # here so ordinary conversations do not pay for an unnecessary objective-state recovery call.
     if (
-        not any(item.change_type == ChangeType.FACT for item in result)
+        not quotes
+        and not any(item.change_type == ChangeType.FACT for item in result)
         and _has_completed_interaction_receipt(getattr(scribe, "structured_receipts", ()))
     ):
-        retry = await original(
-            scribe,
-            campaign_id=campaign_id,
-            scene_id=scene_id,
-            assistant_content=assistant_content,
-            player_character_id=player_character_id,
-            base_proposals=result,
-        )
-        retry = _stabilize_narrator_proposals(retry, quotes)
-        # The retry may replay the already accepted narrow quoted claims through base_proposals;
-        # merge the independently generated narrow set again after filtering broad actor segments.
-        result = _dedupe([*retry, *claims])
+        try:
+            recovered = await _recover_interaction_facts(
+                scribe,
+                campaign_id=campaign_id,
+                scene_id=scene_id,
+                assistant_content=assistant_content,
+                player_character_id=player_character_id,
+                existing_proposals=result,
+            )
+        except (LLMProviderError, ValueError, TypeError):
+            recovered = []
+        recovered = _stabilize_narrator_proposals(recovered, quotes)
+        result = _dedupe([*result, *recovered])
 
     return result
 
@@ -530,6 +632,7 @@ __all__ = [
     "_PLANNER_CALL_BUDGET",
     "_has_completed_interaction_receipt",
     "_quoted_spans",
+    "_recover_interaction_facts",
     "_stabilize_narrator_proposals",
     "install",
 ]
