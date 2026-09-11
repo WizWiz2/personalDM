@@ -13,6 +13,17 @@ from app.models.proposed_change import (
 )
 
 
+def _persisted_change_type(change: ProposedChangeCreate) -> str:
+    """Normalize enum-like compatibility wrappers to the stable database wire value."""
+    value = change.change_type
+    for _ in range(3):
+        nested = getattr(value, "value", value)
+        if nested is value:
+            break
+        value = nested
+    return str(value)
+
+
 class ProposedChangeRepository(BaseRepository):
     async def create_batch(
         self,
@@ -25,7 +36,7 @@ class ProposedChangeRepository(BaseRepository):
             validation_error = change.payload.get("_validation_error")
             db_change = ProposedChange(
                 turn_id=str(turn_id),
-                change_type=change.change_type.value,
+                change_type=_persisted_change_type(change),
                 payload=payload_str,
                 status="invalid" if validation_error else "proposed",
             )
