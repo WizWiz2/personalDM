@@ -12,7 +12,6 @@ from app.config import settings
 from app.models.proposed_change import ChangeType, ProposalAction, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
-from app.services.actor_turn_authority_guard import build_actor_segment_proposals
 from app.services.canon_applier import CanonApplier
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
@@ -86,10 +85,10 @@ def _stabilize_narrator_proposals(
 ) -> list[ProposedChangeCreate]:
     """Fail closed when narrator-memory attribution conflicts with immutable quote provenance.
 
-    Quoted speech is epistemic evidence. It can become sourced knowledge, but the quote itself can
-    never be the sole evidence for objective canon. Conversely, the narrator-memory auditor may only
-    manufacture actor-segment knowledge from an actual quoted span; ordinary narrator sentences must
-    never be attributed to an NPC merely because a small model selected the wrong segment id.
+    Quoted speech is epistemic evidence and can never be the sole evidence for objective canon.
+    The broad narrator auditor's actor-segment selections are discarded entirely: it has previously
+    attributed narrator prose and even player speech to an NPC. A separate narrow quote-only pass
+    below recreates only claims whose speaker is explicitly re-adjudicated against present NPCs.
     """
     result: list[ProposedChangeCreate] = []
     objective_types = {
@@ -110,7 +109,6 @@ def _stabilize_narrator_proposals(
         if (
             proposal.change_type == ChangeType.KNOWLEDGE
             and _proposal_outcome_id(proposal).startswith("actor-segment-")
-            and not evidence_is_quote
         ):
             continue
         result.append(proposal)
@@ -239,14 +237,25 @@ async def _quoted_claim_proposals(
             continue
         used.add(marker)
         quote = quoted_spans[claim.quote_id - 1]
-        # Reuse the canonical immutable actor-claim proposal contract.  A one-element segment list
-        # makes the generated segment id local and deterministic; dedupe is content based below.
-        result.extend(
-            build_actor_segment_proposals(
-                [quote],
-                [1],
-                acting_character_id=UUID(speaker_id),
-                player_character_id=player_character_id,
+        result.append(
+            ProposedChangeCreate(
+                change_type=ChangeType.KNOWLEDGE,
+                payload={
+                    "recipient_id": str(player_character_id),
+                    "proposition": quote,
+                    "source_character_id": str(speaker_id),
+                    "confidence": 0.8,
+                    "status": "known",
+                    "_canon": {
+                        "outcome_id": f"quoted-claim-{claim.quote_id}",
+                        "kind": "knowledge_transfer",
+                        "description": "Игрок услышал это дословное утверждение присутствующего NPC.",
+                        "evidence": quote,
+                        "authority": "character_claim",
+                        "durable": True,
+                        "quote_id": claim.quote_id,
+                    },
+                },
             )
         )
     return result
@@ -273,8 +282,8 @@ async def _stabilized_narrator_memory(
     quotes = _quoted_spans(assistant_content)
     result = _stabilize_narrator_proposals(result, quotes)
 
-    # The generic narrator auditor is intentionally broad.  For actor claims, replace that broad
-    # freedom with a second narrow pass whose candidate universe consists only of literal quotes.
+    # Replace the broad actor-segment guesser with one candidate universe: literal quotes only.
+    claims: list[ProposedChangeCreate] = []
     if quotes:
         try:
             claims = await _quoted_claim_proposals(
@@ -290,7 +299,7 @@ async def _stabilized_narrator_memory(
         result = _dedupe([*result, *claims])
 
     # A missed durable state after a completed interaction is a recall dropout, not evidence that
-    # nothing changed. Give the existing independent auditor exactly one retry.  The retry still uses
+    # nothing changed. Give the existing independent auditor exactly one retry. The retry still uses
     # immutable narration + executor receipts and the same CanonEnvelope validator, so it cannot
     # bypass evidence or schema checks.
     if (
@@ -306,7 +315,9 @@ async def _stabilized_narrator_memory(
             base_proposals=result,
         )
         retry = _stabilize_narrator_proposals(retry, quotes)
-        result = _dedupe([*result, *retry])
+        # The retry may replay the already accepted narrow quoted claims through base_proposals;
+        # merge the independently generated narrow set again after filtering broad actor segments.
+        result = _dedupe([*retry, *claims])
 
     return result
 
@@ -314,7 +325,7 @@ async def _stabilized_narrator_memory(
 async def _deterministic_debt_fallback(processor, job_id: UUID) -> None:
     """Close only an exact item-backed debt that survived the normal receipt reconciler.
 
-    This is a legacy-projection bridge only.  It does not run in TE2 writer mode.  A `revise` creates
+    This is a legacy-projection bridge only. It does not run in TE2 writer mode. A `revise` creates
     an extracted replacement row rather than simply mutating the manual assertion, so ActiveCanonReplay
     can restore the old relation on /undo.
     """
