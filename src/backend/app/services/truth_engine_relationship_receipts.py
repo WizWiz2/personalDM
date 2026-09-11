@@ -13,6 +13,7 @@ from app.services.canon_applier import CanonApplier
 
 _WORD_RE = re.compile(r"[\w-]{3,}", flags=re.UNICODE)
 _PROJECTION_MARKER = "_te2_receipt_debt_projection_id"
+_PROJECTION_REASON = "Machine-confirmed completed give receipt fulfilled the item-backed debt."
 
 
 def _tokens(value: object) -> set[str]:
@@ -68,6 +69,15 @@ def _projection_markers(proposals: list[object]) -> set[str]:
         if marker:
             markers.add(marker)
     return markers
+
+
+def _already_projected_relationship(debt: RelationshipAssertion, assistant_turn_id: UUID) -> bool:
+    """Recognize this projector's current replacement even if proposal metadata is unavailable."""
+    return (
+        debt.provenance == "extracted"
+        and debt.source_turn_id == str(assistant_turn_id)
+        and str(debt.reason or "") == _PROJECTION_REASON
+    )
 
 
 class StructuredRelationshipReceiptProjector:
@@ -142,6 +152,9 @@ class StructuredRelationshipReceiptProjector:
                 ).scalars().all()
             )
             for debt in debts:
+                if _already_projected_relationship(debt, assistant_turn_id):
+                    continue
+
                 marker = str(debt.id)
                 if marker in existing_markers:
                     continue
@@ -156,9 +169,7 @@ class StructuredRelationshipReceiptProjector:
                         f"Обязательство выполнено: предмет «{item_name}» передан адресату; "
                         "долг закрыт."
                     ),
-                    "reason": (
-                        "Machine-confirmed completed give receipt fulfilled the item-backed debt."
-                    ),
+                    "reason": _PROJECTION_REASON,
                     "intensity": 0.0,
                     "visibility": str(debt.visibility or "public"),
                     "operation": "revise",
@@ -202,6 +213,7 @@ class StructuredRelationshipReceiptProjector:
 
 __all__ = [
     "StructuredRelationshipReceiptProjector",
+    "_already_projected_relationship",
     "_completed_give",
     "_item_matches_debt",
     "_projection_markers",
