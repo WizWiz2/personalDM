@@ -47,6 +47,10 @@ async def role_json(self, provider, selection, messages, **kwargs):
             "summary": "Narration respects scene state and player agency.",
             "violations": [],
         }
+    if selection.role == ModelRole.ENTITY_REGISTRAR:
+        # Authority already materialized the first appearance. The legacy registrar must observe
+        # no additional entity to create from the same narration.
+        return {"characters": []}
     if selection.role == ModelRole.SCRIBE:
         # Narrator-managed turns now have two independent typed memory audit passes after the
         # generic CanonEnvelope extraction. This fixture is about NPC materialization/presence,
