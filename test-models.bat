@@ -45,7 +45,7 @@ if not "%BOOTSTRAP_RC%"=="0" (
 )
 
 echo.
-python -m live_model_contracts.console_runner %*
+python -m live_model_contracts.diagnostic_console_runner %*
 set "RC=%ERRORLEVEL%"
 popd
 
