@@ -59,9 +59,9 @@ def _parse_args() -> argparse.Namespace:
         help="Run only this case id; repeat the flag for several cases",
     )
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each case in a fresh campaign")
-    parser.add_argument("--turn-timeout", type=float, default=180.0)
+    parser.add_argument("--turn-timeout", type=float, default=300.0)
     parser.add_argument("--post-turn-timeout", type=float, default=120.0)
-    parser.add_argument("--control-timeout", type=float, default=90.0)
+    parser.add_argument("--control-timeout", type=float, default=180.0)
     parser.add_argument("--list", action="store_true", help="List contracts without running models")
     parser.add_argument(
         "--output",

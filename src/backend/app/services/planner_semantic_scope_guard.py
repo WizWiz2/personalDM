@@ -57,13 +57,14 @@ def _unique_presence_keys(messages: list[ChatMessage]) -> set[str]:
 
 
 def _normalize_unproven_npc_introductions(plan):
-    """Downgrade unsupported stable names to role-grounded temporary identities.
+    """Downgrade unsupported names to role-grounded temporary identities.
 
     This is an authority normalization, not a prose/name classifier. The planner already typed both
-    the role and whether it claims a stable personal identity. A stable identity without explicit
-    personal_name_evidence has no pre-publication authority, so preserving the role while marking it
-    temporary is strictly less permissive than accepting the model-authored personal name. If no
-    usable role exists, leave the introduction untouched so the semantic reviewer can fail closed.
+    the role and whether it claims a stable personal identity. A personal label without explicit
+    personal_name_evidence has no pre-publication authority, even when the model already marked it
+    temporary. Preserving the role is strictly less permissive than accepting the invented name.
+    If no usable role exists, leave the introduction untouched so the semantic reviewer can fail
+    closed.
     """
 
     normalized = []
@@ -75,7 +76,7 @@ def _normalize_unproven_npc_introductions(plan):
         evidence = " ".join(str(introduction.personal_name_evidence or "").split())
         canonical_key = identity_key(canonical)
 
-        if introduction.temporary_name or evidence:
+        if evidence:
             normalized.append(introduction)
             if canonical_key:
                 used.add(canonical_key)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Collection
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, model_validator
@@ -28,6 +29,25 @@ from app.services.turn_planner import (
 )
 
 
+@dataclass(frozen=True)
+class _TravelAuthority:
+    committed: bool
+    has_location_transition: bool
+    transitions_to_current: bool
+    unavailable_committed_travel: bool
+    blocked_attempt_typed: bool
+
+
+ReviewDefectKind = Literal[
+    "missing_travel",
+    "redundant_travel",
+    "missing_contact",
+    "identity",
+    "missing_committed_action",
+    "other",
+]
+
+
 class SemanticPlanReview(BaseModel):
     """Independent agent verdict over Planner meaning, never a lexical parser."""
 
@@ -36,6 +56,8 @@ class SemanticPlanReview(BaseModel):
     verdict: Literal["pass", "repair_required"]
     summary: str = Field(default="", max_length=1000)
     issues: list[str] = Field(default_factory=list, max_length=10)
+    # Machine contract for engine override. Free-text issues are not parsed.
+    defect_kinds: list[ReviewDefectKind] = Field(default_factory=list, max_length=10)
     # Runtime provenance, never accepted from model JSON or serialized into its schema.
     _engine_authored: bool = PrivateAttr(default=False)
 
@@ -426,8 +448,202 @@ short sentence. Return exactly the NpcContactDecision schema.
             plan.npc_introductions = NpcIntroductionResolver.sanitize_introductions(
                 plan.npc_introductions
             )
-        except AuthorityResolutionError as exc:
-            raise TurnPlanningError(str(exc)) from exc
+            return
+        except AuthorityResolutionError:
+            kept: list[PlannedNpcIntroduction] = []
+            for introduction in plan.npc_introductions:
+                try:
+                    kept.extend(
+                        NpcIntroductionResolver.sanitize_introductions([introduction])
+                    )
+                except AuthorityResolutionError:
+                    continue
+            # Drop unreadable identities rather than aborting the whole turn. Presence review
+            # and contact recovery can still type a grounded role if the contact is real.
+            plan.npc_introductions = kept
+
+    @staticmethod
+    def _drop_non_encountered_introductions(
+        plan: CoordinatedTurnPlan,
+        assessments: list,
+    ) -> bool:
+        """Apply the identity checker's typed participation verdict.
+
+        mentioned_only/uncertain/remote people must not be materialized. The checker already
+        classified participation; the engine drops those introductions instead of asking another
+        model to rewrite the whole plan from free-text issues.
+        """
+        drop: set[int] = set()
+        for item in assessments:
+            if not isinstance(item, dict):
+                continue
+            try:
+                index = int(item.get("introduction_index"))
+            except (TypeError, ValueError):
+                continue
+            if item.get("participation") in {
+                "mentioned_only",
+                "uncertain",
+                "remote_participant",
+            }:
+                drop.add(index)
+        if not drop:
+            return False
+        plan.npc_introductions = [
+            item
+            for index, item in enumerate(plan.npc_introductions)
+            if index not in drop
+        ]
+        return True
+
+    def _last_identity_assessments(self) -> list:
+        for audit in reversed(self._review_audit):
+            binding = audit.get("identity_binding") if isinstance(audit, dict) else None
+            if isinstance(binding, dict):
+                assessments = binding.get("assessments")
+                if isinstance(assessments, list):
+                    return assessments
+        return []
+
+    _DESTINATION_PREPS = frozenset({"в", "во", "на", "к", "до", "to", "into", "toward", "towards"})
+    _ORIGIN_PREPS = frozenset({"из", "с", "от", "from"})
+
+    @classmethod
+    def _location_named_as_destination(cls, text: str, location: str) -> bool:
+        """True when a travel clause names this location as destination, not merely origin."""
+        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
+
+        specific, _generic = PlayerDestinationAuthorizer._destination_reference(text, location)
+        if not specific:
+            return False
+        tokens = PlayerDestinationAuthorizer.TOKEN_RE.findall(text.casefold())
+        location_tokens = [
+            token
+            for token in PlayerDestinationAuthorizer.TOKEN_RE.findall(location.casefold())
+            if len(token) >= 3
+        ]
+        after_destination = False
+        after_origin = False
+        for index, token in enumerate(tokens):
+            if index == 0:
+                continue
+            if not any(
+                PlayerDestinationAuthorizer._tokens_match(token, location_token)
+                for location_token in location_tokens
+            ):
+                continue
+            prep = tokens[index - 1]
+            if prep in cls._DESTINATION_PREPS:
+                after_destination = True
+            if prep in cls._ORIGIN_PREPS:
+                after_origin = True
+        return after_destination or not after_origin
+
+    @staticmethod
+    def _canonical_travel_authority(
+        player_input: str,
+        plan: CoordinatedTurnPlan,
+        context_messages: list[ChatMessage],
+    ) -> _TravelAuthority:
+        """Machine travel coverage: committed hops vs typed transition or blocked attempt.
+
+        Available exits come from machine-authored scene lines. A hop to a place that is not an
+        available exit cannot be a location_transition; it is covered only by a blocked movement
+        step. Reviewer prose is not inspected.
+        """
+        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
+        from app.services.planner_structural_repair_guard import _scene_location_references
+
+        clauses = PlayerDestinationAuthorizer._clauses(player_input)
+        committed = any(clause.travel for clause in clauses)
+        current_location_ref, available_location_refs = _scene_location_references(
+            context_messages
+        )
+        current_location_key = " ".join(str(current_location_ref or "").split()).casefold()
+        input_tokens = re.findall(r"[a-zа-яё0-9]+", player_input.casefold())
+        locative_tokens = {
+            token
+            for index, token in enumerate(input_tokens)
+            if index > 0 and input_tokens[index - 1] in {"в", "во", "на", "к", "до"}
+        }
+        current_tokens = {
+            token for token in re.findall(r"[a-zа-яё0-9]+", current_location_key) if len(token) >= 4
+        }
+        locative_refers_to_current = any(
+            token.startswith(current_token[:4]) or current_token.startswith(token[:4])
+            for token in locative_tokens
+            if len(token) >= 4
+            for current_token in current_tokens
+        )
+        allowlisted = bool(current_location_key) and not locative_refers_to_current and any(
+            " ".join(str(destination).split()).casefold() != current_location_key
+            and any(
+                token.startswith(destination_token[:4])
+                or destination_token.startswith(token[:4])
+                for token in locative_tokens
+                if len(token) >= 4
+                for destination_token in re.findall(
+                    r"[a-zа-яё0-9]+", str(destination).casefold()
+                )
+                if len(destination_token) >= 4
+            )
+            for destination in available_location_refs
+        )
+        committed = committed or allowlisted
+        has_transition = (
+            plan.scene_transition.required
+            and plan.scene_transition.transition_type == "location_transition"
+        ) or any(
+            step.transition.required
+            and step.transition.transition_type == "location_transition"
+            for step in plan.action_sequence.steps
+        )
+        current_location = next(
+            (
+                line.split(":", 1)[1].split(">")[-1].strip()
+                for message in context_messages
+                for line in message.content.splitlines()
+                if line.startswith("Location path:")
+                and line.split(":", 1)[1].strip().casefold() != "unknown"
+            ),
+            None,
+        )
+        to_current = any(
+            " ".join(str(transition.destination_location or "").split()).casefold()
+            == str(current_location or "").casefold()
+            for transition in (
+                [plan.scene_transition]
+                if plan.scene_transition.required
+                else []
+            )
+            + [
+                step.transition
+                for step in plan.action_sequence.steps
+                if step.transition.required
+            ]
+            if transition.transition_type == "location_transition"
+        )
+        unavailable_committed_travel = any(
+            clause.travel
+            and not any(
+                TurnAuthorityPlanner._location_named_as_destination(clause.text, destination)
+                for destination in available_location_refs
+            )
+            for clause in clauses
+        )
+        blocked_attempt_typed = any(
+            step.action_type == "movement"
+            and step.resolution == "blocked"
+            and bool(step.blocking_reason)
+            for step in plan.action_sequence.steps
+        )
+        return _TravelAuthority(
+            committed=committed,
+            has_location_transition=has_transition,
+            transitions_to_current=to_current and bool(current_location),
+            unavailable_committed_travel=unavailable_committed_travel,
+            blocked_attempt_typed=blocked_attempt_typed,
+        )
 
     @staticmethod
     def _mark_identity_request(
@@ -829,9 +1045,14 @@ short sentence. Return exactly the NpcContactDecision schema.
                 rejection = SemanticPlanReview(
                     verdict="repair_required", issues=identity_issues,
                     summary="Resolve participant identity before accepting the plan.",
+                    defect_kinds=["identity"],
                 )
                 rejection._engine_authored = True
                 return rejection
+        travel = self._canonical_travel_authority(player_input, plan, context_messages)
+        committed_travel = travel.committed
+        has_location_transition = travel.has_location_transition
+        transitions_to_current = travel.transitions_to_current
         data = await self._router.generate_json(
             self._provider,
             selection,
@@ -841,6 +1062,18 @@ short sentence. Return exactly the NpcContactDecision schema.
                     role="user",
                     content=(
                         f"[LATEST HUMAN INPUT]\n{player_input}\n\n"
+                        "[ENGINE TRAVEL AUTHORITY]\n"
+                        f"committed_canonical_travel: {str(committed_travel).lower()}\n"
+                        f"typed_location_transition: {str(has_location_transition).lower()}\n"
+                        f"unavailable_committed_travel: {str(travel.unavailable_committed_travel).lower()}\n"
+                        f"blocked_attempt_typed: {str(travel.blocked_attempt_typed).lower()}\n"
+                        "These flags are machine-resolved. Do not emit defect_kinds=missing_travel "
+                        "when committed_canonical_travel is false, and do not emit redundant_travel "
+                        "when it is true. An unavailable hop is covered by resolution=blocked with "
+                        "blocking_reason and no location_transition; do not demand a successful "
+                        "transition there. When verdict is repair_required, defect_kinds must classify "
+                        "the issues (missing_travel, redundant_travel, missing_contact, identity, "
+                        "missing_committed_action, other).\n\n"
                         "[AUTHORITATIVE PHYSICAL PRESENCE ALLOWLIST]\n"
                         "Only these characters are currently present: "
                         + ", ".join(present_names or [])
@@ -889,6 +1122,12 @@ short sentence. Return exactly the NpcContactDecision schema.
                             "present_names": sorted(present_names or []),
                             "plan": candidate,
                             "objections": dict(enumerate(objections)),
+                            "engine_authority": {
+                                "committed_canonical_travel": committed_travel,
+                                "typed_location_transition": has_location_transition,
+                                "unavailable_committed_travel": travel.unavailable_committed_travel,
+                                "blocked_attempt_typed": travel.blocked_attempt_typed,
+                            },
                         }, ensure_ascii=False),
                     )],
                     max_tokens=900, temperature=0.0,
@@ -910,94 +1149,58 @@ short sentence. Return exactly the NpcContactDecision schema.
                             review = SemanticPlanReview(
                                 verdict="repair_required", issues=remaining[:10],
                                 summary="Repair the independently substantiated remaining defects.",
+                                defect_kinds=review.defect_kinds,
                             )
             except (LLMProviderError, ValueError, TypeError) as exc:
                 # Failed adjudication leaves the original rejection intact.
                 audit["adjudication_error"] = type(exc).__name__
-        # A committed travel clause cannot be downgraded to conversation merely because a small
-        # control model latched onto an addressed responder. Reuse the same clause parser as the
-        # destination authorizer so this boundary follows the shared travel grammar rather than a
-        # case-specific name or phrase. The planner must either type a location transition or let
-        # the bounded repair loop recover one; narration must never advance the scene by prose.
-        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
-        from app.services.planner_structural_repair_guard import _scene_location_references
-
-        has_committed_travel = any(
-            clause.travel for clause in PlayerDestinationAuthorizer._clauses(player_input)
-        )
-        current_location_ref, available_location_refs = _scene_location_references(
-            context_messages
-        )
-        current_location_key = " ".join(str(current_location_ref or "").split()).casefold()
-        # A locative opening such as "В конторе я обращаюсь..." commits the scene
-        # context even when the player omits a movement verb. Resolve it only against
-        # machine-provided exits/current location; arbitrary prose cannot create a route.
-        input_tokens = re.findall(r"[a-zа-яё0-9]+", player_input.casefold())
-        locative_tokens = {
-            token
-            for index, token in enumerate(input_tokens)
-            if index > 0 and input_tokens[index - 1] in {"в", "во", "на", "к", "до"}
-        }
-        current_tokens = {
-            token for token in re.findall(r"[a-zа-яё0-9]+", current_location_key) if len(token) >= 4
-        }
-        locative_refers_to_current = any(
-            token.startswith(current_token[:4]) or current_token.startswith(token[:4])
-            for token in locative_tokens
-            if len(token) >= 4
-            for current_token in current_tokens
-        )
-        has_allowlisted_location_reference = bool(current_location_key) and not locative_refers_to_current and any(
-            " ".join(str(destination).split()).casefold() != current_location_key
-            and any(
-                token.startswith(destination_token[:4])
-                or destination_token.startswith(token[:4])
-                for token in locative_tokens
-                if len(token) >= 4
-                for destination_token in re.findall(
-                    r"[a-zа-яё0-9]+", str(destination).casefold()
-                )
-                if len(destination_token) >= 4
+        # Travel coverage is engine-owned. The reviewer may allege missing_travel/redundant_travel,
+        # but those kinds cannot override the machine travel flags computed above.
+        llm_kinds = [
+            kind
+            for kind in review.defect_kinds
+            if kind not in {"missing_travel", "redundant_travel"}
+        ]
+        if review.verdict == "repair_required" and review.defect_kinds and not llm_kinds:
+            review = SemanticPlanReview(
+                verdict="pass",
+                issues=[],
+                summary="Travel coverage is settled by engine authority, not reviewer prose.",
+                defect_kinds=[],
             )
-            for destination in available_location_refs
-        )
-        has_committed_travel = has_committed_travel or has_allowlisted_location_reference
-        has_location_transition = (
-            plan.scene_transition.required
-            and plan.scene_transition.transition_type == "location_transition"
-        ) or any(
-            step.transition.required
-            and step.transition.transition_type == "location_transition"
-            for step in plan.action_sequence.steps
-        )
-        current_location = next(
-            (
-                line.split(":", 1)[1].split(">")[-1].strip()
-                for message in context_messages
-                for line in message.content.splitlines()
-                if line.startswith("Location path:")
-                and line.split(":", 1)[1].strip().casefold() != "unknown"
-            ),
-            None,
-        )
-        transitions_to_current_location = any(
-            " ".join(str(transition.destination_location or "").split()).casefold()
-            == str(current_location or "").casefold()
-            for transition in (
-                [plan.scene_transition]
-                if plan.scene_transition.required
-                else []
+            review._engine_authored = True
+        elif review.verdict == "repair_required" and llm_kinds != list(review.defect_kinds):
+            review = SemanticPlanReview(
+                verdict="repair_required",
+                issues=review.issues,
+                summary=review.summary,
+                defect_kinds=llm_kinds,
             )
-            + [
-                step.transition
-                for step in plan.action_sequence.steps
-                if step.transition.required
+        if travel.unavailable_committed_travel and not travel.blocked_attempt_typed:
+            coverage = (
+                "TRAVEL COVERAGE: a committed movement attempt is not an available exit. "
+                "Keep it as a blocked action_sequence step with blocking_reason and no "
+                "location_transition."
+            )
+            issues = [item for item in (review.issues or []) if item != coverage]
+            kinds = [
+                kind
+                for kind in review.defect_kinds
+                if kind not in {"missing_travel", "redundant_travel"}
             ]
-            if transition.transition_type == "location_transition"
-        )
+            if "missing_committed_action" not in kinds:
+                kinds.append("missing_committed_action")
+            return SemanticPlanReview(
+                verdict="repair_required",
+                summary=(
+                    "Committed travel attempt has no available exit and is not typed as blocked."
+                ),
+                issues=[coverage, *issues][:10],
+                defect_kinds=kinds[:10],
+            )
         if (
             review.verdict == "pass"
-            and has_committed_travel
+            and committed_travel
             and not has_location_transition
         ):
             return SemanticPlanReview(
@@ -1008,12 +1211,12 @@ short sentence. Return exactly the NpcContactDecision schema.
                     "typed plan has no location_transition. Preserve the route and add the "
                     "required atomic movement step(s)."
                 ],
+                defect_kinds=["missing_travel"],
             )
         if (
             review.verdict == "pass"
-            and current_location
-            and transitions_to_current_location
-            and not has_committed_travel
+            and transitions_to_current
+            and not committed_travel
         ):
             return SemanticPlanReview(
                 verdict="repair_required",
@@ -1023,6 +1226,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                     "inside the current location and contains no committed travel. Remove the "
                     "no-op location_transition and preserve the local interaction/dialogue."
                 ],
+                defect_kinds=["redundant_travel"],
             )
         # Structural completeness does not establish semantic correctness. Preserve every
         # rejected review for the bounded repair loop; typed outcomes cannot discharge
@@ -1470,6 +1674,18 @@ short sentence. Return exactly the NpcContactDecision schema.
             )
             if review.verdict == "pass":
                 return plan
+            if self._drop_non_encountered_introductions(
+                plan, self._last_identity_assessments()
+            ):
+                review = await self._semantic_review(
+                    selection,
+                    context_messages,
+                    player_input,
+                    plan,
+                    present_names,
+                )
+                if review.verdict == "pass":
+                    return plan
 
             issues = review.issues or [review.summary or "Семантический план требует исправления."]
             repaired = plan

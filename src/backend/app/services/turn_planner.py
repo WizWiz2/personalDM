@@ -107,6 +107,23 @@ class ActionStepPlan(BaseModel):
         normalized["action_type"] = "inventory"
         return normalized
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_safe_mundane_against_resolution(cls, data):
+        """Resolution is the stronger typed contract; safe_mundane cannot contradict it.
+
+        Local control models sometimes mark a blocked or choice step as safe_mundane. That
+        combination is unsatisfiable and should not discard an otherwise valid sequence.
+        """
+        if not isinstance(data, dict):
+            return data
+        resolution = data.get("resolution")
+        if data.get("safe_mundane") and resolution not in {None, "auto_success"}:
+            normalized = dict(data)
+            normalized["safe_mundane"] = False
+            return normalized
+        return data
+
     @model_validator(mode="after")
     def validate_step(self):
         if self.safe_mundane and self.resolution != "auto_success":
