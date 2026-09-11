@@ -41,6 +41,7 @@ def authority_plan() -> CoordinatedTurnPlan:
 
 
 async def role_json(self, provider, selection, messages, **kwargs):
+    response_model_name = getattr(kwargs.get("response_model"), "__name__", "")
     if selection.role == ModelRole.NARRATION_VALIDATOR:
         return {
             "verdict": "pass",
@@ -48,6 +49,16 @@ async def role_json(self, provider, selection, messages, **kwargs):
             "violations": [],
         }
     if selection.role == ModelRole.SCRIBE:
+        # Narrator-managed turns now have two independent typed memory audit passes after the
+        # generic CanonEnvelope extraction. This fixture is about NPC materialization/presence,
+        # so both audits intentionally find no additional memory changes.
+        if response_model_name == "NarratorMemoryAudit":
+            return {
+                "claims": [],
+                "recovery": {"outcomes": [], "proposals": []},
+            }
+        if response_model_name == "QuoteClaimAttributionEnvelope":
+            return {"claims": []}
         return {
             "outcomes": [
                 {
