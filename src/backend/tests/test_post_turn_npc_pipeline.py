@@ -144,7 +144,12 @@ def test_authority_materializes_npc_before_scribe_resolves_event_participant(
     assert response.text == NARRATION
 
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
-    assert snapshot["health"]["failed_jobs"] == 0, snapshot["post_turn_jobs"]
+    failed_jobs = [
+        (job["job_type"], job.get("error"))
+        for job in snapshot["post_turn_jobs"]
+        if job["status"] == "failed"
+    ]
+    assert not failed_jobs, failed_jobs
     # Authority owns first appearances. Legacy EntityRegistrar must not infer the same NPC again.
     assert snapshot["health"]["auto_registered_npcs"] == 0
     assert set(snapshot["active_scene"]["participant_names"]) == {
