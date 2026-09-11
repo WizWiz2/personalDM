@@ -170,25 +170,19 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
         base_proposals=[_base_wrong_claim_fact(claim)],
     )
 
-    knowledge = [
-        item
-        for item in proposals
-        if item.change_type.value == ChangeType.KNOWLEDGE.value
-    ]
-    facts = [
-        item
-        for item in proposals
-        if item.change_type.value == ChangeType.FACT.value
-    ]
+    serialized = [item.model_dump(mode="json") for item in proposals]
+    knowledge = [item for item, raw in zip(proposals, serialized) if raw["change_type"] == "knowledge"]
+    facts = [item for item, raw in zip(proposals, serialized) if raw["change_type"] == "fact"]
     audit = scribe.last_audit
 
     assert audit["present_npcs"] == ["Мартин Вэнс"], audit
     assert audit["narrator_claim_count"] == 1, audit
     assert audit["resolved_claim_speakers"] == ["Мартин Вэнс"], audit
+    assert "knowledge" in audit["merged_change_types"], audit
     assert len(knowledge) == 1, {
         "audit": audit,
         "segments": segments,
-        "proposals": [item.model_dump(mode="json") for item in proposals],
+        "proposals": serialized,
     }
     assert knowledge[0].payload["source_character_id"] == str(martin.id)
     assert knowledge[0].payload["recipient_id"] == str(hero.id)
