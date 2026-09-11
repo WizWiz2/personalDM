@@ -121,7 +121,7 @@ async def test_committed_physical_travel_hidden_as_stay_is_repaired_before_narra
                 "Available exits: набережная -> Старая Марина\n"
             ),
         ),
-        ChatMessage(role="user", content="Иду в город, на Старую Марину."),
+        ChatMessage(role="user", content="Иду на Старую Марину."),
     ]
     base_messages = planner.planning_messages(context)
     player_input = planner._latest_user_text(context)
