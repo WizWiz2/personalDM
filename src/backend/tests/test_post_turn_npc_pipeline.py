@@ -8,7 +8,6 @@ from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.role_model_router import ModelRole
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 
-
 BARTENDER_IDENTITY = "Бармен таверны «Медный Котёл»"
 NARRATION = (
     "Бармен ставит перед тобой кружку и говорит: «Комната наверху свободна»."

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -141,7 +141,7 @@ def _selection(campaign_id):
         model_name="fake-control",
         has_api_key=False,
         context_window=4096,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
     )
     return RoleModelSelection(
         role=ModelRole.PLANNER,
@@ -158,7 +158,7 @@ def _selection(campaign_id):
 async def test_planner_authority_validator_and_materializer_share_one_new_npc_contract(
     db_session: AsyncSession,
 ):
-    campaign_id, _player, known_absent, scene = await _world(db_session)
+    campaign_id, _player, _known_absent, scene = await _world(db_session)
     expected = _planned_doorman()
     router = FakeControlRouter(expected)
     selection = _selection(campaign_id)
@@ -173,7 +173,8 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
     )
     # The model may propose a descriptive designation, but without personal-name evidence the
     # authority boundary owns canonicalization and collapses it to the grounded temporary role.
-    assert plan.npc_introductions[0].canonical_name == "Дежурный фабрики"
+    assert plan.npc_introductions[0].canonical_name == "Ночной дежурный"
+    assert plan.npc_introductions[0].temporary_name is True
     authority = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,
         trigger_turn_id=uuid4(),
@@ -319,7 +320,7 @@ async def test_explicit_provider_stop_beats_terminal_punctuation_heuristic(
         model_name="fake-narrator",
         has_api_key=False,
         context_window=4096,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
     )
     selection = RoleModelSelection(
         role=ModelRole.NARRATOR,

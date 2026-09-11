@@ -5,9 +5,9 @@ from collections.abc import Sequence
 from fastapi.testclient import TestClient
 
 from live_model_contracts.cases import CaseSpec
+from live_model_contracts.identity_oracles import name_binding_failures
 from live_model_contracts.snapshot import TruthSnapshot
 from live_model_contracts.state_oracles import is_lighting_fact, light_is_on
-from live_model_contracts.identity_oracles import name_binding_failures
 from live_model_contracts.world import FixtureWorld, add_fact
 
 

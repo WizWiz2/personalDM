@@ -12,8 +12,8 @@ from app.config import settings
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services.player_intent_contract import expects_russian
 from app.services.entity_identity import identity_key
+from app.services.player_intent_contract import expects_russian
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import (
     present_character_names,
@@ -551,8 +551,8 @@ short sentence. Return exactly the NpcContactDecision schema.
         available exit cannot be a location_transition; it is covered only by a blocked movement
         step. Reviewer prose is not inspected.
         """
-        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
         from app.services.planner_structural_repair_guard import _scene_location_references
+        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
 
         clauses = PlayerDestinationAuthorizer._clauses(player_input)
         committed = any(clause.travel for clause in clauses)
@@ -763,7 +763,6 @@ short sentence. Return exactly the NpcContactDecision schema.
         changed = False
         steps = list(plan.action_sequence.steps)
         for index, step in enumerate(steps):
-            transition = step.transition
             if step.action_type != "movement":
                 continue
             steps[index] = step.model_copy(
@@ -1108,7 +1107,10 @@ short sentence. Return exactly the NpcContactDecision schema.
         self._review_audit.append(audit)
         if review.verdict == "repair_required":
             from app.services.planner_review_adjudication import (
-                PROMPT, PlanReviewAdjudication, all_objections_disproved, certified_assessments,
+                PROMPT,
+                PlanReviewAdjudication,
+                all_objections_disproved,
+                certified_assessments,
             )
             objections = review.issues or [review.summary]
             candidate = plan.model_dump(mode="json")
@@ -1207,9 +1209,9 @@ short sentence. Return exactly the NpcContactDecision schema.
                 verdict="repair_required",
                 summary="Committed travel is missing a typed location transition.",
                 issues=[
-                    "TRAVEL COVERAGE: latest human input contains committed travel, but the "
+                    ("TRAVEL COVERAGE: latest human input contains committed travel, but the "
                     "typed plan has no location_transition. Preserve the route and add the "
-                    "required atomic movement step(s)."
+                    "required atomic movement step(s).")
                 ],
                 defect_kinds=["missing_travel"],
             )
@@ -1222,9 +1224,9 @@ short sentence. Return exactly the NpcContactDecision schema.
                 verdict="repair_required",
                 summary="Plan repeats the already current location without travel intent.",
                 issues=[
-                    "REDUNDANT LOCATION TRANSITION: the latest human input describes an action "
+                    ("REDUNDANT LOCATION TRANSITION: the latest human input describes an action "
                     "inside the current location and contains no committed travel. Remove the "
-                    "no-op location_transition and preserve the local interaction/dialogue."
+                    "no-op location_transition and preserve the local interaction/dialogue.")
                 ],
                 defect_kinds=["redundant_travel"],
             )
@@ -1311,7 +1313,7 @@ short sentence. Return exactly the NpcContactDecision schema.
 
         patched = plan.model_copy(deep=True)
         original_count = len(patched.action_sequence.steps)
-        accepted = list(sorted(patch_set.patches, key=lambda value: value.insert_at))
+        accepted = sorted(patch_set.patches, key=lambda value: value.insert_at)
         # Every index addresses the original candidate, never the growing result.
         # Reject the patch transaction as a whole when any reference is invalid.
         if (
@@ -1320,11 +1322,9 @@ short sentence. Return exactly the NpcContactDecision schema.
             or len(accepted) + original_count > 8
         ):
             return plan
-        offset = 0
-        for item in accepted:
+        for offset, item in enumerate(accepted):
             index = item.insert_at + offset
             patched.action_sequence.steps.insert(index, item.step)
-            offset += 1
         # Recompile derived execution fields and validate the complete candidate.
         # model_copy/list mutation alone leaves sequence_payload pointing at the old plan.
         try:

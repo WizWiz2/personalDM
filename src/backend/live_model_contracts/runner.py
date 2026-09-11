@@ -8,11 +8,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from live_model_contracts.transport import open_endpoint
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from live_model_contracts.transport import open_endpoint
 
 # IMPORTANT: do not import ``app`` at module import time. The isolated database/model env must be
 # installed before PersonalDM settings and SQLAlchemy engine are created.
