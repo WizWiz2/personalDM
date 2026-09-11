@@ -91,10 +91,28 @@ def _same_evidence_surface(left: object, right: object) -> bool:
     return len(shorter) >= 12 and shorter in longer
 
 
+def _change_type_value(proposal: ProposedChangeCreate) -> str:
+    """Use the wire value so compatibility reloads cannot change semantic class equality."""
+    value = proposal.change_type
+    return str(getattr(value, "value", value))
+
+
 def _proposal_evidence(proposal: ProposedChangeCreate) -> str:
     payload = proposal.payload if isinstance(proposal.payload, dict) else {}
     canon = payload.get("_canon") if isinstance(payload.get("_canon"), dict) else {}
     return str(canon.get("evidence") or "")
+
+
+def _proposal_signature(proposal: ProposedChangeCreate) -> str:
+    return json.dumps(
+        {
+            "change_type": _change_type_value(proposal),
+            "payload": proposal.payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
 
 
 def _filter_claim_promotions(
@@ -106,8 +124,9 @@ def _filter_claim_promotions(
         return proposals, 0
     kept: list[ProposedChangeCreate] = []
     removed = 0
+    epistemic_types = {ChangeType.KNOWLEDGE.value, ChangeType.CANON_GAP.value}
     for proposal in proposals:
-        if proposal.change_type in {ChangeType.KNOWLEDGE, ChangeType.CANON_GAP}:
+        if _change_type_value(proposal) in epistemic_types:
             kept.append(proposal)
             continue
         evidence = _proposal_evidence(proposal)
@@ -124,20 +143,33 @@ def _dedupe_proposals(proposals: list[ProposedChangeCreate]) -> list[ProposedCha
     result: list[ProposedChangeCreate] = []
     seen: set[str] = set()
     for proposal in proposals:
-        signature = json.dumps(
-            {
-                "change_type": proposal.change_type.value,
-                "payload": proposal.payload,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
+        signature = _proposal_signature(proposal)
         if signature in seen:
             continue
         seen.add(signature)
         result.append(proposal)
     return result
+
+
+def _append_epistemic_claims(
+    proposals: list[ProposedChangeCreate],
+    claims: list[ProposedChangeCreate],
+) -> list[ProposedChangeCreate]:
+    """Keep audited character claims independent from objective canon recovery/dedupe.
+
+    Narrator claims are epistemic state, not objective world facts. They therefore get their own
+    merge lane after objective recovery. Stable signatures still prevent exact duplicate knowledge
+    proposals, but objective proposal handling can never erase an independently audited claim.
+    """
+    merged = list(proposals)
+    seen = {_proposal_signature(proposal) for proposal in merged}
+    for claim in _dedupe_proposals(claims):
+        signature = _proposal_signature(claim)
+        if signature in seen:
+            continue
+        merged.append(claim)
+        seen.add(signature)
+    return merged
 
 
 async def _memory_state(
@@ -209,7 +241,7 @@ def _proposal_summary(proposals: list[ProposedChangeCreate]) -> str:
             json.dumps(
                 {
                     "index": index,
-                    "change_type": proposal.change_type.value,
+                    "change_type": _change_type_value(proposal),
                     "evidence": _proposal_evidence(proposal),
                     "payload": {
                         key: value
@@ -334,14 +366,15 @@ async def enrich_narrator_memory(
     recovered = [
         proposal
         for proposal in recovered
-        if proposal.change_type != ChangeType.KNOWLEDGE
+        if _change_type_value(proposal) != ChangeType.KNOWLEDGE.value
     ]
     recovered, removed_recovery_claims = _filter_claim_promotions(
         recovered,
         claim_segments,
     )
 
-    merged = _dedupe_proposals([*filtered_base, *recovered, *claim_proposals])
+    objective_merged = _dedupe_proposals([*filtered_base, *recovered])
+    merged = _append_epistemic_claims(objective_merged, claim_proposals)
     scribe.last_audit = {
         **recovery_audit,
         "narrator_memory_auditor": "completed",
@@ -350,7 +383,7 @@ async def enrich_narrator_memory(
             [
                 proposal
                 for proposal in recovered
-                if proposal.change_type != ChangeType.CANON_GAP
+                if _change_type_value(proposal) != ChangeType.CANON_GAP.value
             ]
         ),
         "claim_promotions_removed": removed_promotions + removed_recovery_claims,
@@ -360,6 +393,7 @@ async def enrich_narrator_memory(
             display_by_id.get(str(proposal.payload.get("source_character_id")), "")
             for proposal in claim_proposals
         ],
+        "merged_change_types": [_change_type_value(proposal) for proposal in merged],
     }
     return merged
 
