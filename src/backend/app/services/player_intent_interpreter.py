@@ -19,6 +19,9 @@ world, decide success/failure, invent NPC reactions, choose routes, write prose,
 state. Return exactly PlayerIntentContractDraft.
 
 The contract contains only what the HUMAN actually committed to now:
+- summary and actions are REQUIRED JSON fields. Never omit them. actions may be [] only when the
+  human truly committed to no affirmative world action in this turn.
+- Each action object MUST contain action_type and intent. Do not emit an empty action object.
 - actions is an ordered list of affirmative atomic world actions. Preserve their stated order.
 - Ordinary speech, a greeting, a question, a claim, or telling someone information is NOT an action
   step. Represent expected dialogue with addressed_response_requested/addressed_character_name.
@@ -64,13 +67,14 @@ class PlayerActionIntentDraft(BaseModel):
 
     Ollama JSON-schema decoding can satisfy field shapes but cannot enforce our semantic conditional
     invariants reliably. Those invariants are normalized deterministically before the public frozen IR
-    is constructed.
+    is constructed. The two semantic anchors are required so native structured decoding cannot satisfy
+    this schema with an empty action object.
     """
 
     model_config = ConfigDict(extra="ignore")
 
-    action_type: str = "other"
-    intent: str = ""
+    action_type: str = Field(min_length=2, max_length=32)
+    intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     item_id: str | None = None
     inventory_operation: str | None = None
@@ -80,10 +84,17 @@ class PlayerActionIntentDraft(BaseModel):
 
 
 class PlayerIntentContractDraft(BaseModel):
+    """Model-facing shape whose structural anchors are mandatory but semantics remain permissive.
+
+    ``summary`` and ``actions`` intentionally have no defaults. With Ollama native JSON-schema
+    decoding, defaulted fields are optional in the generated schema; the previous version therefore
+    made ``{}`` a fully valid intent response and silently normalized it into an empty turn.
+    """
+
     model_config = ConfigDict(extra="ignore")
 
-    summary: str = ""
-    actions: list[PlayerActionIntentDraft] = Field(default_factory=list, max_length=8)
+    summary: str = Field(min_length=2, max_length=500)
+    actions: list[PlayerActionIntentDraft] = Field(max_length=8)
     addressed_response_requested: bool = False
     addressed_character_name: str | None = None
     identity_reveal_requested: bool = False
