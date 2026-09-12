@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import re
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
 from app.config import settings
-from app.models.player_intent import PlayerIntentContract, PlayerIntentReview
+from app.models.player_intent import PlayerIntentContract
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
@@ -11,7 +16,7 @@ from app.services.turn_planner import TurnPlanningError
 _INTENT_PROMPT = """[PLAYER INTENT INTERPRETER]
 You convert exactly one human RPG turn into immutable player-authority IR. You do NOT resolve the
 world, decide success/failure, invent NPC reactions, choose routes, write prose, or repair campaign
-state. Return exactly PlayerIntentContract.
+state. Return exactly PlayerIntentContractDraft.
 
 The contract contains only what the HUMAN actually committed to now:
 - actions is an ordered list of affirmative atomic world actions. Preserve their stated order.
@@ -29,9 +34,10 @@ The contract contains only what the HUMAN actually committed to now:
   destination.
 - Do not decide whether a destination already exists, whether a route may be discovered, or whether
   the move is possible. The deterministic world compiler owns all of that after this contract freezes.
-- Inventory fields must use IDs supplied by AUTHORITATIVE CONTEXT. Never invent IDs. give requires
-  the recipient entity id. drop means release into the current place; place means a named
-  surface/container/position.
+- Inventory actions MUST set inventory_operation to exactly take, drop, give, or place. Use IDs from
+  AUTHORITATIVE CONTEXT when available. give also requires inventory_target_id. drop means release
+  into the current place; place means deliberately position on/in a named surface/container/position.
+- Do not put item/inventory fields on movement, interaction, observation, rest, wait, or other actions.
 - rest/wait may carry elapsed_time/time_after only when the human establishes it.
 - identity_reveal_requested=true when the human explicitly asks a present person for their name.
 - addressed_character_name must use the current known designation, never a future/invented answer.
@@ -40,35 +46,182 @@ Do not encode consequences in the intent. No action here means the world is unch
 outcome resolver owns external consequences.
 """
 
-_REVIEW_PROMPT = """[PLAYER INTENT FIDELITY REVIEW]
-You verify only HUMAN INPUT -> PlayerIntentContract fidelity. You do not judge world feasibility,
-route availability, success/failure, NPC behavior, prose quality, or whether a destination exists.
-Return exactly PlayerIntentReview.
+_ACTION_TYPES = {
+    "service",
+    "movement",
+    "rest",
+    "wait",
+    "interaction",
+    "observation",
+    "inventory",
+    "other",
+}
+_INVENTORY_OPERATIONS = {"take", "drop", "give", "place"}
 
-Return repair_required only when the contract:
-- omits an affirmative committed world action;
-- adds an action/choice not supplied by the human;
-- changes action order;
-- turns speech/question/claim into a world action;
-- turns a negative/stationary clause into an action;
-- turns local body motion inside one scene into canonical movement;
-- loses an explicitly committed intermediate destination, or invents route-media as another action;
-- chooses an unresolved alternative;
-- misstates addressed-response or explicit identity-request ownership.
 
-Do not ask for richer detail and do not propose world outcomes. Issues must describe only the
-input/IR mismatch.
-"""
+class PlayerActionIntentDraft(BaseModel):
+    """LLM-facing draft deliberately avoids cross-field validators.
 
-_REPAIR_PROMPT = """[PLAYER INTENT IR REPAIR]
-Repair only the listed fidelity defects between the latest human input and the rejected
-PlayerIntentContract. Return one complete replacement PlayerIntentContract. Do not resolve the world,
-invent consequences, or change actions that were not implicated by the issues.
-"""
+    Ollama JSON-schema decoding can satisfy field shapes but cannot enforce our semantic conditional
+    invariants reliably. Those invariants are normalized deterministically before the public frozen IR
+    is constructed.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    action_type: str = "other"
+    intent: str = ""
+    destination_location: str | None = None
+    item_id: str | None = None
+    inventory_operation: str | None = None
+    inventory_target_id: str | None = None
+    elapsed_time: str | None = None
+    time_after: str | None = None
+
+
+class PlayerIntentContractDraft(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    summary: str = ""
+    actions: list[PlayerActionIntentDraft] = Field(default_factory=list, max_length=8)
+    addressed_response_requested: bool = False
+    addressed_character_name: str | None = None
+    identity_reveal_requested: bool = False
+    pending_player_choice: str | None = None
+    protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
+
+
+def _compact(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _inventory_operation(player_input: str, action: PlayerActionIntentDraft) -> str | None:
+    supplied = _compact(action.inventory_operation).casefold()
+    if supplied in _INVENTORY_OPERATIONS:
+        return supplied
+
+    text = _compact(f"{action.intent} {player_input}").casefold().replace("ё", "е")
+    patterns = (
+        ("give", r"\b(передаю|передать|отдаю|отдать|возвращаю|возвращаюсь\s+с|вернуть|вручаю|вручить|give|hand\s+over)\b"),
+        ("take", r"\b(поднимаю|поднять|беру|взять|забираю|забрать|подбираю|подобрать|take|pick\s+up)\b"),
+        ("drop", r"\b(роняю|уронить|бросаю|бросить|выбрасываю|выбросить|drop)\b"),
+    )
+    for operation, pattern in patterns:
+        if re.search(pattern, text):
+            return operation
+
+    # Russian "кладу" is intentionally contextual: floor/ground/near self is a release into the
+    # current place, while a named surface/container is deliberate placement.
+    if re.search(r"\b(кладу|положить|оставляю|оставить)\b", text):
+        if re.search(r"\b(на\s+пол|на\s+земл|рядом\s+с\s+(?:собой|себя))\b", text):
+            return "drop"
+        return "place"
+    if re.search(r"\b(place|put)\b", text):
+        return "place"
+    return None
+
+
+def _normalized_action(
+    player_input: str,
+    action: PlayerActionIntentDraft,
+    *,
+    fallback_intent: str,
+) -> dict[str, Any]:
+    action_type = _compact(action.action_type).casefold()
+    if action_type not in _ACTION_TYPES:
+        action_type = "other"
+
+    operation = _inventory_operation(player_input, action)
+    item_id = _compact(action.item_id) or None
+    inventory_target_id = _compact(action.inventory_target_id) or None
+
+    # An explicit item identity plus an inventory verb is stronger evidence than a noisy action_type
+    # label emitted by the model (for example it occasionally called "put the key on the floor" a
+    # movement). Conversely, merely mentioning an entity/item ID must not turn an ordinary switch
+    # interaction into inventory manipulation.
+    if item_id and operation:
+        action_type = "inventory"
+
+    intent = _compact(action.intent) or fallback_intent
+    payload: dict[str, Any] = {
+        "action_type": action_type,
+        "intent": intent,
+        "destination_location": None,
+        "item_id": None,
+        "inventory_operation": None,
+        "inventory_target_id": None,
+        "elapsed_time": None,
+        "time_after": None,
+    }
+
+    if action_type == "movement":
+        destination = _compact(action.destination_location)
+        if not destination:
+            raise TurnPlanningError("movement intent is missing the player-selected destination")
+        payload["destination_location"] = destination
+    elif action_type == "inventory":
+        if not item_id:
+            raise TurnPlanningError("inventory intent is missing an authoritative item id")
+        if not operation:
+            raise TurnPlanningError("inventory intent is missing take/drop/give/place operation")
+        if operation == "give" and not inventory_target_id:
+            raise TurnPlanningError("give intent is missing an authoritative recipient id")
+        payload.update(
+            {
+                "item_id": item_id,
+                "inventory_operation": operation,
+                "inventory_target_id": inventory_target_id if operation == "give" else None,
+            }
+        )
+    elif action_type in {"rest", "wait"}:
+        payload["elapsed_time"] = _compact(action.elapsed_time) or None
+        payload["time_after"] = _compact(action.time_after) or None
+
+    return payload
+
+
+def normalize_intent_draft(
+    draft: PlayerIntentContractDraft,
+    player_input: str,
+) -> PlayerIntentContract:
+    """Convert permissive model output into strict immutable player authority.
+
+    This boundary is deterministic: irrelevant conditional fields are discarded, inventory operation
+    labels are recovered only from explicit language, and the final public model still enforces every
+    semantic invariant before anything reaches world-state compilation.
+    """
+
+    fallback = _compact(player_input)
+    summary = _compact(draft.summary) or fallback
+    actions = [
+        _normalized_action(player_input, action, fallback_intent=fallback)
+        for action in draft.actions
+    ]
+    return PlayerIntentContract.model_validate(
+        {
+            "summary": summary,
+            "actions": actions,
+            "addressed_response_requested": bool(draft.addressed_response_requested),
+            "addressed_character_name": _compact(draft.addressed_character_name) or None,
+            "identity_reveal_requested": bool(draft.identity_reveal_requested),
+            "pending_player_choice": _compact(draft.pending_player_choice) or None,
+            "protected_player_decisions": [
+                value
+                for raw in draft.protected_player_decisions
+                if (value := _compact(raw))
+            ],
+        }
+    )
 
 
 class PlayerIntentInterpreter:
-    """One semantic owner for human commitments, with exactly one bounded repair opportunity."""
+    """Single semantic extraction followed by deterministic normalization.
+
+    The previous implementation asked the same small local model to judge and then re-judge its own
+    contract. Live-model evidence showed that this self-review loop rejected every tested turn and
+    often damaged an initially valid intent during repair. Frozen intent now has one semantic owner:
+    one model extraction. Machine validation owns structure after that boundary.
+    """
 
     def __init__(self, router: RoleModelRouter):
         self._router = router
@@ -77,77 +230,9 @@ class PlayerIntentInterpreter:
 
     @staticmethod
     def _authoritative_context(context_messages: list[ChatMessage]) -> str:
-        """Keep semantic parsing anchored to machine/campaign state without replaying prose history."""
         if not context_messages:
             return ""
-        # ContextCompiler puts its layered authoritative state in the first system message. The
-        # latest human input is supplied separately below, so old transcript turns are intentionally
-        # excluded from intent extraction.
         return context_messages[0].content
-
-    async def _interpret_once(
-        self,
-        selection: RoleModelSelection,
-        context_messages: list[ChatMessage],
-        player_input: str,
-        *,
-        repair_issues: list[str] | None = None,
-        rejected: PlayerIntentContract | None = None,
-    ) -> PlayerIntentContract:
-        user = (
-            "[AUTHORITATIVE CONTEXT]\n"
-            + self._authoritative_context(context_messages)
-            + "\n\n[LATEST HUMAN INPUT]\n"
-            + player_input
-        )
-        system = _INTENT_PROMPT
-        if repair_issues is not None and rejected is not None:
-            system += "\n\n" + _REPAIR_PROMPT
-            user += (
-                "\n\n[REVIEW ISSUES]\n- "
-                + "\n- ".join(repair_issues)
-                + "\n\n[REJECTED INTENT CONTRACT]\n"
-                + rejected.model_dump_json()
-            )
-        data = await self._router.generate_json(
-            self._provider,
-            selection,
-            [
-                ChatMessage(role="system", content=system),
-                ChatMessage(role="user", content=user),
-            ],
-            max_tokens=1000,
-            temperature=0.0 if repair_issues is not None else settings.PLANNER_TEMPERATURE,
-            response_model=PlayerIntentContract,
-        )
-        return PlayerIntentContract.model_validate(data)
-
-    async def _review(
-        self,
-        selection: RoleModelSelection,
-        player_input: str,
-        contract: PlayerIntentContract,
-    ) -> PlayerIntentReview:
-        data = await self._router.generate_json(
-            self._provider,
-            selection,
-            [
-                ChatMessage(role="system", content=_REVIEW_PROMPT),
-                ChatMessage(
-                    role="user",
-                    content=(
-                        "[LATEST HUMAN INPUT]\n"
-                        + player_input
-                        + "\n\n[PLAYER INTENT CONTRACT]\n"
-                        + contract.model_dump_json()
-                    ),
-                ),
-            ],
-            max_tokens=500,
-            temperature=0.0,
-            response_model=PlayerIntentReview,
-        )
-        return PlayerIntentReview.model_validate(data)
 
     async def interpret(
         self,
@@ -155,53 +240,44 @@ class PlayerIntentInterpreter:
         context_messages: list[ChatMessage],
         player_input: str,
     ) -> PlayerIntentContract:
-        """Interpret -> review -> at most one repair -> final review, then freeze."""
+        user = (
+            "[AUTHORITATIVE CONTEXT]\n"
+            + self._authoritative_context(context_messages)
+            + "\n\n[LATEST HUMAN INPUT]\n"
+            + player_input
+        )
         try:
-            contract = await self._interpret_once(
+            data = await self._router.generate_json(
+                self._provider,
                 selection,
-                context_messages,
-                player_input,
+                [
+                    ChatMessage(role="system", content=_INTENT_PROMPT),
+                    ChatMessage(role="user", content=user),
+                ],
+                max_tokens=1000,
+                temperature=settings.PLANNER_TEMPERATURE,
+                response_model=PlayerIntentContractDraft,
             )
-            review = await self._review(selection, player_input, contract)
+            draft = PlayerIntentContractDraft.model_validate(data)
+            contract = normalize_intent_draft(draft, player_input)
             self.audit.append(
                 {
-                    "phase": "initial",
+                    "phase": "single_pass",
+                    "draft": draft.model_dump(mode="json"),
                     "intent": contract.model_dump(mode="json"),
-                    "review": review.model_dump(mode="json"),
+                    "normalization": "deterministic",
                 }
             )
-            if review.verdict == "pass":
-                return contract
-
-            issues = review.issues or [review.summary or "Intent contract is not faithful."]
-            repaired = await self._interpret_once(
-                selection,
-                context_messages,
-                player_input,
-                repair_issues=issues,
-                rejected=contract,
-            )
-            final_review = await self._review(selection, player_input, repaired)
-            self.audit.append(
-                {
-                    "phase": "repair",
-                    "intent": repaired.model_dump(mode="json"),
-                    "review": final_review.model_dump(mode="json"),
-                }
-            )
-            if final_review.verdict != "pass":
-                remaining = final_review.issues or [
-                    final_review.summary or "Intent contract remained unfaithful."
-                ]
-                raise TurnPlanningError(
-                    "player intent contract remained invalid after one repair: "
-                    + "; ".join(remaining)
-                )
-            return repaired
+            return contract
         except TurnPlanningError:
             raise
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise TurnPlanningError(f"player intent interpretation failed: {exc}") from exc
 
 
-__all__ = ["PlayerIntentInterpreter"]
+__all__ = [
+    "PlayerActionIntentDraft",
+    "PlayerIntentContractDraft",
+    "PlayerIntentInterpreter",
+    "normalize_intent_draft",
+]
