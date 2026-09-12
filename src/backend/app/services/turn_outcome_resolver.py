@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.player_intent import (
+    DestinationProfilePatch,
     DestinationProfilePatchSet,
     PlayerIntentContract,
     TurnOutcomeDecision,
@@ -22,8 +23,11 @@ The human's voluntary contribution is already frozen in PLAYER INTENT CONTRACT. 
 current-world/external result of those exact actions. Return exactly TurnOutcomeDecisionDraft.
 
 Hard ownership boundaries:
+- action_outcomes is a REQUIRED JSON field. Never omit it. Return exactly one action_outcome for every
+  frozen action index; the structured response schema enforces the expected list length.
 - Never add, delete, reorder, merge, reinterpret or continue the player's actions. action_index must
   refer to one existing frozen action. Return exactly one action_outcome for every action index.
+- Every action_outcome MUST contain action_index and resolution.
 - You may decide success, a concrete blocker, external consequences, observable information and NPC
   behavior. There is no dice/check resolver; do not postpone an action to a future check.
 - resolution for each action must be exactly auto_success, requires_choice, or blocked.
@@ -61,7 +65,7 @@ Return exactly DestinationProfilePatchSet. You receive frozen action indices and
 the deterministic compiler already identified as explicit new route-discovered places. Supply only a
 stable public physical profile for each listed index: 2-4 Russian sentences, at least 80 characters,
 ordinary purpose/appearance only. Do not change routes, actions, outcomes, NPCs or destination names.
-Return one patch per requested index and no other indices.
+The patches field is required and must contain exactly one patch per requested action index.
 """
 
 _ACTION_RESOLUTIONS = {"auto_success", "requires_choice", "blocked"}
@@ -84,7 +88,7 @@ class ActionOutcomeDraft(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     action_index: int = Field(ge=0, le=7)
-    resolution: str = ""
+    resolution: str = Field(min_length=2, max_length=32)
     safe_mundane: bool = False
     observable_outcome: str | None = None
     blocking_reason: str | None = None
@@ -105,9 +109,16 @@ class OutcomeNpcIntroductionDraft(BaseModel):
 
 
 class TurnOutcomeDecisionDraft(BaseModel):
+    """Permissive semantic draft with a mandatory action coverage field.
+
+    Cross-field meaning is normalized later, but ``action_outcomes`` has no default on purpose.
+    Otherwise Ollama's native schema considers ``{}`` valid and an actionful turn can silently become
+    an empty decision before deterministic coverage checks ever get useful evidence.
+    """
+
     model_config = ConfigDict(extra="ignore")
 
-    action_outcomes: list[ActionOutcomeDraft] = Field(default_factory=list, max_length=8)
+    action_outcomes: list[ActionOutcomeDraft] = Field(max_length=8)
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
     resolution: str = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
@@ -118,6 +129,35 @@ class TurnOutcomeDecisionDraft(BaseModel):
     dramatic_mode: str = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = None
+
+
+def _outcome_wire_model(action_count: int) -> type[TurnOutcomeDecisionDraft]:
+    """Constrain only structural coverage at the model boundary.
+
+    The model remains free to describe each external result permissively. The list cardinality is not
+    semantic inference, though: it is already known exactly from frozen player authority, so native
+    structured decoding should enforce it instead of allowing a vacuous list through to later guards.
+    """
+
+    class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
+        action_outcomes: list[ActionOutcomeDraft] = Field(
+            min_length=action_count,
+            max_length=action_count,
+        )
+
+    ExactTurnOutcomeDecisionDraft.__name__ = "TurnOutcomeDecisionDraft"
+    return ExactTurnOutcomeDecisionDraft
+
+
+def _profile_wire_model(patch_count: int) -> type[DestinationProfilePatchSet]:
+    class ExactDestinationProfilePatchSet(DestinationProfilePatchSet):
+        patches: list[DestinationProfilePatch] = Field(
+            min_length=patch_count,
+            max_length=patch_count,
+        )
+
+    ExactDestinationProfilePatchSet.__name__ = "DestinationProfilePatchSet"
+    return ExactDestinationProfilePatchSet
 
 
 def _compact(value: object) -> str:
@@ -283,6 +323,7 @@ class TurnOutcomeResolver:
         contract: PlayerIntentContract,
     ) -> TurnOutcomeDecision:
         try:
+            response_model = _outcome_wire_model(len(contract.actions))
             data = await self._router.generate_json(
                 self._provider,
                 selection,
@@ -302,7 +343,7 @@ class TurnOutcomeResolver:
                 ],
                 max_tokens=1200,
                 temperature=0.0,
-                response_model=TurnOutcomeDecisionDraft,
+                response_model=response_model,
             )
             draft = TurnOutcomeDecisionDraft.model_validate(data)
             decision = normalize_outcome_draft(draft, contract)
@@ -337,6 +378,7 @@ class TurnOutcomeResolver:
             for item in missing
         ]
         try:
+            response_model = _profile_wire_model(len(missing))
             data = await self._router.generate_json(
                 self._provider,
                 selection,
@@ -354,7 +396,7 @@ class TurnOutcomeResolver:
                 ],
                 max_tokens=700,
                 temperature=0.0,
-                response_model=DestinationProfilePatchSet,
+                response_model=response_model,
             )
             patches = DestinationProfilePatchSet.model_validate(data)
         except (LLMProviderError, ValueError, TypeError) as exc:
