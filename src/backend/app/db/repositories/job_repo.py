@@ -95,9 +95,11 @@ class PostTurnJobRepository(BaseRepository):
         self,
         campaign_id: UUID,
         assistant_turn_id: UUID,
+        *,
+        job_types: tuple[str, ...] | None = None,
     ) -> list[PostTurnJobRead]:
         created: list[PostTurnJob] = []
-        for job_type in self.JOB_TYPES:
+        for job_type in job_types or self.JOB_TYPES:
             existing = await self._session.execute(
                 select(PostTurnJob).where(
                     PostTurnJob.assistant_turn_id == str(assistant_turn_id),

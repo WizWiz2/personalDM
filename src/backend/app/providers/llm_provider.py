@@ -262,7 +262,24 @@ class LLMProvider:
             "строго по заданной схеме. Не используй markdown и пояснения."
         ]
         if error:
-            parts.append(f"Ошибка предыдущего ответа: {str(error)[:1800]}")
+            error_text = str(error)
+            parts.append(f"Ошибка предыдущего ответа: {error_text[:1800]}")
+            if "completed inventory steps require item_id and inventory_operation" in error_text:
+                parts.append(
+                    "Для каждого action_sequence step выбери ровно один вариант: обычное действие "
+                    "с item_id=null, inventory_operation=null, inventory_target_id=null; либо "
+                    "action_type=inventory с item_id и inventory_operation. Частичный inventory "
+                    "payload недопустим; для give также нужен inventory_target_id."
+                )
+            if "auto-success steps require a concrete observable_outcome" in error_text:
+                parts.append(
+                    "Для каждого action_sequence step с resolution=auto_success укажи короткий "
+                    "фактический observable_outcome, описывающий именно результат этого шага. "
+                    "Если это обычный вопрос/диалог, не создавай искусственный action step: "
+                    "удали такой step и перенеси текущий обмен в typed response ownership и "
+                    "observable_consequences/character_beats. Для структурного действия "
+                    "сохрани сам шаг и заполни observable_outcome; не оставляй его null."
+                )
         previous = previous_response.strip()
         if previous:
             parts.append(
@@ -270,6 +287,35 @@ class LLMProvider:
                 + previous[:4000]
             )
         return {"role": "user", "content": "\n\n".join(parts)}
+
+    @staticmethod
+    def _sanitize_partial_planner_inventory(payload: object, response_model) -> object:
+        """Remove only impossible optional inventory metadata from a planner wire payload.
+
+        Small local models occasionally attach a lone item reference to an ordinary interaction.
+        The domain model intentionally rejects that partial representation. At the transport
+        boundary it is safe to discard the incomplete optional metadata when no inventory operation
+        or target was supplied; a real inventory action must still carry its complete typed fields.
+        """
+        if getattr(response_model, "__name__", "") != "CoordinatedTurnPlan":
+            return payload
+
+        def visit(value):
+            if isinstance(value, list):
+                return [visit(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            result = {key: visit(item) for key, item in value.items()}
+            if (
+                result.get("action_type") == "interaction"
+                and result.get("inventory_operation") is None
+                and result.get("inventory_target_id") is None
+                and result.get("item_id") is not None
+            ):
+                result["item_id"] = None
+            return result
+
+        return visit(payload)
 
     @staticmethod
     def _adaptive_budget(base: int, attempt: int) -> int:
@@ -449,9 +495,20 @@ class LLMProvider:
                                 )
                             ):
                                 parsed = parsed[response_model.__name__]
-                            parsed = response_model.model_validate(parsed).model_dump(
-                                mode="json"
-                            )
+                            try:
+                                parsed = response_model.model_validate(parsed).model_dump(
+                                    mode="json"
+                                )
+                            except ValidationError as exc:
+                                sanitized = self._sanitize_partial_planner_inventory(
+                                    parsed,
+                                    response_model,
+                                )
+                                if sanitized is parsed:
+                                    raise
+                                parsed = response_model.model_validate(sanitized).model_dump(
+                                    mode="json"
+                                )
                         except ValidationError as exc:
                             last_raw_text = raw_text or json.dumps(
                                 parsed, ensure_ascii=False

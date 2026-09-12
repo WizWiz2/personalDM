@@ -35,6 +35,9 @@ class PostTurnDispatcher:
             )
             try:
                 async with factory() as session:
+                    # Every enabled post-turn observer, including the optional TE2 semantic shadow,
+                    # is represented by a durable PostTurnJob. process_turn() drives those jobs to a
+                    # terminal state before the lifecycle checkpoint is published.
                     await PostTurnProcessor(session).process_turn(assistant_turn_id)
                     await GenerationLifecycleRepository(session).set_phase_for_assistant(
                         assistant_turn_id,

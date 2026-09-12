@@ -107,6 +107,23 @@ class ActionStepPlan(BaseModel):
         normalized["action_type"] = "inventory"
         return normalized
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_safe_mundane_against_resolution(cls, data):
+        """Resolution is the stronger typed contract; safe_mundane cannot contradict it.
+
+        Local control models sometimes mark a blocked or choice step as safe_mundane. That
+        combination is unsatisfiable and should not discard an otherwise valid sequence.
+        """
+        if not isinstance(data, dict):
+            return data
+        resolution = data.get("resolution")
+        if data.get("safe_mundane") and resolution not in {None, "auto_success"}:
+            normalized = dict(data)
+            normalized["safe_mundane"] = False
+            return normalized
+        return data
+
     @model_validator(mode="after")
     def validate_step(self):
         if self.safe_mundane and self.resolution != "auto_success":
@@ -255,6 +272,11 @@ Authoritative scene state:
 - A completed change of room/building/district/journey endpoint requires structured transition.
 - Explicit player-selected plausible movement may create/discover a destination/route only through
   the transition executor; never hide travel in prose fields.
+- A sentence that explicitly names departure and destination (including return language such as
+  “возвращаюсь из текущего места в свою комнату”) is a movement commitment even when the route is
+  ordinary and no interaction is requested. Do not reinterpret such a sentence as observation or
+  interaction; put the location_transition on the movement step and resolve its destination from
+  the authoritative current scene and available exits.
 - World time advances only through an approved time transition.
 
 Dramatic discipline:

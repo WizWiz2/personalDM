@@ -131,7 +131,7 @@ async def test_presence_service_rejects_dead_character_even_with_explicit_moveme
 
 
 @pytest.mark.asyncio
-async def test_named_reveal_promotes_temporary_identity_instead_of_creating_duplicate(
+async def test_named_description_without_binding_does_not_rename_temporary_identity(
     db_session: AsyncSession,
 ):
     campaign_id, location, _, scene = await _campaign_state(db_session)
@@ -179,13 +179,13 @@ async def test_named_reveal_promotes_temporary_identity_instead_of_creating_dupl
     promoted = await entities.get_character(dealer.id)
 
     assert result.created_ids == []
-    assert dealer.id in result.resolved_ids
+    assert dealer.id not in result.resolved_ids
+    assert result.conflicts
     assert len(characters) == 2
-    assert promoted.canonical_name == "Мартин Вэнс"
-    assert "Местный делец" in promoted.aliases
-    assert "Вэнс" in promoted.aliases
-    assert promoted.custom_fields["temporary_name"] is False
-    assert promoted.custom_fields["identity_promoted_from"] == "Местный делец"
+    assert promoted.canonical_name == "Местный делец"
+    assert "Вэнс" not in promoted.aliases
+    assert promoted.custom_fields["temporary_name"] is True
+    assert "identity_promoted_from" not in promoted.custom_fields
 
 
 @pytest.mark.asyncio

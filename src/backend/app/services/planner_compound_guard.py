@@ -7,11 +7,23 @@ _COMPOUND_AUTHORITY = """
 [ROUND 43 — COMPOUND ACTION PRESERVATION]
 - One human turn may contain several ordered world actions. Preserve EVERY committed action in the
   order the player stated it; do not summarize a chain into only its first or final intent.
-- In particular, `выйду из комнаты, спущусь вниз и пойду в контору` contains multiple sequential
-  movement boundaries. Represent each completed movement as its own ordered action_sequence step
-  with its own destination/transition. Do not collapse the route to one top-level destination.
+- When the human explicitly commits to reaching one named location and then continuing to another
+  named location (for example `выхожу из комнаты в коридор и иду в контору`), those are distinct
+  sequential location boundaries. Preserve both in action_sequence, in order. Do not silently stop at
+  the intermediate location or jump over a structured boundary that is needed to authorize the route.
+- By contrast, route media such as `по лестнице`, `через коридор`, `через двор` are not separate
+  actions when they merely describe how one continuous move reaches a single committed destination.
+  The distinction is semantic: an explicitly committed intermediate destination/boundary is preserved;
+  incidental path prose is not promoted into another player action.
 - Mixed chains may include movement + interaction + item action + movement. Keep all committed steps
   until the first genuinely blocked/failed step; later dependent steps must then remain unexecuted.
+- The first genuinely blocked committed action remains in the sequence as a `blocked` step with a
+  concrete blocking_reason; stop means do not execute later dependent steps, not erase the blocked
+  attempt from the ordered plan.
+- A completed movement step is fully covered when its intent, observable_outcome (or structured
+  transition as the visible result), and location_transition are present. Do not require an extra
+  prose description of the path or duplicate a known destination's profile in the next step; durable
+  profiles belong only to genuinely new destinations.
 - A connective phrase such as `потом`, `затем`, `после этого`, `и`, or punctuation is not by itself
   proof of multiple actions; decide semantically from the actions the player actually committed to.
 """
@@ -22,8 +34,17 @@ _COMPOUND_REVIEW = """
 - Compare the latest human turn against action_sequence in order. If the player committed to two or
   more distinct world actions and the plan silently dropped, merged, reordered or skipped one, return
   repair_required. This is especially important for sequential location changes.
-- Do not invent extra steps from descriptive clauses or unresolved alternatives. The requirement is
-  complete coverage of committed actions, not maximum decomposition.
+- An explicitly named intermediate destination is not disposable route prose when the human states
+  that they reach it and then continue elsewhere. `выхожу из комнаты в коридор и иду в контору`
+  requires ordered coverage of Коридор and then Контора when those are structured route boundaries.
+  A repair that keeps only Коридор has lost the tail; a repair that jumps directly to Контора despite
+  the authoritative route requiring Коридор has lost the intermediate boundary.
+- Do not invent extra steps from descriptive clauses or unresolved alternatives. Incidental path
+  phrases such as `по лестнице`, `через коридор`, or `через двор` remain route detail when the player
+  commits to only one destination. The requirement is complete coverage of committed actions, not
+  maximum decomposition.
+- Do not reject a typed movement merely because it lacks a separate literary path description when
+  its structured destination and transition already make the physical result explicit.
 """
 
 
@@ -55,4 +76,4 @@ def install() -> None:
     _INSTALLED = True
 
 
-__all__ = ["install"]
+__all__ = ["_COMPOUND_AUTHORITY", "_COMPOUND_REVIEW", "install"]

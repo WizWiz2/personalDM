@@ -14,6 +14,7 @@ from app.models.jobs import GenerationPhase
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProviderError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services.initial_world_state import InitialWorldStateService
 from app.services.post_turn_dispatcher import PostTurnDispatcher
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -26,13 +27,11 @@ from app.services.turn_authority_planner import (
     TurnAuthorityPlanner,
 )
 from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
-from app.services.initial_world_state import InitialWorldStateService
 from app.services.turn_outcome_materializer import (
     MaterializedTurnOutcome,
     TurnOutcomeMaterializer,
 )
 from app.services.turn_planner import TurnPlanningError
-
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -392,24 +391,9 @@ class TurnSaga:
                         )
                     except ValueError as exc:
                         await self._session.rollback()
-                        failed_plan = plan.model_dump(mode="json")
-                        plan = CoordinatedTurnPlan.conservative_fallback(turn_create.content)
-                        planner_metadata = {
-                            **planner_metadata,
-                            "status": "transition_fallback",
-                            "failed_plan": failed_plan,
-                            "transition_error": str(exc)[:2000],
-                            "plan": plan.model_dump(mode="json"),
-                        }
-                        applied_transition = None
-                        effective_scene_id = source_scene_id
-                        transition_metadata = {
-                            "status": "rejected_before_narration",
-                            "source_scene_id": (
-                                str(source_scene_id) if source_scene_id else None
-                            ),
-                            "error": str(exc)[:2000],
-                        }
+                        raise TurnPlanningError(
+                            f"Planned transition rejected before narration: {exc}"
+                        ) from exc
 
                 if applied_transition:
                     effective_scene_id = applied_transition.target_scene_id
@@ -450,55 +434,9 @@ class TurnSaga:
                     acting_character_id=turn_create.acting_character_id,
                 )
             except TurnAuthorityError as exc:
-                if turn_create.acting_character_id is not None:
-                    raise
-
-                if applied_transition and applied_transition.status == "prepared":
-                    # This attempt has not crossed PREPARED yet, so its transition is still part of
-                    # the local prepare transaction. Roll it back atomically instead of invoking
-                    # durable compensation for a state that was never published as prepared.
-                    await self._session.rollback()
-                    applied_transition = None
-                    effective_scene_id = source_scene_id
-                    transition_metadata = {
-                        "status": "rolled_back_after_authority_rejection",
-                        "source_scene_id": (
-                            str(source_scene_id) if source_scene_id else None
-                        ),
-                        "error": str(exc)[:2000],
-                    }
-                elif applied_transition:
-                    transition_metadata = {
-                        **transition_metadata,
-                        "status": "reused_after_authority_rejection",
-                        "error": str(exc)[:2000],
-                    }
-                else:
-                    effective_scene_id = source_scene_id
-                    transition_metadata = {
-                        "status": "authority_rejected_without_transition",
-                        "source_scene_id": (
-                            str(source_scene_id) if source_scene_id else None
-                        ),
-                        "error": str(exc)[:2000],
-                    }
-
-                plan = CoordinatedTurnPlan.conservative_fallback(turn_create.content)
-                planner_metadata = {
-                    **planner_metadata,
-                    "status": "authority_fallback",
-                    "authority_error": str(exc)[:2000],
-                    "plan": plan.model_dump(mode="json"),
-                }
-                authority = await authority_service.build(
-                    campaign_id=campaign_id,
-                    trigger_turn_id=user_turn.id,
-                    player_input=turn_create.content,
-                    source_scene_id=source_scene_id,
-                    target_scene_id=effective_scene_id,
-                    plan=plan,
-                    acting_character_id=None,
-                )
+                raise TurnPlanningError(
+                    f"Turn authority rejected before narration: {exc}"
+                ) from exc
 
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(

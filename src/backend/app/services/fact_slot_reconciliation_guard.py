@@ -17,6 +17,7 @@ _INSTALLED = False
 class FactSlotMatch(BaseModel):
     proposal_index: int = Field(ge=0)
     current_fact_id: str | None = None
+    object_value: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class FactSlotReview(BaseModel):
@@ -35,6 +36,10 @@ def _canon_value(payload: dict, key: str, default: str) -> str:
 def _same_scope(payload: dict, fact: FactRead) -> bool:
     scope = str(payload.get("scope") or "campaign").casefold()
     if scope != fact.scope:
+        # A scene observation may refine a campaign-wide slot. Once semantic slot identity is
+        # established, inheriting the broader scope is required to supersede the old current value.
+        if scope == "scene" and fact.scope == "campaign":
+            return True
         return False
     if scope == "scene":
         return str(payload.get("scene_id") or "") == str(fact.scene_id or "")
@@ -45,7 +50,8 @@ def _has_exact_slot(payload: dict, facts: list[FactRead]) -> bool:
     subject = _norm(payload.get("subject"))
     predicate = _norm(payload.get("predicate"))
     return any(
-        _same_scope(payload, fact)
+        _norm(payload.get("scope") or "campaign") == fact.scope
+        and _same_scope(payload, fact)
         and _norm(fact.subject) == subject
         and _norm(fact.predicate) == predicate
         for fact in facts
@@ -116,6 +122,11 @@ def apply_fact_slot_matches(
         if fact.subject_entity_id:
             payload["subject_entity_id"] = str(fact.subject_entity_id)
         payload["previous_object_value"] = fact.object_value
+        # A proposal may encode a whole proposition in its predicate ("valve closed | yes").
+        # When rebasing onto an existing property ("valve | position"), the semantic matcher
+        # must also translate its value; copying only the keys would erase the new state.
+        if match.object_value is not None:
+            payload["object_value"] = match.object_value
 
         operation = _canon_value(payload, "operation", "assert")
         same_value = (
@@ -184,9 +195,18 @@ async def reconcile_fact_slots(
 slot, если оба описывают текущее освещение той же комнаты.
 
 Не склеивай просто связанные, причинно связанные или тематически похожие факты. Два независимых
-свойства должны остаться разными. Scope и scene должны совпадать.
+свойства должны остаться разными. Если новый scene-факт уточняет тот же campaign-слот, сопоставь
+его с campaign-фактом: движок унаследует более широкий scope и заменит старое текущее значение.
+Разные scene-слоты не склеивай.
 
-Верни только JSON вида {"matches":[{"proposal_index":0,"current_fact_id":"uuid-or-null"}]}.
+Для сопоставленного слота верни также object_value: новое значение, выраженное в терминах
+predicate текущего факта. Не копируй старое значение. Если новый факт записан целой пропозицией
+в predicate и значением «да/true», перенеси утверждаемое состояние в object_value. Например,
+«клапан | закрыт | да» относительно «клапан | положение | открыт» даёт object_value="закрыт".
+Сохраняй полярность и не добавляй смысл, отсутствующий в новом факте. Несвязанный атрибут
+(например цвет вместо рабочего состояния) не является тем же слотом.
+
+Верни только JSON вида {"matches":[{"proposal_index":0,"current_fact_id":"uuid-or-null","object_value":"новое значение или null"}]}.
 current_fact_id может быть только точным id из CURRENT FACTS или null. Для каждого proposal_index
 верни ровно одну запись.
 """

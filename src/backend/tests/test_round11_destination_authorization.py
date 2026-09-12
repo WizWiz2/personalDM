@@ -184,6 +184,40 @@ async def test_natural_travel_forms_authorize_named_destination(
 
 
 @pytest.mark.asyncio
+async def test_route_media_filter_preserves_authorized_endpoint_order(
+    db_session: AsyncSession,
+):
+    world = await _world(db_session)
+    turn = await TurnRepository(db_session).create(
+        world["campaign_id"],
+        TurnCreate(
+            role="user",
+            content="I leave the Detective Office for Lower City Street and then go to Cybercrime Department.",
+        ),
+    )
+
+    plan = ActionSequencePlan(steps=[
+        ActionStepPlan(
+            action_type="movement", intent=f"Travel to {destination}",
+            resolution="auto_success", safe_mundane=True,
+            transition=SceneTransitionPlan(
+                required=True, transition_type="location_transition",
+                destination_location=destination,
+            ),
+        )
+        for destination in (world["street"].canonical_name, world["cyber"].canonical_name)
+    ])
+    filtered = await SceneTransitionExecutor(db_session)._collapse_unauthorized_route_media(
+        plan, turn.id
+    )
+    assert filtered == plan
+    assert [step.transition.destination_location for step in filtered.steps] == [
+        world["street"].canonical_name,
+        world["cyber"].canonical_name,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_compound_travel_and_observation_reaches_named_department(
     db_session: AsyncSession,
 ):

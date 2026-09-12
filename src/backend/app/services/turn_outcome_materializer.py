@@ -73,6 +73,9 @@ class TurnOutcomeMaterializer:
             authority.campaign_id,
             entity_type="character",
         )
+        # Introductions and identity revelation are independent effects. Authority
+        # resolves which actors are new; a name question cannot suppress another
+        # authorized arrival based on how many temporary participants are present.
         known_names: set[str] = set()
         for entity in known:
             known_names.add(identity_key(entity.canonical_name))

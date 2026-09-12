@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.engine import AsyncSessionLocal
 from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.proposed_change import ChangeType, ProposalAction
@@ -22,6 +24,8 @@ from app.services.memory_scribe import MemoryScribe
 from app.services.memory_taxonomy import MemoryTaxonomyService
 from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.thesis_curator import ThesisCurator
+from app.services.truth_engine_shadow import SemanticResidualShadowService
+from app.services.truth_engine_writer import SemanticResidualWriterService
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,13 @@ AUTO_COMMIT_CHANGE_TYPES = frozenset(
         ChangeType.KNOWLEDGE,
         ChangeType.ITEM_TRANSFER,
         ChangeType.NARRATIVE_DETAIL,
+    }
+)
+
+TE2_WRITER_OWNED_LEGACY_TYPES = frozenset(
+    {
+        ChangeType.FACT,
+        ChangeType.RELATIONSHIP,
     }
 )
 
@@ -51,9 +62,62 @@ class PostTurnProcessor:
         self._jobs = PostTurnJobRepository(session)
         self._turns = TurnRepository(session)
         self._campaigns = CampaignRepository(session)
+        self._scenes = SceneRepository(session)
+
+    @staticmethod
+    def _filter_unstructured_player_claims(assistant, proposals):
+        """Keep claim-only conversation text from becoming objective world canon.
+
+        Scribe sees published prose and can occasionally mistake a player's quoted assertion for a
+        confirmed result. The planner's durable TurnAuthority is the stronger contract: a
+        conversation without an executed world-state action cannot authorize a new objective fact.
+        Knowledge proposals and explicit structured mutations remain untouched.
+        """
+        try:
+            raw_snapshot = getattr(assistant, "context_snapshot", "") or "{}"
+            snapshot = (
+                raw_snapshot
+                if isinstance(raw_snapshot, dict)
+                else json.loads(raw_snapshot)
+            )
+        except (TypeError, ValueError):
+            return proposals
+        authority = snapshot.get("turn_authority")
+        if not isinstance(authority, dict) or authority.get("resolution") != "conversation":
+            return proposals
+        sequence = authority.get("action_sequence")
+        steps = sequence.get("steps") if isinstance(sequence, dict) else []
+        has_structured_world_action = any(
+            isinstance(step, dict)
+            and (
+                step.get("action_type") in {"inventory", "movement", "rest", "wait"}
+                or (
+                    isinstance(step.get("transition"), dict)
+                    and step["transition"].get("transition_type")
+                    in {"location_transition", "time_transition"}
+                )
+            )
+            for step in (steps if isinstance(steps, list) else [])
+        )
+        if has_structured_world_action:
+            return proposals
+        return [
+            proposal
+            for proposal in proposals
+            if proposal.change_type != ChangeType.FACT
+        ]
 
     async def enqueue(self, campaign_id: UUID, assistant_turn_id: UUID) -> None:
-        await self._jobs.enqueue_for_turn(campaign_id, assistant_turn_id)
+        job_types = list(self._jobs.JOB_TYPES)
+        if settings.TE2_SEMANTIC_MODE == "shadow":
+            job_types.append("te2_semantic_shadow")
+        elif settings.TE2_SEMANTIC_MODE == "writer":
+            job_types.append("te2_semantic_writer")
+        await self._jobs.enqueue_for_turn(
+            campaign_id,
+            assistant_turn_id,
+            job_types=tuple(job_types),
+        )
         await self._session.flush()
 
     async def process_turn(self, assistant_turn_id: UUID) -> None:
@@ -95,6 +159,17 @@ class PostTurnProcessor:
             and isinstance(protocol, dict)
             and int(protocol.get("version") or 0) >= 1
         )
+
+    @staticmethod
+    def _respect_semantic_ownership(proposals):
+        """Remove legacy objective writes once TE2 owns those semantic domains."""
+        if settings.TE2_SEMANTIC_MODE != "writer":
+            return proposals
+        return [
+            proposal
+            for proposal in proposals
+            if proposal.change_type not in TE2_WRITER_OWNED_LEGACY_TYPES
+        ]
 
     async def _source_pair_is_active(self, assistant_turn_id: UUID) -> bool:
         """Read turn status from a fresh transaction boundary before durable writes."""
@@ -151,6 +226,14 @@ class PostTurnProcessor:
                 staged += 1
                 continue
             if change_type not in AUTO_COMMIT_CHANGE_TYPES:
+                staged += 1
+                continue
+            # Defense in depth: writer mode must never accept legacy objective semantic canon,
+            # even if a future caller bypasses _respect_semantic_ownership before create_batch().
+            if (
+                settings.TE2_SEMANTIC_MODE == "writer"
+                and change_type in TE2_WRITER_OWNED_LEGACY_TYPES
+            ):
                 staged += 1
                 continue
 
@@ -248,15 +331,62 @@ class PostTurnProcessor:
             elif row.job_type == "memory_scribe":
                 proposal_repo = ProposedChangeRepository(self._session)
                 existing = await proposal_repo.get_for_turn(assistant.id)
-                if not existing:
-                    campaign = await self._campaigns.get_by_id(campaign_id)
+                campaign = await self._campaigns.get_by_id(campaign_id)
+                if assistant.parent_turn_id:
+                    from app.services.location_profile_guard import (
+                        enrich_new_location_profiles,
+                    )
 
-                    # TurnAuthority already owns first-time NPC introductions and the
-                    # materializer has committed them before this job exists. Running the
-                    # legacy EntityRegistrar again would re-infer the same presence from
-                    # prose, add another LLM call, and create an undo race. Keep Registrar
-                    # only for legacy/non-authority turns.
+                    await enrich_new_location_profiles(
+                        self._session,
+                        campaign_id=campaign_id,
+                        trigger_turn_id=UUID(str(assistant.parent_turn_id)),
+                        assistant_content=assistant.content,
+                    )
+                if not existing:
+                    # TurnAuthority owns first-time NPC introductions and the materializer
+                    # commits them before this job exists.  The registrar is still useful
+                    # as a second, promotion-only semantic verifier: the authority plan
+                    # may conservatively omit the identity-reveal bit even when the
+                    # narrator's published text contains an explicit self-identification.
+                    # In promotion-only mode it cannot create a duplicate entity, so this
+                    # pass is safe on every authority-managed turn and keeps the boundary
+                    # between planning and durable identity state robust.
                     if self._authority_managed(assistant):
+                        authority_snapshot = self._snapshot_dict(assistant).get(
+                            "turn_authority"
+                        ) or {}
+                        should_verify_identity = bool(
+                            authority_snapshot.get("identity_reveal_requested")
+                        )
+                        if not should_verify_identity and assistant.scene_id:
+                            scene = await self._scenes.get_by_id(assistant.scene_id)
+                            if scene:
+                                entities = await EntityRepository(
+                                    self._session
+                                ).list_by_campaign(campaign_id)
+                                participant_ids = {
+                                    str(entity_id) for entity_id in scene.participants
+                                }
+                                should_verify_identity = any(
+                                    str(entity.id) in participant_ids
+                                    and bool(
+                                        (getattr(entity, "custom_fields", None) or {}).get(
+                                            "temporary_name"
+                                        )
+                                    )
+                                    for entity in entities
+                                    if entity.entity_type == "character"
+                                )
+                        if should_verify_identity:
+                            await EntityRegistrar(self._session).register_from_turn(
+                                campaign_id=campaign_id,
+                                scene_id=assistant.scene_id,
+                                source_turn_id=assistant.id,
+                                assistant_content=assistant.content,
+                                promotion_only=True,
+                            )
+                            await self._session.commit()
                         registration = EntityRegistrationResult()
                     else:
                         registration = await EntityRegistrar(
@@ -276,7 +406,12 @@ class PostTurnProcessor:
                             )
                             return
 
-                    scribe = MemoryScribe(self._session)
+                    from app.services.truth_engine_turn_context import SemanticTurnContextReader
+
+                    receipts = await SemanticTurnContextReader(self._session).structured_receipts(
+                        user_turn.id
+                    )
+                    scribe = MemoryScribe(self._session, structured_receipts=receipts)
                     if (
                         assistant.acting_character_id is not None
                         and campaign is not None
@@ -317,6 +452,10 @@ class PostTurnProcessor:
                         for proposal in proposals
                         if proposal.change_type != ChangeType.SCENE_THESIS
                     ]
+                    proposals = self._filter_unstructured_player_claims(
+                        assistant,
+                        proposals,
+                    )
                     taxonomy = MemoryTaxonomyService(self._session)
                     proposals = await taxonomy.classify_batch(
                         campaign_id,
@@ -347,6 +486,10 @@ class PostTurnProcessor:
                         assistant.scene_id,
                         proposals,
                     )
+                    # Writer cutover is domain ownership, not just read preference. Once TE2 owns
+                    # objective fluents/relations, legacy FACT/RELATIONSHIP proposals are removed
+                    # before validation/persistence so they cannot later be accepted or replayed.
+                    proposals = self._respect_semantic_ownership(proposals)
                     checker = ContinuityChecker(self._session)
                     for proposal in proposals:
                         valid, warning = await checker.validate_change(
@@ -398,6 +541,12 @@ class PostTurnProcessor:
                             "Memory Scribe turn %s: extracted=0 auto_committed=0 staged=0",
                             assistant.id,
                         )
+            elif row.job_type == "te2_semantic_shadow":
+                if settings.TE2_SEMANTIC_MODE == "shadow":
+                    await SemanticResidualShadowService(self._session).capture(assistant.id)
+            elif row.job_type == "te2_semantic_writer":
+                if settings.TE2_SEMANTIC_MODE == "writer":
+                    await SemanticResidualWriterService(self._session).write(assistant.id)
             else:
                 raise ValueError(f"Unknown post-turn job type: {row.job_type}")
 

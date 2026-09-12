@@ -33,11 +33,19 @@ class CharacterMention(BaseModel):
     presence: Literal["present", "departed", "mentioned_only"] = "present"
     importance: Literal["incidental", "supporting", "major"] = "incidental"
     temporary_name: bool = False
+    personal_name_evidence: str | None = Field(default=None, max_length=500)
     persistent: bool = True
 
 
 class EntityRegistrationEnvelope(BaseModel):
     characters: list[CharacterMention] = Field(default_factory=list, max_length=12)
+
+
+class PersonalNameRevealDecision(BaseModel):
+    """Semantic confirmation for a named reveal misclassified as temporary by the registrar."""
+
+    is_explicit: bool = False
+    evidence: str | None = Field(default=None, max_length=500)
 
 
 @dataclass
@@ -93,6 +101,8 @@ class EntityRegistrar:
         scene_id: UUID | None,
         source_turn_id: UUID,
         assistant_content: str,
+        *,
+        promotion_only: bool = False,
     ) -> EntityRegistrationResult:
         result = EntityRegistrationResult()
         if not scene_id or not assistant_content.strip():
@@ -149,6 +159,9 @@ class EntityRegistrar:
 - Не придумывай canonical_name, которого нет в тексте ответа. Запрещены синтетические ярлыки вроде «Городской Диктатор» или «Безымянный собеседник», если Narrator буквально так персонажа не назвал.
 - Для пока безымянного важного NPC допустимо точное временное обозначение вроде «бармен Медного Котла»; тогда temporary_name=true.
 - Если временный NPC позже назван по имени, верни новое имя, ту же role и temporary_name=false: движок сам повысит временную идентичность до постоянной.
+- Если персонаж прямо сам сообщает личное имя (например, «Меня зовут Иван»), заполни
+  personal_name_evidence точной цитатой из ответа ДМа. Такое evidence важнее случайного
+  значения temporary_name: движок всё равно проверит цитату и однозначность сцены перед promotion.
 - evidence — короткий точный фрагмент ответа ДМа, доказывающий появление, действие, реплику или уход.
 - presence=present только если персонаж физически находится в сцене к концу ответа.
 - presence=departed только если он явно покинул сцену.
@@ -271,18 +284,34 @@ class EntityRegistrar:
             if entity:
                 if (
                     matched_contextually
-                    and not mention.temporary_name
                     and self._is_temporary_identity(entity)
                     and identity_key(name) != identity_key(entity.canonical_name)
                 ):
+                    # Role/location similarity proposes a candidate, not an identity binding.
+                    # Neither an extractor's temporary flag nor a real but unrelated quotation
+                    # authorizes merging a discourse referent into this physical participant.
+                    confirmed_evidence = None
+                    if mention.presence != "mentioned_only":
+                        confirmed_evidence = await self._confirm_personal_name_reveal(
+                            selection, assistant_content, entity.canonical_name, mention,
+                        )
+                    if not confirmed_evidence:
+                        result.conflicts.append({
+                            "description": f"Name {name} is not bound to {entity.canonical_name}.",
+                            "evidence": mention.evidence,
+                            "error": "Unconfirmed contextual identity binding",
+                        })
+                        # Do not enrich aliases/profile or mark the candidate resolved either.
+                        continue
+                    old_name = entity.canonical_name
                     promoted = await self._promote_temporary_identity(
                         entity,
                         new_name=name,
                         mention=mention,
                         source_turn_id=source_turn_id,
+                        binding_evidence=confirmed_evidence,
                     )
                     if promoted is not None:
-                        old_name = entity.canonical_name
                         entity = promoted
                         index[identity_key(old_name)] = entity
                         index[identity_key(name)] = entity
@@ -295,6 +324,11 @@ class EntityRegistrar:
                 await self._enrich_existing(character, mention, source_turn_id, scene_id)
                 character_id = entity.id
             else:
+                if promotion_only:
+                    # This mode is used after TurnAuthority has already materialized all
+                    # authorized first appearances. It may reconcile a published name with an
+                    # existing temporary identity, but it is never allowed to create a new one.
+                    continue
                 character = await self._entities.create_character(
                     campaign_id,
                     CharacterCreate(
@@ -354,6 +388,54 @@ class EntityRegistrar:
         await self._session.flush()
         return result
 
+    async def _confirm_personal_name_reveal(
+        self,
+        selection,
+        assistant_content: str,
+        previous_identity: str,
+        mention: CharacterMention,
+    ) -> str | None:
+        """Confirm a self-identification semantically, without parsing prose lexically."""
+        try:
+            data = await self._router.generate_json(
+                self._provider,
+                selection,
+                [
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "Ты semantic identity verifier. Определи только, устанавливает ли "
+                            "приведённый фрагмент личное имя уже присутствующего временного "
+                            "персонажа. Не считай роль, должность, обращение или имя, названное "
+                            "третьим лицом, self-identification. Верни is_explicit=true только "
+                            "при прямом сообщении самим персонажем; evidence должна быть точной "
+                            "цитатой из текста. Не придумывай и не исправляй цитату."
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=(
+                            f"ПРЕЖНЯЯ ВРЕМЕННАЯ ИДЕНТИЧНОСТЬ: {previous_identity}\n"
+                            f"УПОМИНАНИЕ REGISTRAR: {mention.model_dump_json()}\n"
+                            f"ОПУБЛИКОВАННЫЙ ОТВЕТ ДМА:\n{assistant_content}"
+                        ),
+                    ),
+                ],
+                max_tokens=250,
+                temperature=0.0,
+                response_model=PersonalNameRevealDecision,
+            )
+            decision = PersonalNameRevealDecision.model_validate(data)
+            if (
+                decision.is_explicit and decision.evidence
+                and decision.evidence in assistant_content
+                and self._name_supported_by_text(mention.canonical_name, decision.evidence)
+            ):
+                return decision.evidence
+        except (LLMProviderError, ValidationError, ValueError, TypeError):
+            return None
+        return None
+
     async def _promote_temporary_identity(
         self,
         entity,
@@ -361,6 +443,7 @@ class EntityRegistrar:
         new_name: str,
         mention: CharacterMention,
         source_turn_id: UUID,
+        binding_evidence: str,
     ):
         old_name = entity.canonical_name
         aliases = self._clean_aliases(
@@ -371,6 +454,11 @@ class EntityRegistrar:
         custom_fields["temporary_name"] = False
         custom_fields.setdefault("identity_promoted_from", old_name)
         custom_fields["identity_promoted_turn_id"] = str(source_turn_id)
+        custom_fields["identity_binding"] = {
+            "entity_id": str(entity.id), "previous_designation": old_name,
+            "personal_name": new_name, "evidence": binding_evidence,
+            "source_turn_id": str(source_turn_id), "source": "published_self_identification",
+        }
         if mention.role:
             custom_fields["role"] = mention.role
 

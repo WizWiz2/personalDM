@@ -145,6 +145,65 @@ def structured_inventory_contract_issues(
     return issues
 
 
+def normalize_impossible_inventory_acquisition(
+    plan: CoordinatedTurnPlan,
+    context_messages,
+) -> CoordinatedTurnPlan:
+    """Downgrade an impossible ``take`` of an already-owned item to a neutral interaction.
+
+    Ownership is a machine-authored invariant, not a lexical guess.  Once the typed plan says
+    ``take`` but the authoritative bridge says the item is not a physical object here, the
+    mutation cannot be executed.  An already-owned item is retained as a neutral interaction;
+    an otherwise absent item is fail-closed as a blocked step.  Neither path invents an
+    acquisition or mutates the world.
+    """
+    has_owned, owned_ids = _reference_ids(context_messages, "Player-owned items:")
+    has_objects, object_ids = _reference_ids(context_messages, "Objects physically here:")
+    if not (has_owned and has_objects):
+        return plan
+
+    steps = list(plan.action_sequence.steps)
+    changed = False
+    for index, step in enumerate(steps):
+        if (
+            step.action_type == "inventory"
+            and step.resolution == "auto_success"
+            and step.inventory_operation == "take"
+            and step.item_id is not None
+            and str(step.item_id).casefold() not in object_ids
+        ):
+            if str(step.item_id).casefold() in owned_ids:
+                steps[index] = step.model_copy(
+                    update={
+                        "action_type": "interaction",
+                        "item_id": None,
+                        "inventory_operation": None,
+                        "inventory_target_id": None,
+                    }
+                )
+            else:
+                steps[index] = step.model_copy(
+                    update={
+                        "resolution": "blocked",
+                        "safe_mundane": False,
+                        "blocking_reason": (
+                            "Предмет не находится среди доступных объектов текущей сцены."
+                        ),
+                        "item_id": None,
+                        "inventory_operation": None,
+                        "inventory_target_id": None,
+                    }
+                )
+            changed = True
+    if not changed:
+        return plan
+    return plan.model_copy(
+        update={
+            "action_sequence": plan.action_sequence.model_copy(update={"steps": steps})
+        }
+    )
+
+
 def systemless_contract_issues(
     plan: CoordinatedTurnPlan,
     player_input: str,

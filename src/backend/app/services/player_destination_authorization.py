@@ -53,7 +53,7 @@ class PlayerDestinationAuthorizer:
         r"walk|walking|step|stepping|make\s+(?:my|our|their|his|her)\s+way|"
         r"иду|пойду|еду|поеду|отправляюсь|направляюсь|возвращаюсь|вхожу|захожу|"
         r"зайду|выхожу|ухожу|уйду|выезжаю|добираюсь|доберусь|следую|"
-        r"спускаюсь|поднимаюсь"
+        r"спускаюсь|поднимаюсь|пройти|прохожу|пройду|проходим"
         r")\b",
         re.IGNORECASE,
     )
@@ -621,7 +621,15 @@ class PlayerDestinationAuthorizer:
         result: list[_InputClause] = []
         previous_was_travel = False
         for part in parts:
-            explicit = bool(cls.TRAVEL_ANCHOR_RE.search(part))
+            anchors = list(cls.TRAVEL_ANCHOR_RE.finditer(part))
+            # A negated travel verb is a constraint on the world-action parser, not a
+            # committed movement.  Inspect the local token window rather than adding
+            # case-specific phrases: this handles coordinated prose such as
+            # "I do not go to the warehouse" and Russian "к складу не иду" while
+            # preserving a real travel clause elsewhere in the same input.
+            explicit = bool(anchors) and any(
+                not cls._anchor_is_negated(part, anchor) for anchor in anchors
+            )
             elliptical = previous_was_travel and bool(
                 cls.ELLIPTICAL_TRAVEL_RE.search(part)
             )
@@ -629,6 +637,17 @@ class PlayerDestinationAuthorizer:
             result.append(_InputClause(text=part, travel=travel))
             previous_was_travel = travel
         return result
+
+    @staticmethod
+    def _anchor_is_negated(clause: str, anchor: re.Match[str]) -> bool:
+        prefix = clause[: anchor.start()].casefold()
+        tokens = re.findall(r"[a-zа-яё0-9']+", prefix)
+        if not tokens:
+            return False
+        # Keep the window deliberately local. A negation in an earlier independent
+        # clause must not suppress a later committed movement.
+        window = tokens[-3:]
+        return any(token in {"не", "not", "never", "dont", "don't", "won't"} for token in window)
 
     @classmethod
     def _destination_reference(

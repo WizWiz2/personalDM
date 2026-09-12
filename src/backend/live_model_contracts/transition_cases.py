@@ -5,7 +5,9 @@ from collections.abc import Sequence
 from fastapi.testclient import TestClient
 
 from live_model_contracts.cases import CaseSpec
+from live_model_contracts.identity_oracles import name_binding_failures
 from live_model_contracts.snapshot import TruthSnapshot
+from live_model_contracts.state_oracles import is_lighting_fact, light_is_on
 from live_model_contracts.world import FixtureWorld, add_fact
 
 
@@ -93,12 +95,7 @@ def _identity_revealed(
     _fail(len(created) == 1, f"temporary→named reveal split identity: {created}", failures)
     if len(created) == 1:
         npc = created[0]
-        name = _fold(npc.get("name"))
-        _fail(
-            not any(token in name for token in ("безымян", "дежурный", "собеседник")),
-            f"identity remained synthetic after explicit name reveal: {npc}",
-            failures,
-        )
+        failures.extend(name_binding_failures(npc, after.data['turns']))
         custom = npc.get("custom_fields") or {}
         _fail(
             custom.get("temporary_name") is not True,
@@ -189,13 +186,10 @@ def _fact_created(
     world: FixtureWorld,
 ) -> list[str]:
     failures: list[str] = []
-    current = [row for row in after.current_facts() if "свет" in _fold(row.get("subject"))]
+    current = [row for row in after.current_facts() if is_lighting_fact(row)]
     _fail(bool(current), f"explicit changed light state was not persisted: {after.data['facts']}", failures)
     _fail(
-        any(
-            any(token in _fold(row.get("object")) for token in ("включ", "горит", "заж"))
-            for row in current
-        ),
+        any(light_is_on(row) for row in current),
         f"current light fact does not represent the observed on-state: {current}",
         failures,
     )
@@ -209,7 +203,7 @@ def _undo_fact_removed(
     world: FixtureWorld,
 ) -> list[str]:
     failures: list[str] = []
-    current = [row for row in after.current_facts() if "свет" in _fold(row.get("subject"))]
+    current = [row for row in after.current_facts() if is_lighting_fact(row)]
     _fail(not current, f"undo left turn-created light fact current: {current}", failures)
     return failures
 

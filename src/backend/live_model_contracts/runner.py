@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from live_model_contracts.transport import open_endpoint
+
 # IMPORTANT: do not import ``app`` at module import time. The isolated database/model env must be
 # installed before PersonalDM settings and SQLAlchemy engine are created.
 
@@ -50,7 +52,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--narrator-model", default="gemma4:e4b")
     parser.add_argument("--control-model", default="qwen2.5:7b")
     parser.add_argument("--ollama", default="http://127.0.0.1:11434")
-    parser.add_argument("--suite", choices=("core", "extended", "all"), default="core")
+    parser.add_argument("--suite", choices=("core", "extended", "all"), default="all")
     parser.add_argument(
         "--case",
         action="append",
@@ -58,9 +60,9 @@ def _parse_args() -> argparse.Namespace:
         help="Run only this case id; repeat the flag for several cases",
     )
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each case in a fresh campaign")
-    parser.add_argument("--turn-timeout", type=float, default=180.0)
+    parser.add_argument("--turn-timeout", type=float, default=300.0)
     parser.add_argument("--post-turn-timeout", type=float, default=120.0)
-    parser.add_argument("--control-timeout", type=float, default=90.0)
+    parser.add_argument("--control-timeout", type=float, default=180.0)
     parser.add_argument("--list", action="store_true", help="List contracts without running models")
     parser.add_argument(
         "--output",
@@ -82,7 +84,7 @@ def _api_base(ollama: str) -> str:
 def _ollama_models(ollama: str) -> set[str]:
     url = ollama.rstrip("/") + "/api/tags"
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
+        with open_endpoint(url, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         raise RuntimeError(

@@ -48,6 +48,19 @@ def test_typed_inventory_fields_normalize_interaction_to_inventory():
     assert str(step.inventory_target_id) == target_id
 
 
+def test_safe_mundane_cannot_contradict_a_blocked_resolution():
+    step = ActionStepPlan(
+        action_type="movement",
+        intent="Пройти на склад",
+        resolution="blocked",
+        safe_mundane=True,
+        blocking_reason="Из коридора нет прохода на склад.",
+    )
+
+    assert step.safe_mundane is False
+    assert step.resolution == "blocked"
+
+
 def test_partial_typed_inventory_payload_cannot_hide_as_interaction():
     with pytest.raises(ValidationError):
         ActionStepPlan(

@@ -10,8 +10,9 @@ from app.services.narration_publication_guard import (
     NarrationPublicationError,
     NarrationPublicationGuard,
 )
-from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
-from app.services.turn_planner import SceneTransitionPlan
+from app.services.turn_authority_planner import CoordinatedTurnPlan
+from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
+from app.services.turn_planner import SceneTransitionPlan, TurnPlanningError
 
 pytestmark = pytest.mark.product_contract
 
@@ -83,6 +84,16 @@ def _investigation_plan() -> CoordinatedTurnPlan:
     )
 
 
+def _pipeline_result(plan: CoordinatedTurnPlan) -> tuple[CoordinatedTurnPlan, dict]:
+    """Inject one already-compiled typed result at the production planning boundary.
+
+    Product contracts intentionally isolate execution/publication from live control-model variance.
+    The production planning owner is now TurnIntentPlanningPipeline, so tests must patch that seam
+    instead of the retired TurnAuthorityPlanner entrypoint.
+    """
+    return plan, {"architecture": "product_contract_fixture"}
+
+
 async def _narrate_return(*args, **kwargs):
     yield "Ты возвращаешься в укрытие; дверь закрывается за спиной, и знакомая комната снова вокруг тебя."
 
@@ -97,10 +108,10 @@ def test_new_location_without_profile_fails_before_world_mutation(client: TestCl
     campaign_id, _hero = _campaign_with_player(client)
 
     with patch.object(
-        TurnAuthorityPlanner,
+        TurnIntentPlanningPipeline,
         "plan",
         new_callable=AsyncMock,
-        return_value=_location_plan(with_profile=False),
+        return_value=_pipeline_result(_location_plan(with_profile=False)),
     ):
         response = client.post(
             f"/api/campaigns/{campaign_id}/turns",
@@ -119,17 +130,41 @@ def test_new_location_without_profile_fails_before_world_mutation(client: TestCl
     assert not any(turn["role"] == "assistant" for turn in active_history)
 
 
+def test_intent_failure_reports_original_cause_without_publishing_turn(client: TestClient):
+    campaign_id, _hero = _campaign_with_player(client)
+    before = client.get(f"/api/campaigns/{campaign_id}/locations").json()
+    with patch.object(
+        TurnIntentPlanningPipeline,
+        "plan",
+        new_callable=AsyncMock,
+        side_effect=TurnPlanningError("player intent contract remained invalid after one repair"),
+    ):
+        response = client.post(
+            f"/api/campaigns/{campaign_id}/turns",
+            json={"role": "user", "content": "Я выхожу в коридор."},
+        )
+
+    assert "player intent contract remained invalid after one repair" in response.text
+    assert "Control-plane recovery produced no concrete typed outcome" not in response.text
+    assert client.get(f"/api/campaigns/{campaign_id}/locations").json() == before
+    history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
+    assert not any(turn["role"] == "assistant" for turn in history)
+
+
 def test_new_location_profile_survives_full_turn_and_is_queryable(client: TestClient):
     campaign_id, hero = _campaign_with_player(client)
 
-    with patch.object(
-        TurnAuthorityPlanner,
-        "plan",
-        new_callable=AsyncMock,
-        return_value=_location_plan(with_profile=True),
-    ), patch(
-        "app.providers.llm_provider.LLMProvider.generate_stream",
-        side_effect=_narrate_return,
+    with (
+        patch.object(
+            TurnIntentPlanningPipeline,
+            "plan",
+            new_callable=AsyncMock,
+            return_value=_pipeline_result(_location_plan(with_profile=True)),
+        ),
+        patch(
+            "app.providers.llm_provider.LLMProvider.generate_stream",
+            side_effect=_narrate_return,
+        ),
     ):
         response = client.post(
             f"/api/campaigns/{campaign_id}/turns",
@@ -171,14 +206,17 @@ def test_investigation_publishes_typed_findings_even_when_narrator_returns_dead_
         "И желательно зацепки, к которым они могут привести."
     )
 
-    with patch.object(
-        TurnAuthorityPlanner,
-        "plan",
-        new_callable=AsyncMock,
-        return_value=_investigation_plan(),
-    ), patch(
-        "app.providers.llm_provider.LLMProvider.generate_stream",
-        side_effect=_dead_investigation_narration,
+    with (
+        patch.object(
+            TurnIntentPlanningPipeline,
+            "plan",
+            new_callable=AsyncMock,
+            return_value=_pipeline_result(_investigation_plan()),
+        ),
+        patch(
+            "app.providers.llm_provider.LLMProvider.generate_stream",
+            side_effect=_dead_investigation_narration,
+        ),
     ):
         response = client.post(
             f"/api/campaigns/{campaign_id}/turns",

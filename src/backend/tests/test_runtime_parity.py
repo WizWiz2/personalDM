@@ -57,6 +57,14 @@ def _cold_manifest(import_target: str) -> dict:
     return json.loads(line.split("=", 1)[1])
 
 
+def _closure_callables(value: object) -> list[object]:
+    return [
+        cell.cell_contents
+        for cell in (getattr(value, "__closure__", None) or ())
+        if callable(cell.cell_contents)
+    ]
+
+
 def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     cli_manifest = _cold_manifest("cli")
     api_manifest = _cold_manifest("app.main")
@@ -77,7 +85,12 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "location_profile",
         "dead_turn",
         "semantic_authority",
+        "performance_telemetry",
+        "quality_stabilization",
+        "player_quote_provenance",
+        "truth_engine_relationship_receipts",
     ]
+    assert cli_manifest["planning_architecture"] == "frozen_player_intent_v1"
     assert cli_manifest["context_pipeline"] == [
         "authoritative_scene_state",
         "recent_narrative_details",
@@ -85,7 +98,10 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["turn_pipeline"] == [
         "reserve_user_turn",
         "compile_planner_context",
-        "plan_authority",
+        "interpret_player_intent",
+        "normalize_player_intent_ir",
+        "resolve_external_outcomes",
+        "compile_action_plan_from_world_state",
         "execute_structured_boundary",
         "build_turn_authority",
         "materialize_structured_outcome",
@@ -115,13 +131,16 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "publish_accepted",
     ]
     assert cli_manifest["semantic_policy"] == {
-        "ownership": "model",
-        "sensory_vs_internal_state": "model",
-        "addressed_response": "typed_planner_field",
-        "npc_introduction_semantics": "model",
-        "movement_intent_semantics": "model",
-        "compound_action_coverage": "model_with_semantic_review",
-        "location_profile": "typed_transition_bridge_profile",
+        "player_action_ownership": "frozen_player_intent_ir",
+        "intent_fidelity": "single_semantic_extraction_then_deterministic_normalization",
+        "world_outcomes": "model_after_intent_freeze",
+        "movement_topology": "deterministic_graph_compiler",
+        "compound_action_order": "frozen_intent_order",
+        "route_discovery": "explicit_intent_plus_raw_provenance_gate",
+        "addressed_response": "player_intent_ir",
+        "npc_introduction_semantics": "outcome_resolver",
+        "location_profile": "scoped_new_destination_enrichment",
+        "relationship_receipt_resolution": "machine_receipt_undo_safe_projection",
         "empty_turn_fallback": "forbidden_fail_closed",
         "narrator_memory_attribution": "independent_segment_audit",
         "plot_fact_recovery": "evidence_grounded_second_pass",
@@ -129,13 +148,16 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     }
     assert cli_manifest["turn_stream"].endswith("TurnRunner.run_turn_stream")
     assert cli_manifest["turn_saga"].endswith("TurnSaga.run_turn_stream")
-    assert cli_manifest["provider_stream"].endswith("LLMProvider.generate_stream")
+    assert cli_manifest["turn_planning_pipeline"].endswith(
+        "TurnIntentPlanningPipeline.plan"
+    )
+    assert "quality_stabilization_guard" in cli_manifest["legacy_authority_planner"]
+    assert cli_manifest["legacy_authority_planner"].endswith("budgeted_plan")
+    assert "performance_telemetry_guard" in cli_manifest["provider_stream"]
+    assert cli_manifest["provider_stream"].endswith("measured_generate_stream")
     assert cli_manifest["narration_pipeline_impl"].endswith(
         "AuthorityNarrationPipeline.generate"
     )
-    assert "systemless_authority_guard" in cli_manifest["authority_planner"]
-    assert cli_manifest["authority_planner"].endswith("guarded_plan")
-    assert "round34" not in cli_manifest["authority_planner"]
     assert "semantic_authority_guard" in cli_manifest["authority_validator"]
     assert cli_manifest["authority_validator"].endswith("semantically_adjudicated_validate")
     assert cli_manifest["context_compiler"].endswith(
@@ -176,7 +198,18 @@ def test_turn_saga_and_authority_pipeline_are_explicit() -> None:
 
     assert LLMProvider.generate_stream is raw_provider_method
     assert BaseTurnRunner.run_turn_stream is legacy_turn_method
-    assert TurnAuthorityPlanner.plan.__module__ == "app.services.systemless_authority_guard"
+
+    # The cold manifest proves the production planner implementation itself. In the warm pytest
+    # process conftest deliberately replaces TurnIntentPlanningPipeline.plan with a compatibility
+    # bridge, so assert the stable TurnSaga wiring here instead of the patched class method.
+    assert TurnSaga._plan.__module__ == "app.services.turn_intent_pipeline"
+    assert TurnAuthorityPlanner.plan.__module__ == "app.services.quality_stabilization_guard"
+    wrapped_modules = {
+        getattr(value, "__module__", "")
+        for value in _closure_callables(TurnAuthorityPlanner.plan)
+    }
+    assert "app.services.systemless_authority_guard" in wrapped_modules
+
     assert MemoryScribe._parse_data is memory_parser
     assert ThesisCurator.reconcile is thesis_reconcile
     assert TurnRunner.__mro__[1] is TurnSaga

@@ -2,8 +2,13 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
+from app.config import settings
 from app.services.post_turn_structured_receipt_guard import (
     RelationshipReceiptDecision,
+    _explicit_item_debt_fulfillments,
+    _ensure_relationship_receipts,
     _executed_steps,
     _player_id,
 )
@@ -60,3 +65,28 @@ def test_relationship_reconciler_accepts_only_typed_verdicts():
         reason="Структурированная передача выполнила явное условие долга.",
     )
     assert decision.retract_ids == [relationship_id]
+
+
+def test_exact_item_receipt_closes_only_item_specific_debt():
+    relationship_id = uuid4()
+    receipt = {
+        "operation": "give",
+        "item_name": "Латунный ключ (у Кая)",
+        "from_character_id": "kai",
+        "to_character_id": "martin",
+    }
+    row = SimpleNamespace(
+        id=relationship_id,
+        subject_id="martin",
+        object_id="kai",
+        relation_type="debt",
+        description="Кай должен Мартину вернуть латунный ключ; после возврата долг закрыт.",
+    )
+    assert _explicit_item_debt_fulfillments(receipt, [row]) == {relationship_id}
+
+
+@pytest.mark.asyncio
+async def test_writer_mode_disables_legacy_relationship_receipt_writer(monkeypatch):
+    monkeypatch.setattr(settings, "TE2_SEMANTIC_MODE", "writer")
+    # The ownership guard must short-circuit before touching any legacy processor/state.
+    assert await _ensure_relationship_receipts(None, None, None, None) == 0

@@ -5,7 +5,7 @@ from uuid import uuid4
 import pytest
 
 from app.services.memory_operations import MemoryOperationsService
-from app.services.thesis_curator import ThesisCurator
+from app.services.thesis_curator import DesiredThesis, ThesisCurator
 
 
 class FakeSceneRepository:
@@ -53,11 +53,11 @@ class FullLifecycleFakeSession(AuditableFakeSession):
         return None
 
 
-def thesis(*, priority=5, created_offset=0, pinned=False):
+def thesis(*, priority=5, created_offset=0, pinned=False, thesis_type="tension"):
     created = datetime.utcnow() + timedelta(seconds=created_offset)
     return SimpleNamespace(
         id=uuid4(),
-        thesis_type="tension",
+        thesis_type=thesis_type,
         related_entity_ids=[],
         priority=priority,
         pinned=pinned,
@@ -109,6 +109,35 @@ async def test_unmentioned_working_memory_survives_curator_pass():
     assert open_thread.status == "active"
     assert result.kept == 1
     assert result.resolved == 0
+
+
+@pytest.mark.asyncio
+async def test_low_similarity_unresolved_beat_survives_reused_model_id():
+    open_thread = thesis(
+        priority=8,
+        thesis_type="unresolved_beat",
+    )
+    open_thread.text = "Нужно понять, почему в журнале есть семиминутный разрыв."
+    repo = FakeSceneRepository([open_thread])
+    curator = ThesisCurator(FakeSession())
+    curator._scene_repo = repo
+
+    result = await curator.reconcile(
+        uuid4(),
+        uuid4(),
+        [
+            DesiredThesis(
+                thesis_type="unresolved_beat",
+                text="Нужно проверить происхождение старой квитанции.",
+                priority=8,
+                existing_thesis_id=open_thread.id,
+            )
+        ],
+    )
+
+    assert open_thread.status == "active"
+    assert result.kept == 1
+    assert repo.created == []
 
 
 @pytest.mark.asyncio

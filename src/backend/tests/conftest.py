@@ -18,6 +18,7 @@ from app.services.turn_authority_planner import (
     TurnAuthorityPlanner,
 )
 from app.services.turn_authority_validator import TurnAuthorityValidator
+from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
 from app.services.turn_planner import TurnPlan, TurnPlanner
 
 # Use in-memory SQLite database for testing
@@ -51,16 +52,17 @@ def _coordinated_from_legacy(plan: TurnPlan) -> CoordinatedTurnPlan:
 
 @pytest.fixture(autouse=True)
 def mock_turn_planner(request):
-    """Keep unrelated endpoint tests offline without pretending this is acceptance coverage.
+    """Keep old deterministic tests meaningful while production uses frozen-intent planning.
 
-    Existing invariant tests often patch legacy ``TurnPlanner.plan`` with a precise transition or
-    compound plan. The test-only bridge below converts that exact plan into the new typed shape, so
-    those tests continue to assert state semantics rather than an implementation class name.
+    Unmarked endpoint tests historically patched ``TurnPlanner.plan``. They still get that exact
+    deterministic plan, but through the current ``TurnIntentPlanningPipeline`` entry point.
 
-    ``interagent_contract_enforced`` tests keep the real authority planner/hand-off and provide
-    their own deterministic model transport. ``product_contract`` tests also opt out of the generic
-    authority-plan seam: a player-visible scenario must either exercise the real planner transport or
-    explicitly provide a scenario-specific TurnAuthorityPlanner plan in the test itself.
+    ``interagent_contract_enforced`` means the old typed Planner→Authority→Validator hand-off is the
+    thing under test. Those tests therefore route a real/explicitly patched ``TurnAuthorityPlanner``
+    through the current production entry point instead of bypassing it. This preserves the contract
+    during the strangler migration without making the retired planner the production owner again.
+
+    ``product_contract`` tests own their planning seam explicitly and receive no generic bridge.
     """
     legacy_plan = TurnPlan(
         player_intent="Resolve the player's latest action.",
@@ -79,22 +81,64 @@ def mock_turn_planner(request):
         legacy = await TurnPlanner(AsyncMock()).plan(selection, context_messages)
         return _coordinated_from_legacy(legacy)
 
-    authority_enabled = bool(
+    async def bridge_intent_pipeline(
+        _self,
+        *,
+        campaign_id,
+        user_input,
+        context_messages,
+        selection,
+    ):
+        legacy = await TurnPlanner(AsyncMock()).plan(selection, context_messages)
+        plan = _coordinated_from_legacy(legacy)
+        return plan, {"architecture": "legacy_test_bridge"}
+
+    async def bridge_interagent_pipeline(
+        _self,
+        *,
+        campaign_id,
+        user_input,
+        context_messages,
+        selection,
+    ):
+        # Respect a test's own patch of TurnAuthorityPlanner.plan (golden playthrough does this), or
+        # otherwise exercise the real legacy typed planner with the pipeline's control router.
+        planner = TurnAuthorityPlanner(_self._router)
+        plan = await planner.plan(
+            selection,
+            context_messages,
+            latest_user_input=user_input,
+        )
+        return plan, {"architecture": "legacy_interagent_test_bridge"}
+
+    interagent_enabled = bool(
         request.node.get_closest_marker("interagent_contract_enforced")
-        or request.node.get_closest_marker("product_contract")
     )
+    product_enabled = bool(request.node.get_closest_marker("product_contract"))
+
     with patch(
         "app.services.turn_planner.TurnPlanner.plan",
         new_callable=AsyncMock,
         return_value=legacy_plan,
     ):
-        if authority_enabled:
+        if product_enabled:
             yield
+        elif interagent_enabled:
+            with patch.object(
+                TurnIntentPlanningPipeline,
+                "plan",
+                new=bridge_interagent_pipeline,
+            ):
+                yield
         else:
             with patch.object(
                 TurnAuthorityPlanner,
                 "plan",
                 new=bridge_authority_plan,
+            ), patch.object(
+                TurnIntentPlanningPipeline,
+                "plan",
+                new=bridge_intent_pipeline,
             ):
                 yield
 
