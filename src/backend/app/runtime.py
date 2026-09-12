@@ -186,7 +186,7 @@ def runtime_manifest() -> dict[str, Any]:
             "reserve_user_turn",
             "compile_planner_context",
             "interpret_player_intent",
-            "review_player_intent",
+            "normalize_player_intent_ir",
             "resolve_external_outcomes",
             "compile_action_plan_from_world_state",
             "execute_structured_boundary",
@@ -217,7 +217,7 @@ def runtime_manifest() -> dict[str, Any]:
         ],
         "semantic_policy": {
             "player_action_ownership": "frozen_player_intent_ir",
-            "intent_fidelity": "single_narrow_review_with_one_repair_max",
+            "intent_fidelity": "single_semantic_extraction_then_deterministic_normalization",
             "world_outcomes": "model_after_intent_freeze",
             "movement_topology": "deterministic_graph_compiler",
             "compound_action_order": "frozen_intent_order",
