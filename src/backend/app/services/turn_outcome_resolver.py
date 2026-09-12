@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.player_intent import (
     DestinationProfilePatchSet,
@@ -16,13 +19,16 @@ from app.services.turn_planner import TurnPlanningError
 
 _OUTCOME_PROMPT = """[FROZEN INTENT OUTCOME RESOLVER]
 The human's voluntary contribution is already frozen in PLAYER INTENT CONTRACT. Resolve only the
-current-world/external result of those exact actions. Return exactly TurnOutcomeDecision.
+current-world/external result of those exact actions. Return exactly TurnOutcomeDecisionDraft.
 
 Hard ownership boundaries:
 - Never add, delete, reorder, merge, reinterpret or continue the player's actions. action_index must
   refer to one existing frozen action. Return exactly one action_outcome for every action index.
 - You may decide success, a concrete blocker, external consequences, observable information and NPC
   behavior. There is no dice/check resolver; do not postpone an action to a future check.
+- resolution for each action must be exactly auto_success, requires_choice, or blocked.
+- blocked requires a concrete blocking_reason. Non-blocked actions should not carry blocking_reason.
+- safe_mundane=true is valid only for auto_success.
 - requires_choice is only for a choice the human genuinely has not supplied. It is not a substitute
   for uncertainty or risk.
 - Do not decide route topology. The deterministic compiler owns current location, exits, known
@@ -42,7 +48,8 @@ NPC authority:
   is handled after narration.
 
 Narrative fields constrain only external presentation. They cannot authorize another player action.
-Do not manufacture a complication in a calm routine turn without an established source.
+Do not manufacture a complication in a calm routine turn without an established source. If
+allow_new_complication=true, complication_source must identify that established source.
 
 For an explicitly new route-discovered destination, destination_profile may describe stable public
 physical traits/ordinary purpose in 2-4 Russian sentences. It is enrichment only; never use it to
@@ -56,6 +63,169 @@ stable public physical profile for each listed index: 2-4 Russian sentences, at 
 ordinary purpose/appearance only. Do not change routes, actions, outcomes, NPCs or destination names.
 Return one patch per requested index and no other indices.
 """
+
+_ACTION_RESOLUTIONS = {"auto_success", "requires_choice", "blocked"}
+_TURN_RESOLUTIONS = {
+    "success",
+    "partial_success",
+    "failure",
+    "uncertain",
+    "conversation",
+    "observation",
+    "transition",
+    "sequence",
+}
+_DRAMATIC_MODES = {"calm", "routine", "tense", "dangerous"}
+
+
+class ActionOutcomeDraft(BaseModel):
+    """LLM-facing outcome shape without cross-field semantic validators."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    action_index: int = Field(ge=0, le=7)
+    resolution: str = ""
+    safe_mundane: bool = False
+    observable_outcome: str | None = None
+    blocking_reason: str | None = None
+    destination_profile: str | None = None
+
+
+class OutcomeNpcIntroductionDraft(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    canonical_name: str = ""
+    role: str = ""
+    description: str = ""
+    appearance: str = ""
+    voice: str | None = None
+    temporary_name: bool = True
+    personal_name_evidence: str | None = None
+    reason: str = ""
+
+
+class TurnOutcomeDecisionDraft(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    action_outcomes: list[ActionOutcomeDraft] = Field(default_factory=list, max_length=8)
+    npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
+    resolution: str = "success"
+    observable_consequences: list[str] = Field(default_factory=list, max_length=4)
+    character_beats: list[str] = Field(default_factory=list, max_length=6)
+    canon_constraints: list[str] = Field(default_factory=list, max_length=8)
+    narration_guidance: list[str] = Field(default_factory=list, max_length=6)
+    ending_hook: str = ""
+    dramatic_mode: str = "calm"
+    allow_new_complication: bool = False
+    complication_source: str | None = None
+
+
+def _compact(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _bounded_strings(values: list[str], limit: int) -> list[str]:
+    result: list[str] = []
+    for raw in values[:limit]:
+        value = _compact(raw)
+        if value:
+            result.append(value)
+    return result
+
+
+def normalize_outcome_draft(
+    draft: TurnOutcomeDecisionDraft,
+    contract: PlayerIntentContract,
+) -> TurnOutcomeDecision:
+    """Turn permissive model output into strict world-facing semantics deterministically."""
+
+    expected = set(range(len(contract.actions)))
+    got = [item.action_index for item in draft.action_outcomes]
+    if len(got) != len(set(got)) or set(got) != expected:
+        raise TurnPlanningError(
+            "outcome resolver did not preserve frozen action coverage; "
+            f"expected={sorted(expected)} got={sorted(got)}"
+        )
+
+    action_outcomes: list[dict[str, Any]] = []
+    for item in draft.action_outcomes:
+        resolution = _compact(item.resolution).casefold()
+        if resolution not in _ACTION_RESOLUTIONS:
+            raise TurnPlanningError(
+                f"outcome action {item.action_index} returned unknown resolution={resolution!r}"
+            )
+        blocking_reason = _compact(item.blocking_reason) or None
+        if resolution == "blocked" and not blocking_reason:
+            raise TurnPlanningError(
+                f"blocked outcome for action {item.action_index} has no concrete blocking reason"
+            )
+        action_outcomes.append(
+            {
+                "action_index": item.action_index,
+                "resolution": resolution,
+                "safe_mundane": bool(item.safe_mundane) if resolution == "auto_success" else False,
+                "observable_outcome": _compact(item.observable_outcome) or None,
+                "blocking_reason": blocking_reason if resolution == "blocked" else None,
+                "destination_profile": _compact(item.destination_profile) or None,
+            }
+        )
+
+    introductions: list[dict[str, Any]] = []
+    for index, npc in enumerate(draft.npc_introductions):
+        canonical_name = _compact(npc.canonical_name)
+        role = _compact(npc.role)
+        description = _compact(npc.description)
+        appearance = _compact(npc.appearance)
+        reason = _compact(npc.reason)
+        if not canonical_name or not role:
+            raise TurnPlanningError(f"NPC introduction {index} is missing designation or role")
+        if len(description) < 32 or len(appearance) < 32:
+            raise TurnPlanningError(
+                f"NPC introduction {index} lacks a concrete description/appearance"
+            )
+        if not reason:
+            raise TurnPlanningError(f"NPC introduction {index} is missing appearance reason")
+        evidence = _compact(npc.personal_name_evidence) or None
+        # Missing evidence cannot promote a personal identity. Downgrading to a temporary role is
+        # conservative and preserves the person without inventing stable canon.
+        temporary_name = bool(npc.temporary_name) or not evidence
+        introductions.append(
+            {
+                "canonical_name": canonical_name,
+                "role": role,
+                "description": description,
+                "appearance": appearance,
+                "voice": _compact(npc.voice) or None,
+                "temporary_name": temporary_name,
+                "personal_name_evidence": evidence if not temporary_name else None,
+                "reason": reason,
+            }
+        )
+
+    resolution = _compact(draft.resolution).casefold()
+    if resolution not in _TURN_RESOLUTIONS:
+        resolution = "success"
+    dramatic_mode = _compact(draft.dramatic_mode).casefold()
+    if dramatic_mode not in _DRAMATIC_MODES:
+        dramatic_mode = "calm"
+    complication_source = _compact(draft.complication_source) or None
+    allow_complication = bool(draft.allow_new_complication and complication_source)
+
+    return TurnOutcomeDecision.model_validate(
+        {
+            "action_outcomes": action_outcomes,
+            "npc_introductions": introductions,
+            "resolution": resolution,
+            "observable_consequences": _bounded_strings(draft.observable_consequences, 4),
+            "character_beats": _bounded_strings(draft.character_beats, 6),
+            "canon_constraints": _bounded_strings(draft.canon_constraints, 8),
+            "narration_guidance": _bounded_strings(draft.narration_guidance, 6),
+            "ending_hook": _compact(draft.ending_hook),
+            "dramatic_mode": dramatic_mode,
+            "allow_new_complication": allow_complication,
+            "complication_source": complication_source if allow_complication else None,
+        }
+    )
 
 
 class TurnOutcomeResolver:
@@ -132,13 +302,19 @@ class TurnOutcomeResolver:
                 ],
                 max_tokens=1200,
                 temperature=0.0,
-                response_model=TurnOutcomeDecision,
+                response_model=TurnOutcomeDecisionDraft,
             )
-            decision = TurnOutcomeDecision.model_validate(data)
+            draft = TurnOutcomeDecisionDraft.model_validate(data)
+            decision = normalize_outcome_draft(draft, contract)
             self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
             self.audit.append(
-                {"phase": "outcome", "decision": decision.model_dump(mode="json")}
+                {
+                    "phase": "outcome",
+                    "draft": draft.model_dump(mode="json"),
+                    "decision": decision.model_dump(mode="json"),
+                    "normalization": "deterministic",
+                }
             )
             return decision
         except TurnPlanningError:
@@ -200,4 +376,10 @@ class TurnOutcomeResolver:
         return enriched
 
 
-__all__ = ["TurnOutcomeResolver"]
+__all__ = [
+    "ActionOutcomeDraft",
+    "OutcomeNpcIntroductionDraft",
+    "TurnOutcomeDecisionDraft",
+    "TurnOutcomeResolver",
+    "normalize_outcome_draft",
+]
