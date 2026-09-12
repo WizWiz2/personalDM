@@ -90,4 +90,4 @@ def install() -> None:
     TurnAuthorityService.build = strict_authority
 
 
-__all__ = ["_is_dead_surface", "_empty_plan_diagnostic", "_is_empty_plan", "install"]
+__all__ = ["_empty_plan_diagnostic", "_is_dead_surface", "_is_empty_plan", "install"]
