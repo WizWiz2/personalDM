@@ -135,19 +135,12 @@ def install() -> None:
                 "telemetry": audit,
             }
         except TurnPlanningError as exc:
-            # Preserve TurnSaga's established fail-closed semantics. The conservative fallback is
-            # non-mutating and cannot smuggle a partially compiled action into execution.
-            fallback = CoordinatedTurnPlan.conservative_fallback(user_input)
-            return fallback, {
-                "status": "fallback",
-                "reason": "intent_pipeline_failed",
-                "error": str(exc)[:2000],
-                "plan": fallback.model_dump(mode="json"),
-                "telemetry": {
-                    "architecture": "frozen_player_intent_v1",
-                    "status": "failed",
-                },
-            }
+            # Do not convert a failed typed pipeline into an empty conservative plan. The strangler
+            # installer replaced the older dead-turn wrapper around TurnSaga._plan, so returning a
+            # fallback here used to hide the original control-plane defect until TurnAuthority and
+            # every live-model case reported the same generic "no concrete typed outcome" error.
+            # Preserve fail-closed semantics by surfacing the phase error at the actual boundary.
+            raise TurnPlanningError(f"frozen intent pipeline failed: {exc}") from exc
 
     async def compiled_apply_action_sequence(
         self,
