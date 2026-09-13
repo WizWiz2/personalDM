@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { Icons } from './Icons'
 
 interface VisualLightboxProps {
@@ -9,7 +9,10 @@ interface VisualLightboxProps {
 }
 
 export function VisualLightbox({ src, title, subtitle, onClose }: VisualLightboxProps) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+
   useEffect(() => {
+    closeRef.current?.focus()
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
     }
@@ -20,7 +23,7 @@ export function VisualLightbox({ src, title, subtitle, onClose }: VisualLightbox
   return (
     <div className="visual-lightbox" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="visual-lightbox-dialog" role="dialog" aria-modal="true" aria-label={title}>
-        <button className="visual-lightbox-close" onClick={onClose} aria-label="Закрыть"><Icons.close /></button>
+        <button ref={closeRef} className="visual-lightbox-close" onClick={onClose} aria-label="Закрыть"><Icons.close /></button>
         <img src={src} alt={title} />
         <div className="visual-lightbox-caption">
           <strong>{title}</strong>

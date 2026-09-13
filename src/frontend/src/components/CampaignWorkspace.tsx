@@ -130,7 +130,14 @@ export function CampaignWorkspace() {
         <aside className={`campaign-sidebar ${pinned ? 'pinned' : ''} ${mobileOpen ? 'mobile-open' : ''}`}>
           <div className="workspace-brand"><BrandLogo /></div>
 
-          <button className="rail-control" onClick={() => setPinned((v) => !v)} title={pinned ? 'Открепить меню' : 'Закрепить меню'}>
+          <button
+            type="button"
+            className="rail-control"
+            onClick={() => setPinned((v) => !v)}
+            title={pinned ? 'Открепить меню' : 'Закрепить меню'}
+            aria-pressed={pinned}
+            aria-label={pinned ? 'Открепить меню' : 'Закрепить меню'}
+          >
             <span className="rail-icon"><Icons.menu /></span>
             <span className="nav-label">Навигация</span>
           </button>
@@ -161,6 +168,14 @@ export function CampaignWorkspace() {
           </nav>
         </aside>
 
+        {mobileOpen && (
+          <button
+            type="button"
+            className="workspace-mobile-scrim"
+            aria-label="Закрыть меню кампании"
+            onClick={() => setMobileOpen(false)}
+          />
+        )}
         <main className="workspace-main">
           <Outlet />
         </main>

@@ -22,6 +22,7 @@ export function SessionZeroPage() {
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
+  const [optimisticUser, setOptimisticUser] = useState<string | null>(null)
   const [lastTechnicalError, setLastTechnicalError] = useState('')
   const [notice, setNotice] = useState('')
   const transcriptEnd = useRef<HTMLDivElement | null>(null)
@@ -58,9 +59,21 @@ export function SessionZeroPage() {
 
   const messages = useMemo(() => {
     if (!interview) return []
-    if (interview.state.messages.length) return interview.state.messages
-    return [{ role: 'assistant' as const, content: interview.opening_message }]
-  }, [interview])
+    const base = interview.state.messages.length
+      ? [...interview.state.messages]
+      : [{ role: 'assistant' as const, content: interview.opening_message }]
+    const pending = interview.state.pending_user_message?.trim()
+    if (pending && !base.some((message) => message.role === 'user' && message.content.trim() === pending)) {
+      base.push({ role: 'user' as const, content: pending })
+    }
+    if (
+      optimisticUser
+      && !base.some((message) => message.role === 'user' && message.content.trim() === optimisticUser.trim())
+    ) {
+      base.push({ role: 'user' as const, content: optimisticUser })
+    }
+    return base
+  }, [interview, optimisticUser])
 
   const refreshAfterTurn = async () => {
     const [s, i] = await Promise.all([
@@ -160,9 +173,11 @@ export function SessionZeroPage() {
     setSending(true)
     setError('')
     setNotice('')
+    setOptimisticUser(message)
     setInput('')
     try {
       await applyTurnResult(await api.answerSessionZeroInterview(campaignId, message))
+      setOptimisticUser(null)
     } catch (err) {
       setError(readableError(err))
       setLastTechnicalError(extractTechnicalError(err))
@@ -249,7 +264,7 @@ export function SessionZeroPage() {
           {completed ? <>
             <div className="session-zero-final-summary">
               <span className="eyebrow">Итоговые договорённости</span>
-              <p>{summary || interview.state.last_summary || 'Нулевая сессия завершена.'}</p>
+              <p>{dedupeSummaryText(summary || interview.state.last_summary || 'Нулевая сессия завершена.')}</p>
             </div>
             <div className="session-zero-ready">
               <div>
@@ -261,7 +276,9 @@ export function SessionZeroPage() {
                 Начать приключение <Icons.chevron />
               </button>
             </div>
-          </> : pending && !sending ? <div className="session-zero-pending">
+          </> : pending && sending ? <div className="session-zero-pending">
+            <span>Мастер обрабатывает сохранённый ответ…</span>
+          </div> : pending ? <div className="session-zero-pending">
             <span>Последний ответ сохранён. Можно повторить его без повторного ввода.</span>
             <button className="btn primary" onClick={() => void retry()}><Icons.refresh />Повторить</button>
           </div> : <form className="session-zero-composer" onSubmit={submit}>
@@ -289,7 +306,7 @@ export function SessionZeroPage() {
 
         <aside className="session-zero-preview" aria-label="Черновик кампании">
           <div className="session-zero-preview-heading">
-            <span className="eyebrow">Собирается по ходу разговора</span>
+            <span className="eyebrow">{completed ? 'Собрано для старта' : 'Собирается по ходу разговора'}</span>
             <h2>Кампания</h2>
           </div>
 
@@ -333,6 +350,48 @@ export function SessionZeroPage() {
       {!loading && error && !interview && <ErrorState message={error} action={<button className="btn" onClick={() => void load()}>Повторить</button>} />}
     </main>
   </div>
+}
+
+function normalizeDesireItem(value: string): string {
+  return value
+    .toLocaleLowerCase('ru-RU')
+    .replace(/[.…]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function dedupeSemicolonList(line: string): string {
+  const colon = line.indexOf(':')
+  if (colon < 0 || !line.includes(';')) return line
+  const label = line.slice(0, colon + 1)
+  const items = line.slice(colon + 1).split(';').map((part) => part.trim()).filter(Boolean)
+  const kept: string[] = []
+  for (const item of items) {
+    const norm = normalizeDesireItem(item)
+    let merged = false
+    for (let index = 0; index < kept.length; index += 1) {
+      const existingNorm = normalizeDesireItem(kept[index])
+      if (norm === existingNorm || norm.startsWith(existingNorm) || existingNorm.startsWith(norm)) {
+        if (item.length > kept[index].length) kept[index] = item
+        merged = true
+        break
+      }
+    }
+    if (!merged) kept.push(item)
+  }
+  return `${label} ${kept.join('; ')}`
+}
+
+function dedupeSummaryText(text: string): string {
+  const lines = text.split('\n')
+  const out: string[] = []
+  for (const line of lines) {
+    const cleaned = dedupeSemicolonList(line)
+    const trimmed = cleaned.trim()
+    if (trimmed && out.length && out[out.length - 1].trim() === trimmed) continue
+    out.push(cleaned)
+  }
+  return out.join('\n')
 }
 
 function extractTechnicalError(error: unknown): string {

@@ -44,15 +44,13 @@ export function GalleryPage() {
     setLoading(true)
     setError('')
     try {
-      const [gallery, status] = await Promise.all([
-        visualApi.gallery(campaign.id),
-        visualApi.status().catch(() => null),
-      ])
+      const gallery = await visualApi.gallery(campaign.id)
       setItems(gallery)
+      setLoading(false)
+      const status = await visualApi.status().catch(() => null)
       setVisualStatus(status)
     } catch (err) {
       setError(readableError(err))
-    } finally {
       setLoading(false)
     }
   }
@@ -70,7 +68,7 @@ export function GalleryPage() {
     : !visualStatus.enabled
       ? 'Генерация изображений выключена в настройках моделей.'
       : !visualStatus.connected
-        ? 'Image runtime сейчас недоступен — генерация не запустится, пока provider не поднимется.'
+        ? 'Графическая модель сейчас недоступна — генерация не запустится, пока provider не поднимется.'
         : null
 
   const renderCard = (asset: GalleryAsset) => {
@@ -100,7 +98,7 @@ export function GalleryPage() {
             text={
               runtimeHint
                 ? `${runtimeHint} Обложка, портреты и сцены появятся после успешной генерации.`
-                : 'Обложка, портреты и сцены появятся после успешной генерации изображений, когда image runtime доступен. Сцену можно запросить кнопкой «Сгенерировать сцену» на экране Игра.'
+                : 'Обложка, портреты и сцены появятся после успешной генерации изображений, когда графическая модель доступна. Сцену можно запросить кнопкой «Сгенерировать сцену» на экране Игра.'
             }
             action={
               !runtimeReady ? (

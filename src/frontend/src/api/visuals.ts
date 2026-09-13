@@ -63,6 +63,22 @@ async function requestGallery(campaignId: UUID): Promise<GalleryAsset[]> {
   return result.map((asset) => ({ ...asset, url: absoluteVisualUrl(asset.url) }))
 }
 
+
+export function friendlyVisualError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '')
+  const lower = raw.toLocaleLowerCase('en-US')
+  if (/comfyui is not reachable|connection refused|econnrefused/.test(lower)) {
+    return 'Локальный image runtime (ComfyUI) недоступен. Открой Кампания → Модели и запусти/почини графику.'
+  }
+  if (/comfyui/.test(lower) && /timeout|timed out/.test(lower)) {
+    return 'ComfyUI не ответил вовремя. Проверь, что он запущен, или повтори позже.'
+  }
+  if (/generation.*disabled|images? disabled|visuals? disabled/.test(lower)) {
+    return 'Генерация изображений выключена в настройках моделей.'
+  }
+  return raw || 'Не удалось выполнить операцию с изображениями.'
+}
+
 export function absoluteVisualUrl(path: string): string {
   if (/^https?:\/\//i.test(path)) return path
   return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
@@ -80,8 +96,12 @@ export const visualUrls = {
 export const visualApi = {
   status: requestVisualStatus,
   gallery: requestGallery,
+  getCharacterPortrait: (characterId: UUID) =>
+    requestVisual(`/api/characters/${characterId}/visuals/portrait`),
   getCampaignCover: (campaignId: UUID) =>
     requestVisual(`/api/campaigns/${campaignId}/visuals/cover`),
+  getSceneVisual: (campaignId: UUID, sceneId: UUID) =>
+    requestVisual(`/api/campaigns/${campaignId}/scenes/${sceneId}/visuals/latest`),
   generateCharacterPortrait: (characterId: UUID) =>
     requestVisual(`/api/characters/${characterId}/visuals/portrait?force=true`, {
       method: 'POST',

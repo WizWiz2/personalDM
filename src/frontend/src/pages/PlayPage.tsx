@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import { submitDetachedTurn } from '../api/turnRuntime'
 import type { SceneState, Turn } from '../api/types'
-import { visualApi, visualUrls } from '../api/visuals'
+import { friendlyVisualError, visualApi, visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
 import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { GenerationFailurePanel } from '../components/GenerationFailurePanel'
@@ -63,9 +63,12 @@ export function PlayPage() {
   const [drawer, setDrawer] = useState(false)
   const [sceneGenerating, setSceneGenerating] = useState(false)
   const [sceneArtNonce, setSceneArtNonce] = useState(0)
+  const [sceneArtAvailable, setSceneArtAvailable] = useState(false)
   const [stickToBottom, setStickToBottom] = useState(true)
   const [showJumpLatest, setShowJumpLatest] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLFormElement>(null)
+  const [jumpBottom, setJumpBottom] = useState(96)
   const previousGeneration = useRef<{ id: string; status: string } | null>(null)
   const stickToBottomRef = useRef(true)
 
@@ -94,9 +97,13 @@ export function PlayPage() {
       setTurns(history)
       setPlayerName(characterCard?.character.canonical_name ?? '')
       if (freshCampaign.current_scene_id) {
-        setScene(await api.getSceneState(campaign.id, freshCampaign.current_scene_id))
+        const nextScene = await api.getSceneState(campaign.id, freshCampaign.current_scene_id)
+        setScene(nextScene)
+        const visual = await visualApi.getSceneVisual(campaign.id, freshCampaign.current_scene_id).catch(() => null)
+        setSceneArtAvailable(Boolean(visual?.available))
       } else {
         setScene(null)
+        setSceneArtAvailable(false)
       }
     } catch (err) {
       setError(readableError(err))
@@ -128,6 +135,23 @@ export function PlayPage() {
   useEffect(() => { void load(true) }, [campaign.id])
 
   useEffect(() => {
+    const node = composerRef.current
+    if (!node) return
+    const update = () => {
+      const height = Math.ceil(node.getBoundingClientRect().height)
+      setJumpBottom(Math.max(height + 16, 72))
+    }
+    update()
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(update) : null
+    ro?.observe(node)
+    window.addEventListener('resize', update)
+    return () => {
+      ro?.disconnect()
+      window.removeEventListener('resize', update)
+    }
+  }, [loading, busy, failedGeneration, mode, error])
+
+  useEffect(() => {
     const onScroll = () => updateScrollAffinity()
     window.addEventListener('scroll', onScroll, { passive: true })
     window.addEventListener('resize', onScroll)
@@ -151,6 +175,15 @@ export function PlayPage() {
   useEffect(() => {
     window.sessionStorage.setItem(modeKey, mode)
   }, [modeKey, mode])
+
+  useEffect(() => {
+    if (!drawer) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDrawer(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawer])
 
   useEffect(() => {
     if (
@@ -211,6 +244,10 @@ export function PlayPage() {
     event?.preventDefault()
     const text = input.trim()
     if (!text) return
+    if (failedGeneration) {
+      setError('Сначала повтори или убери неудачный ход — иначе следующий ход встанет в очередь поверх ошибки.')
+      return
+    }
     if (busy) {
       setError('Мастер ещё обрабатывает предыдущий ход. Черновик сохранён — можно спокойно открыть другие разделы и вернуться позже.')
       return
@@ -292,9 +329,10 @@ export function PlayPage() {
     setError('')
     try {
       const result = await visualApi.generateScene(campaign.id, scene.scene_id)
+      setSceneArtAvailable(true)
       setSceneArtNonce(result.seed || Date.now())
     } catch (err) {
-      setError(readableError(err))
+      setError(friendlyVisualError(err))
     } finally {
       setSceneGenerating(false)
     }
@@ -312,8 +350,8 @@ export function PlayPage() {
       <header className="workspace-topbar">
         <div><h1>{campaign.name}</h1><p>{topbarSubtitle}</p></div>
         <div className="topbar-actions">
-          <button className="btn primary context-toggle" onClick={() => setDrawer(true)}>Сейчас</button>
-          <button className="btn primary scene-generate" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода мастера: текстовая и графическая модели делят видеопамять' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
+          <button className="btn primary context-toggle" type="button" aria-expanded={drawer} aria-controls="play-scene-context" onClick={() => setDrawer(true)}>Сейчас</button>
+          <button className="btn primary scene-generate" type="button" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода мастера: текстовая и графическая модели делят видеопамять' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'} aria-label={sceneGenerating ? 'Рисуем сцену' : 'Сгенерировать сцену'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
         </div>
       </header>
 
@@ -321,7 +359,7 @@ export function PlayPage() {
         <section className="play-column">
           <div className="scene-art">
             {scene && sceneArtSrc
-              ? <GeneratedPixelArt src={sceneArtSrc} alt={`Сцена: ${scene.scene_title}`} fallback={fallbackScene} />
+              ? <GeneratedPixelArt src={sceneArtSrc} alt={`Сцена: ${scene.scene_title}`} fallback={fallbackScene} active={sceneArtAvailable} retryOnError={sceneArtAvailable} />
               : fallbackScene}
             <div className="scene-overlay">
               <h2>{sceneTitle}</h2>
@@ -371,17 +409,17 @@ export function PlayPage() {
           </div>
 
           {showJumpLatest && (
-            <button type="button" className="jump-latest-btn" onClick={() => scrollToLatest('smooth')}>
+            <button type="button" className="jump-latest-btn" style={{ bottom: jumpBottom }} onClick={() => scrollToLatest('smooth')}>
               К последнему ходу
             </button>
           )}
 
-          <form className="composer" onSubmit={send}>
+          <form className="composer" ref={composerRef} onSubmit={send}>
             <div className="mode-row">
               <span className="composer-hint">Опиши ход персонажа свободно — действие и речь можно сочетать.</span>
               <button type="button" className={`btn primary composer-mode ${mode === 'dm' ? 'active' : ''}`} onClick={() => setMode(mode === 'dm' ? 'play' : 'dm')}><Icons.shield />{mode === 'dm' ? 'Вернуться в игру' : 'Обращение к мастеру'}</button>
             </div>
-            <div className="compose-row"><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder={busy ? 'Можно набросать следующий ход — черновик сохранится…' : mode === 'dm' ? 'Спроси мастера вне игры…' : 'Что делает и говорит персонаж?'} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} /><button className="btn primary send-btn" disabled={!input.trim() || busy} aria-label="Отправить"><Icons.send /></button></div>
+            <div className="compose-row"><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder={failedGeneration ? 'Сначала повтори или убери неудачный ход…' : busy ? 'Можно набросать следующий ход — черновик сохранится…' : mode === 'dm' ? 'Спроси мастера вне игры…' : 'Что делает и говорит персонаж?'} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} /><button className="btn primary send-btn" disabled={!input.trim() || busy || Boolean(failedGeneration)} aria-label="Отправить"><Icons.send /></button></div>
             <div className="composer-footer">
               {busy
                 ? <><span className="turn-runtime-note">Ход сохранён. Можно открыть Героя, Мир или Хронику — мастер продолжит работу.</span><button type="button" className="quiet-action danger" onClick={() => void stop()}><Icons.stop />Остановить</button></>
@@ -390,7 +428,7 @@ export function PlayPage() {
           </form>
         </section>
 
-        <aside className={`scene-context ${drawer ? 'open' : ''}`}>
+        <aside id="play-scene-context" className={`scene-context ${drawer ? 'open' : ''}`}>
           <button className="context-close" onClick={() => setDrawer(false)} aria-label="Закрыть">×</button>
           <h3>Сейчас</h3>
           <div>

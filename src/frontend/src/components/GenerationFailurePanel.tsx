@@ -43,10 +43,15 @@ export function GenerationFailurePanel({ generation }: { generation: GenerationR
     setShowTechnical(false)
   }, [generation.id])
 
-  const technical = generation.error?.trim()
+  const technicalRaw = generation.error?.trim()
     || (generation.status === 'cancelled'
       ? 'Generation was cancelled before completion.'
       : 'Backend did not persist a technical error for this failed generation.')
+  const technical = /cancellation requested/i.test(technicalRaw)
+    ? 'Остановку запросил пользователь.'
+    : /generation was cancelled before completion/i.test(technicalRaw)
+      ? 'Генерация остановлена до завершения.'
+      : technicalRaw
 
   return <div className="session-zero-inline-error generation-failure-panel" role="alert">
     <strong>{generation.status === 'cancelled' ? 'Обработка хода остановлена.' : 'Мастер не смог обработать ход.'}</strong>

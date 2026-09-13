@@ -73,7 +73,7 @@ export function CampaignSettingsPage() {
 
         <section className="settings-section">
           <span className="eyebrow">Состояние</span>
-          <h2>Campaign Truth Engine</h2>
+          <h2>Канон кампании</h2>
           <div className="settings-row"><span>Текущая сцена</span><strong>{campaign.current_scene_id ? 'есть' : 'не создана'}</strong></div>
           <div className="settings-row"><span>Герой</span><strong>{campaign.player_character_id ? 'привязан' : 'не выбран'}</strong></div>
           <div className="settings-row"><span>Обновлено</span><strong>{new Date(campaign.updated_at).toLocaleString('ru-RU')}</strong></div>
