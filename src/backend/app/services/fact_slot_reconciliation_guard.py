@@ -24,6 +24,47 @@ class FactSlotReview(BaseModel):
     matches: list[FactSlotMatch] = Field(default_factory=list, max_length=12)
 
 
+class FactSlotDecision(BaseModel):
+    """One model decision for one machine-selected candidate, in candidate order."""
+
+    current_fact_id: str | None
+    object_value: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+def _fact_slot_wire_model(candidate_count: int) -> type[BaseModel]:
+    """Require exactly one model decision per machine-owned candidate.
+
+    Candidate identity and ordering are deterministic. The model decides only semantic slot identity
+    and value translation; it cannot omit candidates, duplicate indexes, or target another proposal.
+    """
+
+    class ExactFactSlotReview(BaseModel):
+        decisions: list[FactSlotDecision] = Field(
+            min_length=candidate_count,
+            max_length=candidate_count,
+        )
+
+    ExactFactSlotReview.__name__ = "FactSlotReview"
+    ExactFactSlotReview.__qualname__ = "FactSlotReview"
+    return ExactFactSlotReview
+
+
+def _review_from_decisions(
+    candidate_indexes: list[int],
+    decisions: list[FactSlotDecision],
+) -> FactSlotReview:
+    return FactSlotReview(
+        matches=[
+            FactSlotMatch(
+                proposal_index=proposal_index,
+                current_fact_id=decision.current_fact_id,
+                object_value=decision.object_value,
+            )
+            for proposal_index, decision in zip(candidate_indexes, decisions, strict=True)
+        ]
+    )
+
+
 def _norm(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
 
@@ -176,7 +217,6 @@ async def reconcile_fact_slots(
     ]
     proposed_rows = [
         {
-            "proposal_index": index,
             "subject": proposals[index].payload.get("subject"),
             "predicate": proposals[index].payload.get("predicate"),
             "object_value": proposals[index].payload.get("object_value"),
@@ -206,9 +246,9 @@ predicate текущего факта. Не копируй старое знач
 Сохраняй полярность и не добавляй смысл, отсутствующий в новом факте. Несвязанный атрибут
 (например цвет вместо рабочего состояния) не является тем же слотом.
 
-Верни только JSON вида {"matches":[{"proposal_index":0,"current_fact_id":"uuid-or-null","object_value":"новое значение или null"}]}.
-current_fact_id может быть только точным id из CURRENT FACTS или null. Для каждого proposal_index
-верни ровно одну запись.
+Верни только JSON вида {"decisions":[{"current_fact_id":"uuid-or-null","object_value":"новое значение или null"}]}.
+current_fact_id может быть только точным id из CURRENT FACTS или null. Верни ровно одно решение
+для каждого NEW FACT, строго в том же порядке, в котором NEW FACTS переданы. Не пропускай записи.
 """
     messages = [
         ChatMessage(role="system", content=prompt),
@@ -223,6 +263,7 @@ current_fact_id может быть только точным id из CURRENT FA
         ),
     ]
 
+    response_model = _fact_slot_wire_model(len(candidate_indexes))
     try:
         data = await scribe._model_router.generate_json(
             scribe._llm_provider,
@@ -230,21 +271,14 @@ current_fact_id может быть только точным id из CURRENT FA
             messages,
             max_tokens=500,
             temperature=0.0,
-            response_model=FactSlotReview,
+            response_model=response_model,
         )
-        review = FactSlotReview.model_validate(data)
+        wire_review = response_model.model_validate(data)
     except (LLMProviderError, ValueError, TypeError):
         return proposals
 
-    allowed_indexes = set(candidate_indexes)
-    filtered = FactSlotReview(
-        matches=[
-            match
-            for match in review.matches
-            if match.proposal_index in allowed_indexes
-        ]
-    )
-    return apply_fact_slot_matches(proposals, facts, filtered)
+    review = _review_from_decisions(candidate_indexes, wire_review.decisions)
+    return apply_fact_slot_matches(proposals, facts, review)
 
 
 def install() -> None:
@@ -281,6 +315,7 @@ def install() -> None:
 
 
 __all__ = [
+    "FactSlotDecision",
     "FactSlotMatch",
     "FactSlotReview",
     "apply_fact_slot_matches",
