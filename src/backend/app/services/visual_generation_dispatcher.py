@@ -1,28 +1,30 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from uuid import UUID
 
 from app.config import settings
 from app.db.engine import AsyncSessionLocal
 from app.services.visual_provider_factory import create_visual_generation_service
+from app.services.visual_runtime_gate import VisualRuntimeGate
 
 logger = logging.getLogger(__name__)
 
 
 class VisualGenerationDispatcher:
-    """Best-effort visual work that must never block or invalidate game state."""
+    """Best-effort visual work that must never block or invalidate game state.
 
-    _tasks: set[asyncio.Task] = set()
+    All GPU visual jobs go through ``VisualRuntimeGate`` so they wait for narrative
+    idle time and yield VRAM when a turn starts.
+    """
 
     @staticmethod
     def schedule_session_zero(campaign_id: UUID, character_id: UUID) -> None:
         if not settings.IMAGE_ENABLED or settings.IMAGE_PROVIDER == "off":
             return
-        VisualGenerationDispatcher._spawn(
-            VisualGenerationDispatcher._session_zero(campaign_id, character_id),
+        VisualGenerationDispatcher.schedule(
+            lambda: VisualGenerationDispatcher._session_zero(campaign_id, character_id),
             name=f"visual-session-zero-{campaign_id}",
         )
 
@@ -33,26 +35,16 @@ class VisualGenerationDispatcher:
         ids = tuple(dict.fromkeys(character_ids))
         if not ids:
             return
-        VisualGenerationDispatcher._spawn(
-            VisualGenerationDispatcher._character_portraits(ids),
+        VisualGenerationDispatcher.schedule(
+            lambda: VisualGenerationDispatcher._character_portraits(ids),
             name=f"visual-character-portraits-{ids[0]}",
         )
 
     @staticmethod
-    def _spawn(coro, *, name: str) -> None:
-        task = asyncio.create_task(coro, name=name)
-        VisualGenerationDispatcher._tasks.add(task)
-
-        def _done(completed: asyncio.Task) -> None:
-            VisualGenerationDispatcher._tasks.discard(completed)
-            try:
-                completed.result()
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:  # pragma: no cover
-                logger.info("Background visual generation deferred: %s", exc)
-
-        task.add_done_callback(_done)
+    def schedule(factory: Callable[[], Awaitable[None]], *, name: str) -> None:
+        if not settings.IMAGE_ENABLED or settings.IMAGE_PROVIDER == "off":
+            return
+        VisualRuntimeGate.spawn(factory, name=name)
 
     @staticmethod
     async def _session_zero(campaign_id: UUID, character_id: UUID) -> None:

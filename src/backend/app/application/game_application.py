@@ -24,6 +24,7 @@ from app.runtime import install_runtime
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
 from app.services.player_memory_query import PlayerMemoryQuery
 from app.services.post_turn_processor import PostTurnProcessor
+from app.services.visual_runtime_gate import VisualRuntimeGate
 from app.services.presence_service import PresenceService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.session_zero_service import (
@@ -132,6 +133,7 @@ class GameApplication:
             )
 
         bound = await self._bind_current_scene(campaign_id, data)
+        VisualRuntimeGate.preempt_for_turn()
         return GameInputRoute(
             channel="narrative",
             stream=TurnRunner(self._session).run_turn_stream(
@@ -184,6 +186,7 @@ class GameApplication:
             parent_turn_id=user_turn.parent_turn_id,
             model_name=user_turn.model_name,
         )
+        VisualRuntimeGate.preempt_for_turn()
         return GameInputRoute(
             channel="narrative",
             stream=TurnRunner(self._session).run_turn_stream(

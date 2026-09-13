@@ -11,12 +11,30 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db.engine import get_session
+from app.db.engine import AsyncSessionLocal, get_session
 from app.db.tables import Campaign, MediaAsset
 from app.services.visual_generation import ComfyUIError, VisualGenerationService
+from app.services.visual_generation_dispatcher import VisualGenerationDispatcher
 from app.services.visual_provider_factory import create_visual_generation_service
+from app.services.visual_runtime_gate import VisualRuntimeGate
 
 router = APIRouter(tags=["visuals"])
+
+async def _enqueue_visual_job(factory, *, name: str) -> dict:
+    """Accept visual work without blocking the HTTP request on Comfy/LLM VRAM."""
+    from app.config import settings as _settings
+
+    if not _settings.IMAGE_ENABLED or _settings.IMAGE_PROVIDER == "off":
+        raise HTTPException(status_code=503, detail="Visual generation is disabled")
+    VisualGenerationDispatcher.schedule(factory, name=name)
+    return {
+        "accepted": True,
+        "generating": True,
+        "visual_busy": VisualRuntimeGate.is_busy(),
+        "narrative_running": await VisualRuntimeGate.any_narrative_running(),
+    }
+
+
 
 
 def _asset_payload(service: VisualGenerationService, path: Path, kind: str) -> dict:
@@ -98,14 +116,24 @@ async def generate_character_portrait(
     force: bool = Query(default=True),
     session: AsyncSession = Depends(get_session),
 ):
-    try:
-        service = create_visual_generation_service(session)
-        result = await service.generate_character_portrait(character_id, force=force)
-        return await _archive_generated_result(session, service, result)
-    except ComfyUIError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    service = create_visual_generation_service(session)
+    path = service.character_portrait_path(character_id)
+    payload = _asset_payload(service, path, service.PORTRAIT_TYPE)
+
+    async def job() -> None:
+        async with AsyncSessionLocal() as job_session:
+            job_service = create_visual_generation_service(job_session)
+            try:
+                result = await job_service.generate_character_portrait(character_id, force=force)
+                await _archive_generated_result(job_session, job_service, result)
+                await job_session.commit()
+            except Exception:
+                await job_session.rollback()
+                raise
+
+    queued = await _enqueue_visual_job(job, name=f"visual-portrait-{character_id}")
+    payload.update(queued)
+    return payload
 
 
 @router.get("/api/campaigns/{campaign_id}/visuals/cover")
@@ -127,19 +155,31 @@ async def generate_campaign_cover(
     force: bool = Query(default=True),
     session: AsyncSession = Depends(get_session),
 ):
-    try:
-        service = create_visual_generation_service(session)
-        result = await service.generate_campaign_cover(campaign_id, force=force)
-        return await _archive_generated_result(
-            session,
-            service,
-            result,
-            campaign_id=campaign_id,
-        )
-    except ComfyUIError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if await session.get(Campaign, str(campaign_id)) is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    service = create_visual_generation_service(session)
+    path = service.campaign_cover_path(campaign_id)
+    payload = _asset_payload(service, path, service.CAMPAIGN_COVER_TYPE)
+
+    async def job() -> None:
+        async with AsyncSessionLocal() as job_session:
+            job_service = create_visual_generation_service(job_session)
+            try:
+                result = await job_service.generate_campaign_cover(campaign_id, force=force)
+                await _archive_generated_result(
+                    job_session,
+                    job_service,
+                    result,
+                    campaign_id=campaign_id,
+                )
+                await job_session.commit()
+            except Exception:
+                await job_session.rollback()
+                raise
+
+    queued = await _enqueue_visual_job(job, name=f"visual-cover-{campaign_id}")
+    payload.update(queued)
+    return payload
 
 
 @router.get("/api/campaigns/{campaign_id}/visuals/gallery")
@@ -223,16 +263,33 @@ async def generate_scene_visual(
     force: bool = Query(default=True),
     session: AsyncSession = Depends(get_session),
 ):
+    service = create_visual_generation_service(session)
     try:
-        service = create_visual_generation_service(session)
-        result = await service.generate_scene(campaign_id, scene_id, force=force)
-        return await _archive_generated_result(
-            session,
-            service,
-            result,
-            campaign_id=campaign_id,
-        )
-    except ComfyUIError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        from app.services.scene_state_service import SceneStateService
+
+        await SceneStateService(session).get(campaign_id, scene_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    path = service.scene_path(scene_id)
+    payload = _asset_payload(service, path, service.SCENE_TYPE)
+
+    async def job() -> None:
+        async with AsyncSessionLocal() as job_session:
+            job_service = create_visual_generation_service(job_session)
+            try:
+                result = await job_service.generate_scene(campaign_id, scene_id, force=force)
+                await _archive_generated_result(
+                    job_session,
+                    job_service,
+                    result,
+                    campaign_id=campaign_id,
+                )
+                await job_session.commit()
+            except Exception:
+                await job_session.rollback()
+                raise
+
+    queued = await _enqueue_visual_job(job, name=f"visual-scene-{scene_id}")
+    payload.update(queued)
+    return payload

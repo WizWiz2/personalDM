@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import { submitDetachedTurn } from '../api/turnRuntime'
@@ -351,7 +351,7 @@ export function PlayPage() {
         <div><h1>{campaign.name}</h1><p>{topbarSubtitle}</p></div>
         <div className="topbar-actions">
           <button className="btn primary context-toggle" type="button" aria-expanded={drawer} aria-controls="play-scene-context" onClick={() => setDrawer(true)}>Сейчас</button>
-          <button className="btn primary scene-generate" type="button" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода мастера: текстовая и графическая модели делят видеопамять' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'} aria-label={sceneGenerating ? 'Рисуем сцену' : 'Сгенерировать сцену'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
+          <button className="btn primary scene-generate" type="button" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода: текстовая и графическая модели делят видеопамять' : sceneGenerating ? 'Рисуем в фоне. Можно отправлять ход — графика подождёт и продолжит после ответа мастера.' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'} aria-label={sceneGenerating ? 'Рисуем сцену' : 'Сгенерировать сцену'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
         </div>
       </header>
 
@@ -446,3 +446,4 @@ export function PlayPage() {
     </div>
   )
 }
+
