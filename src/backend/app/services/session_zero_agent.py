@@ -434,6 +434,7 @@ class SessionZeroInterviewService:
                 world.setting_name = summary if len(summary) <= 80 else summary[:77].rstrip() + "..."
         return draft
 
+    @classmethod
     def _apply_patch(
         cls,
         previous: SessionZeroInterviewDraft,

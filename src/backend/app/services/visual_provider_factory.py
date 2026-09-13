@@ -22,6 +22,7 @@ class CloudVisualGenerationService(VisualGenerationService):
             "model": settings.IMAGE_CLOUD_MODEL,
             "text_encoder": "",
             "lora": "",
+            "references": "edits",
         }
 
 
