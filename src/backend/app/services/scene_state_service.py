@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.scene_location_table import SceneLocationLink
 from app.db.scene_state_table import LocationExit, SceneRuntimeState
 from app.db.tables import Campaign, Character, Entity, Item, Scene, SceneParticipant
 from app.models.scene_state import (
@@ -347,6 +346,8 @@ class SceneStateService:
 
     @staticmethod
     def prompt_contract(state: SceneStateRead) -> str:
+        from app.services.planning_context import SCENE_RENDERER_RULES
+
         location = " > ".join(state.location_path) or "unknown"
         participants = ", ".join(state.participant_names) or "player only / none recorded"
         exits = ", ".join(
@@ -369,10 +370,7 @@ class SceneStateService:
             f"Physically present characters: {participants}\n"
             f"Objects physically here: {objects}\n"
             f"Available exits: {exits}\n"
-            "Hard rules: characters absent from the physically-present list are not in "
-            "the scene. Do not move anyone, advance time, or use an unlisted exit unless "
-            "the approved structured transition already did so. Do not invent doors, "
-            "routes, objects, or off-screen arrivals as accomplished facts.\n"
+            + SCENE_RENDERER_RULES
         )
 
     async def _upsert_exit(

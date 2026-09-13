@@ -191,13 +191,28 @@ class ActionSequenceExecutor:
                 )
 
             if step.action_type == "inventory":
-                await self._apply_inventory_step(
-                    campaign_id,
-                    current_scene_id,
-                    trigger_turn_id,
-                    step,
-                    db_step,
-                )
+                try:
+                    await self._apply_inventory_step(
+                        campaign_id,
+                        current_scene_id,
+                        trigger_turn_id,
+                        step,
+                        db_step,
+                    )
+                except InventoryExecutionError as exc:
+                    # Inventory is a typed world mutation, but the model can still race with
+                    # state materialization between planning and execution. Treat the failed
+                    # precondition like any other deterministic obstacle: persist a blocked
+                    # step, stop the ordered tail, and let narration describe the concrete
+                    # result. Never turn a safe no-op into a failed turn or partial mutation.
+                    db_step.status = "blocked"
+                    db_step.blocking_reason = str(exc)
+                    db_step.target_scene_id = (
+                        str(current_scene_id) if current_scene_id else None
+                    )
+                    sequence.blocked_step_index = index
+                    blocked = True
+                    continue
 
             db_step.status = "completed"
             sequence.completed_steps += 1

@@ -307,6 +307,8 @@ class ContextCompiler:
             if campaign and campaign.narrative_style
             else ""
         )
+        from app.services.planning_context import NARRATOR_EXECUTION_BOUNDARY
+
         boundary = (
             "\nYou are roleplaying one specific character. Continue the character's "
             "own recent conversation naturally. Use only knowledge present in this "
@@ -314,14 +316,7 @@ class ContextCompiler:
             "speak or decide for the player. Do not use abilities or equipment absent "
             "from your card."
             if actor_mode
-            else "\nYou are the omniscient narrator. Respect every character card, "
-            "capability, limitation, owned item and current location. Resolve the "
-            "player's attempted action with a concrete consequence. Do not invent a "
-            "successful ability, item or movement absent from structured state.\n"
-            "Контракт прогрессии: прямо разреши текущую попытку; покажи хотя бы одно "
-            "наблюдаемое последствие, новую конкретную информацию или изменившееся "
-            "препятствие; закончи ситуацией, на которую игрок может осмысленно "
-            "ответить. Не пересказывай уже установленное и не управляй героем игрока."
+            else NARRATOR_EXECUTION_BOUNDARY
         )
         system_msg = ChatMessage(role="system", content=f"{system_instr}{style}{boundary}")
         current_budget_used = count_tokens(system_msg.content)

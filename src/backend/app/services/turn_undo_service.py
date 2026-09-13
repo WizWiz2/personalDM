@@ -13,6 +13,7 @@ from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
+from app.services.truth_engine import CanonicalEventStore, WorldReducer
 
 
 class TurnUndoService:
@@ -124,13 +125,22 @@ class TurnUndoService:
         campaign_id: UUID,
         assistant_turn_id: UUID,
     ) -> None:
-        """Project the world from still-active turns after the pair becomes undone.
+        """Rebuild legacy and TE2 projections after the source pair becomes inactive.
 
-        This deliberately happens after structural scene/action compensation: Turn status decides
-        which extracted canon may survive, while scene/action executors remain the authority for
-        the current physical boundary.
+        Keep this boundary stable for migration extensions. TE2 derives the source user turn from the
+        persisted assistant-parent relation instead of leaking a new private-method signature into
+        legacy guards. Canonical history is append-only: undo changes event inclusion and rebuilds
+        derived temporal assertions.
         """
+        assistant = await self._turns.get_by_id(assistant_turn_id)
+        if assistant and assistant.parent_turn_id:
+            await CanonicalEventStore(self._session).set_turn_status(
+                campaign_id,
+                assistant.parent_turn_id,
+                active=False,
+            )
         await ActiveCanonReplayService(self._session).replay(campaign_id)
+        await WorldReducer(self._session).rebuild(campaign_id)
         await self._remove_turn_introductions(campaign_id, assistant_turn_id)
         # Curator-created working-memory rows from the undone turn must not remain active.
         # Existing theses changed by a curator are not reconstructed here; unlike durable canon,

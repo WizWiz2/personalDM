@@ -12,6 +12,8 @@ class CloudVisualGenerationService(VisualGenerationService):
         super().__init__(session, client=OpenAIImageClient())
 
     async def status(self) -> dict:
+        from app.services.visual_runtime_gate import VisualRuntimeGate
+
         enabled = bool(settings.IMAGE_ENABLED and settings.IMAGE_PROVIDER == "cloud")
         connected = enabled and await self._client.health()
         return {
@@ -22,6 +24,9 @@ class CloudVisualGenerationService(VisualGenerationService):
             "model": settings.IMAGE_CLOUD_MODEL,
             "text_encoder": "",
             "lora": "",
+            "references": "edits",
+            "visual_busy": VisualRuntimeGate.is_busy(),
+            "narrative_running": await VisualRuntimeGate.any_narrative_running(),
         }
 
 

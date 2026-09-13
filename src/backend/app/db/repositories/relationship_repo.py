@@ -73,6 +73,15 @@ class RelationshipRepository(BaseRepository):
         result = await self._session.execute(query)
         return [RelationshipRead.model_validate(item) for item in result.scalars().all()]
 
+    async def list_active(self, campaign_id: UUID) -> list[RelationshipRead]:
+        result = await self._session.execute(
+            select(RelationshipAssertion).where(
+                RelationshipAssertion.campaign_id == str(campaign_id),
+                RelationshipAssertion.is_current == True,
+            )
+        )
+        return [RelationshipRead.model_validate(item) for item in result.scalars().all()]
+
     async def update(
         self,
         assertion_id: UUID,

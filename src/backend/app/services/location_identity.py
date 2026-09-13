@@ -7,6 +7,10 @@ from app.services.entity_identity import identity_key
 
 _TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
 _ROUTE_SPLIT_RE = re.compile(r"\s*(?:->|→|>)\s*")
+_ROUTE_ORDINAL_SUFFIX_RE = re.compile(
+    r"\s*\((?:order|step|порядок|шаг)\s*\d+\)\s*$",
+    re.IGNORECASE,
+)
 
 # Numbered places are common model-authored references ("Причал №7", "седьмой причал",
 # "причал номер семь"). Normalize grammatical spelling, not story-specific aliases.
@@ -111,7 +115,10 @@ def display_location_name(value: object) -> str:
     if not text:
         return ""
     parts = [part.strip(" ,—-") for part in _ROUTE_SPLIT_RE.split(text) if part.strip(" ,—-")]
-    return parts[-1] if parts else text
+    result = parts[-1] if parts else text
+    # Control models sometimes append traversal metadata to a route segment. It is not part of
+    # the place identity and must not force a new location or a missing profile on revisits.
+    return _ROUTE_ORDINAL_SUFFIX_RE.sub("", result).strip(" ,—-")
 
 
 def is_route_labeled_location_name(value: object) -> bool:

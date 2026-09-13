@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { api, readableError } from '../api/client'
 import { locationApi, type Location } from '../api/locations'
 import type { Character, CharacterCard, Fact, SceneState } from '../api/types'
-import { visualUrls } from '../api/visuals'
+import { visualApi, visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
 import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { PixelPortrait, PixelScene } from '../components/PixelArt'
@@ -27,11 +27,20 @@ function characterRole(character: Character | undefined): string | null {
 }
 
 function CharacterPortrait({ id, name }: { id: string; name: string }) {
+  const [available, setAvailable] = useState(false)
+  useEffect(() => {
+    let active = true
+    visualApi.getCharacterPortrait(id)
+      .then((asset) => { if (active) setAvailable(Boolean(asset.available)) })
+      .catch(() => { if (active) setAvailable(false) })
+    return () => { active = false }
+  }, [id])
   return <GeneratedPixelArt
     src={visualUrls.characterPortrait(id)}
     alt={`Портрет ${name}`}
     fallback={<PixelPortrait seed={name} />}
-    retryOnError
+    active={available}
+    retryOnError={available}
     retryIntervalMs={5000}
     maxRetries={8}
   />
@@ -163,9 +172,13 @@ export function WorldPage() {
       <div className="tabs"><button className={tab === 'characters' ? 'active' : ''} onClick={() => setTab('characters')}>Персонажи</button><button className={tab === 'locations' ? 'active' : ''} onClick={() => setTab('locations')}>Места</button><button className={tab === 'knowledge' ? 'active' : ''} onClick={() => setTab('knowledge')}>Знания</button></div>
       {loading && <LoadingState label="Собираем известный мир…" />}
       {error && <ErrorState message={error} />}
-      {!loading && !error && <div className="world-layout">
+      {!loading && !error && filtered.length === 0 && (
+        <div className="world-empty-panel">
+          <p className="muted-note">Пока в этом разделе нет записей. Сведения появляются по мере игры, когда герой что-то узнаёт, встречает кого-то или находит выход.</p>
+        </div>
+      )}
+      {!loading && !error && filtered.length > 0 && <div className="world-layout">
         <div className="world-index">
-          {filtered.length === 0 && <p className="muted-note">Пока здесь ничего нет.</p>}
           {filtered.map((item) => <button key={item.id} className={`world-index-item ${selectedItem?.id === item.id ? 'active' : ''}`} onClick={() => setSelected(item.id)}>{tab === 'characters' ? <span className="tiny-portrait"><CharacterPortrait id={item.id} name={item.name} /></span> : <span className="tiny-scene"><PixelScene seed={item.name} compact /></span>}<span><strong>{item.name}</strong><small>{item.subtitle}</small></span></button>)}
         </div>
         <article className="world-detail">

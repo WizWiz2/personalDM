@@ -7,12 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
+from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import CanonAudit, CanonEnvelope, proposals_from_envelope
 from app.services.role_model_router import ModelRole, RoleModelRouter
+from app.services.semantic_receipt_context import memory_evidence
 
 PLACEHOLDER_SELF = {"self", "speaker", "acting_character", "acting_character_id"}
 PLACEHOLDER_PLAYER = {
@@ -35,7 +37,7 @@ HTML_PATTERN = re.compile(r"<[^>]+>")
 class MemoryScribe:
     """Extract evidence-backed durable canon candidates from one authoritative turn."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, *, structured_receipts: list[dict] | None = None):
         self._session = session
         self._entity_repo = EntityRepository(session)
         self._scene_repo = SceneRepository(session)
@@ -44,6 +46,7 @@ class MemoryScribe:
         self._model_router = RoleModelRouter(self._config_repo)
         self._llm_provider = LLMProvider()
         self.last_audit: dict = CanonAudit().model_dump()
+        self.structured_receipts = structured_receipts or []
 
     async def extract_proposals(
         self,
@@ -60,6 +63,8 @@ class MemoryScribe:
             return []
         if "[generation interrupted]" in assistant_content:
             return []
+
+        assistant_content = memory_evidence(assistant_content, self.structured_receipts)
 
         selection = await self._model_router.resolve(campaign_id, ModelRole.SCRIBE)
         if selection is None:
@@ -93,12 +98,20 @@ class MemoryScribe:
         ]
         current_facts = await self._fact_repo.list_active(
             campaign_id,
-            scene_id=scene_id,
+        )
+        current_relationships = await RelationshipRepository(self._session).list_active(
+            campaign_id
         )
         fact_lines = [
             f"- {fact.subject} | {fact.predicate} | {fact.object_value or 'null'} "
-            f"[{fact.truth_status}]"
+            f"[{fact.truth_status}] scope={fact.scope}"
             for fact in current_facts[-40:]
+        ]
+        relationship_lines = [
+            f"- {display_by_id.get(str(item.subject_id), str(item.subject_id))} | "
+            f"{item.relation_type} | {display_by_id.get(str(item.object_id), str(item.object_id))} | "
+            f"{item.description or 'без описания'} | intensity={item.intensity}"
+            for item in current_relationships[-40:]
         ]
 
         system_prompt = f"""Ты Memory Scribe русскоязычной настольной RPG.
@@ -115,16 +128,60 @@ class MemoryScribe:
 ТЕКУЩИЕ ОБЪЕКТИВНЫЕ FACTS:
 {chr(10).join(fact_lines) or '- нет'}
 
+ТЕКУЩИЕ ОБЪЕКТИВНЫЕ RELATIONSHIPS:
+{chr(10).join(relationship_lines) or '- нет'}
+
 КРИТИЧЕСКИЕ ПРАВИЛА:
+- EXECUTED WORLD RESULTS — подтверждённые исполнителем результаты, а не намерения игрока.
+  В первую очередь сохрани каждое явное устойчивое изменение состояния из этого блока.
+  Декоративные свойства из narration не заменяют изменённое состояние. Если результат
+  уже отражён текущим фактом, не дублируй его; если это новое значение — сохрани его.
 - Сообщение игрока является попыткой, вопросом или гипотезой, но не доказательством результата.
 - Авторитетным источником результата является только ответ ДМа.
 - Реплика NPC является character_claim: она создаёт knowledge слушателя, но не объективный fact.
+- Упоминание NPC в авторском описании, его поза/нахождение в сцене или реакция Narrator не
+  являются character_claim. Делай knowledge_transfer только когда в ответе действительно есть
+  произнесённая/переданная NPC реплика или явно отмеченное знание персонажа; объективное действие
+  и его наблюдаемый результат остаются world_state/event с dm_confirmed или public_observation.
 - Публично описанное ДМом наблюдение является public_observation.
 - Прямо подтверждённое ДМом изменение мира является dm_confirmed.
 - Не сохраняй атмосферу, намерения, планы и повтор уже известного.
 - Для evidence скопируй короткий точный фрагмент из ответа ДМа.
 - Используй точные ИМЕНА сущностей, не UUID и не SELF/USER/all/N/A.
 - Scene Thesis обслуживается отдельным Curator и запрещён.
+- Для каждого durable world_state outcome обязательно создай proposal change_type=fact с непустыми
+  payload.subject, payload.predicate и payload.object_value; payload не может быть пустым.
+- Выбирай субъектом сущность, чьё состояние или свойство непосредственно изменилось (state-bearing
+  entity). Не подменяй её контейнером, сценой или местом, где эффект лишь наблюдается; место можно
+  указать отдельным фактом только если его собственное состояние также явно установлено.
+- Если состояние уже описывает устойчивое значение, передай его как object_value и выбери
+  operation=assert для нового значения или operation=revise для замены текущего значения.
+- Если в текущих FACTS уже есть то же смысловое subject+predicate, новая подтверждённая версия
+  должна использовать operation=revise, сохранить тот же scope и заменить прежнее значение;
+  не создавай второй параллельный current fact для single-кардинальности.
+- object_value всегда является короткой строкой на русском, даже если состояние логически
+  истинно или ложно: не помещай boolean true/false в object_value. Boolean-аспект уже
+  выражается наличием факта и truth_status="true" или "false".
+- При изменении состояния запиши именно результирующее состояние изменённого объекта:
+  subject = носитель изменённого свойства, predicate = это свойство, object_value = его новое
+  значение. Не заменяй состояние атмосферой, цветом, впечатлением или описанием эффекта.
+  Сохраняй отрицания и различай действие, его причину и наблюдаемый результат. Если результат
+  не подтверждён, не утверждай желаемое состояние из попытки игрока. Для уже известного
+  свойства сохраняй его subject/predicate и сопоставимое краткое значение.
+- subject и object_value факта — текстовые понятия, а не ссылки на известные сущности;
+  не отбрасывай новый предмет только потому, что его ещё нет в списке сущностей.
+- Не создавай canon_gap proposal и не оставляй durable outcome без конкретного fact/event/relationship
+  payload: backend сам сформирует диагностический gap только если структурированное предложение
+  действительно не удалось нормализовать.
+- Если результат одновременно меняет физическое владение/положение предмета и устойчивое отношение
+  между персонажами (например, возврат долга, прекращение обещания или смена статуса доверия),
+  создай отдельные proposals для каждого домена: item_transfer не заменяет relationship.
+  Для закрытия или замены уже текущего отношения используй change_type=relationship с operation
+  revise или retract и укажи тех же subject_id/object_id и relation_type, что у изменяемой связи.
+- Если в CURRENT RELATIONSHIPS есть текущий debt между теми же персонажами, а ответ ДМа подтверждает
+  возврат/передачу предмета кредитору как исполнение этого долга, relationship proposal обязателен:
+  используй operation=retract (или revise с явно закрытым состоянием), те же subject_id, object_id и
+  relation_type=debt. Не оставляй debt current только потому, что item_transfer уже создан.
 
 ФОРМАТ:
 {{
@@ -342,6 +399,7 @@ FACT SEMANTICS:
                 acting_character_id,
                 player_character_id,
                 scene_participant_ids,
+                authoritative_text=authoritative_text,
             )
             if normalized:
                 results.append(
@@ -486,6 +544,7 @@ FACT SEMANTICS:
         acting_character_id: UUID | None,
         player_character_id: UUID | None,
         scene_participant_ids: list[str],
+        authoritative_text: str = "",
     ) -> dict | None:
         resolved = dict(payload)
         canon_meta = resolved.get("_canon") if isinstance(resolved.get("_canon"), dict) else {}
@@ -593,6 +652,7 @@ FACT SEMANTICS:
             else:
                 resolved["scope"] = "campaign"
                 resolved.pop("scene_id", None)
+
 
         if canon_meta:
             resolved["_canon"] = canon_meta

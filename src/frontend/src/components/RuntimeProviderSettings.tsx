@@ -17,6 +17,7 @@ const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve
 export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Props) {
   const [profile, setProfile] = useState<RuntimeProviderProfile | null>(null)
   const [busy, setBusy] = useState('')
+  const [loadFailed, setLoadFailed] = useState(false)
 
   const [textMode, setTextMode] = useState<'local' | 'cloud'>('local')
   const [textBaseUrl, setTextBaseUrl] = useState('')
@@ -43,7 +44,9 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
   const load = async () => {
     try {
       applyProfile(await runtimeProviderApi.profile())
+      setLoadFailed(false)
     } catch (error) {
+      setLoadFailed(true)
       onError(error instanceof Error ? error.message : 'Не удалось загрузить настройки моделей')
     }
   }
@@ -156,9 +159,54 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
     <div className={ready ? 'connection-ok' : 'connection-bad'}>● {message}</div>
   )
 
-  if (!profile) return <section className="settings-section"><h2>Модели</h2><p>Загружаем конфигурацию…</p></section>
+  if (!profile) {
+    return <section className="settings-section">
+      <h2>Модели</h2>
+      {loadFailed ? (
+        <>
+          <p>Не удалось загрузить конфигурацию моделей.</p>
+          <button className="btn" type="button" onClick={() => { setLoadFailed(false); void load() }}>Повторить</button>
+        </>
+      ) : (
+        <p>Загружаем конфигурацию…</p>
+      )}
+    </section>
+  }
+
+  const imageNeedsHelp = imageMode === 'local' && !profile.image.status.ready
 
   return <>
+    <section className="settings-section models-status-summary">
+      <span className="eyebrow">Статус</span>
+      <h2>Модели</h2>
+      <div className="models-status-grid">
+        <div>
+          <strong>Текст</strong>
+          {status(profile.text.status.ready, profile.text.status.message)}
+        </div>
+        <div>
+          <strong>Графика</strong>
+          {status(
+            imageMode === 'off' ? true : profile.image.status.ready,
+            imageMode === 'off' ? 'Генерация выключена' : profile.image.status.message,
+          )}
+        </div>
+      </div>
+      {imageNeedsHelp && (
+        <div className="models-runtime-warning">
+          <p>Локальный image runtime не готов (часто это ComfyUI не запущен).</p>
+          <div className="settings-actions">
+            <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => void install('image')}>
+              <Icons.download />{busy === 'image-install' ? 'Устанавливаем…' : 'Установить / починить'}
+            </button>
+            <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => void checkAll()}>
+              <Icons.refresh />{busy === 'check' ? 'Проверяем…' : 'Проверить всё'}
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+
     <form className="settings-section" onSubmit={saveText}>
       <span className="eyebrow">Текст</span>
       <h2>Модель мастера</h2>
@@ -194,7 +242,7 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
         <label>Модель<input value={imageModel} onChange={(e) => setImageModel(e.target.value)} placeholder="gpt-image-2" /></label>
         <label>API key<input type="password" value={imageKey} onChange={(e) => setImageKey(e.target.value)} placeholder={profile.image.has_api_key ? '•••••••• (пусто — оставить текущий)' : 'обязательно'} /></label>
       </>}
-      {status(profile.image.status.ready, profile.image.status.message)}
+      {status(imageMode === 'off' ? true : profile.image.status.ready, imageMode === 'off' ? 'Генерация выключена' : profile.image.status.message)}
       <p>{imageMode === 'off' ? 'Новые обложки, портреты и сцены не генерируются. Уже созданные изображения остаются в галерее.' : 'Обложки, портреты и сцены используют выбранный provider.'}</p>
       <div className="settings-actions">
         <button className="btn primary" disabled={Boolean(busy)}>Сохранить</button>

@@ -3,6 +3,15 @@ from pathlib import Path
 from live_model_contracts.registry import all_cases
 
 
+def test_default_cli_suite_includes_all_registered_contracts(monkeypatch):
+    from live_model_contracts.runner import _parse_args, _select_cases
+    monkeypatch.setattr('sys.argv', ['test-models'])
+    assert _parse_args().suite == 'all'
+    assert {case.id for case in _select_cases(_parse_args())} == {case.id for case in all_cases()}
+    monkeypatch.setattr('sys.argv', ['test-models', '--suite', 'core'])
+    assert _parse_args().suite == 'core'
+
+
 def test_live_model_contract_ids_and_transition_ownership_are_explicit():
     cases = list(all_cases())
     ids = [case.id for case in cases]

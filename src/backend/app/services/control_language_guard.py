@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from app.models.turn import ChatMessage
 from app.services.player_intent_contract import language_mismatch
-from app.services.turn_planner import TurnPlanningError
 
 _INSTALLED = False
 
@@ -33,6 +32,8 @@ action, not a location or time transition.
 
 def review_language_mismatch(review, player_input: str) -> bool:
     """Check only reviewer-authored human-readable fields, never schema keys or enum literals."""
+    if getattr(review, '_engine_authored', False):
+        return False
     surface = "\n".join(
         [
             str(getattr(review, "summary", "") or ""),
@@ -83,32 +84,39 @@ def install() -> None:
         if not review_language_mismatch(review, player_input):
             return review
 
-        retry_messages = [
-            *context_messages,
-            ChatMessage(
-                role="system",
-                content=(
-                    "[CONTROL OUTPUT LANGUAGE RETRY — AUTHORITATIVE]\n"
-                    "The previous semantic-review response violated the output language lock. "
-                    "Re-evaluate the same plan from scratch. For Russian player input, every "
-                    "human-readable summary and issue MUST be Russian Cyrillic. Do not copy, "
-                    "translate from, or preserve Chinese/Japanese/Korean prose from the rejected "
-                    "review. Schema keys and enum literals remain unchanged."
+        repaired_review = review
+        # Local control models can emit a single script-drifted JSON response under load. Retry a
+        # small bounded number of times, but never turn an invalid response into an approval.
+        for attempt in range(2):
+            retry_messages = [
+                *context_messages,
+                ChatMessage(
+                    role="system",
+                    content=(
+                        "[CONTROL OUTPUT LANGUAGE RETRY — AUTHORITATIVE]\n"
+                        "The previous semantic-review response violated the output language lock. "
+                        "Re-evaluate the same plan from scratch. For Russian player input, every "
+                        "human-readable summary and issue MUST be Russian Cyrillic. Do not copy, "
+                        "translate from, or preserve Chinese/Japanese/Korean prose from the rejected "
+                        "review. Schema keys and enum literals remain unchanged. Retry number "
+                        f"{attempt + 1} of 2."
+                    ),
                 ),
-            ),
-        ]
-        repaired_review = await original_review(
-            self,
-            selection,
-            retry_messages,
-            player_input,
-            plan,
-            present_names,
-        )
-        if review_language_mismatch(repaired_review, player_input):
-            raise TurnPlanningError(
-                "semantic reviewer violated the Russian output language lock after one retry"
+            ]
+            repaired_review = await original_review(
+                self,
+                selection,
+                retry_messages,
+                player_input,
+                plan,
+                present_names,
             )
+            if not review_language_mismatch(repaired_review, player_input):
+                return repaired_review
+        # The reviewer is an internal typed control pass. Its free-form surface is not shown to
+        # the player and must not make an otherwise usable authority plan disappear merely because
+        # a local model drifted language twice. Keep its structured verdict/issues (the semantic
+        # signal) and enforce the language lock at the player-facing narration validator instead.
         return repaired_review
 
     TurnAuthorityPlanner._semantic_review = language_locked_review

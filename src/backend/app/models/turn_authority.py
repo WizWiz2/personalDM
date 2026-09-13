@@ -18,6 +18,7 @@ class PlannedNpcIntroduction(BaseModel):
     appearance: str | None = Field(default=None, max_length=800)
     voice: str | None = Field(default=None, max_length=400)
     temporary_name: bool = False
+    personal_name_evidence: str | None = Field(default=None, max_length=500)
     reason: str = Field(min_length=2, max_length=500)
 
 
@@ -66,6 +67,7 @@ class TurnAuthority(BaseModel):
     object_names: list[str] = Field(default_factory=list)
 
     resolution: str = "conversation"
+    identity_reveal_requested: bool = False
     dramatic_mode: str = "calm"
     observable_consequences: list[str] = Field(default_factory=list)
     character_beats: list[str] = Field(default_factory=list)

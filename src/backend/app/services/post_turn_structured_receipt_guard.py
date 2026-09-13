@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 
-from app.db.repositories.event_repo import EventRepository
+from app.config import settings
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
-from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import PostTurnJob, RelationshipAssertion
 from app.models.proposed_change import (
     ChangeType,
@@ -23,13 +23,47 @@ from app.services.canon_applier import CanonApplier
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
-_INSTALLED = False
-
 
 class RelationshipReceiptDecision(BaseModel):
     verdict: Literal["no_change", "retract"] = "no_change"
     retract_ids: list[UUID] = Field(default_factory=list)
     reason: str = ""
+
+
+def _explicit_item_debt_fulfillments(receipt: dict, relationships) -> set[UUID]:
+    """Return debts whose own text names the item in a confirmed give receipt.
+
+    The receipt is already an authoritative executor result.  For a debt, an exact
+    item match is enough to close only when the current assertion itself names that
+    item; generic obligations and unrelated transfers remain delegated to the
+    semantic reconciler below.
+    """
+    if receipt.get("operation") != "give":
+        return set()
+    item_text = str(receipt.get("item_name") or "")
+    from_id = str(receipt.get("from_character_id") or "")
+    to_id = str(receipt.get("to_character_id") or "")
+    if not item_text or not from_id or not to_id:
+        return set()
+    item_tokens = {
+        token.casefold() for token in re.findall(r"[\w-]{3,}", item_text, flags=re.UNICODE)
+    }
+    if not item_tokens:
+        return set()
+    result: set[UUID] = set()
+    for row in relationships:
+        if str(row.relation_type or "").casefold() != "debt":
+            continue
+        if {str(row.subject_id), str(row.object_id)} != {from_id, to_id}:
+            continue
+        description_tokens = {
+            token.casefold()
+            for token in re.findall(r"[\w-]{3,}", str(row.description or ""), flags=re.UNICODE)
+        }
+        overlap = len(item_tokens & description_tokens)
+        if overlap >= min(2, len(item_tokens)):
+            result.add(UUID(str(row.id)))
+    return result
 
 
 def _snapshot_dict(turn) -> dict:
@@ -61,126 +95,6 @@ def _player_id(assistant) -> UUID | None:
         return None
 
 
-async def _matching_movement_event_exists(
-    session,
-    campaign_id: UUID,
-    assistant_turn_id: UUID,
-    player_id: UUID,
-    location_id: UUID,
-) -> bool:
-    for event in await EventRepository(session).list_by_campaign(campaign_id):
-        if assistant_turn_id not in event.source_turns:
-            continue
-        if event.location_id != location_id:
-            continue
-        if player_id not in event.participant_ids:
-            continue
-        return True
-    return False
-
-
-async def _ensure_movement_receipts(
-    processor: PostTurnProcessor,
-    campaign_id: UUID,
-    assistant,
-) -> int:
-    """Turn completed typed movement into replayable accepted canon exactly once."""
-
-    player_id = _player_id(assistant)
-    if player_id is None:
-        return 0
-    steps = _executed_steps(assistant)
-    movement = [
-        step
-        for step in steps
-        if step.get("status") == "completed"
-        and step.get("action_type") == "movement"
-        and step.get("target_scene_id")
-    ]
-    if not movement:
-        return 0
-
-    proposal_repo = ProposedChangeRepository(processor._session)
-    existing = await proposal_repo.get_for_turn(assistant.id)
-    applier = CanonApplier(processor._session)
-    scene_repo = SceneRepository(processor._session)
-    external_resolution = False
-    if assistant.parent_turn_id:
-        external_resolution = await processor._uses_external_proposal_resolution(
-            assistant.parent_turn_id
-        )
-
-    ensured = 0
-    for step in movement:
-        try:
-            target_scene_id = UUID(str(step["target_scene_id"]))
-        except (TypeError, ValueError):
-            continue
-        location_id = await scene_repo.get_location_id(target_scene_id)
-        if location_id is None:
-            continue
-        step_index = int(step.get("step_index") or 0)
-
-        matching = None
-        for proposal in existing:
-            if proposal.change_type != ChangeType.MOVEMENT.value:
-                continue
-            payload = proposal.payload or {}
-            if (
-                str(payload.get("character_id")) == str(player_id)
-                and str(payload.get("location_id")) == str(location_id)
-                and int(payload.get("_structured_step_index", step_index)) == step_index
-            ):
-                matching = proposal
-                break
-
-        if matching is None:
-            payload = {
-                "character_id": str(player_id),
-                "location_id": str(location_id),
-                "description": (
-                    step.get("observable_outcome")
-                    or step.get("intent")
-                    or "Выполнено структурированное перемещение."
-                ),
-                "_structured_receipt": True,
-                "_structured_step_index": step_index,
-            }
-            created = await proposal_repo.create_batch(
-                assistant.id,
-                [ProposedChangeCreate(change_type=ChangeType.MOVEMENT, payload=payload)],
-            )
-            matching = created[0]
-            existing.append(matching)
-
-        if external_resolution:
-            continue
-        if matching.status == "proposed":
-            await proposal_repo.resolve(
-                matching.id,
-                ProposalAction(status="accepted"),
-            )
-        elif matching.status not in {"accepted", "edited"}:
-            continue
-
-        if not await _matching_movement_event_exists(
-            processor._session,
-            campaign_id,
-            assistant.id,
-            player_id,
-            location_id,
-        ):
-            await applier.apply(
-                campaign_id,
-                ChangeType.MOVEMENT,
-                matching.payload,
-                assistant.id,
-                record_noop_events=True,
-            )
-        ensured += 1
-    return ensured
-
-
 async def _relationship_candidates(
     processor: PostTurnProcessor,
     campaign_id: UUID,
@@ -188,23 +102,27 @@ async def _relationship_candidates(
     target_id: UUID,
 ):
     return (
-        await processor._session.execute(
-            select(RelationshipAssertion).where(
-                RelationshipAssertion.campaign_id == str(campaign_id),
-                RelationshipAssertion.is_current.is_(True),
-                or_(
-                    (
-                        (RelationshipAssertion.subject_id == str(player_id))
-                        & (RelationshipAssertion.object_id == str(target_id))
+        (
+            await processor._session.execute(
+                select(RelationshipAssertion).where(
+                    RelationshipAssertion.campaign_id == str(campaign_id),
+                    RelationshipAssertion.is_current.is_(True),
+                    or_(
+                        (
+                            (RelationshipAssertion.subject_id == str(player_id))
+                            & (RelationshipAssertion.object_id == str(target_id))
+                        ),
+                        (
+                            (RelationshipAssertion.subject_id == str(target_id))
+                            & (RelationshipAssertion.object_id == str(player_id))
+                        ),
                     ),
-                    (
-                        (RelationshipAssertion.subject_id == str(target_id))
-                        & (RelationshipAssertion.object_id == str(player_id))
-                    ),
-                ),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
 
 async def _relationship_decision(
@@ -249,7 +167,7 @@ The player's prose can clarify intent, but it cannot override the machine-confir
 Schema:
 {"verdict":"no_change|retract","retract_ids":["uuid"],"reason":"brief Russian reason"}
 """
-    return await router.generate_json(
+    data = await router.generate_json(
         LLMProvider(),
         selection,
         [
@@ -272,6 +190,10 @@ Schema:
         temperature=0.0,
         response_model=RelationshipReceiptDecision,
     )
+    # Provider adapters return JSON-compatible mappings even when a response_model
+    # was supplied. Re-validate at this boundary so callers always receive the typed
+    # decision contract and cannot accidentally treat a dict as an object.
+    return RelationshipReceiptDecision.model_validate(data)
 
 
 async def _ensure_relationship_receipts(
@@ -280,7 +202,12 @@ async def _ensure_relationship_receipts(
     assistant,
     user_turn,
 ) -> int:
-    """Reconcile explicit continuing relationships against completed typed item receipts."""
+    """Temporary legacy bridge for relationships not yet migrated to TE2 semantic relations."""
+
+    # Once TE2 owns objective relations this bridge is not a compatibility projection: it would be
+    # a second semantic writer. Refuse to run it even when called directly by an old wrapper/test.
+    if settings.TE2_SEMANTIC_MODE == "writer":
+        return 0
 
     player_id = _player_id(assistant)
     if player_id is None:
@@ -323,19 +250,22 @@ async def _ensure_relationship_receipts(
             "to_character_id": str(target_id),
             "observable_outcome": step.get("observable_outcome"),
         }
-        decision = await _relationship_decision(
-            processor,
-            campaign_id,
-            receipt,
-            relationships,
-            user_turn.content,
-            assistant.content,
+        deterministic_retract_ids = _explicit_item_debt_fulfillments(receipt, relationships)
+        unresolved = [row for row in relationships if UUID(row.id) not in deterministic_retract_ids]
+        decision = (
+            await _relationship_decision(
+                processor, campaign_id, receipt, unresolved, user_turn.content, assistant.content
+            )
+            if unresolved
+            else RelationshipReceiptDecision()
         )
-        if decision.verdict != "retract" or not decision.retract_ids:
+        retract_ids = set(decision.retract_ids) if decision.verdict == "retract" else set()
+        retract_ids.update(deterministic_retract_ids)
+        if not retract_ids:
             continue
 
         by_id = {UUID(row.id): row for row in relationships}
-        for relationship_id in decision.retract_ids:
+        for relationship_id in retract_ids:
             row = by_id.get(relationship_id)
             if row is None:
                 continue
@@ -391,6 +321,15 @@ async def reconcile_structured_receipts(
     processor: PostTurnProcessor,
     job_id: UUID,
 ) -> None:
+    """Run only legacy semantic receipt reconciliation not yet owned by TE2.
+
+    Movement and inventory physical state are intentionally absent here: applied executor receipts
+    are already canonicalized synchronously by StructuredReceiptEventCompiler. Keeping another
+    post-turn writer would create two competing sources of truth.
+    """
+
+    if settings.TE2_SEMANTIC_MODE == "writer":
+        return
     row = await processor._session.get(PostTurnJob, str(job_id))
     if row is None or row.status != "completed" or row.job_type != "memory_scribe":
         return
@@ -407,7 +346,6 @@ async def reconcile_structured_receipts(
         return
 
     campaign_id = UUID(row.campaign_id)
-    await _ensure_movement_receipts(processor, campaign_id, assistant)
     await _ensure_relationship_receipts(
         processor,
         campaign_id,
@@ -418,38 +356,12 @@ async def reconcile_structured_receipts(
 
 
 def install() -> None:
-    global _INSTALLED
-    if _INSTALLED:
-        return
-
-    original_process_job = PostTurnProcessor.process_job
-
-    async def receipt_aware_process_job(self, job_id, *, already_claimed=False):
-        await original_process_job(
-            self,
-            job_id,
-            already_claimed=already_claimed,
-        )
-        try:
-            await reconcile_structured_receipts(self, job_id)
-        except Exception as exc:
-            await self._session.rollback()
-            row = await self._session.get(PostTurnJob, str(job_id))
-            if row is not None:
-                row.status = "failed"
-                row.error = f"structured receipt reconciliation failed: {exc}"[:4000]
-                row.locked_at = None
-                await self._session.commit()
-            raise
-
-    PostTurnProcessor.process_job = receipt_aware_process_job
-    _INSTALLED = True
+    """Compatibility entry point; reconciliation now runs inside process_job."""
 
 
 __all__ = [
     "RelationshipReceiptDecision",
     "_executed_steps",
-    "_ensure_movement_receipts",
     "_ensure_relationship_receipts",
     "install",
     "reconcile_structured_receipts",

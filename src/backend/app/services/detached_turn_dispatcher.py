@@ -14,6 +14,7 @@ from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.jobs import GenerationRunRead
+from app.services.visual_runtime_gate import VisualRuntimeGate
 from app.models.turn import TurnCreate, TurnRead
 from app.services.base_turn_runner import active_tasks
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
@@ -92,6 +93,9 @@ class DetachedTurnDispatcher:
     ) -> DetachedTurnAccepted:
         if data.role != "user":
             raise ValueError("Detached public input accepts only role='user'")
+
+        # Narrative turns own the GPU on 8GB cards: cancel Comfy mid-flight and retry later.
+        VisualRuntimeGate.preempt_for_turn()
 
         turns = TurnRepository(session)
         runs = GenerationRunRepository(session)

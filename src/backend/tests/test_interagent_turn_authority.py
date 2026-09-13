@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -20,6 +20,7 @@ from app.models.turn_authority import PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProviderTruncatedError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.context_compiler import ContextCompiler
+from app.services.npc_identity_binding import IdentityBindingDecision
 from app.services.role_model_router import ModelRole, RoleModelSelection
 from app.services.turn_authority_planner import (
     CoordinatedTurnPlan,
@@ -35,6 +36,13 @@ from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
 class FakeControlRouter:
     def __init__(self, plan: CoordinatedTurnPlan):
         self.plan = plan
+        self.narration_validation_calls = 0
+
+    async def resolve(self, campaign_id, role):
+        # The semantic narration guard may ask for a dedicated evaluator. Returning None exercises
+        # its documented fallback to the validator selection supplied by the caller.
+        assert role == ModelRole.EVALUATOR
+        return None
 
     async def generate_json(
         self,
@@ -50,7 +58,27 @@ class FakeControlRouter:
             return self.plan.model_dump(mode="json")
         if response_model is SemanticPlanReview:
             return {"verdict": "pass", "summary": "План согласован.", "issues": []}
+        if response_model is IdentityBindingDecision:
+            return {
+                "designation_kind": "description",
+                "binding_source": "planned_outcome",
+                "introduction_index": 0,
+                "participation": "encountered",
+                "designation": "role_reference",
+                "encounter_source": "planned_outcome",
+                "encounter_evidence": self.plan.observable_consequences[0],
+                "designation_source": "planned_outcome",
+                "designation_evidence": self.plan.observable_consequences[0],
+                "reason": "The role designation refers to the person opening the door.",
+            }
         if response_model is NarrationValidationResult:
+            self.narration_validation_calls += 1
+            if self.narration_validation_calls >= 2:
+                return {
+                    "verdict": "pass",
+                    "summary": "Повторная семантическая проверка подтверждает допустимую реплику.",
+                    "violations": [],
+                }
             npc_name = self.plan.npc_introductions[0].canonical_name
             return {
                 "verdict": "repair_required",
@@ -127,7 +155,7 @@ def _selection(campaign_id):
         model_name="fake-control",
         has_api_key=False,
         context_window=4096,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
     )
     return RoleModelSelection(
         role=ModelRole.PLANNER,
@@ -144,7 +172,7 @@ def _selection(campaign_id):
 async def test_planner_authority_validator_and_materializer_share_one_new_npc_contract(
     db_session: AsyncSession,
 ):
-    campaign_id, _player, known_absent, scene = await _world(db_session)
+    campaign_id, _player, _known_absent, scene = await _world(db_session)
     expected = _planned_doorman()
     router = FakeControlRouter(expected)
     selection = _selection(campaign_id)
@@ -157,6 +185,10 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
             ChatMessage(role="user", content="Стучу в фабрику"),
         ],
     )
+    # The model may propose a descriptive designation, but without personal-name evidence the
+    # authority boundary owns canonicalization and collapses it to the grounded temporary role.
+    assert plan.npc_introductions[0].canonical_name == "Ночной дежурный"
+    assert plan.npc_introductions[0].temporary_name is True
     authority = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,
         trigger_turn_id=uuid4(),
@@ -167,7 +199,8 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
         acting_character_id=None,
     )
 
-    assert authority.allowed_new_npc_names == ["Дежурный фабрики"]
+    assert authority.allowed_new_npc_names == ["Ночной дежурный"]
+    assert authority.allowed_new_npcs[0].temporary_name is True
     assert "Шептун" in authority.known_absent_character_names
 
     validator_selection = RoleModelSelection(
@@ -181,18 +214,25 @@ async def test_planner_authority_validator_and_materializer_share_one_new_npc_co
     verdict = await TurnAuthorityValidator(router).validate(
         validator_selection,
         authority,
-        "На стук дверь открывает Дежурный фабрики и смотрит на Рэта.",
+        "На стук дверь открывает Ночной дежурный и смотрит на Рэта.",
     )
     assert verdict.verdict == "pass"
     assert verdict.violations == []
+    assert router.narration_validation_calls == 2
 
     materialized = await TurnOutcomeMaterializer(db_session).materialize(
         authority,
         source_turn_id=uuid4(),
     )
     assert len(materialized.introduced_character_ids) == 1
+    introduced_id = materialized.introduced_character_ids[0]
+    introduced = await EntityRepository(db_session).get_character(introduced_id)
+    assert introduced is not None
+    assert introduced.canonical_name == "Ночной дежурный"
+    assert introduced.custom_fields["temporary_name"] is True
+    assert introduced.custom_fields["role"] == "ночной дежурный"
     participants = await SceneRepository(db_session).get_participants(scene.id)
-    assert materialized.introduced_character_ids[0] in participants
+    assert introduced_id in participants
 
 
 @pytest.mark.interagent_contract_enforced
@@ -295,7 +335,7 @@ async def test_explicit_provider_stop_beats_terminal_punctuation_heuristic(
         model_name="fake-narrator",
         has_api_key=False,
         context_window=4096,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
     )
     selection = RoleModelSelection(
         role=ModelRole.NARRATOR,

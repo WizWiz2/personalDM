@@ -165,6 +165,15 @@ class TurnAuthorityService:
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
+            identity_reveal_requested=(
+                bool(
+                    plan
+                    and (
+                        plan.personal_name_revealed
+                        or plan.identity_reveal_requested
+                    )
+                )
+            ),
             dramatic_mode=(plan.narration_policy.dramatic_mode if plan else "calm"),
             observable_consequences=(list(plan.observable_consequences) if plan else []),
             character_beats=(list(plan.character_beats) if plan else []),
@@ -185,6 +194,14 @@ class TurnAuthorityService:
             ),
             action_sequence=executed_sequence,
         )
+
+        if authority.identity_reveal_requested:
+            authority.narration_guidance.append(
+                "Игрок прямо спросил имя присутствующего персонажа: дай ему ясный ответ с конкретным "
+                "именем. В этой сцене не вводи отказ или уклонение вместо ответа: имя должно быть "
+                "явно произнесено самим персонажем и только такое самоназывание может стабилизировать "
+                "его личность."
+            )
 
         # Sticky `/talk` identifies a possible listener, not unconditional ownership of every later
         # player action. Explicit actor-scoped internal callers remain authoritative; public routing

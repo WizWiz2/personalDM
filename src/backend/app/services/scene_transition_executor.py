@@ -30,6 +30,31 @@ from app.services.scene_state_service import SceneStateService
 from app.services.turn_planner import ActionSequencePlan, SceneTransitionPlan
 
 
+def _destination_profile(bridge_summary: str | None) -> str | None:
+    """Read the planner's typed public profile without importing the profile guard.
+
+    The executor is the durable identity boundary: a profile accepted by the planner must be
+    written in the same transaction as a newly-created Location, rather than relying on a later
+    best-effort observer job.
+    """
+    text = " ".join(str(bridge_summary or "").split())
+    folded = text.casefold()
+    marker = "destination profile:"
+    end_marker = "transition:"
+    start = folded.find(marker)
+    if start < 0:
+        return None
+    start += len(marker)
+    end = folded.find(end_marker, start)
+    if end < 0:
+        return None
+    profile = text[start:end].strip(" -—–;,.")
+    words = profile.split()
+    if len(profile) < 80 or len(words) < 10 or len({word.casefold() for word in words}) < 8:
+        return None
+    return profile
+
+
 @dataclass(frozen=True)
 class AppliedSceneTransition:
     scene: SceneRead
@@ -201,6 +226,7 @@ class SceneTransitionExecutor:
                         campaign_id,
                         destination,
                         plan.destination_parent_location,
+                        profile=_destination_profile(plan.bridge_summary),
                     )
                 )
             if allow_route_discovery is None:
@@ -252,6 +278,7 @@ class SceneTransitionExecutor:
             campaign.player_character_id,
             source_scene_id,
             plan,
+            preserve_unlisted_focus=trigger_turn_id is not None,
         )
         for participant_id in carried_ids:
             await self._scenes.add_participant(
@@ -324,6 +351,10 @@ class SceneTransitionExecutor:
         from app.services.action_sequence_executor import ActionSequenceExecutor
 
         sequence_plan = ActionSequencePlan.model_validate(plan.sequence_payload)
+        sequence_plan = await self._collapse_unauthorized_route_media(
+            sequence_plan,
+            trigger_turn_id,
+        )
         execution = await ActionSequenceExecutor(self._session).execute(
             campaign_id,
             source_scene_id,
@@ -368,6 +399,62 @@ class SceneTransitionExecutor:
         await self._session.flush()
         plan.execution_report = execution.model_dump(mode="json")
         return self._to_applied(row, target_scene, execution)
+
+    async def _collapse_unauthorized_route_media(
+        self,
+        sequence_plan: ActionSequencePlan,
+        trigger_turn_id: UUID,
+    ) -> ActionSequencePlan:
+        """Remove model-added path segments when the human authorized one final destination.
+
+        A compound plan may describe stairs/corridors as extra movement steps even though the
+        player committed to one destination. Compare every typed movement destination against the
+        persisted human-input authorizer. Collapse only the unambiguous case of a movement-only
+        sequence with exactly one authorized destination; explicit multi-destination plans and
+        mixed action sequences remain untouched.
+        """
+        movement_indices = [
+            index
+            for index, step in enumerate(sequence_plan.steps)
+            if step.action_type == "movement"
+            and step.transition.required
+            and step.transition.transition_type == "location_transition"
+        ]
+        if len(movement_indices) < 2 or len(movement_indices) != len(sequence_plan.steps):
+            return sequence_plan
+
+        # Missing actions and destination repair belong to semantic planning. Never infer
+        # replacement endpoints here: a lexical mention may be an origin, an alias, or an
+        # unrelated place. Reusing a step with another endpoint also invalidates its outcome,
+        # preconditions and destination profile. This boundary can only filter route media.
+
+        decisions = []
+        for index in movement_indices:
+            destination = sequence_plan.steps[index].transition.destination_location
+            decisions.append(
+                await self.authorize_destination(trigger_turn_id, destination)
+            )
+        authorized = [
+            index
+            for index, decision in zip(movement_indices, decisions)
+            if decision.applicable and decision.authorized
+        ]
+        # A named destination that the player mentioned but is not allowed to reach
+        # must remain in the sequence so the executor can record a blocked step. Only
+        # discard destinations absent from the input altogether: those are the model's
+        # route-media additions (corridor/stairs/etc.), not player commitments.
+        unauthorized_named = [
+            decision
+            for decision in decisions
+            if decision.applicable and not decision.authorized
+        ]
+        if len(authorized) != 1 or unauthorized_named:
+            return sequence_plan
+
+        keep_index = authorized[0]
+        return sequence_plan.model_copy(
+            update={"steps": [sequence_plan.steps[keep_index]]}
+        )
 
     async def mark_applied(self, transition_id: UUID) -> bool:
         row = await self._session.get(SceneTransition, str(transition_id))
@@ -529,6 +616,26 @@ class SceneTransitionExecutor:
                     if candidate
                 ):
                     matched_ids.add(target.id)
+                # A control model may serialize an exit label together with the current
+                # location, for example "Коридор, Комната Кая". The whole string is not a
+                # canonical location name, but an individual route segment can be authoritative
+                # when it matches this source scene's unique exit.
+                # Commas are the model's route-list delimiter. An em dash is intentionally not
+                # split here: it is also a legitimate hierarchy/description separator in a
+                # canonical location name (e.g. an outside area with a nested street), and
+                # treating its middle segment as an exit would collapse distinct locations.
+                route_segments = [
+                    segment.strip(" ,—-")
+                    for segment in clean_destination.split(",")
+                    if segment.strip(" ,—-")
+                ]
+                if len(route_segments) > 1 and any(
+                    same_location_reference(segment, candidate)
+                    for segment in route_segments
+                    for candidate in candidates
+                    if candidate
+                ):
+                    matched_ids.add(target.id)
             if len(matched_ids) == 1:
                 matched = by_id[next(iter(matched_ids))]
                 if matched.id != source_location_id:
@@ -568,6 +675,7 @@ class SceneTransitionExecutor:
         campaign_id: UUID,
         destination: str,
         parent_name: str | None,
+        profile: str | None = None,
     ) -> tuple[UUID, bool]:
         clean_destination = display_location_name(" ".join(destination.split()))
         if not clean_destination:
@@ -591,8 +699,12 @@ class SceneTransitionExecutor:
             campaign_id,
             LocationCreate(
                 canonical_name=clean_destination,
+                description=profile,
                 parent_location_id=parent_id,
-                custom_fields={"created_by": "turn_planner"},
+                custom_fields={
+                    "created_by": "turn_planner",
+                    **({"profile_source": "turn_planner_destination_profile"} if profile else {}),
+                },
             ),
         )
         return created.id, True
@@ -613,6 +725,8 @@ class SceneTransitionExecutor:
         player_character_id: str | None,
         source_scene_id: UUID | None,
         plan: SceneTransitionPlan,
+        *,
+        preserve_unlisted_focus: bool = False,
     ) -> list[UUID]:
         selected: list[UUID] = []
         if player_character_id:
@@ -631,7 +745,17 @@ class SceneTransitionExecutor:
         )
         present = result.scalars().all()
         requested = {name.casefold() for name in plan.carry_participants}
-        carry_all = plan.transition_type == "focus_transition" and not requested
+        # A top-level focus transition may intentionally preserve the current
+        # conversational roster.  Sequence steps are executed through this
+        # same method with no trigger turn; treating their default focus
+        # transition as "everyone follows" leaks unrelated NPCs across a
+        # movement boundary.  The explicit trigger is the typed ownership
+        # boundary between those two execution paths.
+        carry_all = (
+            preserve_unlisted_focus
+            and plan.transition_type == "focus_transition"
+            and not requested
+        )
         for entity in present:
             entity_id = UUID(entity.id)
             if entity_id in selected:

@@ -275,7 +275,7 @@ class PlayableBootstrapService:
             return False, []
         raw_npcs = world.get("starter_npcs", [])
         if not isinstance(raw_npcs, list):
-            raise ValueError("Structured starter NPC contract is malformed")
+            raise TypeError("Structured starter NPC contract is malformed")
         parsed: list[SessionZeroStarterNPC] = []
         for raw in raw_npcs[:6]:
             try:

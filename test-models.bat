@@ -33,6 +33,14 @@ echo It does NOT use pytest Planner/Validator/Scribe mocks and does not touch
 echo your normal campaign library or provider .env.
 echo.
 
+set "PDM_GIT_BRANCH=unknown"
+set "PDM_GIT_SHA=unknown"
+for /f "delims=" %%i in ('git branch --show-current 2^>nul') do set "PDM_GIT_BRANCH=%%i"
+for /f "delims=" %%i in ('git rev-parse --short HEAD 2^>nul') do set "PDM_GIT_SHA=%%i"
+echo [Setup] Source checkout: %PDM_GIT_BRANCH% @ %PDM_GIT_SHA%
+python -c "from pathlib import Path; runtime=Path(r'src/backend/app/runtime.py').read_text(encoding='utf-8'); pipeline=Path(r'src/backend/app/services/turn_intent_pipeline.py'); assert pipeline.is_file(), 'turn_intent_pipeline.py is missing'; assert 'install_turn_intent_pipeline()' in runtime, 'runtime.py does not install frozen-intent planning'; assert 'frozen_player_intent_v1' in runtime, 'runtime manifest does not declare frozen_player_intent_v1'; print('[Setup] Frozen-intent source preflight: OK')"
+if errorlevel 1 goto :err_stale_source
+
 echo [Setup] Checking Ollama runtime and required models...
 pushd src\backend
 python -m live_model_contracts.bootstrap %*
@@ -45,7 +53,7 @@ if not "%BOOTSTRAP_RC%"=="0" (
 )
 
 echo.
-python -m live_model_contracts.console_runner %*
+python -m live_model_contracts.diagnostic_console_runner %*
 set "RC=%ERRORLEVEL%"
 popd
 
@@ -67,4 +75,9 @@ exit /b 1
 
 :err_deps
 echo [ERROR] Failed to install backend dependencies.
+exit /b 1
+
+:err_stale_source
+echo [ERROR] Live model suite refused to start because this checkout does not contain the frozen-intent production pipeline.
+echo [ERROR] Verify the current branch and pull feat/truth-engine-2-foundation before running expensive model contracts.
 exit /b 1

@@ -5,6 +5,8 @@ interface GeneratedPixelArtProps {
   alt: string
   fallback: ReactNode
   className?: string
+  /** When false, never request src ? show fallback immediately (avoids 404 flash). */
+  active?: boolean
   retryOnError?: boolean
   retryIntervalMs?: number
   maxRetries?: number
@@ -21,6 +23,7 @@ export function GeneratedPixelArt({
   alt,
   fallback,
   className = '',
+  active = true,
   retryOnError = false,
   retryIntervalMs = 5000,
   maxRetries = 6,
@@ -31,18 +34,18 @@ export function GeneratedPixelArt({
   useEffect(() => {
     setFailed(false)
     setAttempt(0)
-  }, [src])
+  }, [src, active])
 
   useEffect(() => {
-    if (!failed || !retryOnError || attempt >= maxRetries) return
+    if (!active || !failed || !retryOnError || attempt >= maxRetries) return
     const timer = window.setTimeout(() => {
       setAttempt((value) => value + 1)
       setFailed(false)
     }, retryIntervalMs)
     return () => window.clearTimeout(timer)
-  }, [failed, retryOnError, attempt, maxRetries, retryIntervalMs])
+  }, [active, failed, retryOnError, attempt, maxRetries, retryIntervalMs])
 
-  if (failed) return <>{fallback}</>
+  if (!active || failed) return <>{fallback}</>
 
   return <img
     className={`generated-pixel-art ${className}`.trim()}

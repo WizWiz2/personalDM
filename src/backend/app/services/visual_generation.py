@@ -328,6 +328,8 @@ class VisualGenerationService:
         return Path(settings.DATA_DIR) / settings.IMAGE_GENERATED_SUBDIR
 
     async def status(self) -> dict:
+        from app.services.visual_runtime_gate import VisualRuntimeGate
+
         enabled = bool(settings.IMAGE_ENABLED)
         connected = enabled and await self._client.health()
         return {
@@ -338,6 +340,8 @@ class VisualGenerationService:
             "model": settings.IMAGE_DIFFUSION_MODEL,
             "text_encoder": settings.IMAGE_TEXT_ENCODER,
             "lora": settings.IMAGE_LORA_MODEL,
+            "visual_busy": VisualRuntimeGate.is_busy(),
+            "narrative_running": await VisualRuntimeGate.any_narrative_running(),
         }
 
     def character_portrait_path(self, character_id: UUID) -> Path:

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.proposed_change_repo import _persisted_change_type
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
@@ -80,6 +81,67 @@ def _base_wrong_claim_fact(claim: str) -> ProposedChangeCreate:
     )
 
 
+def _narrator_audit_response(claim_segment_id: int) -> dict:
+    return {
+        "claims": [
+            {
+                "segment_id": claim_segment_id,
+                "speaker_name": "Мартин Вэнс",
+            }
+        ],
+        "recovery": {
+            "outcomes": [
+                {
+                    "id": "key17",
+                    "kind": "world_state",
+                    "description": "На столе обнаружен латунный ключ с номером 17.",
+                    "evidence": "На столе лежит латунный ключ с номером 17",
+                    "authority": "public_observation",
+                    "durable": True,
+                },
+                {
+                    "id": "folder",
+                    "kind": "world_state",
+                    "description": "В папке лежат три фотографии и квитанция.",
+                    "evidence": "В папке три фотографии и квитанция",
+                    "authority": "public_observation",
+                    "durable": True,
+                },
+            ],
+            "proposals": [
+                {
+                    "outcome_id": "key17",
+                    "change_type": "fact",
+                    "operation": "assert",
+                    "cardinality": "single",
+                    "payload": {
+                        "subject": "Латунный ключ",
+                        "predicate": "номер",
+                        "object_value": "17",
+                        "truth_status": "true",
+                        "visibility": "public",
+                        "scope": "scene",
+                    },
+                },
+                {
+                    "outcome_id": "folder",
+                    "change_type": "fact",
+                    "operation": "assert",
+                    "cardinality": "multi",
+                    "payload": {
+                        "subject": "Папка",
+                        "predicate": "содержит",
+                        "object_value": "три фотографии и квитанцию",
+                        "truth_status": "true",
+                        "visibility": "public",
+                        "scope": "scene",
+                    },
+                },
+            ],
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_facts(
     db_session: AsyncSession,
@@ -98,68 +160,35 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
         if segment == claim
     )
 
+    async def typed_memory_response(
+        provider,
+        selection,
+        messages,
+        *,
+        response_model,
+        **kwargs,
+    ):
+        del provider, selection, messages, kwargs
+        if response_model.__name__ == "NarratorMemoryAudit":
+            return _narrator_audit_response(claim_segment_id)
+        if response_model.__name__ == "QuoteClaimAttributionEnvelope":
+            # quality_stabilization_guard deliberately distrusts the broad actor-segment guess and
+            # re-adjudicates immutable direct speech through a second, quote-only control pass.
+            return {
+                "claims": [
+                    {
+                        "quote_id": 1,
+                        "speaker_name": "Мартин Вэнс",
+                    }
+                ]
+            }
+        raise AssertionError(
+            f"Unexpected memory response model: {response_model.__name__}"
+        )
+
     scribe = MemoryScribe(db_session)
     scribe._model_router.resolve = AsyncMock(return_value=SimpleNamespace())
-    scribe._model_router.generate_json = AsyncMock(
-        return_value={
-            "claims": [
-                {
-                    "segment_id": claim_segment_id,
-                    "speaker_name": "Мартин Вэнс",
-                }
-            ],
-            "recovery": {
-                "outcomes": [
-                    {
-                        "id": "key17",
-                        "kind": "world_state",
-                        "description": "На столе обнаружен латунный ключ с номером 17.",
-                        "evidence": "На столе лежит латунный ключ с номером 17",
-                        "authority": "public_observation",
-                        "durable": True,
-                    },
-                    {
-                        "id": "folder",
-                        "kind": "world_state",
-                        "description": "В папке лежат три фотографии и квитанция.",
-                        "evidence": "В папке три фотографии и квитанция",
-                        "authority": "public_observation",
-                        "durable": True,
-                    },
-                ],
-                "proposals": [
-                    {
-                        "outcome_id": "key17",
-                        "change_type": "fact",
-                        "operation": "assert",
-                        "cardinality": "single",
-                        "payload": {
-                            "subject": "Латунный ключ",
-                            "predicate": "номер",
-                            "object_value": "17",
-                            "truth_status": "true",
-                            "visibility": "public",
-                            "scope": "scene",
-                        },
-                    },
-                    {
-                        "outcome_id": "folder",
-                        "change_type": "fact",
-                        "operation": "assert",
-                        "cardinality": "multi",
-                        "payload": {
-                            "subject": "Папка",
-                            "predicate": "содержит",
-                            "object_value": "три фотографии и квитанцию",
-                            "truth_status": "true",
-                            "visibility": "public",
-                            "scope": "scene",
-                        },
-                    },
-                ],
-            },
-        }
-    )
+    scribe._model_router.generate_json = AsyncMock(side_effect=typed_memory_response)
 
     proposals = await enrich_narrator_memory(
         scribe,
@@ -170,23 +199,34 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
         base_proposals=[_base_wrong_claim_fact(claim)],
     )
 
-    knowledge = [item for item in proposals if item.change_type == ChangeType.KNOWLEDGE]
-    facts = [item for item in proposals if item.change_type == ChangeType.FACT]
+    serialized = [item.model_dump(mode="json") for item in proposals]
+    knowledge = [item for item in proposals if _persisted_change_type(item) == "knowledge"]
+    facts = [item for item in proposals if _persisted_change_type(item) == "fact"]
+    audit = scribe.last_audit
 
-    assert len(knowledge) == 1
+    assert scribe._model_router.generate_json.await_count == 2
+    assert audit["present_npcs"] == ["Мартин Вэнс"], audit
+    assert audit["narrator_claim_count"] == 1, audit
+    assert audit["resolved_claim_speakers"] == ["Мартин Вэнс"], audit
+    assert "knowledge" in audit["merged_change_types"], audit
+    assert len(knowledge) == 1, {
+        "audit": audit,
+        "segments": segments,
+        "proposals": serialized,
+        "persisted_types": [_persisted_change_type(item) for item in proposals],
+    }
     assert knowledge[0].payload["source_character_id"] == str(martin.id)
     assert knowledge[0].payload["recipient_id"] == str(hero.id)
     assert knowledge[0].payload["proposition"] == claim
     assert knowledge[0].payload["_canon"]["authority"] == "character_claim"
+    assert knowledge[0].payload["_canon"]["outcome_id"] == "quoted-claim-1"
 
     assert {item.payload["subject"] for item in facts} == {"Латунный ключ", "Папка"}
     assert all(item.payload["scope"] == "scene" for item in facts)
     assert all(item.payload.get("scene_id") == str(scene.id) for item in facts)
     assert not any(item.payload.get("subject") == "Ипотека" for item in facts)
 
-    audit = scribe.last_audit
     assert audit["narrator_memory_auditor"] == "completed"
-    assert audit["narrator_claim_count"] == 1
     assert audit["objective_recovery_count"] == 2
     assert audit["claim_promotions_removed"] == 1
 

@@ -12,6 +12,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from live_model_contracts.transport import open_endpoint
+
 DEFAULT_OLLAMA = "http://127.0.0.1:11434"
 DEFAULT_NARRATOR = "gemma4:e4b"
 DEFAULT_CONTROL = "qwen2.5:7b"
@@ -45,7 +47,7 @@ def _tags_url(ollama: str) -> str:
 
 def _probe_models(ollama: str, *, timeout: float = 2.0) -> set[str] | None:
     try:
-        with urllib.request.urlopen(_tags_url(ollama), timeout=timeout) as response:
+        with open_endpoint(_tags_url(ollama), timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
         return None

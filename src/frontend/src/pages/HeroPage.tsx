@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, readableError } from '../api/client'
 import type { CharacterCard, SceneState } from '../api/types'
-import { visualApi, visualUrls } from '../api/visuals'
+import { friendlyVisualError, visualApi, visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
 import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { PixelPortrait } from '../components/PixelArt'
@@ -15,21 +15,24 @@ export function HeroPage() {
   const [error, setError] = useState('')
   const [portraitGenerating, setPortraitGenerating] = useState(false)
   const [portraitNonce, setPortraitNonce] = useState(0)
+  const [portraitAvailable, setPortraitAvailable] = useState(false)
 
   useEffect(() => {
     let active = true
     const run = async () => {
       if (!campaign.player_character_id) { setLoading(false); return }
       try {
-        const [data, sceneState] = await Promise.all([
+        const [data, sceneState, portrait] = await Promise.all([
           api.getCharacterCard(campaign.player_character_id),
           campaign.current_scene_id
             ? api.getSceneState(campaign.id, campaign.current_scene_id)
             : Promise.resolve(null),
+          visualApi.getCharacterPortrait(campaign.player_character_id).catch(() => null),
         ])
         if (!active) return
         setCard(data)
         setScene(sceneState)
+        setPortraitAvailable(Boolean(portrait?.available))
       } catch (err) { if (active) setError(readableError(err)) }
       finally { if (active) setLoading(false) }
     }
@@ -59,9 +62,10 @@ export function HeroPage() {
     setError('')
     try {
       const result = await visualApi.generateCharacterPortrait(character.id)
+      setPortraitAvailable(true)
       setPortraitNonce(result.seed || Date.now())
     } catch (err) {
-      setError(readableError(err))
+      setError(friendlyVisualError(err))
     } finally {
       setPortraitGenerating(false)
     }
@@ -71,7 +75,7 @@ export function HeroPage() {
     <header className="workspace-topbar"><div><h1>Герой</h1><p>Досье персонажа</p></div></header>
     <div className="page-content hero-content">
       {loading && <LoadingState label="Собираем досье…" />}
-      {error && <ErrorState message={error} />}
+      {error && <ErrorState title={/модел|comfy|runtime|график|портрет/i.test(error) ? 'Не удалось обновить портрет' : 'Не получилось загрузить данные'} message={error} />}
       {!loading && !error && !campaign.player_character_id && <EmptyState title="Герой ещё не создан" text="Сначала заверши нулевую сессию." />}
       {card && character && <div className="hero-dossier">
         <aside className="hero-summary">
@@ -80,6 +84,8 @@ export function HeroPage() {
               src={`${visualUrls.characterPortrait(character.id)}${portraitNonce ? `?v=${portraitNonce}` : ''}`}
               alt={`Портрет ${character.canonical_name}`}
               fallback={<PixelPortrait seed={character.canonical_name} />}
+              active={portraitAvailable}
+              retryOnError={portraitAvailable}
             />
           </div>
           <button className="btn" type="button" disabled={portraitGenerating} onClick={() => void regeneratePortrait()}>{portraitGenerating ? 'Рисуем…' : 'Перерисовать портрет'}</button>
@@ -94,7 +100,14 @@ export function HeroPage() {
           {character.appearance && <section className="dossier-section"><h3>Образ</h3><p>{character.appearance}</p></section>}
           {character.personality && <section className="dossier-section"><h3>Характер</h3><p>{character.personality}</p></section>}
           {character.backstory_public && <section className="dossier-section"><h3>Прошлое</h3><p>{character.backstory_public}</p></section>}
-          {(character.emotional_state || character.current_intentions?.length) && <section className="dossier-section"><h3>Текущее состояние</h3>{character.emotional_state && <p>{character.emotional_state}</p>}<div className="chips">{character.current_intentions?.map((v) => <span className="chip" key={v}>{v}</span>)}</div></section>}
+          {(() => {
+            const goalTexts = new Set(card.goals.map((g) => g.description.trim()))
+            const stateText = character.emotional_state?.trim() || ''
+            const intentions = (character.current_intentions ?? []).filter((v) => !goalTexts.has(v.trim()))
+            const showStateText = Boolean(stateText) && !goalTexts.has(stateText)
+            if (!showStateText && intentions.length === 0) return null
+            return <section className="dossier-section"><h3>Текущее состояние</h3>{showStateText && <p>{character.emotional_state}</p>}<div className="chips">{intentions.map((v) => <span className="chip" key={v}>{v}</span>)}</div></section>
+          })()}
           {card.goals.length > 0 && <section className="dossier-section"><h3>Цели</h3><div className="knowledge-list">{[...card.goals].sort((a, b) => b.priority - a.priority).map((goal, i) => <div className="knowledge-item" key={goal.id}><span className="bullet">{i === 0 ? '●' : '○'}</span><span>{goal.description}</span></div>)}</div></section>}
           {visibleRelationships.length > 0 && <section className="dossier-section"><h3>Важные связи</h3><div className="relationship-list">{visibleRelationships.map((rel) => {
             const otherId = rel.subject_id === character.id ? rel.object_id : rel.subject_id

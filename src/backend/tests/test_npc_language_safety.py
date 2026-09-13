@@ -6,7 +6,6 @@ from app.services.turn_authority_resolvers import (
     AuthorityResolutionError,
     NpcIntroductionResolver,
 )
-from app.services.turn_planner import TurnPlanningError
 
 
 def _planner_plan(intro: PlannedNpcIntroduction) -> CoordinatedTurnPlan:
@@ -86,8 +85,13 @@ def test_planner_rejects_unreadable_identity_instead_of_inventing_placeholder():
         )
     )
 
-    with pytest.raises(TurnPlanningError, match="without a usable role"):
-        TurnAuthorityPlanner._sanitize_npc_names(
-            plan,
-            "Я спрашиваю диспетчера о грузе.",
-        )
+    TurnAuthorityPlanner._sanitize_npc_names(
+        plan,
+        "Я спрашиваю диспетчера о грузе.",
+    )
+
+    assert plan.npc_introductions == []
+    assert all(
+        "безымян" not in item.canonical_name.casefold()
+        for item in plan.npc_introductions
+    )

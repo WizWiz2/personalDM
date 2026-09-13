@@ -17,10 +17,52 @@ _INSTALLED = False
 class FactSlotMatch(BaseModel):
     proposal_index: int = Field(ge=0)
     current_fact_id: str | None = None
+    object_value: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class FactSlotReview(BaseModel):
     matches: list[FactSlotMatch] = Field(default_factory=list, max_length=12)
+
+
+class FactSlotDecision(BaseModel):
+    """One model decision for one machine-selected candidate, in candidate order."""
+
+    current_fact_id: str | None
+    object_value: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+def _fact_slot_wire_model(candidate_count: int) -> type[BaseModel]:
+    """Require exactly one model decision per machine-owned candidate.
+
+    Candidate identity and ordering are deterministic. The model decides only semantic slot identity
+    and value translation; it cannot omit candidates, duplicate indexes, or target another proposal.
+    """
+
+    class ExactFactSlotReview(BaseModel):
+        decisions: list[FactSlotDecision] = Field(
+            min_length=candidate_count,
+            max_length=candidate_count,
+        )
+
+    ExactFactSlotReview.__name__ = "FactSlotReview"
+    ExactFactSlotReview.__qualname__ = "FactSlotReview"
+    return ExactFactSlotReview
+
+
+def _review_from_decisions(
+    candidate_indexes: list[int],
+    decisions: list[FactSlotDecision],
+) -> FactSlotReview:
+    return FactSlotReview(
+        matches=[
+            FactSlotMatch(
+                proposal_index=proposal_index,
+                current_fact_id=decision.current_fact_id,
+                object_value=decision.object_value,
+            )
+            for proposal_index, decision in zip(candidate_indexes, decisions, strict=True)
+        ]
+    )
 
 
 def _norm(value: object) -> str:
@@ -35,6 +77,10 @@ def _canon_value(payload: dict, key: str, default: str) -> str:
 def _same_scope(payload: dict, fact: FactRead) -> bool:
     scope = str(payload.get("scope") or "campaign").casefold()
     if scope != fact.scope:
+        # A scene observation may refine a campaign-wide slot. Once semantic slot identity is
+        # established, inheriting the broader scope is required to supersede the old current value.
+        if scope == "scene" and fact.scope == "campaign":
+            return True
         return False
     if scope == "scene":
         return str(payload.get("scene_id") or "") == str(fact.scene_id or "")
@@ -45,7 +91,8 @@ def _has_exact_slot(payload: dict, facts: list[FactRead]) -> bool:
     subject = _norm(payload.get("subject"))
     predicate = _norm(payload.get("predicate"))
     return any(
-        _same_scope(payload, fact)
+        _norm(payload.get("scope") or "campaign") == fact.scope
+        and _same_scope(payload, fact)
         and _norm(fact.subject) == subject
         and _norm(fact.predicate) == predicate
         for fact in facts
@@ -116,6 +163,11 @@ def apply_fact_slot_matches(
         if fact.subject_entity_id:
             payload["subject_entity_id"] = str(fact.subject_entity_id)
         payload["previous_object_value"] = fact.object_value
+        # A proposal may encode a whole proposition in its predicate ("valve closed | yes").
+        # When rebasing onto an existing property ("valve | position"), the semantic matcher
+        # must also translate its value; copying only the keys would erase the new state.
+        if match.object_value is not None:
+            payload["object_value"] = match.object_value
 
         operation = _canon_value(payload, "operation", "assert")
         same_value = (
@@ -165,7 +217,6 @@ async def reconcile_fact_slots(
     ]
     proposed_rows = [
         {
-            "proposal_index": index,
             "subject": proposals[index].payload.get("subject"),
             "predicate": proposals[index].payload.get("predicate"),
             "object_value": proposals[index].payload.get("object_value"),
@@ -184,11 +235,20 @@ async def reconcile_fact_slots(
 slot, если оба описывают текущее освещение той же комнаты.
 
 Не склеивай просто связанные, причинно связанные или тематически похожие факты. Два независимых
-свойства должны остаться разными. Scope и scene должны совпадать.
+свойства должны остаться разными. Если новый scene-факт уточняет тот же campaign-слот, сопоставь
+его с campaign-фактом: движок унаследует более широкий scope и заменит старое текущее значение.
+Разные scene-слоты не склеивай.
 
-Верни только JSON вида {"matches":[{"proposal_index":0,"current_fact_id":"uuid-or-null"}]}.
-current_fact_id может быть только точным id из CURRENT FACTS или null. Для каждого proposal_index
-верни ровно одну запись.
+Для сопоставленного слота верни также object_value: новое значение, выраженное в терминах
+predicate текущего факта. Не копируй старое значение. Если новый факт записан целой пропозицией
+в predicate и значением «да/true», перенеси утверждаемое состояние в object_value. Например,
+«клапан | закрыт | да» относительно «клапан | положение | открыт» даёт object_value="закрыт".
+Сохраняй полярность и не добавляй смысл, отсутствующий в новом факте. Несвязанный атрибут
+(например цвет вместо рабочего состояния) не является тем же слотом.
+
+Верни только JSON вида {"decisions":[{"current_fact_id":"uuid-or-null","object_value":"новое значение или null"}]}.
+current_fact_id может быть только точным id из CURRENT FACTS или null. Верни ровно одно решение
+для каждого NEW FACT, строго в том же порядке, в котором NEW FACTS переданы. Не пропускай записи.
 """
     messages = [
         ChatMessage(role="system", content=prompt),
@@ -203,6 +263,7 @@ current_fact_id может быть только точным id из CURRENT FA
         ),
     ]
 
+    response_model = _fact_slot_wire_model(len(candidate_indexes))
     try:
         data = await scribe._model_router.generate_json(
             scribe._llm_provider,
@@ -210,21 +271,14 @@ current_fact_id может быть только точным id из CURRENT FA
             messages,
             max_tokens=500,
             temperature=0.0,
-            response_model=FactSlotReview,
+            response_model=response_model,
         )
-        review = FactSlotReview.model_validate(data)
+        wire_review = response_model.model_validate(data)
     except (LLMProviderError, ValueError, TypeError):
         return proposals
 
-    allowed_indexes = set(candidate_indexes)
-    filtered = FactSlotReview(
-        matches=[
-            match
-            for match in review.matches
-            if match.proposal_index in allowed_indexes
-        ]
-    )
-    return apply_fact_slot_matches(proposals, facts, filtered)
+    review = _review_from_decisions(candidate_indexes, wire_review.decisions)
+    return apply_fact_slot_matches(proposals, facts, review)
 
 
 def install() -> None:
@@ -261,6 +315,7 @@ def install() -> None:
 
 
 __all__ = [
+    "FactSlotDecision",
     "FactSlotMatch",
     "FactSlotReview",
     "apply_fact_slot_matches",

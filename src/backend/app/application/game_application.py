@@ -32,6 +32,7 @@ from app.services.session_zero_service import (
 )
 from app.services.turn_runner import TurnRunner
 from app.services.turn_undo_service import TurnUndoService
+from app.services.visual_runtime_gate import VisualRuntimeGate
 
 
 class CampaignNotFoundError(ValueError):
@@ -132,6 +133,7 @@ class GameApplication:
             )
 
         bound = await self._bind_current_scene(campaign_id, data)
+        VisualRuntimeGate.preempt_for_turn()
         return GameInputRoute(
             channel="narrative",
             stream=TurnRunner(self._session).run_turn_stream(
@@ -184,6 +186,7 @@ class GameApplication:
             parent_turn_id=user_turn.parent_turn_id,
             model_name=user_turn.model_name,
         )
+        VisualRuntimeGate.preempt_for_turn()
         return GameInputRoute(
             channel="narrative",
             stream=TurnRunner(self._session).run_turn_stream(

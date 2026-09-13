@@ -6,6 +6,16 @@ import { ErrorState, LoadingState } from '../components/States'
 
 const fmt = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })
 
+function ruTurns(count: number): string {
+  const n = Math.abs(count) % 100
+  const n1 = n % 10
+  if (n > 10 && n < 20) return `${count} ходов`
+  if (n1 === 1) return `${count} ход`
+  if (n1 >= 2 && n1 <= 4) return `${count} хода`
+  return `${count} ходов`
+}
+
+
 export function ChroniclePage() {
   const { campaign } = useCampaignWorkspace()
   const [scenes, setScenes] = useState<Scene[]>([])
@@ -30,7 +40,7 @@ export function ChroniclePage() {
       {loading && <LoadingState label="Читаем хронику…" />}
       {error && <ErrorState message={error} />}
       {!loading && !error && entries.length === 0 && <p className="muted-note">Сцены появятся здесь после начала игры.</p>}
-      {entries.map(({ scene, count }) => <article className="chronicle-entry" key={scene.id}><time>{fmt.format(new Date(scene.created_at))}</time><div><div className="chronicle-title-row"><h2>{scene.title}</h2><span className={`status-pill ${scene.status}`}>{scene.status === 'active' ? 'текущая' : scene.status}</span></div><p>{scene.location_description || [scene.mood, scene.tension].filter(Boolean).join(' · ') || 'Описание сцены не задано.'}</p><small>{count} {count === 1 ? 'ход' : 'ходов'}</small></div></article>)}
+      {entries.map(({ scene, count }) => <article className="chronicle-entry" key={scene.id}><time>{fmt.format(new Date(scene.created_at))}</time><div><div className="chronicle-title-row"><h2>{scene.title}</h2><span className={`status-pill ${scene.status}`}>{scene.status === 'active' ? 'текущая' : scene.status}</span></div><p>{scene.location_description || [scene.mood, scene.tension].filter(Boolean).join(' · ') || 'Описание сцены не задано.'}</p><small>{ruTurns(count)}</small></div></article>)}
     </div>
   </div>
 }

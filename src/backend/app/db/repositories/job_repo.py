@@ -87,6 +87,12 @@ class GenerationRunRepository(BaseRepository):
         )
         return [GenerationRunRead.model_validate(row) for row in result.scalars().all()]
 
+    async def has_any_running(self) -> bool:
+        result = await self._session.execute(
+            select(GenerationRun.id).where(GenerationRun.status == "running").limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
 
 class PostTurnJobRepository(BaseRepository):
     JOB_TYPES = ("thesis_curator", "memory_scribe")
@@ -95,9 +101,11 @@ class PostTurnJobRepository(BaseRepository):
         self,
         campaign_id: UUID,
         assistant_turn_id: UUID,
+        *,
+        job_types: tuple[str, ...] | None = None,
     ) -> list[PostTurnJobRead]:
         created: list[PostTurnJob] = []
-        for job_type in self.JOB_TYPES:
+        for job_type in job_types or self.JOB_TYPES:
             existing = await self._session.execute(
                 select(PostTurnJob).where(
                     PostTurnJob.assistant_turn_id == str(assistant_turn_id),

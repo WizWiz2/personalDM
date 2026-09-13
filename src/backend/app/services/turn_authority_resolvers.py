@@ -75,12 +75,12 @@ class NpcIntroductionResolver:
 
     @classmethod
     def sanitize_introductions(cls, introductions: list) -> list:
-        """Keep temporary planner identities readable without canonizing fake placeholders.
+        """Keep planner identities readable without canonizing unsupported personal names.
 
-        Planner control models occasionally leak CJK names on a Russian surface. Older code replaced
-        those with the literal identity ``Безымянный собеседник``, which then became durable canon.
-        At the authority boundary we instead derive a role identity (``Диспетчер``) when possible;
-        if even the role is unusable, fail closed and let the planner repair the contact.
+        Planner control models occasionally leak CJK/synthetic names or claim a stable personal
+        identity without current/campaign evidence. At the final authority boundary we derive the
+        grounded role identity and keep it temporary. If no usable role exists, fail closed rather
+        than persisting an invented stable name.
         """
         used: set[str] = set()
         result = []
@@ -89,13 +89,26 @@ class NpcIntroductionResolver:
         for introduction in introductions:
             canonical = " ".join(str(introduction.canonical_name or "").split())
             canonical_key = identity_key(canonical)
-            needs_repair = contains_cjk(canonical) or canonical_key in placeholder_keys
+            evidence = " ".join(str(introduction.personal_name_evidence or "").split())
+            role = " ".join(str(introduction.role or "").split())
+            usable_role = bool(
+                role and not contains_cjk(role) and identity_key(role) not in placeholder_keys
+            )
+            unsupported_stable_name = not introduction.temporary_name and not evidence
+            # A temporary flag is not evidence. An invented personal label must still collapse
+            # to the grounded role before publication, or identity binding fail-closes the turn.
+            unproven_personal_label = not evidence and usable_role
+            needs_repair = (
+                contains_cjk(canonical)
+                or canonical_key in placeholder_keys
+                or unsupported_stable_name
+                or unproven_personal_label
+            )
 
             if needs_repair:
-                role = " ".join(str(introduction.role or "").split())
-                if not role or contains_cjk(role) or identity_key(role) in placeholder_keys:
+                if not usable_role:
                     raise AuthorityResolutionError(
-                        "Planner returned an unreadable temporary NPC identity without a usable role"
+                        "Planner returned an unsupported NPC identity without a usable grounded role"
                     )
                 base = role[0].upper() + role[1:] if role else role
                 candidate = base
@@ -107,6 +120,7 @@ class NpcIntroductionResolver:
                     update={
                         "canonical_name": candidate,
                         "temporary_name": True,
+                        "personal_name_evidence": None,
                     }
                 )
                 canonical_key = identity_key(candidate)

@@ -487,6 +487,7 @@ def capture(db_path: Path, campaign_id: str) -> TruthSnapshot:
 
         turns = [
             {
+                "id": row["id"],
                 "role": row["role"],
                 "content": row["content"],
                 "status": row["status"],
@@ -495,7 +496,7 @@ def capture(db_path: Path, campaign_id: str) -> TruthSnapshot:
             }
             for row in _rows(
                 db,
-                """SELECT role, content, status, acting_character_id, model_name
+                """SELECT id, role, content, status, acting_character_id, model_name
                      FROM turns WHERE campaign_id=? ORDER BY created_at, id""",
                 (campaign_id,),
             )

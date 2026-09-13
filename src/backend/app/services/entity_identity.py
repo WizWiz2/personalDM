@@ -167,6 +167,20 @@ def resolve_character_candidates(
             if temporary_matches:
                 return temporary_matches
 
+    # A narrator may type both the newly revealed name and the NPC's already-known role.  The
+    # role is not a new identity constraint in that case: when exactly one temporary character is
+    # present at the target location, the scene itself supplies the missing referent.  This is a
+    # contextual identity join, not a name/role heuristic; ambiguity remains fail-closed.
+    if target_location_id is not None and not temporary_name:
+        temporary_matches = [
+            entity
+            for entity in entities
+            if character_locations.get(UUID(str(entity.id))) == target_location_id
+            and (getattr(entity, "custom_fields", None) or {}).get("temporary_name")
+        ]
+        if len(temporary_matches) == 1:
+            return temporary_matches
+
     if not temporary_name or target_location_id is None:
         return []
 
