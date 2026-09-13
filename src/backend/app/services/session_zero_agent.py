@@ -418,6 +418,22 @@ class SessionZeroInterviewService:
         return merged, finalize_requested
 
     @classmethod
+    def _normalize_world_draft_fields(
+        cls,
+        draft: SessionZeroInterviewDraft,
+    ) -> SessionZeroInterviewDraft:
+        """Fill obvious gaps left by local models without inventing new fiction."""
+        world = draft.world
+        if cls._has_value(world.boundaries) and not world.boundaries_confirmed:
+            world.boundaries_confirmed = True
+        if not cls._has_value(world.setting_name):
+            if cls._has_value(world.starting_location_name):
+                world.setting_name = cls._text(world.starting_location_name)
+            elif cls._has_value(world.world_summary):
+                summary = cls._text(world.world_summary)
+                world.setting_name = summary if len(summary) <= 80 else summary[:77].rstrip() + "..."
+        return draft
+
     def _apply_patch(
         cls,
         previous: SessionZeroInterviewDraft,
@@ -454,7 +470,7 @@ class SessionZeroInterviewService:
                     continue
                 setattr(target_section, field_name, new_value)
         merged.world.starter_npcs = reconcile_starter_npcs(merged.world.starter_npcs)
-        return merged
+        return cls._normalize_world_draft_fields(merged)
 
     @classmethod
     def _rate_limit_retry_seconds(cls, error: str) -> float | None:

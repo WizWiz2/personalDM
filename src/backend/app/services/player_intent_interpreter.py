@@ -5,13 +5,14 @@ import re
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from app.config import settings
 from app.models.player_intent import IntentActionType, PlayerIntentContract
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services.planning_context import planning_context
+from app.services.location_identity import location_reference_key, same_location_reference
+from app.services.planning_context import intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
 
@@ -30,8 +31,10 @@ The contract contains only what the HUMAN actually committed to now:
 - A negative/stationary boundary ("не иду", "остаюсь здесь", "не проверяю") is not an action.
 - An unresolved alternative/condition is not executed. Preserve it in pending_player_choice and/or
   protected_player_decisions instead of choosing a branch.
-- movement means changing canonical physical location. Moving/turning/approaching within the current
-  room/scene is interaction, not movement.
+- movement means an INTENTION TO REACH another physical location, including a failed attempt.
+  Classify by the intended endpoint, NEVER by whether the actor actually reaches it. Only a
+  voluntary act whose intended endpoint stays inside the same room/scene is interaction.
+- Preserve the destination selected by the human. Never replace it with a nearby or familiar place.
 - For movement, destination_location is only the human-selected endpoint for that atomic move, never
   a route policy or prose route path. Preserve two movement actions only when the human actually
   commits to reaching two distinct location boundaries in order. Route media such as stairs,
@@ -43,6 +46,10 @@ The contract contains only what the HUMAN actually committed to now:
   passage is absent or blocked. Obstacles never turn movement into interaction or remove a preceding
   move. Extract the intention before its outcome: "go to A, then try to go to B; no passage to B"
   contains two movement actions, to A then B. Do not invent a locked room, door or alternative route.
+- movement_method describes the means explicitly chosen by the human, NEVER difficulty or success.
+  ordinary = walking/travelling/trying to walk, even with no passage. teleportation = explicitly
+  teleporting; force = explicitly breaking/pushing through an obstacle; stealth = explicitly sneaking;
+  ability = another explicitly named extraordinary means. An obstacle alone supplies no such means.
 - Inventory actions MUST set inventory_operation to exactly take, drop, give, or place. Use IDs from
   AUTHORITATIVE CONTEXT when available. give also requires inventory_target_id. drop means release
   into the current place; place means deliberately position on/in a named surface/container/position.
@@ -82,6 +89,10 @@ class PlayerActionIntentDraft(BaseModel):
     action_type: IntentActionType
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
+    destination_reference: str | None = None
+    movement_method: Literal[
+        "ordinary", "special", "teleportation", "force", "stealth", "ability"
+    ] = "ordinary"
     item_id: str | None = None
     inventory_operation: str | None = None
     inventory_target_id: str | None = None
@@ -110,12 +121,19 @@ class PlayerIntentContractDraft(BaseModel):
 
 class _ActionWire(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    intent: str = Field(min_length=2, max_length=500)
+    intent: str = Field(
+        min_length=2,
+        max_length=500,
+        description="Only the voluntary attempted act, without success, failure or obstacles.",
+    )
 
 
 class _MovementWire(_ActionWire):
-    action_type: Literal["movement"]
+    action_type: Literal["movement"] = Field(
+        description="Intended travel to another location, including attempts that cannot succeed."
+    )
     destination_location: str = Field(min_length=1, max_length=255)
+    movement_method: Literal["ordinary", "teleportation", "force", "stealth", "ability"]
 
 
 class _InventoryWire(_ActionWire):
@@ -150,6 +168,28 @@ class _IntentWire(PlayerIntentContractDraft):
 
 
 _IntentWire.__name__ = "PlayerIntentContractDraft"
+
+
+def _destination_binding_wire(
+    indices: list[int],
+    references: dict[str, str],
+    candidates: dict[int, dict[str, str]] | None = None,
+):
+    return create_model(
+        "DestinationIdentityBindings",
+        __config__=ConfigDict(extra="forbid"),
+        **{
+            f"action_{index}": (
+                Literal[
+                    tuple(candidates[index] if candidates is not None else references) + ("new",)
+                ],
+                Field(
+                    description="ID of the same existing place, or new if no candidate is identical."
+                ),
+            )
+            for index in indices
+        },
+    )
 
 
 def _compact(value: object) -> str:
@@ -226,6 +266,9 @@ def _normalized_action(
         if not destination:
             raise TurnPlanningError("movement intent is missing the player-selected destination")
         payload["destination_location"] = destination
+        payload["movement_method"] = (
+            "ordinary" if action.movement_method == "ordinary" else "special"
+        )
     elif action_type == "inventory":
         if not item_id:
             raise TurnPlanningError("inventory intent is missing an authoritative item id")
@@ -280,12 +323,13 @@ def normalize_intent_draft(
 
 
 class PlayerIntentInterpreter:
-    """Single semantic extraction followed by deterministic normalization.
+    """Single action extraction, bounded place binding, then deterministic normalization.
 
     The previous implementation asked the same small local model to judge and then re-judge its own
     contract. Live-model evidence showed that this self-review loop rejected every tested turn and
     often damaged an initially valid intent during repair. Frozen intent now has one semantic owner:
-    one model extraction. Machine validation owns structure after that boundary.
+    one model extraction. A separate identity lookup can bind an unresolved destination to an
+    existing place, but cannot revise the actions. Machine validation owns executable structure.
     """
 
     def __init__(self, router: RoleModelRouter):
@@ -295,14 +339,96 @@ class PlayerIntentInterpreter:
 
     @staticmethod
     def _authoritative_context(context_messages: list[ChatMessage]) -> str:
-        return planning_context(context_messages)
+        return intent_reference_context(context_messages)
+
+    async def _bind_destinations(self, selection, draft, player_input, references):
+        """Resolve only place identity; this pass cannot change the extracted action sequence.
+
+        Keeping the catalogue out of action extraction avoids substituting a familiar location for
+        the player's explicitly new destination. Exact references need no additional model call.
+        """
+        unresolved = {}
+        candidates = {}
+        for index, action in enumerate(draft.actions):
+            if action.action_type != "movement":
+                continue
+            matches = [
+                key
+                for key, name in references.items()
+                if same_location_reference(action.destination_location or "", name)
+            ]
+            if len(matches) == 1:
+                action.destination_reference = matches[0]
+            else:
+                # Identity lookup is conservative candidate matching, not a campaign-wide nearest
+                # neighbour search. A shared lexical anchor permits resolving inflection/possession;
+                # an unrelated named place must never replace the selected new destination.
+                tokens = set(location_reference_key(action.destination_location or ""))
+                plausible = {
+                    key: name
+                    for key, name in references.items()
+                    if tokens.intersection(location_reference_key(name))
+                }
+                if plausible:
+                    unresolved[index] = action.destination_location
+                    candidates[index] = plausible
+                else:
+                    action.destination_reference = "new"
+        if unresolved and references:
+            wire = _destination_binding_wire(list(unresolved), references, candidates)
+            data = await self._router.generate_json(
+                self._provider,
+                selection,
+                [
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "Resolve location identity only. For each extracted destination, select an ID "
+                            "ONLY if it names the SAME place in LOCATION REFERENCES. Inflection and a "
+                            "possessive reference (my room) may refer to the same place. Otherwise select "
+                            "new. A new public destination is valid; never substitute a similar place, "
+                            "a parent area, an intermediate route or a nearby candidate. Do not judge "
+                            "accessibility, feasibility or actions. Compare meanings, not exact spelling. "
+                            "Return DestinationIdentityBindings.\n\n[OUTPUT JSON SCHEMA]\n"
+                            + json.dumps(wire.model_json_schema(), ensure_ascii=False)
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=json.dumps(
+                            {
+                                "human_input": player_input,
+                                "selected_destinations": unresolved,
+                                "LOCATION REFERENCES by action index": candidates,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                ],
+                max_tokens=300,
+                temperature=0,
+                response_model=wire,
+            )
+            bindings = wire.model_validate(data).model_dump()
+            self.audit.append({"phase": "destination_identity", "bindings": bindings})
+            for index in unresolved:
+                draft.actions[index].destination_reference = bindings[f"action_{index}"]
+        for action in draft.actions:
+            reference = action.destination_reference
+            if action.action_type == "movement" and reference and reference != "new":
+                if reference not in references:
+                    raise TurnPlanningError("movement refers to an unknown location identity")
+                action.destination_location = references[reference]
 
     async def interpret(
         self,
         selection: RoleModelSelection,
         context_messages: list[ChatMessage],
         player_input: str,
+        *,
+        location_references: dict[str, str] | None = None,
     ) -> PlayerIntentContract:
+        references = location_references or {}
         user = (
             "[AUTHORITATIVE CONTEXT]\n"
             + self._authoritative_context(context_messages)
@@ -327,6 +453,7 @@ class PlayerIntentInterpreter:
                 response_model=_IntentWire,
             )
             draft = PlayerIntentContractDraft.model_validate(data)
+            await self._bind_destinations(selection, draft, player_input, references)
             contract = normalize_intent_draft(draft, player_input)
             self.audit.append(
                 {

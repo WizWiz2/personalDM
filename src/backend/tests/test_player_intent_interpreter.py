@@ -15,8 +15,9 @@ from app.services.turn_planner import TurnPlanningError
 
 
 class _Router:
-    def __init__(self, payload: dict):
+    def __init__(self, payload: dict, bindings: dict | None = None):
         self.payload = payload
+        self.bindings = bindings
         self.calls: list[str] = []
 
     async def generate_json(
@@ -30,8 +31,87 @@ class _Router:
     ):
         del provider, selection, messages, kwargs
         self.calls.append(response_model.__name__)
+        if response_model.__name__ == "DestinationIdentityBindings":
+            return self.bindings
         assert issubclass(response_model, PlayerIntentContractDraft)
         return self.payload
+
+
+@pytest.mark.asyncio
+async def test_known_destination_identity_overrides_inflected_model_label():
+    location_id = str(uuid4())
+    router = _Router(
+        {
+            "summary": "Возвращаюсь домой.",
+            "actions": [
+                {
+                    "action_type": "movement",
+                    "intent": "Вернуться в свою комнату.",
+                    "destination_location": "комната Кай",
+                }
+            ],
+        },
+        bindings={"action_0": location_id},
+    )
+    result = await PlayerIntentInterpreter(router).interpret(
+        SimpleNamespace(),
+        [],
+        "Возвращаюсь в свою комнату.",
+        location_references={location_id: "Комната Кая"},
+    )
+    assert result.actions[0].destination_location == "Комната Кая"
+    assert router.calls == ["PlayerIntentContractDraft", "DestinationIdentityBindings"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_location_identity_cannot_authorize_a_destination():
+    router = _Router(
+        {
+            "summary": "Иду в комнату.",
+            "actions": [
+                {
+                    "action_type": "movement",
+                    "intent": "Иду в комнату.",
+                    "destination_location": "Моя комната",
+                }
+            ],
+        },
+        bindings={"action_0": str(uuid4())},
+    )
+    with pytest.raises(TurnPlanningError, match="player intent interpretation failed"):
+        await PlayerIntentInterpreter(router).interpret(
+            SimpleNamespace(),
+            [],
+            "Иду в комнату.",
+            location_references={str(uuid4()): "Комната"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_new_destination_binding_preserves_selected_endpoint_and_action():
+    router = _Router(
+        {
+            "summary": "Иду в прачечную.",
+            "actions": [
+                {
+                    "action_type": "movement",
+                    "intent": "Иду в прачечную.",
+                    "destination_location": "Прачечная соседнего дома",
+                }
+            ],
+        },
+        bindings={"action_0": "new"},
+    )
+    result = await PlayerIntentInterpreter(router).interpret(
+        SimpleNamespace(),
+        [],
+        "Иду в прачечную соседнего дома.",
+        location_references={str(uuid4()): "Контора"},
+    )
+    assert len(result.actions) == 1
+    assert result.actions[0].destination_location == "Прачечная соседнего дома"
+    assert result.actions[0].intent == "Иду в прачечную."
+    assert router.calls == ["PlayerIntentContractDraft"]
 
 
 @pytest.mark.asyncio
@@ -54,6 +134,7 @@ async def test_healthy_intent_path_uses_one_semantic_control_call() -> None:
         SimpleNamespace(),
         [ChatMessage(role="system", content="AUTHORITATIVE STATE")],
         "Я выхожу в коридор.",
+        location_references={str(uuid4()): "Коридор"},
     )
 
     assert result.actions[0].destination_location == "Коридор"

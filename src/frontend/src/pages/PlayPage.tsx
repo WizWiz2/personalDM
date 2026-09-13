@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import { submitDetachedTurn } from '../api/turnRuntime'
@@ -27,6 +27,18 @@ function readStoredMode(key: string): Mode {
   return value === 'dm' ? 'dm' : 'play'
 }
 
+function uniquePath(path: string[] | undefined | null): string[] {
+  if (!path?.length) return []
+  const out: string[] = []
+  for (const part of path) {
+    const trimmed = part.trim()
+    if (!trimmed) continue
+    if (out.length && out[out.length - 1].toLocaleLowerCase('ru-RU') === trimmed.toLocaleLowerCase('ru-RU')) continue
+    out.push(trimmed)
+  }
+  return out
+}
+
 export function PlayPage() {
   const {
     campaign,
@@ -51,8 +63,11 @@ export function PlayPage() {
   const [drawer, setDrawer] = useState(false)
   const [sceneGenerating, setSceneGenerating] = useState(false)
   const [sceneArtNonce, setSceneArtNonce] = useState(0)
+  const [stickToBottom, setStickToBottom] = useState(true)
+  const [showJumpLatest, setShowJumpLatest] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const previousGeneration = useRef<{ id: string; status: string } | null>(null)
+  const stickToBottomRef = useRef(true)
 
   const busy = generation?.status === 'running'
   const failedGeneration = generation
@@ -90,8 +105,43 @@ export function PlayPage() {
     }
   }
 
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    stickToBottomRef.current = true
+    setStickToBottom(true)
+    setShowJumpLatest(false)
+    bottomRef.current?.scrollIntoView({ behavior, block: 'end' })
+  }, [])
+
+  const updateScrollAffinity = useCallback(() => {
+    const marker = bottomRef.current
+    if (!marker) return
+    const rect = marker.getBoundingClientRect()
+    const viewport = window.innerHeight || document.documentElement.clientHeight
+    const distanceFromBottom = rect.top - viewport
+    const nearBottom = distanceFromBottom < 140
+    stickToBottomRef.current = nearBottom
+    setStickToBottom(nearBottom)
+    const jumpedUp = distanceFromBottom > Math.max(viewport * 0.9, 360)
+    setShowJumpLatest(jumpedUp)
+  }, [])
+
   useEffect(() => { void load(true) }, [campaign.id])
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [turns, generation?.status])
+
+  useEffect(() => {
+    const onScroll = () => updateScrollAffinity()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    onScroll()
+    return () => {
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onScroll)
+    }
+  }, [updateScrollAffinity, loading, turns.length, generation?.status])
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [turns.length, generation?.status, acceptedTurn?.id])
 
   useEffect(() => {
     if (input) window.sessionStorage.setItem(draftKey, input)
@@ -128,10 +178,9 @@ export function PlayPage() {
       if (current.status === 'completed') {
         setAcceptedTurn(null)
         window.sessionStorage.removeItem(acceptedKey)
+        stickToBottomRef.current = true
+        setStickToBottom(true)
       }
-      // Failed/cancelled generations are rendered from durable generation state below.
-      // Do not copy the transient error into generic page-loading state: the failure
-      // panel must survive navigation and a fresh PlayPage mount.
       void load(false)
     }
   }, [generation?.id, generation?.status])
@@ -146,6 +195,18 @@ export function PlayPage() {
     return [...visibleTurns, acceptedTurn]
   }, [acceptedTurn, visibleTurns])
 
+  const locationParts = useMemo(() => uniquePath(scene?.location_path), [scene?.location_path])
+  const locationLeaf = locationParts.at(-1) || null
+  const locationAncestors = locationParts.slice(0, -1)
+  const sceneTitle = scene?.scene_title?.trim() || 'Сцена'
+  const titleLooksLikeLocation = Boolean(
+    locationLeaf
+    && sceneTitle.toLocaleLowerCase('ru-RU') === locationLeaf.toLocaleLowerCase('ru-RU'),
+  )
+  const topbarSubtitle = titleLooksLikeLocation
+    ? (locationAncestors.join(' · ') || 'Начало приключения')
+    : (locationParts.join(' · ') || sceneTitle)
+
   const send = async (event?: FormEvent) => {
     event?.preventDefault()
     const text = input.trim()
@@ -157,6 +218,9 @@ export function PlayPage() {
 
     const content = mode === 'dm' ? `/DM ${text}` : text
     setError('')
+    stickToBottomRef.current = true
+    setStickToBottom(true)
+    setShowJumpLatest(false)
     try {
       const accepted = await submitDetachedTurn(campaign.id, content)
       setAcceptedTurn(accepted.user_turn)
@@ -166,8 +230,8 @@ export function PlayPage() {
         : [...items, accepted.user_turn])
       trackGeneration(accepted.generation)
       setInput('')
+      window.setTimeout(() => scrollToLatest('smooth'), 40)
     } catch (err) {
-      // Input is intentionally left untouched until the backend has durably accepted it.
       setError(readableError(err))
       await refreshGeneration().catch(() => undefined)
     }
@@ -186,8 +250,40 @@ export function PlayPage() {
     if (busy) return
     try {
       await api.undoTurn(campaign.id)
+      setAcceptedTurn(null)
+      window.sessionStorage.removeItem(acceptedKey)
       await load(false)
+      await refreshGeneration()
     } catch (err) { setError(readableError(err)) }
+  }
+
+  const retryFailedTurn = async () => {
+    if (busy || !failedGeneration) return
+    const failedTurn = timelineTurns.find((turn) => turn.id === failedGeneration.user_turn_id)
+      || acceptedTurn
+    const raw = failedTurn?.content?.trim()
+    if (!raw) {
+      setError('Не удалось найти текст неудачного хода для повтора.')
+      return
+    }
+    setError('')
+    stickToBottomRef.current = true
+    setStickToBottom(true)
+    try {
+      await api.undoTurn(campaign.id)
+      setAcceptedTurn(null)
+      window.sessionStorage.removeItem(acceptedKey)
+      const accepted = await submitDetachedTurn(campaign.id, raw)
+      setAcceptedTurn(accepted.user_turn)
+      window.sessionStorage.setItem(acceptedKey, JSON.stringify(accepted.user_turn))
+      trackGeneration(accepted.generation)
+      await load(false)
+      await refreshGeneration()
+    } catch (err) {
+      setError(readableError(err))
+      await load(false)
+      await refreshGeneration()
+    }
   }
 
   const generateScene = async () => {
@@ -214,7 +310,7 @@ export function PlayPage() {
   return (
     <div className="workspace-page play-page">
       <header className="workspace-topbar">
-        <div><h1>{campaign.name}</h1><p>{scene?.location_path.join(' · ') || scene?.scene_title || 'Текущая сцена'}</p></div>
+        <div><h1>{campaign.name}</h1><p>{topbarSubtitle}</p></div>
         <div className="topbar-actions">
           <button className="btn primary context-toggle" onClick={() => setDrawer(true)}>Сейчас</button>
           <button className="btn primary scene-generate" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода мастера: текстовая и графическая модели делят видеопамять' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
@@ -227,10 +323,25 @@ export function PlayPage() {
             {scene && sceneArtSrc
               ? <GeneratedPixelArt src={sceneArtSrc} alt={`Сцена: ${scene.scene_title}`} fallback={fallbackScene} />
               : fallbackScene}
-            <div className="scene-overlay"><h2>{scene?.scene_title || 'Сцена'}</h2><span>{[scene?.world_time_label, scene?.location_path.at(-1)].filter(Boolean).join(' · ')}</span></div>
+            <div className="scene-overlay">
+              <h2>{sceneTitle}</h2>
+              <span>{[scene?.world_time_label, titleLooksLikeLocation ? null : locationLeaf].filter(Boolean).join(' · ')}</span>
+            </div>
           </div>
 
-          {failedGeneration && <GenerationFailurePanel generation={failedGeneration} />}
+          {failedGeneration && (
+            <div className="generation-failure-stack" role="alert">
+              <GenerationFailurePanel generation={failedGeneration} />
+              <div className="session-zero-error-actions">
+                <button className="btn primary" type="button" disabled={busy} onClick={() => void retryFailedTurn()}>
+                  Повторить ход
+                </button>
+                <button className="btn" type="button" disabled={busy} onClick={() => void undo()}>
+                  Убрать неудачный ход
+                </button>
+              </div>
+            </div>
+          )}
           {error && <ErrorState message={error} />}
 
           <div className="timeline" aria-live="polite">
@@ -242,10 +353,14 @@ export function PlayPage() {
               const label = meta
                 ? (player ? 'Вопрос мастеру' : 'Мастер вне игры')
                 : (player ? (playerName || 'Персонаж') : 'Мастер')
+              const showMasterUndo = !meta
+                && turn.id === latestMasterTurnId
+                && !busy
+                && !failedGeneration
               return <article key={turn.id} className={`turn ${player ? 'player' : 'dm'} ${meta ? 'meta' : ''} ${failed ? 'failed' : ''}`}>
                 <div className="turn-label">{label}{failed ? ' · не обработано' : ''}</div>
                 <div>{meta && player ? turn.content.replace(/^\s*\/(DM|OOC)\s*/i, '') : turn.content}</div>
-                {!meta && turn.id === latestMasterTurnId && !busy && <button type="button" className="btn primary turn-undo" onClick={() => void undo()}><Icons.undo />Откатить последний ход</button>}
+                {showMasterUndo && <button type="button" className="btn primary turn-undo" onClick={() => void undo()}><Icons.undo />Откатить последний ход мастера</button>}
               </article>
             })}
             {busy && <article className={`turn dm thinking-turn ${generation?.user_turn_id === acceptedTurn?.id && acceptedTurn?.role === 'meta_user' ? 'meta' : ''}`}>
@@ -254,6 +369,12 @@ export function PlayPage() {
             </article>}
             <div ref={bottomRef} />
           </div>
+
+          {showJumpLatest && (
+            <button type="button" className="jump-latest-btn" onClick={() => scrollToLatest('smooth')}>
+              К последнему ходу
+            </button>
+          )}
 
           <form className="composer" onSubmit={send}>
             <div className="mode-row">
@@ -264,7 +385,7 @@ export function PlayPage() {
             <div className="composer-footer">
               {busy
                 ? <><span className="turn-runtime-note">Ход сохранён. Можно открыть Героя, Мир или Хронику — мастер продолжит работу.</span><button type="button" className="quiet-action danger" onClick={() => void stop()}><Icons.stop />Остановить</button></>
-                : <span className="turn-runtime-note">Черновик ввода сохраняется при переходах между разделами.</span>}
+                : <span className="turn-runtime-note">{stickToBottom ? 'Черновик ввода сохраняется при переходах между разделами.' : 'Лента отвязана от низа — новые ответы не утянут скролл.'}</span>}
             </div>
           </form>
         </section>
@@ -272,7 +393,11 @@ export function PlayPage() {
         <aside className={`scene-context ${drawer ? 'open' : ''}`}>
           <button className="context-close" onClick={() => setDrawer(false)} aria-label="Закрыть">×</button>
           <h3>Сейчас</h3>
-          <div><span className="context-label">Локация</span><strong>{scene?.location_path.at(-1) || 'Не указана'}</strong>{scene?.location_path.length ? <small>{scene.location_path.slice(0, -1).join(' → ')}</small> : null}</div>
+          <div>
+            <span className="context-label">Локация</span>
+            <strong>{locationLeaf || 'Не указана'}</strong>
+            {locationAncestors.length ? <small>{locationAncestors.join(' → ')}</small> : null}
+          </div>
           <div className="context-block"><span className="context-label">Кто здесь</span>{scene?.participant_names.length ? scene.participant_names.map((name) => <div className="participant" key={name}><span className="participant-dot" />{name}</div>) : <small>Никто не указан</small>}</div>
           {scene?.scene_goal && <div className="context-block"><span className="context-label">Цель сцены</span><strong>{scene.scene_goal}</strong></div>}
           {scene?.active_conflict && <div className="context-block"><span className="context-label">Напряжение</span><span>{scene.active_conflict}</span></div>}

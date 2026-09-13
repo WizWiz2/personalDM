@@ -8,6 +8,7 @@ from app.services.player_intent_interpreter import (
     PlayerActionIntentDraft,
     PlayerIntentContractDraft,
     _IntentWire,
+    _destination_binding_wire,
     normalize_intent_draft,
 )
 from app.services.turn_authority_planner import CoordinatedTurnPlan
@@ -19,12 +20,33 @@ from app.services.turn_outcome_resolver import (
 )
 
 
+def test_movement_reference_schema_restricts_known_identity_and_allows_discovery():
+    location_id = "00000000-0000-4000-8000-000000000001"
+    wire = _destination_binding_wire([0], {location_id: "Комната Кая"})
+    payload = {"action_0": location_id}
+    assert wire.model_validate(payload).action_0 == location_id
+    payload["action_0"] = "new"
+    assert wire.model_validate(payload).action_0 == "new"
+    payload["action_0"] = "invented-id"
+    with pytest.raises(ValidationError):
+        wire.model_validate(payload)
+
+
 def test_intent_wire_schema_cannot_accept_empty_json_object() -> None:
     schema = PlayerIntentContractDraft.model_json_schema()
 
     assert {"summary", "actions"}.issubset(set(schema.get("required") or []))
     with pytest.raises(ValidationError):
         PlayerIntentContractDraft.model_validate({})
+
+
+def test_destination_bindings_cannot_select_another_actions_candidate():
+    refs = {"room": "Комната", "garden": "Сад"}
+    wire = _destination_binding_wire([0, 1], refs, {0: {"room": "Комната"}, 1: {"garden": "Сад"}})
+    with pytest.raises(ValidationError):
+        wire.model_validate({"action_0": "garden", "action_1": "garden"})
+    with pytest.raises(ValidationError):
+        wire.model_validate({"action_0": "room", "action_1": "garden", "actions": []})
 
 
 def test_intent_action_wire_schema_requires_type_and_intent() -> None:
@@ -108,6 +130,7 @@ def test_wire_normalization_preserves_movement_and_inventory_authority() -> None
                     "action_type": "movement",
                     "intent": "Выхожу в коридор.",
                     "destination_location": "Коридор",
+                    "movement_method": "ordinary",
                 },
                 {
                     "action_type": "inventory",
@@ -126,6 +149,24 @@ def test_wire_normalization_preserves_movement_and_inventory_authority() -> None
     assert str(contract.actions[1].item_id) == "00000000-0000-4000-8000-000000000001"
     assert str(contract.actions[1].inventory_target_id) == "00000000-0000-4000-8000-000000000002"
     assert contract.actions[1].inventory_operation == "give"
+
+
+def test_special_movement_method_survives_intent_normalization():
+    wire = _IntentWire.model_validate(
+        {
+            "summary": "Телепортируюсь в коридор.",
+            "actions": [
+                {
+                    "action_type": "movement",
+                    "intent": "Телепортироваться в коридор.",
+                    "destination_location": "Коридор",
+                    "movement_method": "teleportation",
+                }
+            ],
+        }
+    )
+    draft = PlayerIntentContractDraft.model_validate(wire.model_dump(mode="json"))
+    assert normalize_intent_draft(draft, wire.summary).actions[0].movement_method == "special"
 
 
 def test_outcome_wire_schema_enforces_frozen_action_cardinality() -> None:

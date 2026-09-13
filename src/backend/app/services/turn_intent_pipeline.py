@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+from app.db.repositories.location_repo import LocationRepository
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -35,17 +36,24 @@ class TurnIntentPlanningPipeline:
         context_messages,
         selection,
     ) -> tuple[CoordinatedTurnPlan, dict]:
+        locations = await LocationRepository(self._session).list_by_campaign(campaign_id)
         contract = await self._intent.interpret(
             selection,
             context_messages,
             user_input,
+            location_references={
+                str(location.id): location.canonical_name for location in locations
+            },
         )
-        decision = await self._outcomes.resolve(
-            selection,
-            context_messages,
-            user_input,
-            contract,
-        )
+        decision = await self._compiler.resolve_known_travel(campaign_id, contract)
+        outcome_owner = "route_graph" if decision is not None else "external_resolver"
+        if decision is None:
+            decision = await self._outcomes.resolve(
+                selection,
+                context_messages,
+                user_input,
+                contract,
+            )
         missing = await self._compiler.missing_destination_profiles(
             campaign_id,
             contract,
@@ -61,6 +69,7 @@ class TurnIntentPlanningPipeline:
         plan = await self._compiler.compile(campaign_id, contract, decision)
         return plan, {
             "architecture": "frozen_player_intent_v1",
+            "outcome_owner": outcome_owner,
             "intent_contract": contract.model_dump(mode="json"),
             "outcome_decision": decision.model_dump(mode="json"),
             "intent_audit": list(self._intent.audit),
@@ -78,8 +87,6 @@ def install() -> None:
     if _INSTALLED:
         return
 
-    from app.db.action_sequence_table import ActionSequence
-    from app.db.repositories.scene_repo import SceneRepository
     from app.db.scene_transition_table import SceneTransition
     from app.services.action_sequence_executor import ActionSequenceExecutor
     from app.services.scene_transition_executor import SceneTransitionExecutor
@@ -184,9 +191,7 @@ def install() -> None:
             raise ValueError("Compiled action sequence final scene not found")
 
         source_location_id = (
-            await self._scenes.get_location_id(source_scene_id)
-            if source_scene_id
-            else None
+            await self._scenes.get_location_id(source_scene_id) if source_scene_id else None
         )
         target_location_id = await self._scenes.get_location_id(execution.final_scene_id)
         row = SceneTransition(

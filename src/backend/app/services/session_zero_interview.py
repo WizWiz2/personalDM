@@ -657,8 +657,12 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         draft: SessionZeroInterviewDraft,
         topic: str,
     ) -> bool:
-        if topic in {"world.boundaries", "world.boundaries_confirmed"}:
-            return draft.world.boundaries_confirmed
+        if topic == "world.boundaries_confirmed":
+            return bool(draft.world.boundaries_confirmed)
+        if topic == "world.boundaries":
+            return bool(draft.world.boundaries_confirmed) or cls._has_value(
+                draft.world.boundaries
+            )
         if not cls._valid_topic(topic):
             return False
         section_name, field_name = topic.split(".", 1)

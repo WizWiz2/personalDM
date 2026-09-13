@@ -74,6 +74,21 @@ async def test_name_verifier_requires_exact_quote_of_the_proposed_name(db_sessio
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('evidence', ['"Меня зовут Степан"', '«Меня зовут Степан»'])
+async def test_name_verifier_accepts_quoted_excerpt_with_source_continuation(db_session, evidence):
+    registrar = EntityRegistrar(db_session)
+    text = 'Охранник отвечает: "Меня зовут Степан," и кивает.'
+    registrar._router.generate_json = AsyncMock(return_value={
+        'is_explicit': True, 'evidence': evidence,
+    })
+    result = await registrar._confirm_personal_name_reveal(
+        object(), text, 'Охранник', CharacterMention(canonical_name='Степан', evidence=text),
+    )
+    assert result == 'Меня зовут Степан'
+    assert result in text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('presence', ['mentioned_only', 'present'])
 @pytest.mark.parametrize('claimed_evidence', [False, True])
 async def test_role_similarity_cannot_bind_a_third_person_to_present_npc(

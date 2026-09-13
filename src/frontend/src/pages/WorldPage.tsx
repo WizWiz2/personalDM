@@ -165,7 +165,7 @@ export function WorldPage() {
       {error && <ErrorState message={error} />}
       {!loading && !error && <div className="world-layout">
         <div className="world-index">
-          {filtered.length === 0 && <p className="muted-note">Пока здесь ничего нет.</p>}
+          {filtered.length === 0 && <p className="muted-note">Пока в этом разделе нет записей. Сведения появляются по мере игры, когда герой что-то узнаёт или встречает.</p>}
           {filtered.map((item) => <button key={item.id} className={`world-index-item ${selectedItem?.id === item.id ? 'active' : ''}`} onClick={() => setSelected(item.id)}>{tab === 'characters' ? <span className="tiny-portrait"><CharacterPortrait id={item.id} name={item.name} /></span> : <span className="tiny-scene"><PixelScene seed={item.name} compact /></span>}<span><strong>{item.name}</strong><small>{item.subtitle}</small></span></button>)}
         </div>
         <article className="world-detail">

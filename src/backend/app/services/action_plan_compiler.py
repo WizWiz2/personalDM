@@ -7,7 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.tables import Campaign
-from app.models.player_intent import PlayerActionIntent, PlayerIntentContract, TurnOutcomeDecision
+from app.models.player_intent import (
+    ActionOutcomeDecision,
+    PlayerActionIntent,
+    PlayerIntentContract,
+    TurnOutcomeDecision,
+)
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.location_identity import display_location_name, same_location_reference
 from app.services.scene_state_service import SceneStateService
@@ -67,7 +72,11 @@ class ActionPlanCompiler:
             candidates = [exit_row.to_location_name, exit_row.label]
             if target is not None:
                 candidates.extend(
-                    [target.canonical_name, display_location_name(target.canonical_name), *target.aliases]
+                    [
+                        target.canonical_name,
+                        display_location_name(target.canonical_name),
+                        *target.aliases,
+                    ]
                 )
             if any(
                 same_location_reference(needle, candidate)
@@ -103,6 +112,74 @@ class ActionPlanCompiler:
                 f"expected={sorted(expected)} got={sorted(by_index)}"
             )
         return by_index
+
+    async def resolve_known_travel(
+        self, campaign_id: UUID, contract: PlayerIntentContract
+    ) -> TurnOutcomeDecision | None:
+        """Resolve ordinary graph travel without asking a model to invent feasibility.
+
+        Explicit contact, conditional access, active conflicts and unknown destinations still need
+        external resolution. For an ordinary trip on known topology, the graph is the authority;
+        movement alone does not authorize introducing a new person or moving a bystander.
+        """
+        if (
+            not contract.actions
+            or contract.addressed_response_requested
+            or contract.pending_player_choice
+            or any(action.action_type != "movement" for action in contract.actions)
+            or any(action.movement_method != "ordinary" for action in contract.actions)
+        ):
+            return None
+        _, state, locations = await self._world(campaign_id)
+        if not state.location_id or getattr(state, "active_conflict", None):
+            return None
+        by_id = {item.id: item for item in locations}
+        current_id = state.location_id
+        outcomes = []
+        stopped = False
+        for index, action in enumerate(contract.actions):
+            if stopped:
+                outcomes.append(
+                    ActionOutcomeDecision(
+                        action_index=index,
+                        resolution="blocked",
+                        blocking_reason="Предыдущий переход не выполнен.",
+                    )
+                )
+                continue
+            destination = action.destination_location or ""
+            exits = await self._state.list_exits(campaign_id, current_id, include_hidden=True)
+            matches = self._matching_exits(destination, exits, by_id)
+            if not matches and not self._matching_locations(destination, locations):
+                return None
+            if any(exit_row.access_rule for exit_row, _ in matches):
+                return None
+            candidate = ActionOutcomeDecision(
+                action_index=index,
+                resolution="auto_success",
+                safe_mundane=True,
+                observable_outcome=f"Переход в место «{destination}» завершён.",
+            )
+            step, current_id, _ = await self._compile_movement(
+                campaign_id=campaign_id,
+                action_index=index,
+                action=action,
+                outcome=candidate,
+                current_location_id=current_id,
+                locations=locations,
+                by_id=by_id,
+            )
+            stopped = step.resolution != "auto_success"
+            outcomes.append(
+                ActionOutcomeDecision(
+                    action_index=index,
+                    resolution=step.resolution,
+                    safe_mundane=step.safe_mundane,
+                    observable_outcome=step.observable_outcome,
+                    blocking_reason=step.blocking_reason,
+                )
+            )
+        return TurnOutcomeDecision(action_outcomes=outcomes, resolution="sequence")
 
     async def missing_destination_profiles(
         self,

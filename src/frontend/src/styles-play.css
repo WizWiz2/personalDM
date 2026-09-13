@@ -13,3 +13,11 @@
 .turn-undo svg{width:15px;height:15px}
 @media(max-width:720px){.mode-row{display:flex}.composer-hint{font-size:10px;line-height:1.3}.composer-mode{font-size:11px;padding:6px 5px}.composer-mode svg{display:none}}
 .play-page .context-toggle.btn.primary,.play-page .composer-mode.btn.primary,.play-page .turn-undo.btn.primary{color:#1d1710;background:linear-gradient(180deg,#dfaa61,#c7893d);border-color:#efc17d;font-weight:700;box-shadow:0 7px 24px rgba(194,132,53,.13)}
+
+.play-column{position:relative}
+.generation-failure-stack{width:min(var(--reading),100%);margin:0 auto 12px;display:grid;gap:10px}
+.generation-failure-stack .generation-failure-panel{margin:0;width:100%}
+.jump-latest-btn{position:sticky;bottom:92px;z-index:12;display:inline-flex;align-self:center;margin:0 auto 10px;padding:8px 14px;border-radius:999px;border:1px solid #5c4a30;background:rgba(28,26,20,.94);color:#efc17d;font:12px/1 Inter,system-ui,sans-serif;letter-spacing:.04em;box-shadow:0 10px 28px rgba(0,0,0,.35);cursor:pointer}
+.jump-latest-btn:hover{border-color:#efc17d;background:#241f16}
+.play-column .jump-latest-btn{left:50%;transform:translateX(-50%)}
+

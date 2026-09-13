@@ -6,6 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.player_intent import (
+    ActionOutcomeDecision,
     DestinationProfilePatch,
     DestinationProfilePatchSet,
     PlayerIntentContract,
@@ -40,6 +41,9 @@ Hard ownership boundaries:
   locations and compound hop order. If authoritative context explicitly establishes an obstacle you
   may return blocked; otherwise resolve the fictional outcome and let the compiler enforce topology.
 - A safe ordinary action with no established obstacle may be auto_success + safe_mundane=true.
+- A destination being outside the current scene/building, or not yet recorded in the location
+  catalogue, is not a physical obstacle. Explicit ordinary travel can discover a new public place.
+  Do not confuse the pre-turn scene snapshot with a prohibition on changing it.
 - Evaluate each action at its own point in the sequence. An obstacle on a later hop cannot block
   an earlier unobstructed hop. The compiler will enforce route availability in sequence order.
 - auto_success means the action happens now; requires_choice means a specific missing player choice,
@@ -80,6 +84,35 @@ stable public physical profile for each listed index: 2-4 Russian sentences, at 
 ordinary purpose/appearance only. Do not change routes, actions, outcomes, NPCs or destination names.
 The patches field is required and must contain exactly one patch per requested action index.
 """
+
+_TRAVEL_PROMPT = """[ОБЫЧНОЕ ПУТЕШЕСТВИЕ: ПРОВЕРКА ФИЗИЧЕСКИХ ПРЕПЯТСТВИЙ]
+Действия игрока уже выбраны. Для каждого перехода проверь только наличие конкретного физического
+препятствия, установленного контекстом мира или вводом игрока. Если препятствия нет, верни
+blocking_reason=null и evidence_quote=null. Если есть — назови его и процитируй дословное основание
+в evidence_quote. Не выдумывай запертые двери, охрану, запреты или опасности.
+
+Правила движка: граф проверяется отдельно. Новые места разрешено открывать обычным путешествием;
+их регистрация, профиль и новая сцена создаются ПОСЛЕ этой проверки. Отсутствие записи места в БД,
+отсутствие его в текущей сцене, нахождение снаружи здания и ещё не исполненный переход НЕ являются
+препятствиями. Не проверяй предварительную регистрацию и не требуй подтверждать выбранный адрес.
+Не добавляй персонажей, диалог, эмоции героя или дополнительные действия.
+Верни OrdinaryTravelObstacles, ровно по одному элементу на каждый action_index.
+"""
+
+
+class TravelObstacleDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action_index: int = Field(ge=0, le=7)
+    blocking_reason: str | None
+    evidence_quote: str | None
+
+
+def _travel_wire_model(action_count: int):
+    class OrdinaryTravelObstacles(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        obstacles: list[TravelObstacleDraft] = Field(min_length=action_count, max_length=action_count)
+
+    return OrdinaryTravelObstacles
 
 _ACTION_RESOLUTIONS = {"auto_success", "requires_choice", "blocked"}
 _TURN_RESOLUTIONS = {
@@ -321,6 +354,44 @@ class TurnOutcomeResolver:
         # compiled system message is the authoritative layered context used by Planner today.
         return planning_context(context_messages)
 
+    async def _resolve_ordinary_travel(self, selection, context_messages, player_input, contract):
+        """A travel-only decision cannot invent NPCs or confuse discovery with missing authority."""
+        context = self._context(context_messages)
+        wire = _travel_wire_model(len(contract.actions))
+        data = await self._router.generate_json(
+            self._provider, selection,
+            [
+                ChatMessage(role="system", content=_TRAVEL_PROMPT + "\n[OUTPUT JSON SCHEMA]\n"
+                            + json.dumps(wire.model_json_schema(), ensure_ascii=False)),
+                ChatMessage(role="user", content=context + "\n[ВВОД ИГРОКА]\n" + player_input
+                            + "\n[ВЫБРАННЫЕ ДЕЙСТВИЯ]\n" + contract.model_dump_json()),
+            ],
+            max_tokens=700, temperature=0, response_model=wire,
+        )
+        draft = wire.model_validate(data)
+        outcomes = []
+        evidence = context + "\n" + player_input
+        for obstacle in draft.obstacles:
+            reason = (obstacle.blocking_reason or "").strip()
+            quote = (obstacle.evidence_quote or "").strip()
+            if reason and (not quote or quote not in evidence):
+                raise TurnPlanningError("travel blocker lacks a verbatim world/input evidence quote")
+            if obstacle.action_index >= len(contract.actions):
+                raise TurnPlanningError("travel obstacle refers to an unknown action")
+            action = contract.actions[obstacle.action_index]
+            outcomes.append(ActionOutcomeDecision(
+                action_index=obstacle.action_index,
+                resolution="blocked" if reason else "auto_success",
+                safe_mundane=not bool(reason),
+                blocking_reason=reason or None,
+                observable_outcome=None if reason else f"Переход в место «{action.destination_location}» завершён.",
+            ))
+        decision = TurnOutcomeDecision(action_outcomes=outcomes, resolution="sequence")
+        self._validate_coverage(contract, decision)
+        self.audit.append({"phase": "ordinary_travel", "draft": draft.model_dump(mode="json"),
+                           "decision": decision.model_dump(mode="json")})
+        return decision
+
     @staticmethod
     def _validate_coverage(
         contract: PlayerIntentContract,
@@ -360,6 +431,16 @@ class TurnOutcomeResolver:
         contract: PlayerIntentContract,
     ) -> TurnOutcomeDecision:
         try:
+            if (
+                contract.actions
+                and not contract.addressed_response_requested
+                and not contract.pending_player_choice
+                and all(action.action_type == "movement" and action.movement_method == "ordinary"
+                        for action in contract.actions)
+            ):
+                return await self._resolve_ordinary_travel(
+                    selection, context_messages, player_input, contract,
+                )
             response_model = _outcome_wire_model(
                 len(contract.actions), allow_choice=bool(contract.pending_player_choice)
             )

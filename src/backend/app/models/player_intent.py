@@ -32,6 +32,7 @@ class PlayerActionIntent(BaseModel):
 
     # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
+    movement_method: Literal["ordinary", "special"] = "ordinary"
 
     # Inventory authority is identity based. IDs must come from authoritative context.
     item_id: UUID | None = None

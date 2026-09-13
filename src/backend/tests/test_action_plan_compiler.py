@@ -13,7 +13,6 @@ from app.models.player_intent import (
 )
 from app.services.action_plan_compiler import ActionPlanCompiler
 
-
 ROOM = UUID("00000000-0000-4000-8000-000000000101")
 CORRIDOR = UUID("00000000-0000-4000-8000-000000000102")
 OFFICE = UUID("00000000-0000-4000-8000-000000000103")
@@ -59,6 +58,30 @@ class _Compiler(ActionPlanCompiler):
         return SCENE, SimpleNamespace(location_id=ROOM), list(self._fixture_locations)
 
 
+@pytest.mark.asyncio
+async def test_conditional_route_and_explicit_contact_keep_external_resolution():
+    route = _exit(ROOM, CORRIDOR, "Коридор")
+    route.access_rule = "Only with permission"
+    compiler = _Compiler(
+        [_location(ROOM, "Комната"), _location(CORRIDOR, "Коридор")], {ROOM: [route]}
+    )
+    contract = PlayerIntentContract(summary="Иду в коридор.", actions=[_move("Коридор")])
+    assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
+    route.access_rule = None
+    contract.actions[0].movement_method = "special"
+    assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
+    contract.actions[0].movement_method = "ordinary"
+    contract.addressed_response_requested = True
+    assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_destination_still_requires_world_resolution():
+    compiler = _Compiler([_location(ROOM, "Комната")], {})
+    contract = PlayerIntentContract(summary="Иду в сад.", actions=[_move("Сад")])
+    assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
+
+
 def _move(destination: str) -> PlayerActionIntent:
     return PlayerActionIntent(
         action_type="movement",
@@ -93,7 +116,9 @@ async def test_compound_route_is_compiled_from_each_virtual_intermediate_locatio
         summary="Кай идёт из комнаты через коридор в контору.",
         actions=[_move("Коридор"), _move("Контора")],
     )
-    decision = TurnOutcomeDecision(action_outcomes=[_success(0), _success(1)])
+    decision = await compiler.resolve_known_travel(CAMPAIGN, contract)
+    assert decision is not None
+    assert decision.npc_introductions == []
 
     plan = await compiler.compile(CAMPAIGN, contract, decision)
 
@@ -123,7 +148,8 @@ async def test_missing_second_edge_blocks_that_hop_without_erasing_completed_pre
         summary="Кай выходит в коридор и затем пытается пройти на склад.",
         actions=[_move("Коридор"), _move("Склад")],
     )
-    decision = TurnOutcomeDecision(action_outcomes=[_success(0), _success(1)])
+    decision = await compiler.resolve_known_travel(CAMPAIGN, contract)
+    assert decision is not None
 
     plan = await compiler.compile(CAMPAIGN, contract, decision)
     first, second = plan.action_sequence.steps
@@ -171,6 +197,4 @@ async def test_unknown_explicit_destination_becomes_one_route_discovery_step() -
     assert plan.action_sequence.steps[0].transition.destination_location == (
         "Круглосуточная прачечная соседнего дома"
     )
-    assert "DESTINATION PROFILE:" in (
-        plan.action_sequence.steps[0].transition.bridge_summary or ""
-    )
+    assert "DESTINATION PROFILE:" in (plan.action_sequence.steps[0].transition.bridge_summary or "")

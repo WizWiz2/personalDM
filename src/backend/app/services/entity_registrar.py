@@ -426,12 +426,20 @@ class EntityRegistrar:
                 response_model=PersonalNameRevealDecision,
             )
             decision = PersonalNameRevealDecision.model_validate(data)
+            evidence = (decision.evidence or "").strip()
+            # Extractors sometimes wrap the excerpt in quotation marks of their own. Those
+            # delimiters are not part of the cited span: the source may continue with a comma
+            # before its closing quote. Match the literal inner span, preserving its punctuation.
+            quote_pairs = {'"': '"', "'": "'", "«": "»", "“": "”", "‘": "’"}
+            if len(evidence) > 1 and quote_pairs.get(evidence[0]) == evidence[-1]:
+                evidence = evidence[1:-1].strip()
             if (
-                decision.is_explicit and decision.evidence
-                and decision.evidence in assistant_content
-                and self._name_supported_by_text(mention.canonical_name, decision.evidence)
+                decision.is_explicit and evidence
+                and evidence in assistant_content
+                and self._name_supported_by_text(mention.canonical_name, evidence)
+                and self._name_supported_by_text(mention.canonical_name, assistant_content)
             ):
-                return decision.evidence
+                return evidence
         except (LLMProviderError, ValidationError, ValueError, TypeError):
             return None
         return None

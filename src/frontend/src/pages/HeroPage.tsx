@@ -94,7 +94,14 @@ export function HeroPage() {
           {character.appearance && <section className="dossier-section"><h3>Образ</h3><p>{character.appearance}</p></section>}
           {character.personality && <section className="dossier-section"><h3>Характер</h3><p>{character.personality}</p></section>}
           {character.backstory_public && <section className="dossier-section"><h3>Прошлое</h3><p>{character.backstory_public}</p></section>}
-          {(character.emotional_state || character.current_intentions?.length) && <section className="dossier-section"><h3>Текущее состояние</h3>{character.emotional_state && <p>{character.emotional_state}</p>}<div className="chips">{character.current_intentions?.map((v) => <span className="chip" key={v}>{v}</span>)}</div></section>}
+          {(() => {
+            const goalTexts = new Set(card.goals.map((g) => g.description.trim()))
+            const stateText = character.emotional_state?.trim() || ''
+            const intentions = (character.current_intentions ?? []).filter((v) => !goalTexts.has(v.trim()))
+            const showStateText = Boolean(stateText) && !goalTexts.has(stateText)
+            if (!showStateText && intentions.length === 0) return null
+            return <section className="dossier-section"><h3>Текущее состояние</h3>{showStateText && <p>{character.emotional_state}</p>}<div className="chips">{intentions.map((v) => <span className="chip" key={v}>{v}</span>)}</div></section>
+          })()}
           {card.goals.length > 0 && <section className="dossier-section"><h3>Цели</h3><div className="knowledge-list">{[...card.goals].sort((a, b) => b.priority - a.priority).map((goal, i) => <div className="knowledge-item" key={goal.id}><span className="bullet">{i === 0 ? '●' : '○'}</span><span>{goal.description}</span></div>)}</div></section>}
           {visibleRelationships.length > 0 && <section className="dossier-section"><h3>Важные связи</h3><div className="relationship-list">{visibleRelationships.map((rel) => {
             const otherId = rel.subject_id === character.id ? rel.object_id : rel.subject_id

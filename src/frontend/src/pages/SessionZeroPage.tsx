@@ -201,9 +201,19 @@ export function SessionZeroPage() {
       {!loading && interview && <div className="session-zero-conversation-layout">
         <section className="session-zero-conversation" aria-label="Разговор нулевой сессии">
           <div className="session-zero-intro">
-            <span className="eyebrow">До первой сцены</span>
-            <h2>Соберём игру разговором</h2>
-            <p>Это тот же разговорный режим, что и в CLI: отвечай свободно, исправляй сказанное и начинай с любой стороны будущей игры. Мастер сам решит, когда данных достаточно.</p>
+            {completed ? (
+              <>
+                <span className="eyebrow">Нулевая сессия завершена</span>
+                <h2>Можно начинать приключение</h2>
+                <p>Договорённости собраны. Открой игру или вернись к сводке ниже — писать «Начинаем» не нужно.</p>
+              </>
+            ) : (
+              <>
+                <span className="eyebrow">До первой сцены</span>
+                <h2>Соберём игру разговором</h2>
+                <p>Это тот же разговорный режим, что и в CLI: отвечай свободно, исправляй сказанное и начинай с любой стороны будущей игры. Мастер сам решит, когда данных достаточно.</p>
+              </>
+            )}
           </div>
 
           <div className="session-zero-transcript" aria-live="polite">
@@ -285,21 +295,31 @@ export function SessionZeroPage() {
 
           <section className="session-zero-preview-section">
             <h3>Мир</h3>
-            <PreviewField label="Сеттинг" value={world?.setting_name || world?.genre} />
-            <PreviewField label="Тон" value={world?.tone} />
+            {world?.setting_name
+              ? <PreviewField label="Сеттинг" value={world.setting_name} />
+              : world?.genre
+                ? <PreviewField label="Жанр" value={world.genre} />
+                : <p className="empty">Сеттинг и жанр появятся, когда обсудите мир.</p>}
+            {world?.tone
+              ? <PreviewField label="Тон" value={world.tone} />
+              : <p className="empty">Тон появится после первых ответов о настроении игры.</p>}
             <PreviewText value={world?.premise || world?.world_summary} fallback="Пока мастер только знакомится с идеей мира." />
           </section>
 
           <section className="session-zero-preview-section">
             <h3>Герой</h3>
-            <PreviewField label="Имя" value={hero?.name} />
+            {hero?.name
+              ? <PreviewField label="Имя" value={hero.name} />
+              : <p className="empty">Имя героя появится, когда его обсудите.</p>}
             <PreviewText value={hero?.description || hero?.personality} fallback="Образ героя появится здесь по мере разговора." />
             {hero?.first_goal && <div className="session-zero-goal"><span>Первая цель</span><strong>{hero.first_goal}</strong></div>}
           </section>
 
           <section className="session-zero-preview-section">
             <h3>Старт</h3>
-            <PreviewField label="Место" value={world?.starting_location_name} />
+            {world?.starting_location_name
+              ? <PreviewField label="Место" value={world.starting_location_name} />
+              : <p className="empty">Стартовое место появится ближе к запуску.</p>}
             <PreviewText value={world?.starting_situation} fallback="Стартовая ситуация ещё не определена." />
           </section>
 
