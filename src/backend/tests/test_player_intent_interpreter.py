@@ -30,7 +30,7 @@ class _Router:
     ):
         del provider, selection, messages, kwargs
         self.calls.append(response_model.__name__)
-        assert response_model is PlayerIntentContractDraft
+        assert issubclass(response_model, PlayerIntentContractDraft)
         return self.payload
 
 

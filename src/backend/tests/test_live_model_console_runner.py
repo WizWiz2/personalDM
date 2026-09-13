@@ -46,6 +46,8 @@ def _args() -> argparse.Namespace:
     return argparse.Namespace(
         narrator_model="gemma4:e4b",
         control_model="qwen2.5:7b",
+        context_window=8192,
+        control_context_window=6144,
         ollama="http://127.0.0.1:11434",
         turn_timeout=180.0,
         post_turn_timeout=120.0,
@@ -64,6 +66,8 @@ def test_child_command_forces_one_case_one_repeat_and_unique_output(tmp_path: Pa
     assert Path(command[command.index("--output") + 1]) == child
     assert command[command.index("--narrator-model") + 1] == "gemma4:e4b"
     assert command[command.index("--control-model") + 1] == "qwen2.5:7b"
+    assert command[command.index("--context-window") + 1] == "8192"
+    assert command[command.index("--control-context-window") + 1] == "6144"
 
 
 def test_child_directories_are_isolated_by_case_and_repetition(tmp_path: Path) -> None:

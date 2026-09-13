@@ -51,6 +51,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--narrator-model", default="gemma4:e4b")
     parser.add_argument("--control-model", default="qwen2.5:7b")
+    parser.add_argument("--context-window", type=int, default=8192)
+    parser.add_argument("--control-context-window", type=int, default=8192)
     parser.add_argument("--ollama", default="http://127.0.0.1:11434")
     parser.add_argument("--suite", choices=("core", "extended", "all"), default="all")
     parser.add_argument(
@@ -118,6 +120,8 @@ def _install_isolated_env(args: argparse.Namespace, run_dir: Path) -> Path:
         "PDM_TEXT_PROVIDER": "local",
         "PDM_LLM_BASE_URL": base_url,
         "PDM_LLM_MODEL": args.narrator_model,
+        "PDM_LLM_CONTEXT_WINDOW": str(args.context_window),
+        "PDM_CONTROL_LLM_CONTEXT_WINDOW": str(args.control_context_window),
         "PDM_CONTROL_LLM_BASE_URL": base_url,
         "PDM_CONTROL_LLM_MODEL": args.control_model,
         "PDM_PLANNER_LLM_MODEL": args.control_model,
@@ -405,6 +409,8 @@ def main() -> int:
         {
             "narrator_model": args.narrator_model,
             "control_model": args.control_model,
+            "context_window": args.context_window,
+            "control_context_window": args.control_context_window,
             "ollama": args.ollama,
             "suite": args.suite,
             "repeat": args.repeat,

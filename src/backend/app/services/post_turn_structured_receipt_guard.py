@@ -23,8 +23,6 @@ from app.services.canon_applier import CanonApplier
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
-_INSTALLED = False
-
 
 class RelationshipReceiptDecision(BaseModel):
     verdict: Literal["no_change", "retract"] = "no_change"
@@ -48,8 +46,7 @@ def _explicit_item_debt_fulfillments(receipt: dict, relationships) -> set[UUID]:
     if not item_text or not from_id or not to_id:
         return set()
     item_tokens = {
-        token.casefold()
-        for token in re.findall(r"[\w-]{3,}", item_text, flags=re.UNICODE)
+        token.casefold() for token in re.findall(r"[\w-]{3,}", item_text, flags=re.UNICODE)
     }
     if not item_tokens:
         return set()
@@ -105,23 +102,27 @@ async def _relationship_candidates(
     target_id: UUID,
 ):
     return (
-        await processor._session.execute(
-            select(RelationshipAssertion).where(
-                RelationshipAssertion.campaign_id == str(campaign_id),
-                RelationshipAssertion.is_current.is_(True),
-                or_(
-                    (
-                        (RelationshipAssertion.subject_id == str(player_id))
-                        & (RelationshipAssertion.object_id == str(target_id))
+        (
+            await processor._session.execute(
+                select(RelationshipAssertion).where(
+                    RelationshipAssertion.campaign_id == str(campaign_id),
+                    RelationshipAssertion.is_current.is_(True),
+                    or_(
+                        (
+                            (RelationshipAssertion.subject_id == str(player_id))
+                            & (RelationshipAssertion.object_id == str(target_id))
+                        ),
+                        (
+                            (RelationshipAssertion.subject_id == str(target_id))
+                            & (RelationshipAssertion.object_id == str(player_id))
+                        ),
                     ),
-                    (
-                        (RelationshipAssertion.subject_id == str(target_id))
-                        & (RelationshipAssertion.object_id == str(player_id))
-                    ),
-                ),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
 
 async def _relationship_decision(
@@ -249,15 +250,15 @@ async def _ensure_relationship_receipts(
             "to_character_id": str(target_id),
             "observable_outcome": step.get("observable_outcome"),
         }
-        decision = await _relationship_decision(
-            processor,
-            campaign_id,
-            receipt,
-            relationships,
-            user_turn.content,
-            assistant.content,
-        )
         deterministic_retract_ids = _explicit_item_debt_fulfillments(receipt, relationships)
+        unresolved = [row for row in relationships if UUID(row.id) not in deterministic_retract_ids]
+        decision = (
+            await _relationship_decision(
+                processor, campaign_id, receipt, unresolved, user_turn.content, assistant.content
+            )
+            if unresolved
+            else RelationshipReceiptDecision()
+        )
         retract_ids = set(decision.retract_ids) if decision.verdict == "retract" else set()
         retract_ids.update(deterministic_retract_ids)
         if not retract_ids:
@@ -355,32 +356,7 @@ async def reconcile_structured_receipts(
 
 
 def install() -> None:
-    global _INSTALLED
-    if _INSTALLED:
-        return
-
-    original_process_job = PostTurnProcessor.process_job
-
-    async def receipt_aware_process_job(self, job_id, *, already_claimed=False):
-        await original_process_job(
-            self,
-            job_id,
-            already_claimed=already_claimed,
-        )
-        try:
-            await reconcile_structured_receipts(self, job_id)
-        except Exception as exc:
-            await self._session.rollback()
-            row = await self._session.get(PostTurnJob, str(job_id))
-            if row is not None:
-                row.status = "failed"
-                row.error = f"structured receipt reconciliation failed: {exc}"[:4000]
-                row.locked_at = None
-                await self._session.commit()
-            raise
-
-    PostTurnProcessor.process_job = receipt_aware_process_job
-    _INSTALLED = True
+    """Compatibility entry point; reconciliation now runs inside process_job."""
 
 
 __all__ = [

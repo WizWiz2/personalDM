@@ -550,7 +550,15 @@ class PostTurnProcessor:
             else:
                 raise ValueError(f"Unknown post-turn job type: {row.job_type}")
 
+            # Receipt-derived canon is part of the job, not work after its terminal status.
+            # Consumers may read the world immediately once they observe completion.
             row = await self._session.get(PostTurnJob, str(job_id))
+            if row.job_type == "memory_scribe" and self._authority_managed(assistant):
+                from app.services.post_turn_structured_receipt_guard import (
+                    _ensure_relationship_receipts,
+                )
+
+                await _ensure_relationship_receipts(self, campaign_id, assistant, user_turn)
             row.status = "completed"
             row.error = None
             row.locked_at = None

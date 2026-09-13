@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -14,9 +14,10 @@ from app.models.player_intent import (
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
+from app.services.planning_context import planning_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
+from app.services.starter_identity import present_character_names
 from app.services.turn_planner import TurnPlanningError
-
 
 _OUTCOME_PROMPT = """[FROZEN INTENT OUTCOME RESOLVER]
 The human's voluntary contribution is already frozen in PLAYER INTENT CONTRACT. Resolve only the
@@ -39,12 +40,22 @@ Hard ownership boundaries:
   locations and compound hop order. If authoritative context explicitly establishes an obstacle you
   may return blocked; otherwise resolve the fictional outcome and let the compiler enforce topology.
 - A safe ordinary action with no established obstacle may be auto_success + safe_mundane=true.
+- Evaluate each action at its own point in the sequence. An obstacle on a later hop cannot block
+  an earlier unobstructed hop. The compiler will enforce route availability in sequence order.
+- auto_success means the action happens now; requires_choice means a specific missing player choice,
+  never a request to confirm an already selected destination or inventory recipient.
 - observable_outcome describes the result of that one action, not an extra player action.
 
 NPC authority:
+- Characters already listed in the context are existing identities, not npc_introductions. Never
+  reintroduce them or move them from another scene. Ordinary travel, inventory transfers and waiting
+  normally have npc_introductions=[]. A new introduction needs a specific encounter/contact reason.
 - Only physically present characters may act unless this turn's frozen actions genuinely encounter,
   contact or cause the appearance of a new person.
 - A genuinely new responder/person must be typed in npc_introductions; Narrator may not invent one.
+- Addressing a new local person can be requested through addressed_response_requested even when
+  actions=[] (speech is not an executable action). If such a person responds, create their typed
+  introduction. Never replace that person with a named character located in another scene.
 - Role/title-only identity is temporary: use temporary_name=true, canonical_name equal to a grounded
   role/designation (not an invented personal name), personal_name_evidence=null, and provide concrete
   description/appearance. Stable personal identity requires explicit current campaign evidence.
@@ -52,6 +63,8 @@ NPC authority:
   is handled after narration.
 
 Narrative fields constrain only external presentation. They cannot authorize another player action.
+For a stationary acknowledgement or speech-only turn, actions may be empty but still supply a
+concrete external response, character beat or observable consequence. Do not add a player action.
 Do not manufacture a complication in a calm routine turn without an established source. If
 allow_new_complication=true, complication_source must identify that established source.
 
@@ -98,14 +111,14 @@ class ActionOutcomeDraft(BaseModel):
 class OutcomeNpcIntroductionDraft(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    canonical_name: str = ""
-    role: str = ""
-    description: str = ""
-    appearance: str = ""
+    canonical_name: str = Field(min_length=2, max_length=120)
+    role: str = Field(min_length=2, max_length=200)
+    description: str = Field(min_length=32, max_length=800)
+    appearance: str = Field(min_length=32, max_length=800)
     voice: str | None = None
     temporary_name: bool = True
     personal_name_evidence: str | None = None
-    reason: str = ""
+    reason: str = Field(min_length=2, max_length=500)
 
 
 class TurnOutcomeDecisionDraft(BaseModel):
@@ -131,7 +144,9 @@ class TurnOutcomeDecisionDraft(BaseModel):
     complication_source: str | None = None
 
 
-def _outcome_wire_model(action_count: int) -> type[TurnOutcomeDecisionDraft]:
+def _outcome_wire_model(
+    action_count: int, *, allow_choice: bool = True
+) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
     The model remains free to describe each external result permissively. The list cardinality is not
@@ -139,11 +154,35 @@ def _outcome_wire_model(action_count: int) -> type[TurnOutcomeDecisionDraft]:
     structured decoding should enforce it instead of allowing a vacuous list through to later guards.
     """
 
+    class SuccessfulActionOutcomeDraft(ActionOutcomeDraft):
+        resolution: Literal["auto_success"]
+        observable_outcome: str = Field(min_length=2, max_length=1000)
+
+    class BlockedActionOutcomeDraft(ActionOutcomeDraft):
+        resolution: Literal["blocked"]
+        blocking_reason: str = Field(min_length=2, max_length=1000)
+
+    action_model = (
+        ActionOutcomeDraft
+        if allow_choice
+        else SuccessfulActionOutcomeDraft | BlockedActionOutcomeDraft
+    )
+
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
-        action_outcomes: list[ActionOutcomeDraft] = Field(
+        action_outcomes: list[action_model] = Field(
             min_length=action_count,
             max_length=action_count,
         )
+        npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(max_length=4)
+
+    if action_count == 0:
+        # No executable action is valid for dialogue/acknowledgement. It still needs an external
+        # response or observable beat, otherwise the downstream authority receives a vacuous plan.
+        class ResponsiveTurnOutcomeDecisionDraft(ExactTurnOutcomeDecisionDraft):
+            observable_consequences: list[str] = Field(min_length=1, max_length=4)
+
+        ResponsiveTurnOutcomeDecisionDraft.__name__ = "TurnOutcomeDecisionDraft"
+        return ResponsiveTurnOutcomeDecisionDraft
 
     ExactTurnOutcomeDecisionDraft.__name__ = "TurnOutcomeDecisionDraft"
     return ExactTurnOutcomeDecisionDraft
@@ -278,11 +317,9 @@ class TurnOutcomeResolver:
 
     @staticmethod
     def _context(context_messages: list[ChatMessage]) -> str:
-        if not context_messages:
-            return ""
         # Outcome resolution needs campaign state/facts, but not the old prose transcript. The first
         # compiled system message is the authoritative layered context used by Planner today.
-        return context_messages[0].content
+        return planning_context(context_messages)
 
     @staticmethod
     def _validate_coverage(
@@ -323,12 +360,24 @@ class TurnOutcomeResolver:
         contract: PlayerIntentContract,
     ) -> TurnOutcomeDecision:
         try:
-            response_model = _outcome_wire_model(len(contract.actions))
+            response_model = _outcome_wire_model(
+                len(contract.actions), allow_choice=bool(contract.pending_player_choice)
+            )
+            response_contract = {
+                "response_requested": contract.addressed_response_requested,
+                "addressed_designation": contract.addressed_character_name,
+                "physically_present": sorted(present_character_names(context_messages)),
+            }
             data = await self._router.generate_json(
                 self._provider,
                 selection,
                 [
-                    ChatMessage(role="system", content=_OUTCOME_PROMPT),
+                    ChatMessage(
+                        role="system",
+                        content=_OUTCOME_PROMPT
+                        + "\n\n[OUTPUT JSON SCHEMA]\n"
+                        + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
+                    ),
                     ChatMessage(
                         role="user",
                         content=(
@@ -338,6 +387,15 @@ class TurnOutcomeResolver:
                             + player_input
                             + "\n\n[PLAYER INTENT CONTRACT — immutable]\n"
                             + contract.model_dump_json()
+                            + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
+                            + json.dumps(response_contract, ensure_ascii=False)
+                            + "\nResolve an explicitly requested ordinary local exchange now. "
+                            "Anyone outside this physical presence list who responds or acts MUST "
+                            "have a complete npc_introductions entry. Historical names and prose "
+                            "do not make them present. If a requested new local responder is "
+                            "available, introduce their grounded role and profile before describing "
+                            "their response. Do not leave an ordinary question pending or request "
+                            "confirmation of the question itself."
                         ),
                     ),
                 ],
@@ -374,8 +432,7 @@ class TurnOutcomeResolver:
         if not missing:
             return decision
         requests = [
-            {"action_index": item.action_index, "destination": item.destination}
-            for item in missing
+            {"action_index": item.action_index, "destination": item.destination} for item in missing
         ]
         try:
             response_model = _profile_wire_model(len(missing))
@@ -383,7 +440,12 @@ class TurnOutcomeResolver:
                 self._provider,
                 selection,
                 [
-                    ChatMessage(role="system", content=_PROFILE_PROMPT),
+                    ChatMessage(
+                        role="system",
+                        content=_PROFILE_PROMPT
+                        + "\n\n[OUTPUT JSON SCHEMA]\n"
+                        + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
+                    ),
                     ChatMessage(
                         role="user",
                         content=(

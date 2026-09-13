@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import json
 import re
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
-from app.models.player_intent import PlayerIntentContract
+from app.models.player_intent import IntentActionType, PlayerIntentContract
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.planning_context import planning_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
-
 
 _INTENT_PROMPT = """[PLAYER INTENT INTERPRETER]
 You convert exactly one human RPG turn into immutable player-authority IR. You do NOT resolve the
@@ -37,6 +39,10 @@ The contract contains only what the HUMAN actually committed to now:
   destination.
 - Do not decide whether a destination already exists, whether a route may be discovered, or whether
   the move is possible. The deterministic world compiler owns all of that after this contract freezes.
+- An attempted move is still movement with the selected destination, even if the human says the
+  passage is absent or blocked. Obstacles never turn movement into interaction or remove a preceding
+  move. Extract the intention before its outcome: "go to A, then try to go to B; no passage to B"
+  contains two movement actions, to A then B. Do not invent a locked room, door or alternative route.
 - Inventory actions MUST set inventory_operation to exactly take, drop, give, or place. Use IDs from
   AUTHORITATIVE CONTEXT when available. give also requires inventory_target_id. drop means release
   into the current place; place means deliberately position on/in a named surface/container/position.
@@ -73,7 +79,7 @@ class PlayerActionIntentDraft(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    action_type: str = Field(min_length=2, max_length=32)
+    action_type: IntentActionType
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     item_id: str | None = None
@@ -102,6 +108,50 @@ class PlayerIntentContractDraft(BaseModel):
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
 
 
+class _ActionWire(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    intent: str = Field(min_length=2, max_length=500)
+
+
+class _MovementWire(_ActionWire):
+    action_type: Literal["movement"]
+    destination_location: str = Field(min_length=1, max_length=255)
+
+
+class _InventoryWire(_ActionWire):
+    action_type: Literal["inventory"]
+    item_id: UUID
+    inventory_operation: Literal["take", "drop", "place"]
+
+
+class _GiveWire(_ActionWire):
+    action_type: Literal["inventory"]
+    item_id: UUID
+    inventory_operation: Literal["give"]
+    inventory_target_id: UUID
+
+
+class _TimeWire(_ActionWire):
+    action_type: Literal["rest", "wait"]
+    elapsed_time: str | None = None
+    time_after: str | None = None
+
+
+class _LocalActionWire(_ActionWire):
+    action_type: Literal["service", "interaction", "observation", "other"]
+
+
+class _IntentWire(PlayerIntentContractDraft):
+    # Conditional requirements belong in the model-facing schema: a movement needs a destination,
+    # and a transfer needs an item and recipient. Keep the permissive draft for legacy normalization.
+    actions: list[_MovementWire | _InventoryWire | _GiveWire | _TimeWire | _LocalActionWire] = (
+        Field(max_length=8)
+    )
+
+
+_IntentWire.__name__ = "PlayerIntentContractDraft"
+
+
 def _compact(value: object) -> str:
     return " ".join(str(value or "").split())
 
@@ -113,8 +163,14 @@ def _inventory_operation(player_input: str, action: PlayerActionIntentDraft) -> 
 
     text = _compact(f"{action.intent} {player_input}").casefold().replace("ё", "е")
     patterns = (
-        ("give", r"\b(передаю|передать|отдаю|отдать|возвращаю|возвращаюсь\s+с|вернуть|вручаю|вручить|give|hand\s+over)\b"),
-        ("take", r"\b(поднимаю|поднять|беру|взять|забираю|забрать|подбираю|подобрать|take|pick\s+up)\b"),
+        (
+            "give",
+            r"\b(передаю|передать|отдаю|отдать|возвращаю|возвращаюсь\s+с|вернуть|вручаю|вручить|give|hand\s+over)\b",
+        ),
+        (
+            "take",
+            r"\b(поднимаю|поднять|беру|взять|забираю|забрать|подбираю|подобрать|take|pick\s+up)\b",
+        ),
         ("drop", r"\b(роняю|уронить|бросаю|бросить|выбрасываю|выбросить|drop)\b"),
     )
     for operation, pattern in patterns:
@@ -140,7 +196,7 @@ def _normalized_action(
 ) -> dict[str, Any]:
     action_type = _compact(action.action_type).casefold()
     if action_type not in _ACTION_TYPES:
-        action_type = "other"
+        raise TurnPlanningError(f"unknown action type: {action_type!r}")
 
     operation = _inventory_operation(player_input, action)
     item_id = _compact(action.item_id) or None
@@ -217,9 +273,7 @@ def normalize_intent_draft(
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
             "protected_player_decisions": [
-                value
-                for raw in draft.protected_player_decisions
-                if (value := _compact(raw))
+                value for raw in draft.protected_player_decisions if (value := _compact(raw))
             ],
         }
     )
@@ -241,9 +295,7 @@ class PlayerIntentInterpreter:
 
     @staticmethod
     def _authoritative_context(context_messages: list[ChatMessage]) -> str:
-        if not context_messages:
-            return ""
-        return context_messages[0].content
+        return planning_context(context_messages)
 
     async def interpret(
         self,
@@ -262,12 +314,17 @@ class PlayerIntentInterpreter:
                 self._provider,
                 selection,
                 [
-                    ChatMessage(role="system", content=_INTENT_PROMPT),
+                    ChatMessage(
+                        role="system",
+                        content=_INTENT_PROMPT
+                        + "\n\n[OUTPUT JSON SCHEMA]\n"
+                        + json.dumps(_IntentWire.model_json_schema(), ensure_ascii=False),
+                    ),
                     ChatMessage(role="user", content=user),
                 ],
                 max_tokens=1000,
                 temperature=settings.PLANNER_TEMPERATURE,
-                response_model=PlayerIntentContractDraft,
+                response_model=_IntentWire,
             )
             draft = PlayerIntentContractDraft.model_validate(data)
             contract = normalize_intent_draft(draft, player_input)
