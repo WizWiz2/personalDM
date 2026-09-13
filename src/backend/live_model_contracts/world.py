@@ -76,8 +76,8 @@ def _npc_payload(name: str, location_id: str, *, status: str = "active") -> dict
 async def _configure_campaign_provider(campaign_id: str, base_url: str, model: str) -> None:
     from uuid import UUID
 
-    from app.db.engine import AsyncSessionLocal
     from app.config import settings
+    from app.db.engine import AsyncSessionLocal
     from app.db.repositories.provider_config_repo import ProviderConfigRepository
     from app.models.provider_config import ProviderConfigCreate
 
