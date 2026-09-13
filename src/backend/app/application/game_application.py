@@ -24,7 +24,6 @@ from app.runtime import install_runtime
 from app.services.meta_command_router import MetaCommandRunner, parse_meta_command
 from app.services.player_memory_query import PlayerMemoryQuery
 from app.services.post_turn_processor import PostTurnProcessor
-from app.services.visual_runtime_gate import VisualRuntimeGate
 from app.services.presence_service import PresenceService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.session_zero_service import (
@@ -33,6 +32,7 @@ from app.services.session_zero_service import (
 )
 from app.services.turn_runner import TurnRunner
 from app.services.turn_undo_service import TurnUndoService
+from app.services.visual_runtime_gate import VisualRuntimeGate
 
 
 class CampaignNotFoundError(ValueError):
