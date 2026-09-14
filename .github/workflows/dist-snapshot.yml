@@ -39,7 +39,7 @@ jobs:
         shell: pwsh
         run: |
           $sha = "${{ github.sha }}".Substring(0, 7)
-          ./scripts/build-dist.ps1 -Version "snapshot-$sha"
+          ./scripts/build-dist.ps1 -Version "snapshot-$sha" -ZipFileName "PersonalDM-snapshot-win.zip"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4

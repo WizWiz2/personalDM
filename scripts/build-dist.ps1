@@ -4,7 +4,8 @@ param(
     [string]$Version = "snapshot",
     [string]$OutRoot = "dist",
     [switch]$SkipFrontendBuild,
-    [switch]$SkipExeBuild
+    [switch]$SkipExeBuild,
+    [string]$ZipFileName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,7 +15,7 @@ Set-Location $RepoRoot
 $SafeVersion = ($Version -replace "[^A-Za-z0-9._-]", "-")
 $StageName = "PersonalDM"
 $StageDir = Join-Path $OutRoot $StageName
-$ZipName = "PersonalDM-$SafeVersion-win.zip"
+$ZipName = if ($ZipFileName) { $ZipFileName } else { "PersonalDM-$SafeVersion-win.zip" }
 $ZipPath = Join-Path $OutRoot $ZipName
 $ExeOut = Join-Path $OutRoot "pyinstaller"
 $BuildVenv = Join-Path $OutRoot "build-venv"
