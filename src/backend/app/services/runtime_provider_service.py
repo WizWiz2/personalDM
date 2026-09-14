@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from app.config import settings
+from app.runtime_paths import backend_dir, env_file, install_dir, tools_dir
 
 
 class RuntimeProviderError(RuntimeError):
@@ -26,10 +27,10 @@ class RuntimeProviderService:
     defaults, but first-run and local infrastructure are managed here.
     """
 
-    BACKEND_DIR = Path(__file__).resolve().parents[2]
-    ROOT_DIR = Path(__file__).resolve().parents[4]
-    ENV_FILE = BACKEND_DIR / ".env"
-    TOOLS_DIR = ROOT_DIR / "tools"
+    BACKEND_DIR = backend_dir()
+    ROOT_DIR = install_dir()
+    ENV_FILE = env_file()
+    TOOLS_DIR = tools_dir()
     COMFY_ROOT = TOOLS_DIR / "comfy"
     COMFY_DIR = COMFY_ROOT / "ComfyUI"
     COMFY_ENV = TOOLS_DIR / "comfy-runtime"

@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.runtime_paths import env_file as _env_file_path
+
 
 def _default_data_dir() -> str:
     """Use the normal per-user data location, while keeping dev/test overrides."""
@@ -119,7 +121,7 @@ class Settings(BaseSettings):
     SECRET_ENCRYPTION_KEY: str | None = None
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_env_file_path()),
         env_prefix="PDM_",
         extra="ignore",
     )
