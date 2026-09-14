@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
@@ -30,7 +30,11 @@ if errorlevel 1 (
     echo [Setup] Installing/updating backend dependencies...
     python -m pip install --upgrade pip
     if errorlevel 1 goto :err_deps
-    pip install -e src\backend[dev]
+    if exist "DIST_MODE" (
+        pip install -e src\backend
+    ) else (
+        pip install -e src\backend[dev]
+    )
     if errorlevel 1 goto :err_deps
 )
 

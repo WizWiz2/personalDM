@@ -20,6 +20,15 @@ FRONTEND_DIR = ROOT_DIR / "src" / "frontend"
 BACKEND_URL = "http://127.0.0.1:8000"
 FRONTEND_URL = "http://127.0.0.1:5173"
 
+DIST_MODE_MARKER = ROOT_DIR / "DIST_MODE"
+FRONTEND_DIST_INDEX = FRONTEND_DIR / "dist" / "index.html"
+
+
+def _use_bundled_frontend() -> bool:
+    """Packaged player builds ship a prebuilt GUI and do not need Node/Vite."""
+    return DIST_MODE_MARKER.is_file() and FRONTEND_DIST_INDEX.is_file()
+
+
 
 def _hidden_process_kwargs() -> dict:
     """Return Windows subprocess options that keep service consoles invisible."""
@@ -172,60 +181,64 @@ def _restart_existing_personaldm_backend() -> bool:
 
 
 def run_gui() -> int:
-    if not _ensure_frontend_dependencies():
+    bundled = _use_bundled_frontend()
+    if not bundled and not _ensure_frontend_dependencies():
         return 1
 
     backend: subprocess.Popen | None = None
     frontend: subprocess.Popen | None = None
+    ui_url = BACKEND_URL if bundled else FRONTEND_URL
     try:
         if _url_ready(f"{BACKEND_URL}/health"):
             restarted = _restart_existing_personaldm_backend()
             if not restarted and _url_ready(f"{BACKEND_URL}/health"):
                 print(
-                    "[GUI] На :8000 уже работает backend, который launcher не может безопасно перезапустить. "
-                    "Использую его как есть."
+                    "[GUI] Port :8000 already has a backend this launcher cannot safely restart. "
+                    "Reusing it as-is."
                 )
 
         if not _url_ready(f"{BACKEND_URL}/health"):
-            print("[GUI] Запускаю FastAPI backend...")
+            print("[GUI] Starting FastAPI backend...")
             backend = subprocess.Popen(
                 [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
                 cwd=BACKEND_DIR,
                 **_hidden_process_kwargs(),
             )
             if not _wait_ready(f"{BACKEND_URL}/health", backend):
-                print("[Ошибка] Backend не поднялся на http://127.0.0.1:8000.")
+                print("[Error] Backend did not become ready at http://127.0.0.1:8000.")
                 return 1
         else:
-            print("[GUI] Backend уже запущен на :8000 — использую его.")
+            print("[GUI] Backend already running on :8000 - reusing it.")
 
-        if _url_ready(FRONTEND_URL):
-            print("[GUI] Vite уже запущен на :5173 — использую его.")
+        if bundled:
+            print("[GUI] Packaged frontend detected (DIST_MODE) - serving UI from backend.")
+        elif _url_ready(FRONTEND_URL):
+            print("[GUI] Vite already running on :5173 - reusing it.")
         else:
-            print("[GUI] Запускаю React/Vite frontend...")
+            print("[GUI] Starting React/Vite frontend...")
             frontend = subprocess.Popen(
                 _npm_command("run", "dev", "--", "--host", "127.0.0.1"),
                 cwd=FRONTEND_DIR,
                 **_hidden_process_kwargs(),
             )
             if not _wait_ready(FRONTEND_URL, frontend):
-                print("[Ошибка] Frontend не поднялся на http://127.0.0.1:5173.")
+                print("[Error] Frontend did not become ready at http://127.0.0.1:5173.")
                 return 1
 
-        print(f"\n[GUI] PersonalDM готов: {FRONTEND_URL}")
-        print("[GUI] Браузер откроется автоматически. Ctrl+C — остановить GUI и вернуться в меню.\n")
-        webbrowser.open(FRONTEND_URL)
+        print(f"\n[GUI] PersonalDM ready: {ui_url}")
+        print("[GUI] Browser will open automatically. Ctrl+C stops GUI and returns to the menu.\n")
+        webbrowser.open(ui_url)
 
         while True:
             if backend is not None and backend.poll() is not None:
-                print("[Ошибка] Backend неожиданно завершился.")
+                print("[Error] Backend exited unexpectedly.")
                 return backend.returncode or 1
             if frontend is not None and frontend.poll() is not None:
-                print("[Ошибка] Frontend неожиданно завершился.")
+                print("[Error] Frontend exited unexpectedly.")
                 return frontend.returncode or 1
             time.sleep(0.5)
     except KeyboardInterrupt:
-        print("\n[GUI] Останавливаю локальные сервисы...")
+        print("\n[GUI] Stopping local services...")
         return 0
     finally:
         _terminate_tree(frontend)
