@@ -32,6 +32,7 @@ for pkg in ("uvicorn", "fastapi", "starlette", "anyio", "httpx", "pydantic", "sq
 
 hiddenimports += collect_submodules("app")
 hiddenimports += [
+    "app.db.migration_compat",
     "uvicorn.logging",
     "uvicorn.loops",
     "uvicorn.loops.auto",

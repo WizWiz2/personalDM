@@ -44,8 +44,10 @@ def run_migrations() -> int:
     if not ini.is_file() or not script_location.is_dir():
         print(f"[Error] Alembic files missing under {BACKEND_DIR}")
         return 1
+    versions = script_location / "versions"
     cfg = Config(str(ini))
     cfg.set_main_option("script_location", str(script_location))
+    cfg.set_main_option("version_locations", str(versions))
     cfg.set_main_option("prepend_sys_path", str(BACKEND_DIR))
     command.upgrade(cfg, "head")
     return 0
