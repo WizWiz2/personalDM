@@ -1,5 +1,6 @@
 import asyncio
 import os
+from pathlib import Path
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -111,6 +112,33 @@ app.include_router(visuals_router)
 app.include_router(runtime_providers_router)
 
 
+
+
+def _mount_packaged_frontend(application: FastAPI) -> None:
+    """Serve prebuilt GUI when DIST_MODE marker is present (player zip)."""
+    repo_root = Path(__file__).resolve().parents[3]
+    dist_dir = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if not (repo_root / "DIST_MODE").is_file():
+        return
+    index = dist_dir / "index.html"
+    if not index.is_file():
+        return
+
+    from fastapi.responses import FileResponse
+
+    @application.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        # API/static routes registered above win; this only catches UI paths.
+        if full_path.startswith("api/") or full_path in {"health", "docs", "openapi.json", "redoc"}:
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = dist_dir / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(index)
+
+
 @app.get("/health")
 async def health():
     return {
@@ -121,3 +149,5 @@ async def health():
         "image_provider": settings.IMAGE_PROVIDER,
         "image_enabled": settings.IMAGE_ENABLED,
     }
+
+_mount_packaged_frontend(app)

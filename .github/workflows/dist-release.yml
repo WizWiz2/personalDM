@@ -1,0 +1,98 @@
+﻿name: Dist release
+
+# Versioned player zip ONLY from v* tags or manual dispatch. Separate from snapshot.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to publish (with or without leading v), e.g. 0.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dist-release
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $raw = "${{ inputs.version }}".Trim()
+          } else {
+            $raw = "${{ github.ref_name }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($raw)) { throw "Empty version" }
+          $tag = if ($raw.StartsWith("v")) { $raw } else { "v$raw" }
+          $safe = $tag.TrimStart("v")
+          if ($safe -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
+            throw "Refusing unsafe version: $tag"
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "safe=$safe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Release version tag=$tag"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: src/frontend/package-lock.json
+
+      - name: Build distribution zip
+        shell: pwsh
+        run: ./scripts/build-dist.ps1 -Version "${{ steps.ver.outputs.safe }}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: personaldm-release-${{ steps.ver.outputs.safe }}
+          path: dist/PersonalDM-*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Ensure tag exists (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          git fetch --tags --force
+          $exists = git rev-parse -q --verify "refs/tags/$tag"
+          if (-not $exists) {
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag $tag
+            git push origin $tag
+          }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: PersonalDM ${{ steps.ver.outputs.tag }}
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: dist/PersonalDM-*.zip
+          body: |
+            PersonalDM ${{ steps.ver.outputs.tag }}
+
+            Contents: launcher + backend + prebuilt GUI.
+            Not included: Ollama/Comfy/models, tools/, tests, secrets, runtime saves.
+
+            Install: unzip → `play.bat` (Python 3.11+ required).
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
