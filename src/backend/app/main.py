@@ -1,6 +1,8 @@
 import asyncio
 import os
 from pathlib import Path
+
+from app.runtime_paths import frontend_dist_dir, is_packaged_dist
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -115,11 +117,10 @@ app.include_router(runtime_providers_router)
 
 
 def _mount_packaged_frontend(application: FastAPI) -> None:
-    """Serve prebuilt GUI when DIST_MODE marker is present (player zip)."""
-    repo_root = Path(__file__).resolve().parents[3]
-    dist_dir = Path(__file__).resolve().parents[2] / "frontend" / "dist"
-    if not (repo_root / "DIST_MODE").is_file():
+    """Serve prebuilt GUI for packaged zip / frozen exe builds."""
+    if not is_packaged_dist():
         return
+    dist_dir = frontend_dist_dir()
     index = dist_dir / "index.html"
     if not index.is_file():
         return

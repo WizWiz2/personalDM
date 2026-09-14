@@ -1,9 +1,10 @@
-﻿# PersonalDM distribution packager.
-# Builds a clean player zip: no tools/, data/, venv, node_modules, tests, secrets.
+# PersonalDM opaque Windows distribution.
+# Builds PersonalDM.exe (PyInstaller onedir) + thin launchers. No .py sources in the zip.
 param(
     [string]$Version = "snapshot",
     [string]$OutRoot = "dist",
-    [switch]$SkipFrontendBuild
+    [switch]$SkipFrontendBuild,
+    [switch]$SkipExeBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +16,8 @@ $StageName = "PersonalDM"
 $StageDir = Join-Path $OutRoot $StageName
 $ZipName = "PersonalDM-$SafeVersion-win.zip"
 $ZipPath = Join-Path $OutRoot $ZipName
+$ExeOut = Join-Path $OutRoot "pyinstaller"
+$BuildVenv = Join-Path $OutRoot "build-venv"
 
 Write-Host "[dist] repo: $RepoRoot"
 Write-Host "[dist] version: $SafeVersion"
@@ -30,131 +33,92 @@ if (-not $SkipFrontendBuild) {
         npm run build
         if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
     }
-    finally {
-        Pop-Location
-    }
+    finally { Pop-Location }
 }
 
 $FrontendDist = Join-Path $RepoRoot "src/frontend/dist/index.html"
-if (-not (Test-Path $FrontendDist)) {
-    throw "Frontend build missing: $FrontendDist"
-}
+if (-not (Test-Path $FrontendDist)) { throw "Frontend build missing: $FrontendDist" }
 
-if (Test-Path $StageDir) {
-    Remove-Item -Recurse -Force $StageDir
-}
-New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
-
-function Copy-FileToStage {
-    param([string]$RelativePath)
-    $src = Join-Path $RepoRoot $RelativePath
-    if (-not (Test-Path $src)) { throw "Missing required file: $RelativePath" }
-    $dest = Join-Path $StageDir $RelativePath
-    $destParent = Split-Path $dest -Parent
-    New-Item -ItemType Directory -Force -Path $destParent | Out-Null
-    Copy-Item -Force $src $dest
-}
-
-function Copy-TreeFiltered {
-    param(
-        [string]$RelativePath,
-        [string[]]$ExcludeDirNames,
-        [string[]]$ExcludeFileNames
-    )
-    $srcRoot = Join-Path $RepoRoot $RelativePath
-    if (-not (Test-Path $srcRoot)) { throw "Missing required tree: $RelativePath" }
-    Get-ChildItem -Path $srcRoot -Recurse -File | ForEach-Object {
-        $rel = $_.FullName.Substring($srcRoot.Length).TrimStart("\", "/")
-        $parts = $rel -split "[\\/]"
-        $dirParts = @()
-        if ($parts.Length -gt 1) {
-            $dirParts = $parts[0..($parts.Length - 2)]
-        }
-        foreach ($part in $dirParts) {
-            if ($ExcludeDirNames -contains $part) { return }
-        }
-        if ($ExcludeFileNames -contains $_.Name) { return }
-        if ($_.Extension -in @(".pyc", ".pyo")) { return }
-        if ($_.Name -like ".env*") { return }
-        if ($_.Name -like "*.db") { return }
-        if ($_.Name -like "*.db-*") { return }
-        $dest = Join-Path (Join-Path $StageDir $RelativePath) $rel
-        $destParent = Split-Path $dest -Parent
-        New-Item -ItemType Directory -Force -Path $destParent | Out-Null
-        Copy-Item -Force $_.FullName $dest
+if (-not $SkipExeBuild) {
+    Write-Host "[dist] preparing build venv + PyInstaller..."
+    if (-not (Test-Path (Join-Path $BuildVenv "Scripts/python.exe"))) {
+        python -m venv $BuildVenv
+        if ($LASTEXITCODE -ne 0) { throw "venv failed" }
     }
+    $py = Join-Path $BuildVenv "Scripts/python.exe"
+    & $py -m pip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed" }
+    & $py -m pip install -e (Join-Path $RepoRoot "src/backend") pyinstaller
+    if ($LASTEXITCODE -ne 0) { throw "pip install backend/pyinstaller failed" }
+    if (Test-Path $ExeOut) { Remove-Item -Recurse -Force $ExeOut }
+    New-Item -ItemType Directory -Force -Path $ExeOut | Out-Null
+    Write-Host "[dist] running PyInstaller..."
+    & $py -m PyInstaller --noconfirm --clean --distpath $ExeOut --workpath (Join-Path $ExeOut "work") (Join-Path $RepoRoot "scripts/personaldm.spec")
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 }
 
-Write-Host "[dist] copying allowlisted files..."
+$BuiltApp = Join-Path $ExeOut "PersonalDM"
+if (-not (Test-Path (Join-Path $BuiltApp "PersonalDM.exe"))) { throw "PersonalDM.exe missing under $BuiltApp" }
 
-Copy-FileToStage "play.bat"
-Copy-FileToStage "uninstall.bat"
-if (Test-Path (Join-Path $RepoRoot "uninstall.ps1")) {
-    Copy-FileToStage "uninstall.ps1"
-}
+if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
+New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+Write-Host "[dist] staging opaque payload..."
+Copy-Item -Recurse -Force (Join-Path $BuiltApp "*") $StageDir
 
+$playBat = @"
+@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+title Personal DM
+"%~dp0PersonalDM.exe" %*
+set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" pause
+exit /b %RC%
+"@
+Set-Content -Path (Join-Path $StageDir "play.bat") -Value $playBat -Encoding ascii
+
+$unBat = @"
+@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+title Personal DM - Uninstall
+"%~dp0PersonalDM.exe" --uninstall
+set "RC=%ERRORLEVEL%"
+if not "%RC%"=="0" pause
+exit /b %RC%
+"@
+Set-Content -Path (Join-Path $StageDir "uninstall.bat") -Value $unBat -Encoding ascii
+
+Copy-Item -Force (Join-Path $RepoRoot "uninstall.ps1") (Join-Path $StageDir "uninstall.ps1")
 $stamp = Get-Date -Format o
-Set-Content -Path (Join-Path $StageDir "DIST_MODE") -Value "version=$SafeVersion`nbuilt=$stamp`n" -Encoding utf8
-
-$backendExcludeDirs = @(
-    "venv", ".venv", "data", "scratch", "tests", ".pytest_cache", ".ruff_cache",
-    ".mypy_cache", "__pycache__", "personal_dm.egg-info", "live_model_contracts",
-    "htmlcov", ".tox"
-)
-$backendExcludeFiles = @(
-    "local_launcher.py", ".coverage", "personal-dm-crash.log"
-)
-Copy-TreeFiltered -RelativePath "src/backend" -ExcludeDirNames $backendExcludeDirs -ExcludeFileNames $backendExcludeFiles
-
-$feStage = Join-Path $StageDir "src/frontend/dist"
-New-Item -ItemType Directory -Force -Path $feStage | Out-Null
-Copy-Item -Recurse -Force (Join-Path $RepoRoot "src/frontend/dist\*") $feStage
+Set-Content -Path (Join-Path $StageDir "DIST_MODE") -Value "version=$SafeVersion`nbuilt=$stamp`nopaque=1`n" -Encoding utf8
 
 $readme = @"
-# PersonalDM - install
+# PersonalDM (opaque Windows build)
 
-1. Need Python 3.11+ in PATH.
-2. Unzip anywhere.
-3. Run play.bat.
-4. First launch installs deps and asks for text/image providers (Ollama/Comfy or cloud).
-5. Uninstall: uninstall.bat.
+1. Unzip anywhere.
+2. Run play.bat (or PersonalDM.exe).
+3. First launch migrates DB and asks for text/image providers (Ollama/Comfy or cloud).
+4. Uninstall: uninstall.bat
 
-This zip does NOT include models, Ollama, ComfyUI, or your saves - bootstrap downloads/installs them on first run.
-
-Node.js is NOT required: GUI is prebuilt and served by the backend at http://127.0.0.1:8000
+No Python/Node required.
+Models/Ollama/ComfyUI are NOT in this zip - bootstrap installs into tools/ next to the exe.
+Game data lives under %APPDATA%\PersonalDM.
+Application logic ships as PersonalDM.exe (not plain .py sources).
 "@
 Set-Content -Path (Join-Path $StageDir "README.txt") -Value $readme.Trim() -Encoding utf8
 
-$forbidden = @(
-    "src/backend/.env",
-    "src/backend/venv",
-    "src/backend/data",
-    "src/backend/tests",
-    "src/frontend/node_modules",
-    "src/frontend/src",
-    "tools",
-    ".git",
-    ".github"
-)
-foreach ($rel in $forbidden) {
-    if (Test-Path (Join-Path $StageDir $rel)) {
-        throw "Refusing to ship forbidden path: $rel"
-    }
+if (Test-Path (Join-Path $StageDir "src")) { throw "Refusing to ship src/ tree in opaque dist" }
+foreach ($name in @("src","tools",".git",".github","venv","node_modules")) {
+    if (Test-Path (Join-Path $StageDir $name)) { throw "Refusing to ship forbidden path: $name" }
 }
-if (-not (Test-Path (Join-Path $StageDir "src/frontend/dist/index.html"))) {
-    throw "Packaged frontend dist/index.html missing"
-}
-if (-not (Test-Path (Join-Path $StageDir "src/backend/app/main.py"))) {
-    throw "Packaged backend main.py missing"
-}
+$loosePy = @(Get-ChildItem -Path $StageDir -Recurse -Filter *.py -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\_internal\\' })
+if ($loosePy.Count -gt 0) { throw ("Loose .py outside _internal: " + ($loosePy.FullName -join ", ")) }
 
-if (Test-Path $ZipPath) {
-    Remove-Item -Force $ZipPath
-}
+if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
 New-Item -ItemType Directory -Force -Path $OutRoot | Out-Null
 Write-Host "[dist] zipping $ZipPath ..."
 Compress-Archive -Path $StageDir -DestinationPath $ZipPath -CompressionLevel Optimal
-
 $sizeMb = [math]::Round((Get-Item $ZipPath).Length / 1MB, 2)
 Write-Host ("[dist] done: {0} ({1} MB)" -f $ZipPath, $sizeMb)
 Write-Output $ZipPath

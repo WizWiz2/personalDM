@@ -11,22 +11,52 @@ import webbrowser
 from pathlib import Path
 
 from app.cli_ui import select_menu
+from app.runtime_paths import (
+    backend_dir,
+    frontend_dir,
+    frontend_dist_dir,
+    install_dir,
+    is_frozen,
+    is_packaged_dist,
+)
 from app.services.runtime_provider_service import RuntimeProviderError, RuntimeProviderService
 
 
-BACKEND_DIR = Path(__file__).resolve().parent
-ROOT_DIR = BACKEND_DIR.parents[1]
-FRONTEND_DIR = ROOT_DIR / "src" / "frontend"
+BACKEND_DIR = backend_dir()
+ROOT_DIR = install_dir()
+FRONTEND_DIR = frontend_dir()
 BACKEND_URL = "http://127.0.0.1:8000"
 FRONTEND_URL = "http://127.0.0.1:5173"
-
-DIST_MODE_MARKER = ROOT_DIR / "DIST_MODE"
-FRONTEND_DIST_INDEX = FRONTEND_DIR / "dist" / "index.html"
 
 
 def _use_bundled_frontend() -> bool:
     """Packaged player builds ship a prebuilt GUI and do not need Node/Vite."""
-    return DIST_MODE_MARKER.is_file() and FRONTEND_DIST_INDEX.is_file()
+    return is_packaged_dist() and (frontend_dist_dir() / "index.html").is_file()
+
+
+def run_migrations() -> int:
+    """Apply Alembic migrations without relying on an external alembic.exe."""
+    from alembic import command
+    from alembic.config import Config
+
+    ini = BACKEND_DIR / "alembic.ini"
+    script_location = BACKEND_DIR / "alembic"
+    if not ini.is_file() or not script_location.is_dir():
+        print(f"[Error] Alembic files missing under {BACKEND_DIR}")
+        return 1
+    cfg = Config(str(ini))
+    cfg.set_main_option("script_location", str(script_location))
+    cfg.set_main_option("prepend_sys_path", str(BACKEND_DIR))
+    command.upgrade(cfg, "head")
+    return 0
+
+
+def serve_backend() -> int:
+    """Child mode used by the frozen exe so GUI can spawn the API process."""
+    import uvicorn
+
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, log_level="info")
+    return 0
 
 
 
@@ -168,7 +198,9 @@ def _restart_existing_personaldm_backend() -> bool:
     if not pid:
         return False
     command_line = _windows_process_command_line(pid).casefold()
-    if "uvicorn" not in command_line or "app.main:app" not in command_line:
+    is_dev_uvicorn = "uvicorn" in command_line and "app.main:app" in command_line
+    is_frozen_server = "--serve-backend" in command_line
+    if not (is_dev_uvicorn or is_frozen_server):
         return False
     print(f"[GUI] Перезапускаю предыдущий PersonalDM backend (PID {pid}) для применения текущего кода и .env...")
     result = subprocess.run(
@@ -199,9 +231,24 @@ def run_gui() -> int:
 
         if not _url_ready(f"{BACKEND_URL}/health"):
             print("[GUI] Starting FastAPI backend...")
+            if is_frozen():
+                backend_cmd = [sys.executable, "--serve-backend"]
+                backend_cwd = str(ROOT_DIR)
+            else:
+                backend_cmd = [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "app.main:app",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8000",
+                ]
+                backend_cwd = str(BACKEND_DIR)
             backend = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
-                cwd=BACKEND_DIR,
+                backend_cmd,
+                cwd=backend_cwd,
                 **_hidden_process_kwargs(),
             )
             if not _wait_ready(f"{BACKEND_URL}/health", backend):
@@ -246,6 +293,16 @@ def run_gui() -> int:
 
 
 def run_cli() -> int:
+    if is_frozen():
+        import asyncio
+        import cli_tui
+
+        try:
+            asyncio.run(cli_tui.main())
+            return 0
+        except KeyboardInterrupt:
+            return 130
+
     process = subprocess.Popen([sys.executable, "cli_tui.py"], cwd=BACKEND_DIR)
     try:
         return process.wait()
@@ -421,14 +478,40 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--bootstrap-providers", action="store_true")
     parser.add_argument("--migrate-user-data", action="store_true")
+    parser.add_argument("--migrate-db", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
-    args, _ = parser.parse_known_args()
-    if args.bootstrap_providers:
-        return bootstrap_providers()
+    parser.add_argument("--serve-backend", action="store_true")
+    parser.add_argument("--cli", action="store_true")
+    parser.add_argument("--boot", action="store_true", help="Run migrate+bootstrap then menu (packaged default)")
+    args, _unknown = parser.parse_known_args()
+
+    if args.serve_backend:
+        return serve_backend()
+    if args.cli:
+        return run_cli()
     if args.migrate_user_data:
         return migrate_user_data()
+    if args.migrate_db:
+        return run_migrations()
+    if args.bootstrap_providers:
+        return bootstrap_providers()
     if args.uninstall:
         return uninstall_menu()
+
+    # Frozen / packaged builds own the full play.bat bootstrap inside the exe.
+    if is_frozen() or args.boot or is_packaged_dist():
+        print("[Setup] Packaged mode: migrate + providers...")
+        code = migrate_user_data()
+        if code:
+            return code
+        code = run_migrations()
+        if code:
+            return code
+        code = bootstrap_providers()
+        if code:
+            # bootstrap_providers returns 0 even on soft warnings usually; keep signal
+            pass
+
     return launcher_menu()
 
 
