@@ -6,6 +6,7 @@ import json
 import os
 import time
 from collections import defaultdict
+from contextlib import aclosing
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,9 @@ def _flatten_telemetry(telemetry: dict[str, Any]) -> dict[str, Any]:
         "status": telemetry.get("status"),
         "transport": telemetry.get("transport"),
         "provider_duration_ms": telemetry.get("duration_ms"),
+        "queue_wait_ms": telemetry.get("queue_wait_ms"),
+        "queue_timeout_seconds": telemetry.get("queue_timeout_seconds"),
+        "timeout_seconds": telemetry.get("timeout_seconds"),
         "attempt": telemetry.get("attempt"),
         "attempt_count": len(attempts) or (1 if telemetry else 0),
         "attempts": _attempt_summaries(telemetry) or None,
@@ -360,14 +364,15 @@ def install() -> None:
         started = time.monotonic()
         error: Exception | None = None
         try:
-            async for chunk in original_generate_stream(
+            async with aclosing(original_generate_stream(
                 self,
                 messages,
                 config,
                 api_key,
                 **kwargs,
-            ):
-                yield chunk
+            )) as stream:
+                async for chunk in stream:
+                    yield chunk
         except Exception as exc:
             error = exc
             raise

@@ -92,7 +92,8 @@ class NpcIntroductionResolver:
             evidence = " ".join(str(introduction.personal_name_evidence or "").split())
             role = " ".join(str(introduction.role or "").split())
             usable_role = bool(
-                role and not contains_cjk(role) and identity_key(role) not in placeholder_keys
+                2 <= len(role) <= 120
+                and not contains_cjk(role) and identity_key(role) not in placeholder_keys
             )
             unsupported_stable_name = not introduction.temporary_name and not evidence
             # A temporary flag is not evidence. An invented personal label must still collapse
@@ -114,7 +115,8 @@ class NpcIntroductionResolver:
                 candidate = base
                 index = 2
                 while identity_key(candidate) in used:
-                    candidate = f"{base} {index}"
+                    suffix = f" {index}"
+                    candidate = f"{base[:120 - len(suffix)]}{suffix}"
                     index += 1
                 introduction = introduction.model_copy(
                     update={
@@ -166,6 +168,11 @@ class NpcIntroductionResolver:
         }
 
         new_introductions = []
+        reserved_names = {
+            identity_key(value)
+            for entity in all_characters
+            for value in (entity.canonical_name, *entity.aliases)
+        }
         existing_arrivals: list[ExistingNpcArrival] = []
         for introduction in introductions:
             matches = resolve_character_candidates(
@@ -186,6 +193,17 @@ class NpcIntroductionResolver:
                     f"{introduction.canonical_name}: {candidate_names}"
                 )
             if not unique_matches:
+                # Materialization uses campaign-unique labels. Keep the role intact for
+                # subsequent local identity joins, but disambiguate a new local person.
+                base = introduction.canonical_name
+                candidate = base
+                index = 2
+                while identity_key(candidate) in reserved_names:
+                    suffix = f" {index}"
+                    candidate = f"{base[:120 - len(suffix)]}{suffix}"
+                    index += 1
+                introduction = introduction.model_copy(update={"canonical_name": candidate})
+                reserved_names.add(identity_key(candidate))
                 new_introductions.append(introduction)
                 continue
 

@@ -11,6 +11,7 @@ from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
 
 
 class ModelRole(str, Enum):
@@ -200,6 +201,33 @@ class RoleModelRouter:
         )
 
     async def _generate_json_once(
+        self, provider, selection, config, api_key, messages, **kwargs,
+    ) -> dict:
+        provider.last_telemetry = {}
+        try:
+            async with local_inference_slot(
+                config.base_url,
+                background=selection.role in {
+                    ModelRole.ENTITY_REGISTRAR, ModelRole.SCRIBE, ModelRole.CURATOR,
+                },
+            ) as queue_wait_ms:
+                try:
+                    return await self._generate_json_with_budget(
+                        provider, selection, config, api_key, messages, **kwargs,
+                    )
+                finally:
+                    provider.last_telemetry = {
+                        **dict(provider.last_telemetry or {}), "queue_wait_ms": queue_wait_ms,
+                    }
+        except LocalInferenceQueueTimeout as exc:
+            provider.last_telemetry = {
+                "status": "local_queue_timeout", "model": config.model_name,
+                "model_role": selection.role.value,
+                "queue_timeout_seconds": settings.LOCAL_LLM_QUEUE_TIMEOUT_SECONDS,
+            }
+            raise LLMProviderError(str(exc)) from exc
+
+    async def _generate_json_with_budget(
         self,
         provider: LLMProvider,
         selection: RoleModelSelection,

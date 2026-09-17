@@ -2,6 +2,7 @@ import json
 import time
 from collections import Counter
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from copy import deepcopy
 from typing import Any
 from urllib.parse import urlparse
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ValidationError
 from app.config import settings
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
+from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
 
 
 class LLMProviderError(RuntimeError):
@@ -447,6 +449,16 @@ class LLMProvider:
                     if temperature is not None:
                         payload["temperature"] = temperature if attempt == 1 else 0.0
 
+                # Preserve in-flight diagnostics if the router cancels this attempt.
+                self.last_telemetry = {
+                    "model": config.model_name,
+                    "status": "running",
+                    "attempt": attempt,
+                    "attempts": list(attempt_telemetry),
+                    "requested_max_tokens": budget,
+                    "requested_num_ctx": config.context_window if is_ollama else None,
+                    "response_model": response_model.__name__ if response_model else None,
+                }
                 try:
                     if is_ollama:
                         response = await client.post(url, headers=headers, json=payload)
@@ -499,7 +511,7 @@ class LLMProvider:
                                 parsed = response_model.model_validate(parsed).model_dump(
                                     mode="json"
                                 )
-                            except ValidationError as exc:
+                            except ValidationError:
                                 sanitized = self._sanitize_partial_planner_inventory(
                                     parsed,
                                     response_model,
@@ -615,6 +627,34 @@ class LLMProvider:
                     yield data
 
     async def generate_stream(
+        self,
+        messages: list[ChatMessage],
+        config: ProviderConfigRead,
+        api_key: str | None = None,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        disable_thinking: bool = True,
+    ) -> AsyncIterator[str]:
+        self.last_telemetry = {}
+        try:
+            async with local_inference_slot(config.base_url) as queue_wait_ms:
+                try:
+                    async with aclosing(self._generate_stream(
+                        messages, config, api_key, max_tokens=max_tokens,
+                        temperature=temperature, disable_thinking=disable_thinking,
+                    )) as stream:
+                        async for chunk in stream:
+                            yield chunk
+                finally:
+                    self.last_telemetry = {
+                        **dict(self.last_telemetry or {}), "queue_wait_ms": queue_wait_ms,
+                    }
+        except LocalInferenceQueueTimeout as exc:
+            self.last_telemetry = {"status": "local_queue_timeout", "model": config.model_name}
+            raise LLMProviderError(str(exc)) from exc
+
+    async def _generate_stream(
         self,
         messages: list[ChatMessage],
         config: ProviderConfigRead,

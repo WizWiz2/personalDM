@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     # The provider may internally repair malformed JSON, but the role boundary owns the total
     # wall-clock budget for that request and converts timeout into a normal planner/validator error.
     CONTROL_LLM_TIMEOUT_SECONDS: float = 60.0
+    # Waiting for another local model is measured separately from active inference.
+    LOCAL_LLM_QUEUE_TIMEOUT_SECONDS: float = 120.0
     PLANNER_LLM_MODEL: str | None = None
     SCRIBE_LLM_MODEL: str | None = None
     CURATOR_LLM_MODEL: str | None = None

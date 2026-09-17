@@ -151,6 +151,16 @@ def resolve_character_candidates(
 
     entities = list(entities)
     exact = exact_identity_matches(entities, proposed_name)
+    if temporary_name and target_location_id is not None:
+        # Generic temporary designations identify a person only within their location.
+        # Stable names/aliases remain global, and must still hit the teleport guard.
+        exact = [
+            entity for entity in exact
+            if not _temporary_role_key(entity)
+            or character_locations.get(UUID(str(entity.id))) in {None, target_location_id}
+            or identity_key(proposed_name) != identity_key(proposed_role)
+            or identity_key(proposed_name) != identity_key(entity.canonical_name)
+        ]
     if exact:
         return exact
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.player_intent import (
     ActionOutcomeDecision,
@@ -19,6 +19,9 @@ from app.services.planning_context import planning_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
 from app.services.turn_planner import TurnPlanningError
+from app.services.turn_authority_resolvers import NpcIntroductionResolver
+from app.services.entity_identity import identity_key
+from app.services.player_intent_contract import contains_cjk
 
 _OUTCOME_PROMPT = """[FROZEN INTENT OUTCOME RESOLVER]
 The human's voluntary contribution is already frozen in PLAYER INTENT CONTRACT. Resolve only the
@@ -107,10 +110,25 @@ class TravelObstacleDraft(BaseModel):
     evidence_quote: str | None
 
 
-def _travel_wire_model(action_count: int):
+def _travel_wire_model(action_count: int, *, evidence: str = ""):
+    class IndexedTravelObstacle(TravelObstacleDraft):
+        action_index: Literal[tuple(range(action_count))]
+
     class OrdinaryTravelObstacles(BaseModel):
         model_config = ConfigDict(extra="forbid")
-        obstacles: list[TravelObstacleDraft] = Field(min_length=action_count, max_length=action_count)
+        obstacles: list[IndexedTravelObstacle] = Field(min_length=action_count, max_length=action_count)
+
+        @model_validator(mode="after")
+        def validate_grounding(self):
+            indices = [item.action_index for item in self.obstacles]
+            if sorted(indices) != list(range(action_count)):
+                raise ValueError(f"travel obstacles must cover exactly indices {list(range(action_count))}")
+            for item in self.obstacles:
+                if (item.blocking_reason or "").strip():
+                    quote = (item.evidence_quote or "").strip()
+                    if not quote or quote not in evidence:
+                        raise ValueError("travel blocker lacks a verbatim world/input evidence quote")
+            return self
 
     return OrdinaryTravelObstacles
 
@@ -145,13 +163,23 @@ class OutcomeNpcIntroductionDraft(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     canonical_name: str = Field(min_length=2, max_length=120)
-    role: str = Field(min_length=2, max_length=200)
+    role: str = Field(min_length=2, max_length=120)
     description: str = Field(min_length=32, max_length=800)
     appearance: str = Field(min_length=32, max_length=800)
     voice: str | None = None
     temporary_name: bool = True
     personal_name_evidence: str | None = None
     reason: str = Field(min_length=2, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_identity(self):
+        # Run this inside the provider's bounded schema-repair loop, before compilation.
+        if contains_cjk(self.role) or identity_key(self.role) in {
+            identity_key(value) for value in NpcIntroductionResolver.SYNTHETIC_PLACEHOLDERS
+        }:
+            raise ValueError("NPC identity needs a short readable grounded role")
+        NpcIntroductionResolver.sanitize_introductions([self])
+        return self
 
 
 class TurnOutcomeDecisionDraft(BaseModel):
@@ -208,6 +236,12 @@ def _outcome_wire_model(
         )
         npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(max_length=4)
 
+        @model_validator(mode="after")
+        def validate_action_indices(self):
+            if sorted(item.action_index for item in self.action_outcomes) != list(range(action_count)):
+                raise ValueError(f"action_outcomes must cover exactly indices {list(range(action_count))}")
+            return self
+
     if action_count == 0:
         # No executable action is valid for dialogue/acknowledgement. It still needs an external
         # response or observable beat, otherwise the downstream authority receives a vacuous plan.
@@ -221,12 +255,24 @@ def _outcome_wire_model(
     return ExactTurnOutcomeDecisionDraft
 
 
-def _profile_wire_model(patch_count: int) -> type[DestinationProfilePatchSet]:
+def _profile_wire_model(
+    patch_count: int, *, action_indices: list[int] | None = None,
+) -> type[DestinationProfilePatchSet]:
+    expected = sorted(action_indices if action_indices is not None else range(patch_count))
+    class IndexedDestinationProfilePatch(DestinationProfilePatch):
+        action_index: Literal[tuple(expected)]
+
     class ExactDestinationProfilePatchSet(DestinationProfilePatchSet):
-        patches: list[DestinationProfilePatch] = Field(
+        patches: list[IndexedDestinationProfilePatch] = Field(
             min_length=patch_count,
             max_length=patch_count,
         )
+
+        @model_validator(mode="after")
+        def validate_action_indices(self):
+            if sorted(item.action_index for item in self.patches) != expected:
+                raise ValueError(f"destination profiles must cover exactly indices {expected}")
+            return self
 
     ExactDestinationProfilePatchSet.__name__ = "DestinationProfilePatchSet"
     return ExactDestinationProfilePatchSet
@@ -357,7 +403,7 @@ class TurnOutcomeResolver:
     async def _resolve_ordinary_travel(self, selection, context_messages, player_input, contract):
         """A travel-only decision cannot invent NPCs or confuse discovery with missing authority."""
         context = self._context(context_messages)
-        wire = _travel_wire_model(len(contract.actions))
+        wire = _travel_wire_model(len(contract.actions), evidence=context + "\n" + player_input)
         data = await self._router.generate_json(
             self._provider, selection,
             [
@@ -409,18 +455,9 @@ class TurnOutcomeResolver:
     def _normalize_temporary_identities(decision: TurnOutcomeDecision) -> TurnOutcomeDecision:
         """A temporary role cannot smuggle an unsupported personal label into entity identity."""
         normalized = decision.model_copy(deep=True)
-        used: set[str] = set()
-        for introduction in normalized.npc_introductions:
-            if introduction.temporary_name and not introduction.personal_name_evidence:
-                base = " ".join(introduction.role.split())
-                candidate = base[0].upper() + base[1:] if base else introduction.canonical_name
-                if candidate.casefold() in used:
-                    suffix = 2
-                    while f"{candidate} {suffix}".casefold() in used:
-                        suffix += 1
-                    candidate = f"{candidate} {suffix}"
-                introduction.canonical_name = candidate
-            used.add(introduction.canonical_name.casefold())
+        normalized.npc_introductions = NpcIntroductionResolver.sanitize_introductions(
+            normalized.npc_introductions
+        )
         return normalized
 
     async def resolve(
@@ -484,7 +521,7 @@ class TurnOutcomeResolver:
                 temperature=0.0,
                 response_model=response_model,
             )
-            draft = TurnOutcomeDecisionDraft.model_validate(data)
+            draft = response_model.model_validate(data)
             decision = normalize_outcome_draft(draft, contract)
             self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
@@ -516,7 +553,9 @@ class TurnOutcomeResolver:
             {"action_index": item.action_index, "destination": item.destination} for item in missing
         ]
         try:
-            response_model = _profile_wire_model(len(missing))
+            response_model = _profile_wire_model(
+                len(missing), action_indices=[item.action_index for item in missing],
+            )
             data = await self._router.generate_json(
                 self._provider,
                 selection,
@@ -541,7 +580,7 @@ class TurnOutcomeResolver:
                 temperature=0.0,
                 response_model=response_model,
             )
-            patches = DestinationProfilePatchSet.model_validate(data)
+            patches = response_model.model_validate(data)
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise TurnPlanningError(f"destination profile enrichment failed: {exc}") from exc
 
