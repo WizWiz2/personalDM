@@ -59,6 +59,8 @@ Return repair_required only for concrete violations:
   authority. Distinguish a natural paraphrase/local body movement from a true scene transition by
   meaning, not vocabulary.
 - OUTCOME: prose contradicts observable_consequences or completed structured execution.
+- ESTABLISHED STATE: established_state entries are already true. They outrank the opening
+  scene description and older prose. Prose that denies one is canon_conflict.
 - ITEM STATE: for a completed inventory step, the `ITEM STATE` record in the structured execution
   is authoritative. Reject prose that reverses or ignores that transfer (for example, describing
   an item as falling back to the floor after an authoritative `take`). The correction must preserve

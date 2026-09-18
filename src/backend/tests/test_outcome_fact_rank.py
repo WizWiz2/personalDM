@@ -200,3 +200,177 @@ async def test_observation_cannot_supersede_a_completed_outcome_fact(db_session:
         memory_kind="scene_state",
     )
     assert [fact.object_value for fact in closed] == ["нет"]
+
+
+@pytest.mark.asyncio
+async def test_established_state_comes_only_from_completed_world_steps(db_session: AsyncSession):
+    from app.models.fact import FactCreate
+    from app.services.outcome_fact_authority import established_state_lines
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="State"))
+    scene = await SceneRepository(db_session).create(campaign_id, SceneCreate(title="Комната"))
+    user, assistant = await _pair(db_session, campaign_id, scene.id, "Откройте.", "Открыто.")
+    sequence = ActionSequence(
+        campaign_id=str(campaign_id),
+        trigger_turn_id=user.id,
+        source_scene_id=str(scene.id),
+        status="prepared",
+        planned_steps=1,
+        completed_steps=1,
+    )
+    db_session.add(sequence)
+    await db_session.flush()
+    db_session.add(_step(sequence.id, "service", "Ставни открыты."))
+    look_user, look_assistant = await _pair(db_session, campaign_id, scene.id, "Опиши.", "Закрыты.")
+    look_sequence = ActionSequence(
+        campaign_id=str(campaign_id),
+        trigger_turn_id=look_user.id,
+        source_scene_id=str(scene.id),
+        status="prepared",
+        planned_steps=1,
+        completed_steps=1,
+    )
+    db_session.add(look_sequence)
+    await db_session.flush()
+    db_session.add(_step(look_sequence.id, "observation", "Осмотр."))
+    await db_session.flush()
+    facts = FactRepository(db_session)
+    from uuid import UUID
+    await facts.create(
+        campaign_id,
+        FactCreate(
+            subject="ставни",
+            predicate="открыты",
+            object_value="да",
+            visibility="public",
+            scope="scene",
+            scene_id=scene.id,
+            memory_kind="scene_state",
+            source_turn_id=UUID(assistant.id),
+        ),
+    )
+    await facts.create(
+        campaign_id,
+        FactCreate(
+            subject="свет",
+            predicate="слабый",
+            object_value="да",
+            visibility="public",
+            scope="scene",
+            scene_id=scene.id,
+            memory_kind="scene_state",
+            source_turn_id=UUID(look_assistant.id),
+        ),
+    )
+    lines = await established_state_lines(db_session, campaign_id, scene.id)
+    assert lines == ["Ставни открыты."]
+
+
+def test_publication_fallback_keeps_established_state():
+    from app.models.turn_authority import TurnAuthority
+    from app.services.narration_publication_guard import NarrationPublicationGuard
+
+    authority = TurnAuthority(
+        campaign_id=uuid4(),
+        trigger_turn_id=uuid4(),
+        player_input="Опиши ставни.",
+        observable_consequences=["Илья осмотрел ставни."],
+        established_state=["ставни открыты да"],
+    )
+    text = NarrationPublicationGuard.render_authority(authority)
+    assert "ставни открыты да" in text
+
+
+def test_observation_outcome_does_not_override_established_state():
+    from app.models.turn_authority import TurnAuthority
+    from app.services.narration_publication_guard import NarrationPublicationGuard
+
+    lie = "Ставни были плотно закрыты деревянными планками."
+    authority = TurnAuthority(
+        campaign_id=uuid4(),
+        trigger_turn_id=uuid4(),
+        player_input="Опиши ставни.",
+        observable_consequences=[lie],
+        established_state=["ставни открыты да"],
+        action_sequence={
+            "steps": [
+                {
+                    "action_type": "observation",
+                    "status": "completed",
+                    "observable_outcome": lie,
+                }
+            ]
+        },
+    )
+    text = NarrationPublicationGuard.render_authority(authority)
+    assert "закрыт" not in text
+    assert "ставни открыты да" in text
+
+
+def test_observation_publication_yields_to_established_state():
+    from app.models.narration_validation import NarrationValidationResult
+    from app.models.turn_authority import TurnAuthority
+    from app.services.narration_publication_guard import NarrationPublicationGuard
+
+    lie = "Деревянные ставни закрывали яркий свет, и в комнате стоял полумрак. На столе стоит кувшин с водой."
+    authority = TurnAuthority(
+        campaign_id=uuid4(),
+        trigger_turn_id=uuid4(),
+        player_input="Опиши ставни.",
+        resolution="auto_success",
+        observable_consequences=["Илья осмотрел окна и кувшин."],
+        established_state=["ставни открыты да"],
+        established_subjects=["ставни"],
+        action_sequence={
+            "steps": [
+                {
+                    "action_type": "observation",
+                    "status": "completed",
+                    "observable_outcome": "Илья осмотрел окна и кувшин.",
+                }
+            ]
+        },
+    )
+    published, guard = NarrationPublicationGuard.publish(
+        authority,
+        lie,
+        NarrationValidationResult(verdict="pass", summary="ok", violations=[]),
+    )
+    assert guard["candidate_discarded"] is True
+    assert "закрывал" not in published
+    assert "полумрак" not in published
+    assert "ставни открыты да" in published
+    assert "кувшин с водой" in published
+
+
+def test_non_observation_keeps_validated_prose_beside_established_state():
+    from app.models.narration_validation import NarrationValidationResult
+    from app.models.turn_authority import TurnAuthority
+    from app.services.narration_publication_guard import NarrationPublicationGuard
+
+    prose = "Мария и Анна открыли ставни, и в комнату вошел свет."
+    authority = TurnAuthority(
+        campaign_id=uuid4(),
+        trigger_turn_id=uuid4(),
+        player_input="Откройте ставни.",
+        resolution="auto_success",
+        observable_consequences=["Мария и Анна открыли ставни."],
+        established_state=["ставни открыты да"],
+        action_sequence={
+            "steps": [
+                {
+                    "action_type": "service",
+                    "status": "completed",
+                    "observable_outcome": "Мария и Анна открыли ставни.",
+                }
+            ]
+        },
+    )
+    published, guard = NarrationPublicationGuard.publish(
+        authority,
+        prose,
+        NarrationValidationResult(verdict="pass", summary="ok", violations=[]),
+    )
+    assert guard["candidate_discarded"] is False
+    assert published == prose

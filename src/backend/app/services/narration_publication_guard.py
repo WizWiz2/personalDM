@@ -108,6 +108,27 @@ class NarrationPublicationGuard:
                 "validated_surface": False,
             }
 
+        # An observation does not restate a slot a completed world step already owns.
+        # That slot's text is the step outcome. Sentences about any other subject stay.
+        if cls._observation_yields_to_established_state(authority):
+            locked = " ".join(
+                line.strip() for line in authority.established_state if line and str(line).strip()
+            )
+            if not locked:
+                locked = cls._safe_authority_projection(authority)
+            remainder = cls._observation_remainder(candidate, authority.established_subjects)
+            fallback = locked if not remainder else f"{locked} {remainder}"
+            return fallback, {
+                "mode": "authority_projection",
+                "candidate_characters": len(candidate),
+                "published_characters": len(fallback),
+                "error_count": len(errors),
+                "candidate_discarded": True,
+                "validated_surface": False,
+                "reason": "established_state",
+                "remainder_kept": bool(remainder),
+            }
+
         # Normalize only for deterministic inspection. If the candidate passes these
         # hard publication invariants, preserve the narrator's original paragraphing
         # and punctuation rather than flattening good prose into one line.
@@ -134,6 +155,56 @@ class NarrationPublicationGuard:
             "candidate_discarded": True,
             "validated_surface": False,
         }
+
+
+    @staticmethod
+    @staticmethod
+    def _sentences(text: str) -> list[str]:
+        chunks: list[str] = []
+        buf: list[str] = []
+        for ch in text:
+            buf.append(ch)
+            if ch in ".!?":
+                sentence = "".join(buf).strip()
+                if sentence:
+                    chunks.append(sentence)
+                buf = []
+        tail = "".join(buf).strip()
+        if tail:
+            chunks.append(tail)
+        return chunks
+
+    @classmethod
+    def _observation_remainder(cls, candidate: str, subjects: list[str]) -> str:
+        """Keep look sentences that are not about a slot the machine already owns.
+
+        The subject is the stored fact key. This is not a lexicon of open or closed.
+        """
+        keys = [subject.casefold() for subject in subjects if subject and subject.strip()]
+        if not keys:
+            return ""
+        kept: list[str] = []
+        for sentence in cls._sentences(candidate):
+            folded = sentence.casefold()
+            if any(key in folded for key in keys):
+                continue
+            kept.append(sentence)
+        return " ".join(kept).strip()
+
+    def _observation_yields_to_established_state(authority: TurnAuthority) -> bool:
+        """A look does not outrank state a completed world step already set."""
+        if not authority.established_state:
+            return False
+        sequence = authority.action_sequence if isinstance(authority.action_sequence, dict) else {}
+        steps = sequence.get("steps")
+        if not isinstance(steps, list):
+            return False
+        typed = [
+            step
+            for step in steps
+            if isinstance(step, dict) and step.get("action_type")
+        ]
+        return bool(typed) and all(step.get("action_type") == "observation" for step in typed)
 
     @classmethod
     def _safe_authority_projection(cls, authority: TurnAuthority) -> str:
@@ -265,8 +336,26 @@ class NarrationPublicationGuard:
             return " ".join(cls._as_sentence(value) for value in parts if value.strip()).strip()
 
         parts: list[str] = []
+        # Observation describes. It does not replace a state a completed world step already set.
+        observation_outcomes: set[str] = set()
+        sequence = authority.action_sequence if isinstance(authority.action_sequence, dict) else {}
+        steps = sequence.get("steps")
+        if authority.established_state and isinstance(steps, list):
+            for step in steps:
+                if not isinstance(step, dict) or step.get("action_type") != "observation":
+                    continue
+                outcome = " ".join(str(step.get("observable_outcome") or "").split())
+                if outcome:
+                    observation_outcomes.add(outcome)
         for consequence in authority.observable_consequences:
+            normalized = " ".join(str(consequence or "").split())
+            if normalized in observation_outcomes:
+                continue
             safe = cls._player_facing_fragment(consequence)
+            if safe:
+                cls._append_unique(parts, safe)
+        for item in authority.established_state:
+            safe = cls._player_facing_fragment(item)
             if safe:
                 cls._append_unique(parts, safe)
 

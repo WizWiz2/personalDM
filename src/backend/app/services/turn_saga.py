@@ -149,7 +149,9 @@ class TurnSaga:
                     "Physical presence is limited to present_character_names plus "
                     "allowed_new_npcs and allowed_existing_npc_arrivals in the typed authority. "
                     "Do not physically show, approach, or describe any other person, even if "
-                    "older narrative prose mentioned one. Historical prose cannot create canon."
+                    "older narrative prose mentioned one. Historical prose cannot create canon. "
+                    "If established_state is present, those slots are already true and outrank "
+                    "the opening scene description."
                 ),
             )
         )

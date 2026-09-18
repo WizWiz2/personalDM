@@ -74,6 +74,8 @@ class TurnAuthority(BaseModel):
     observable_consequences: list[str] = Field(default_factory=list)
     character_beats: list[str] = Field(default_factory=list)
     canon_constraints: list[str] = Field(default_factory=list)
+    established_state: list[str] = Field(default_factory=list)
+    established_subjects: list[str] = Field(default_factory=list)
     narration_guidance: list[str] = Field(default_factory=list)
     ending_hook: str = ""
     protected_player_decisions: list[str] = Field(default_factory=list)
@@ -256,6 +258,8 @@ class TurnAuthority(BaseModel):
             "dramatic_mode": self.dramatic_mode,
             "observable_consequences": self.observable_consequences,
             "canon_constraints": self.canon_constraints,
+            "established_state": self.established_state,
+            "established_subjects": self.established_subjects,
             "protected_player_decisions": self.protected_player_decisions,
             "pending_player_choice": self.pending_player_choice,
             "allow_new_complication": self.allow_new_complication,

@@ -9,6 +9,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
+from app.services.outcome_fact_authority import established_state_lines, established_subjects
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_authority_resolvers import (
     ActorResolver,
@@ -220,7 +221,22 @@ class TurnAuthorityService:
                         update["transition_type"] = "none"
                 authority = authority.model_copy(update=update)
 
+        lines = await established_state_lines(
+            self._session,
+            campaign_id,
+            effective_scene_id,
+        )
+        subjects = await established_subjects(
+            self._session,
+            campaign_id,
+            effective_scene_id,
+        )
+        slot_update = {}
+        if lines:
+            slot_update["established_state"] = lines
+        if subjects:
+            slot_update["established_subjects"] = subjects
+        if slot_update:
+            authority = authority.model_copy(update=slot_update)
+
         return authority
-
-
-__all__ = ["TurnAuthorityError", "TurnAuthorityService"]

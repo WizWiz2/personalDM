@@ -86,34 +86,9 @@ class CanonApplier:
         return receipt.scalar_one_or_none() is not None
 
     async def _completed_world_outcome(self, campaign_id: UUID, turn_id: UUID | None) -> bool:
-        """A completed non-observation step owns world state for its source turn.
+        from app.services.outcome_fact_authority import turn_has_completed_world_outcome
 
-        Observation is not a world change. A later prose proposal may not revise a slot
-        that one of these steps already established, unless the proposal itself comes
-        from a newer completed world step.
-        """
-        if turn_id is None:
-            return False
-        source_turn = await self._session.get(Turn, str(turn_id))
-        if source_turn is None or source_turn.campaign_id != str(campaign_id):
-            return False
-        trigger_id = source_turn.parent_turn_id
-        if not trigger_id:
-            return False
-        receipt = await self._session.execute(
-            select(ActionStep.id)
-            .join(ActionSequence, ActionStep.sequence_id == ActionSequence.id)
-            .where(
-                ActionSequence.campaign_id == str(campaign_id),
-                ActionSequence.trigger_turn_id == trigger_id,
-                ActionSequence.status.in_(("prepared", "applied")),
-                ActionStep.status == "completed",
-                ActionStep.action_type != "observation",
-                ActionStep.observable_outcome.is_not(None),
-            )
-            .limit(1)
-        )
-        return receipt.scalar_one_or_none() is not None
+        return await turn_has_completed_world_outcome(self._session, campaign_id, turn_id)
 
     async def _prose_rewrites_completed_outcome(
         self,

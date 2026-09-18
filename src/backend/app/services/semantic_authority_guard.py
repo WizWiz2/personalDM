@@ -89,6 +89,8 @@ World authority rules:
 - A physically new NPC, route, threat, clue, significant object, completed movement or objective
   world outcome still needs typed authority. Literary quality is not permission to mutate canon.
 - Neutral scene texture and sensory staging are allowed when they do not create a significant fact.
+- established_state entries are already true and outrank the opening scene description.
+  Prose that denies one is canon_conflict, not scene texture.
 - allowed_new_npcs and allowed_existing_npc_arrivals are authoritative physical permissions.
 - After a scene boundary, source-scene NPCs absent from target presence/allowed arrivals cannot keep
   talking, follow the protagonist, enter the destination or otherwise physically act there. A remote

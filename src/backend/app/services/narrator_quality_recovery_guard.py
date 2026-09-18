@@ -76,6 +76,7 @@ def compact_narrator_payload(authority) -> dict:
         "resolution": authority.resolution,
         "observable_consequences": authority.observable_consequences,
         "canon_constraints": authority.canon_constraints,
+        "established_state": authority.established_state,
         "narration_guidance": authority.narration_guidance,
         "ending_hook": authority.ending_hook,
         "pending_player_choice": authority.pending_player_choice,
