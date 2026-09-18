@@ -455,6 +455,10 @@ class TurnOutcomeResolver:
     def _normalize_temporary_identities(decision: TurnOutcomeDecision) -> TurnOutcomeDecision:
         """A temporary role cannot smuggle an unsupported personal label into entity identity."""
         normalized = decision.model_copy(deep=True)
+        for introduction in normalized.npc_introductions:
+            introduction.identity_reference = (
+                introduction.identity_reference or introduction.canonical_name
+            )
         normalized.npc_introductions = NpcIntroductionResolver.sanitize_introductions(
             normalized.npc_introductions
         )

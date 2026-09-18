@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
@@ -46,6 +47,24 @@ class PersonalNameRevealDecision(BaseModel):
 
     is_explicit: bool = False
     evidence: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def explicit_reveal_needs_evidence(self):
+        if self.is_explicit and not (self.evidence or "").strip():
+            raise ValueError("is_explicit=true requires a verbatim self-identification evidence quote")
+        return self
+
+
+class PersonalNameBindingDecision(PersonalNameRevealDecision):
+    """Identify the speaker among several existing temporary scene participants."""
+
+    entity_id: UUID | None
+
+    @model_validator(mode="after")
+    def explicit_binding_needs_id(self):
+        if self.is_explicit and self.entity_id is None:
+            raise ValueError("is_explicit=true requires the existing speaker's entity_id")
+        return self
 
 
 @dataclass
@@ -117,10 +136,21 @@ class EntityRegistrar:
         character_entities = [
             entity for entity in entities if entity.entity_type == "character"
         ]
+        character_profiles = {
+            str(entity.id): await self._entities.get_character(entity.id)
+            for entity in character_entities
+        }
         known_lines = [
             f"- {entity.canonical_name} [{entity.entity_type}]"
             + (f"; aliases: {', '.join(entity.aliases)}" if entity.aliases else "")
             + (f"; status: {entity.status}" if entity.status != "active" else "")
+            + (
+                "; identity card: " + json.dumps(
+                    self._identity_card(character_profiles[str(entity.id)]), ensure_ascii=False,
+                )
+                if entity.id in scene.participants and character_profiles.get(str(entity.id))
+                else ""
+            )
             for entity in entities
         ]
         participant_names = {
@@ -159,6 +189,8 @@ class EntityRegistrar:
 - Не придумывай canonical_name, которого нет в тексте ответа. Запрещены синтетические ярлыки вроде «Городской Диктатор» или «Безымянный собеседник», если Narrator буквально так персонажа не назвал.
 - Для пока безымянного важного NPC допустимо точное временное обозначение вроде «бармен Медного Котла»; тогда temporary_name=true.
 - Если временный NPC позже назван по имени, верни новое имя, ту же role и temporary_name=false: движок сам повысит временную идентичность до постоянной.
+- Если несколько NPC имеют одну роль, различай их по identity card: внешности и описанию.
+  Верни каждого представившегося персонажа отдельно с личным именем и точной цитатой.
 - Если персонаж прямо сам сообщает личное имя (например, «Меня зовут Иван»), заполни
   personal_name_evidence точной цитатой из ответа ДМа. Такое evidence важнее случайного
   значения temporary_name: движок всё равно проверит цитату и однозначность сцены перед promotion.
@@ -194,7 +226,7 @@ class EntityRegistrar:
 
         character_locations: dict[UUID, UUID | None] = {}
         for entity in character_entities:
-            character = await self._entities.get_character(entity.id)
+            character = character_profiles[str(entity.id)]
             if character:
                 character_locations[UUID(str(entity.id))] = character.current_location_id
 
@@ -210,6 +242,7 @@ class EntityRegistrar:
 
             entity = index.get(identity_key(name))
             matched_contextually = False
+            confirmed_evidence = None
             if entity is None:
                 # New identities and named reveals must be grounded in the published prose itself.
                 # Evidence support alone is insufficient because the registrar model can quote a
@@ -227,6 +260,31 @@ class EntityRegistrar:
                 unique_contextual = {
                     UUID(str(candidate.id)): candidate for candidate in contextual
                 }
+                if len(unique_contextual) != 1 and mention.presence != "mentioned_only":
+                    candidates = [
+                        candidate for candidate in character_entities
+                        if self._is_temporary_identity(candidate)
+                        and candidate.id in scene.participants
+                        and character_locations.get(candidate.id) == scene.location_id
+                    ]
+                    if candidates:
+                        bound = await self._bind_personal_name_reveal(
+                            selection, assistant_content, mention,
+                            [character_profiles[str(candidate.id)] for candidate in candidates],
+                        )
+                        if bound:
+                            bound_id, confirmed_evidence = bound
+                            unique_contextual = {
+                                candidate.id: candidate for candidate in candidates
+                                if candidate.id == bound_id
+                            }
+                        elif promotion_only and not unique_contextual:
+                            result.conflicts.append({
+                                "description": f"Name {name} could not be bound to a scene participant.",
+                                "evidence": mention.evidence,
+                                "error": "Unconfirmed contextual identity binding",
+                            })
+                            continue
                 if len(unique_contextual) > 1:
                     names = ", ".join(
                         sorted(
@@ -290,8 +348,7 @@ class EntityRegistrar:
                     # Role/location similarity proposes a candidate, not an identity binding.
                     # Neither an extractor's temporary flag nor a real but unrelated quotation
                     # authorizes merging a discourse referent into this physical participant.
-                    confirmed_evidence = None
-                    if mention.presence != "mentioned_only":
+                    if not confirmed_evidence and mention.presence != "mentioned_only":
                         confirmed_evidence = await self._confirm_personal_name_reveal(
                             selection, assistant_content, entity.canonical_name, mention,
                         )
@@ -317,6 +374,11 @@ class EntityRegistrar:
                         index[identity_key(name)] = entity
                         for alias in entity.aliases:
                             index[identity_key(alias)] = entity
+                        # Later mentions in this same answer must see the promoted identity.
+                        character_entities = [
+                            entity if candidate.id == entity.id else candidate
+                            for candidate in character_entities
+                        ]
 
                 character = await self._entities.get_character(entity.id)
                 if not character:
@@ -387,6 +449,54 @@ class EntityRegistrar:
 
         await self._session.flush()
         return result
+
+    @staticmethod
+    def _identity_card(character) -> dict:
+        return {
+            "entity_id": str(character.id),
+            "canonical_name": character.canonical_name,
+            "aliases": character.aliases,
+            "role": (character.custom_fields or {}).get("role"),
+            "description": character.description,
+            "appearance": getattr(character, "appearance", None),
+        }
+
+    async def _bind_personal_name_reveal(self, selection, text, mention, candidates):
+        """Choose an existing ID using distinguishing evidence, never order or role alone."""
+        try:
+            data = await self._router.generate_json(
+                self._provider, selection,
+                [
+                    ChatMessage(role="system", content=(
+                        "Resolve a published self-identification to ONE existing NPC identity card. "
+                        "Several people may share a role. Use distinguishing appearance, description "
+                        "and speaker context, never list order or shared role alone. A name embedded "
+                        "in a card is only a hint: the published text must explicitly establish it. "
+                        "Return entity_id from the supplied cards and is_explicit=true only when "
+                        "the named speaker is unambiguous. evidence must be a verbatim excerpt "
+                        "containing the proposed name. A third person's name, a job/title, or an "
+                        "ambiguous speaker is not a reveal: return entity_id=null, is_explicit=false."
+                    )),
+                    ChatMessage(role="user", content=json.dumps({
+                        "mention": mention.model_dump(mode="json"),
+                        "existing_candidates": [self._identity_card(c) for c in candidates],
+                        "published_text": text,
+                    }, ensure_ascii=False)),
+                ],
+                max_tokens=350, temperature=0.0, response_model=PersonalNameBindingDecision,
+            )
+            decision = PersonalNameBindingDecision.model_validate(data)
+            evidence = (decision.evidence or "").strip()
+            if (
+                decision.is_explicit
+                and decision.entity_id in {c.id for c in candidates}
+                and evidence and evidence in text
+                and self._name_supported_by_text(mention.canonical_name, evidence)
+            ):
+                return decision.entity_id, evidence
+        except (LLMProviderError, ValidationError, ValueError, TypeError):
+            pass
+        return None
 
     async def _confirm_personal_name_reveal(
         self,

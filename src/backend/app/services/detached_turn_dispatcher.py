@@ -191,13 +191,19 @@ class DetachedTurnDispatcher:
                     command = parse_meta_command(data.content)
                     if command is None:
                         raise ValueError("Detached meta input lost its command marker")
-                    async for _ in MetaCommandRunner(session).run_stream(
+                    failure_note = None
+                    async for chunk in MetaCommandRunner(session).run_stream(
                         campaign_id,
                         command,
                         existing_user_turn_id=user_turn_id,
                     ):
-                        pass
-                    await cls._finish_meta_run(session, user_turn_id)
+                        if isinstance(chunk, str) and chunk.startswith("[Meta command failed"):
+                            failure_note = chunk.strip()[:4000]
+                    await cls._finish_meta_run(
+                        session,
+                        user_turn_id,
+                        failure_note=failure_note,
+                    )
 
                 await cls._reconcile_user_status(session, user_turn_id)
         except asyncio.CancelledError:
@@ -217,7 +223,11 @@ class DetachedTurnDispatcher:
             )
 
     @staticmethod
-    async def _finish_meta_run(session: AsyncSession, user_turn_id: UUID) -> None:
+    async def _finish_meta_run(
+        session: AsyncSession,
+        user_turn_id: UUID,
+        failure_note: str | None = None,
+    ) -> None:
         runs = GenerationRunRepository(session)
         run = await runs.get_by_user_turn(user_turn_id)
         if run is None:
@@ -227,7 +237,7 @@ class DetachedTurnDispatcher:
             await runs.set_status(
                 run.id,
                 "failed",
-                error="Meta generation failed before publishing an answer",
+                error=(failure_note or "Meta generation failed before publishing an answer")[:4000],
             )
             await session.commit()
             return

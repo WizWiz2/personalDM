@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
@@ -14,8 +15,98 @@ from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
 from app.models.provider_config import ProviderConfigCreate
 from app.models.scene import SceneCreate
-from app.services.entity_registrar import CharacterMention, EntityRegistrar
+from app.services.entity_registrar import (
+    CharacterMention, EntityRegistrar, PersonalNameBindingDecision, PersonalNameRevealDecision,
+)
 from app.services.scene_lifecycle import SceneLifecycleService
+
+
+def test_positive_name_binding_requires_quote_and_existing_id():
+    with pytest.raises(ValidationError, match="evidence quote"):
+        PersonalNameRevealDecision(is_explicit=True, evidence=None)
+    with pytest.raises(ValidationError, match="entity_id"):
+        PersonalNameBindingDecision(is_explicit=True, evidence="Я Серафинна", entity_id=None)
+
+
+@pytest.mark.asyncio
+async def test_two_same_role_npcs_reveal_names_without_creating_or_cross_binding(db_session):
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    first = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Служанка", description="Мягкий взгляд, светлые волосы.",
+        appearance="Светлые волосы в косе, светло-зелёные глаза.",
+        current_location_id=tavern.id, custom_fields={"temporary_name": True, "role": "служанка"},
+    ))
+    second = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Служанка 2", description="Строгое выражение лица.",
+        appearance="Тёмные волосы туго стянуты, серые глаза.",
+        current_location_id=tavern.id, custom_fields={"temporary_name": True, "role": "служанка"},
+    ))
+    for entity in (first, second):
+        await SceneRepository(db_session).add_participant(scene.id, entity.id)
+    text = 'Светловолосая говорит: «Я Серафинна». Темноволосая добавляет: «А я Лилиана, господин».'
+    calls = []
+
+    async def generate(provider, selection, messages, **kwargs):
+        calls.append(kwargs["response_model"].__name__)
+        if calls[-1] == "EntityRegistrationEnvelope":
+            assert str(first.id) in messages[0].content
+            assert first.appearance in messages[0].content
+            assert second.appearance in messages[0].content
+            return {"characters": [
+                {"canonical_name": "Серафинна", "role": "служанка", "evidence": "Я Серафинна"},
+                {"canonical_name": "Лилиана", "role": "служанка", "evidence": "А я Лилиана, господин"},
+            ]}
+        if calls[-1] == "PersonalNameBindingDecision":
+            assert str(second.id) in messages[1].content
+            return {"entity_id": str(first.id), "is_explicit": True, "evidence": "Я Серафинна"}
+        return {"is_explicit": True, "evidence": "А я Лилиана, господин"}
+
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=generate)
+    result = await registrar.register_from_turn(campaign_id, scene.id, uuid4(), text, promotion_only=True)
+    assert result.created_ids == []
+    assert result.conflicts == []
+    assert (await entities.get_character(first.id)).canonical_name == "Серафинна"
+    assert (await entities.get_character(second.id)).canonical_name == "Лилиана"
+    assert len(await entities.list_by_campaign(campaign_id, "character")) == 3
+    assert calls.count("PersonalNameBindingDecision") == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["foreign_id", "no_binding", "wrong_quote"])
+async def test_ambiguous_identity_does_not_promote_on_invalid_binding(db_session, invalid):
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    candidates = []
+    for name in ("Служанка", "Служанка 2"):
+        npc = await entities.create_character(campaign_id, CharacterCreate(
+            canonical_name=name, current_location_id=tavern.id,
+            custom_fields={"temporary_name": True, "role": "служанка"},
+        ))
+        await SceneRepository(db_session).add_participant(scene.id, npc.id)
+        candidates.append(npc)
+    decision = {"entity_id": str(candidates[0].id), "is_explicit": True, "evidence": "Я Серафинна"}
+    if invalid == "foreign_id":
+        decision["entity_id"] = str(uuid4())
+    elif invalid == "no_binding":
+        decision["is_explicit"] = False
+    else:
+        decision["evidence"] = "Я Лилиана"
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=[
+        {"characters": [{"canonical_name": "Серафинна", "role": "служанка", "evidence": "Я Серафинна"}]},
+        decision,
+    ])
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), "Я Серафинна. Я Лилиана.", promotion_only=True,
+    )
+    assert result.created_ids == []
+    assert result.conflicts
+    assert (await entities.get_character(candidates[0].id)).canonical_name == "Служанка"
+    assert (await entities.get_character(candidates[1].id)).canonical_name == "Служанка 2"
 
 
 async def _campaign_state(db_session: AsyncSession):

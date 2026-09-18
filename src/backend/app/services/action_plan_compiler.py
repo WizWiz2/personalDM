@@ -475,6 +475,7 @@ class ActionPlanCompiler:
         introductions = [
             PlannedNpcIntroduction(
                 canonical_name=item.canonical_name,
+                identity_reference=item.identity_reference,
                 role=item.role,
                 description=item.description,
                 appearance=item.appearance,

@@ -24,9 +24,11 @@ from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.turn_outcome_resolver import (
     OutcomeNpcIntroductionDraft,
+    TurnOutcomeResolver,
     _profile_wire_model,
     _travel_wire_model,
 )
+from app.models.player_intent import TurnOutcomeDecision
 
 
 def _npc(**updates):
@@ -42,6 +44,32 @@ def _npc(**updates):
 
 
 PROFILE = "Светлое помещение с широкими окнами и несколькими длинными столами вдоль стен. У двери стоят скамейки."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("temporary", [True, False])
+async def test_changed_role_cannot_clone_referenced_existing_npc(db_session, temporary):
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Identity reference"))
+    location = await LocationRepository(db_session).create(campaign_id, LocationCreate(canonical_name="Особняк"))
+    entities = EntityRepository(db_session)
+    name = "Служанка" if temporary else "Серафинна"
+    existing = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name=name, current_location_id=location.id,
+        custom_fields={"temporary_name": temporary, "role": "служанка"},
+    ))
+    decision = TurnOutcomeDecision.model_validate({"npc_introductions": [{
+        **_npc(), "canonical_name": name, "role": "Доверенная служанка",
+    }]})
+    normalized = TurnOutcomeResolver._normalize_temporary_identities(decision)
+    introduction = PlannedNpcIntroduction.model_validate(normalized.npc_introductions[0].model_dump())
+    assert introduction.canonical_name == "Доверенная служанка"
+    assert introduction.identity_reference == name
+    resolver = NpcIntroductionResolver(db_session)
+    result = await resolver.resolve(campaign_id=campaign_id, introductions=[introduction], present_names=[name], target_location_id=location.id)
+    assert result.new_introductions == []
+    assert len(await entities.list_by_campaign(campaign_id, "character")) == 1
+    assert (await entities.get_character(existing.id)).canonical_name == name
 
 
 @pytest.mark.asyncio

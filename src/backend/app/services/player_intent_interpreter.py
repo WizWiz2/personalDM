@@ -15,6 +15,7 @@ from app.services.location_identity import location_reference_key, same_location
 from app.services.planning_context import intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
+from app.services.addressee_guard import retain_addressed_actions
 
 _INTENT_PROMPT = """[PLAYER INTENT INTERPRETER]
 You convert exactly one human RPG turn into immutable player-authority IR. You do NOT resolve the
@@ -28,6 +29,8 @@ The contract contains only what the HUMAN actually committed to now:
 - actions is an ordered list of affirmative atomic world actions. Preserve their stated order.
 - Ordinary speech, a greeting, a question, a claim, or telling someone information is NOT an action
   step. Represent expected dialogue with addressed_response_requested/addressed_character_name.
+- A plural imperative to other people (раздевайтесь, снимайте) is NOT the player's own action.
+  Leave actions empty and set addressed_response_requested unless the human also acts.
 - A negative/stationary boundary ("не иду", "остаюсь здесь", "не проверяю") is not an action.
 - An unresolved alternative/condition is not executed. Preserve it in pending_player_choice and/or
   protected_player_decisions instead of choosing a branch.
@@ -303,15 +306,19 @@ def normalize_intent_draft(
 
     fallback = _compact(player_input)
     summary = _compact(draft.summary) or fallback
+    source_actions = retain_addressed_actions(player_input, draft.actions)
     actions = [
         _normalized_action(player_input, action, fallback_intent=fallback)
-        for action in draft.actions
+        for action in source_actions
     ]
+    dropped_all = bool(draft.actions) and not actions
+    if dropped_all:
+        summary = fallback
     return PlayerIntentContract.model_validate(
         {
             "summary": summary,
             "actions": actions,
-            "addressed_response_requested": bool(draft.addressed_response_requested),
+            "addressed_response_requested": bool(draft.addressed_response_requested) or dropped_all,
             "addressed_character_name": _compact(draft.addressed_character_name) or None,
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
             "pending_player_choice": _compact(draft.pending_player_choice) or None,

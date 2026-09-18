@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.tables import Character, Turn
 from app.models.turn_authority import ExistingNpcArrival
-from app.services.entity_identity import identity_key, resolve_character_candidates
+from app.services.entity_identity import exact_identity_matches, identity_key, resolve_character_candidates
 from app.services.player_intent_contract import contains_cjk
 
 
@@ -143,6 +143,10 @@ class NpcIntroductionResolver:
         present_names: list[str],
         target_location_id: UUID | None,
     ) -> NpcIntroductionResolution:
+        references = [
+            getattr(item, "identity_reference", None) or item.canonical_name
+            for item in introductions
+        ]
         introductions = self.sanitize_introductions(introductions)
         names = list(present_names)
         present_keys = {identity_key(value) for value in names}
@@ -174,15 +178,26 @@ class NpcIntroductionResolver:
             for value in (entity.canonical_name, *entity.aliases)
         }
         existing_arrivals: list[ExistingNpcArrival] = []
-        for introduction in introductions:
-            matches = resolve_character_candidates(
-                all_characters,
-                proposed_name=introduction.canonical_name,
-                proposed_role=introduction.role,
-                temporary_name=introduction.temporary_name,
-                target_location_id=target_location_id,
-                character_locations=character_locations,
-            )
+        for introduction, reference in zip(introductions, references):
+            # Role normalization must not erase an existing identity reference. Temporary
+            # designations remain local; stable names/aliases remain global.
+            matches = [
+                entity for entity in exact_identity_matches(all_characters, reference)
+                if not (entity.custom_fields or {}).get("temporary_name")
+                or (
+                    target_location_id is not None
+                    and character_locations.get(entity.id) == target_location_id
+                )
+            ]
+            if not matches:
+                matches = resolve_character_candidates(
+                    all_characters,
+                    proposed_name=introduction.canonical_name,
+                    proposed_role=introduction.role,
+                    temporary_name=introduction.temporary_name,
+                    target_location_id=target_location_id,
+                    character_locations=character_locations,
+                )
             unique_matches = {UUID(str(entity.id)): entity for entity in matches}
             if len(unique_matches) > 1:
                 candidate_names = ", ".join(

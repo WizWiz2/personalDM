@@ -223,3 +223,81 @@ def test_true_movement_without_destination_still_fails_closed() -> None:
 
     with pytest.raises(TurnPlanningError, match="missing the player-selected destination"):
         normalize_intent_draft(draft, "Иду дальше.")
+
+
+def test_plural_imperative_is_not_the_player_undressing() -> None:
+    draft = PlayerIntentContractDraft.model_validate(
+        {
+            "summary": "Кай понимает, что ответ — да, и начинает раздеваться.",
+            "actions": [
+                {
+                    "action_type": "other",
+                    "intent": "начинаю раздеваться",
+                }
+            ],
+        }
+    )
+
+    result = normalize_intent_draft(
+        draft,
+        "- Я так понимаю, ответ - да. Тогда раздевайтесь",
+    )
+
+    assert result.actions == []
+    assert result.addressed_response_requested is True
+    assert "раздевайтесь" in result.summary
+
+
+def test_plural_remove_command_is_not_a_player_inventory_take() -> None:
+    draft = PlayerIntentContractDraft.model_validate(
+        {
+            "summary": "Кай просит снять заметную деталь.",
+            "actions": [
+                {
+                    "action_type": "inventory",
+                    "intent": "снять заметную деталь",
+                    "item_id": str(uuid4()),
+                    "inventory_operation": "take",
+                }
+            ],
+        }
+    )
+
+    result = normalize_intent_draft(draft, "-Хорошо, это тоже снимайте")
+
+    assert result.actions == []
+    assert result.addressed_response_requested is True
+
+
+def test_player_own_undress_still_survives() -> None:
+    draft = PlayerIntentContractDraft.model_validate(
+        {
+            "summary": "Кай раздевается.",
+            "actions": [
+                {
+                    "action_type": "other",
+                    "intent": "Я раздеваюсь.",
+                }
+            ],
+        }
+    )
+
+    result = normalize_intent_draft(draft, "Я раздеваюсь.")
+
+    assert len(result.actions) == 1
+
+
+def test_description_request_does_not_spawn_an_npc() -> None:
+    from types import SimpleNamespace
+    from app.services.addressee_guard import scrub_uninvited_spawn
+
+    plan = SimpleNamespace(
+        npc_introductions=["Молодой, но влиятельный маг или аристократ"],
+        observable_consequences=["Кай продолжает раздеваться."],
+    )
+    scrub_uninvited_spawn(
+        plan,
+        "Ты описываешь только лицо. Я хочу подробности касательно их тел.",
+    )
+    assert plan.npc_introductions == []
+    assert plan.observable_consequences == []

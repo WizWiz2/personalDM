@@ -71,12 +71,17 @@ export function PlayPage() {
   const [jumpBottom, setJumpBottom] = useState(96)
   const previousGeneration = useRef<{ id: string; status: string } | null>(null)
   const stickToBottomRef = useRef(true)
+  const didInitialScroll = useRef(false)
 
   const busy = generation?.status === 'running'
   const failedGeneration = generation
     && (generation.status === 'failed' || generation.status === 'cancelled')
     ? generation
     : null
+  const failedTurn = failedGeneration
+    ? turns.find((turn) => turn.id === failedGeneration.user_turn_id) ?? acceptedTurn
+    : null
+  const blocksComposer = Boolean(failedGeneration) && !failedTurn?.role.startsWith('meta_')
 
   const load = async (showLoader = false) => {
     if (showLoader) setLoading(true)
@@ -128,8 +133,7 @@ export function PlayPage() {
     const nearBottom = distanceFromBottom < 140
     stickToBottomRef.current = nearBottom
     setStickToBottom(nearBottom)
-    const jumpedUp = distanceFromBottom > Math.max(viewport * 0.9, 360)
-    setShowJumpLatest(jumpedUp)
+    setShowJumpLatest(!nearBottom)
   }, [])
 
   useEffect(() => { void load(true) }, [campaign.id])
@@ -155,6 +159,12 @@ export function PlayPage() {
     const onScroll = () => updateScrollAffinity()
     window.addEventListener('scroll', onScroll, { passive: true })
     window.addEventListener('resize', onScroll)
+    if (!loading && turns.length > 0 && !didInitialScroll.current) {
+      didInitialScroll.current = true
+      stickToBottomRef.current = true
+      setStickToBottom(true)
+      bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
+    }
     onScroll()
     return () => {
       window.removeEventListener('scroll', onScroll)
@@ -244,7 +254,7 @@ export function PlayPage() {
     event?.preventDefault()
     const text = input.trim()
     if (!text) return
-    if (failedGeneration) {
+    if (blocksComposer) {
       setError('Сначала повтори или убери неудачный ход — иначе следующий ход встанет в очередь поверх ошибки.')
       return
     }
@@ -419,7 +429,7 @@ export function PlayPage() {
               <span className="composer-hint">Опиши ход персонажа свободно — действие и речь можно сочетать.</span>
               <button type="button" className={`btn primary composer-mode ${mode === 'dm' ? 'active' : ''}`} onClick={() => setMode(mode === 'dm' ? 'play' : 'dm')}><Icons.shield />{mode === 'dm' ? 'Вернуться в игру' : 'Обращение к мастеру'}</button>
             </div>
-            <div className="compose-row"><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder={failedGeneration ? 'Сначала повтори или убери неудачный ход…' : busy ? 'Можно набросать следующий ход — черновик сохранится…' : mode === 'dm' ? 'Спроси мастера вне игры…' : 'Что делает и говорит персонаж?'} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} /><button className="btn primary send-btn" disabled={!input.trim() || busy || Boolean(failedGeneration)} aria-label="Отправить"><Icons.send /></button></div>
+            <div className="compose-row"><textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder={blocksComposer ? 'Сначала повтори или убери неудачный ход…' : busy ? 'Можно набросать следующий ход — черновик сохранится…' : mode === 'dm' ? 'Спроси мастера вне игры…' : 'Что делает и говорит персонаж?'} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() } }} /><button className="btn primary send-btn" disabled={!input.trim() || busy || blocksComposer} aria-label="Отправить"><Icons.send /></button></div>
             <div className="composer-footer">
               {busy
                 ? <><span className="turn-runtime-note">Ход сохранён. Можно открыть Героя, Мир или Хронику — мастер продолжит работу.</span><button type="button" className="quiet-action danger" onClick={() => void stop()}><Icons.stop />Остановить</button></>

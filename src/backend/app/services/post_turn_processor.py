@@ -378,8 +378,9 @@ class PostTurnProcessor:
                                     for entity in entities
                                     if entity.entity_type == "character"
                                 )
+                        registration = EntityRegistrationResult()
                         if should_verify_identity:
-                            await EntityRegistrar(self._session).register_from_turn(
+                            registration = await EntityRegistrar(self._session).register_from_turn(
                                 campaign_id=campaign_id,
                                 scene_id=assistant.scene_id,
                                 source_turn_id=assistant.id,
@@ -387,7 +388,6 @@ class PostTurnProcessor:
                                 promotion_only=True,
                             )
                             await self._session.commit()
-                        registration = EntityRegistrationResult()
                     else:
                         registration = await EntityRegistrar(
                             self._session
