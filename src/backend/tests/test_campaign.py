@@ -119,3 +119,70 @@ def test_scene_activation_is_authoritative_and_observable(client: TestClient):
     assert debugger["active_scene"]["title"] == "Общий зал таверны"
     assert debugger["scene_state_issues"] == []
     assert debugger["health"]["scene_state_errors"] == 0
+
+
+import uuid
+
+import pytest
+
+from app.db.tables import Entity, Event
+from app.db.truth_engine_table import FluentAssertion, SemanticType
+
+
+@pytest.mark.asyncio
+async def test_delete_campaign_with_truth_event_assertions(client, db_session):
+    """Campaign delete must clear RESTRICT truth rows before cascading events."""
+    campaign_id = client.post(
+        "/api/campaigns",
+        json={"name": "Disposable FK Delete Probe", "description": "throwaway"},
+    ).json()["id"]
+
+    entity_id = str(uuid.uuid4())
+    event_id = str(uuid.uuid4())
+    semantic_type_id = str(uuid.uuid4())
+    assertion_id = str(uuid.uuid4())
+
+    db_session.add(
+        Entity(
+            id=entity_id,
+            campaign_id=campaign_id,
+            entity_type="character",
+            canonical_name="Probe",
+        )
+    )
+    db_session.add(
+        Event(
+            id=event_id,
+            campaign_id=campaign_id,
+            event_type="test",
+            description="probe event",
+        )
+    )
+    db_session.add(
+        SemanticType(
+            id=semantic_type_id,
+            campaign_id=campaign_id,
+            kind="fluent",
+            canonical_label="probe",
+            description="probe type",
+        )
+    )
+    await db_session.flush()
+    db_session.add(
+        FluentAssertion(
+            id=assertion_id,
+            campaign_id=campaign_id,
+            subject_entity_id=entity_id,
+            semantic_type_id=semantic_type_id,
+            value_json="{}",
+            valid_from_event_id=event_id,
+            authority="test",
+        )
+    )
+    await db_session.commit()
+
+    response = client.delete(f"/api/campaigns/{campaign_id}")
+    assert response.status_code == 204, response.text
+    assert client.get(f"/api/campaigns/{campaign_id}").status_code == 404
+    listed = client.get("/api/campaigns").json()
+    assert all(item["id"] != campaign_id for item in listed)
