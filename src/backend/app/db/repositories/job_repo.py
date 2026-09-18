@@ -78,6 +78,14 @@ class GenerationRunRepository(BaseRepository):
         )
         await self._session.flush()
 
+    async def delete(self, run_id: UUID) -> bool:
+        row = await self._session.get(GenerationRun, str(run_id))
+        if row is None:
+            return False
+        await self._session.delete(row)
+        await self._session.flush()
+        return True
+
     async def list_for_campaign(self, campaign_id: UUID, limit: int = 50) -> list[GenerationRunRead]:
         result = await self._session.execute(
             select(GenerationRun)
