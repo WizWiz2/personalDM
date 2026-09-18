@@ -113,6 +113,26 @@ def reconcile_starter_npcs(
     return result
 
 
+
+def apply_established_starter_names(
+    specs: Iterable[SessionZeroStarterNPC],
+    bindings: Iterable[tuple[int, object]],
+) -> list[SessionZeroStarterNPC]:
+    """Write a personal name the control model already established. A role is not a name."""
+    result = [SessionZeroStarterNPC.model_validate(raw) for raw in specs]
+    for index, name in bindings:
+        if not isinstance(index, int) or index < 0 or index >= len(result):
+            continue
+        spec = result[index]
+        if _key(spec.name):
+            continue
+        cleaned = " ".join(str(name or "").split()).strip()
+        if not cleaned or _key(cleaned) == _key(spec.role):
+            continue
+        spec.name = cleaned
+    return result
+
+
 def present_character_names(context_messages) -> frozenset[str]:
     """Read exact physical character names from the authoritative scene-state contract."""
     names: set[str] = set()
@@ -152,6 +172,7 @@ def sanitize_existing_present_npc_introductions(plan, present_names: Iterable[st
 
 __all__ = [
     "names_are_same_identity",
+    "apply_established_starter_names",
     "present_character_names",
     "reconcile_starter_npcs",
     "sanitize_existing_present_npc_introductions",

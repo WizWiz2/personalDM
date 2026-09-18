@@ -108,3 +108,27 @@ def test_presence_contract_is_required_for_conversational_finalize():
     assert "world.starter_presence_confirmed" in missing
     assert "world.starter_npcs" in SessionZeroAgent.SYSTEM_PROMPT
     assert "starter_presence_confirmed" in SessionZeroAgent.SYSTEM_PROMPT
+
+def test_two_starters_with_the_same_role_remain_two_people(client: TestClient):
+    hero, _, participants = _complete(
+        client,
+        situation=(
+            "Илья только что вошёл в комнату, где две горничные занимаются утренней уборкой."
+        ),
+        starter_npcs=[
+            {
+                "role": "Горничная",
+                "description": "Мария, в рабочей одежде",
+                "present_at_start": True,
+            },
+            {
+                "role": "Горничная",
+                "description": "Анна, в рабочей одежде",
+                "present_at_start": True,
+            },
+        ],
+    )
+    assert hero["id"] in participants
+    assert len(participants) == 3
+    assert len(set(participants)) == 3
+

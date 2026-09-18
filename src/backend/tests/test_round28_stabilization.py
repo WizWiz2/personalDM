@@ -11,6 +11,7 @@ from app.services.actor_memory_observability_guard import (
 )
 from app.services.systemless_authority_guard import (
     detect_contained_repetition,
+    detect_prefixed_repetition,
     ensure_distinct_physical_location,
     normalize_addressed_conversation,
 )
@@ -187,3 +188,22 @@ def test_flight_recorder_surfaces_persisted_actor_selector_audit() -> None:
     augmented = _augment_trace(snapshot, assistant_id, trace)
 
     assert augmented["memory"]["actor_selector"] == audit
+
+def test_repetition_guard_detects_reprinted_published_paragraph() -> None:
+    head = (
+        "Сквозняк из приоткрытого окна уносил пыль и слабый запах влажного камня, который "
+        "всегда витал в утренней комнате этого дома. Солнечный свет падал на паркет, а две "
+        "фигуры продолжали утреннюю уборку без лишних слов."
+    )
+    previous = head + "\n\n" + "Илья остановился у порога и не стал нарушать эту тишину."
+    candidate = head + "\n\n" + "С этими словами Мария повернулась к окну, и ставни начали открываться."
+
+    match = detect_prefixed_repetition(candidate, [previous])
+
+    assert match is not None
+    assert match.previous_text == previous
+    assert detect_prefixed_repetition(
+        "Мария вытерла край стола и открыла ставни.",
+        ["Мария вытерла край стола и отложила тряпку."],
+    ) is None
+

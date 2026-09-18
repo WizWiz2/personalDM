@@ -52,6 +52,9 @@ Hard ownership boundaries:
 - auto_success means the action happens now; requires_choice means a specific missing player choice,
   never a request to confirm an already selected destination or inventory recipient.
 - observable_outcome describes the result of that one action, not an extra player action.
+- reaction is optional manner of that same outcome: a look, a pause, a line. It is not another
+  result. If the action happens, reaction cannot say it did not. When any action_outcome exists,
+  leave character_beats empty; the reaction belongs on the action.
 
 NPC authority:
 - Characters already listed in the context are existing identities, not npc_introductions. Never
@@ -155,6 +158,7 @@ class ActionOutcomeDraft(BaseModel):
     resolution: str = Field(min_length=2, max_length=32)
     safe_mundane: bool = False
     observable_outcome: str | None = None
+    reaction: str | None = None
     blocking_reason: str | None = None
     destination_profile: str | None = None
 
@@ -323,6 +327,7 @@ def normalize_outcome_draft(
                 "resolution": resolution,
                 "safe_mundane": bool(item.safe_mundane) if resolution == "auto_success" else False,
                 "observable_outcome": _compact(item.observable_outcome) or None,
+                "reaction": _compact(item.reaction) or None,
                 "blocking_reason": blocking_reason if resolution == "blocked" else None,
                 "destination_profile": _compact(item.destination_profile) or None,
             }
@@ -369,13 +374,40 @@ def normalize_outcome_draft(
     complication_source = _compact(draft.complication_source) or None
     allow_complication = bool(draft.allow_new_complication and complication_source)
 
+    public_outcomes = [
+        {key: value for key, value in item.items() if key != "reaction"}
+        for item in action_outcomes
+    ]
     return TurnOutcomeDecision.model_validate(
         {
-            "action_outcomes": action_outcomes,
+            "action_outcomes": public_outcomes,
             "npc_introductions": introductions,
             "resolution": resolution,
-            "observable_consequences": _bounded_strings(draft.observable_consequences, 4),
-            "character_beats": _bounded_strings(draft.character_beats, 6),
+            "observable_consequences": _bounded_strings(
+                list(
+                    dict.fromkeys(
+                        [
+                            *draft.observable_consequences,
+                            *[
+                                item["observable_outcome"]
+                                for item in action_outcomes
+                                if item.get("observable_outcome")
+                            ],
+                        ]
+                    )
+                ),
+                4,
+            ),
+            "character_beats": _bounded_strings(
+                [
+                    item["reaction"]
+                    for item in action_outcomes
+                    if item.get("reaction")
+                ]
+                if any(item.get("observable_outcome") for item in action_outcomes)
+                else draft.character_beats,
+                6,
+            ),
             "canon_constraints": _bounded_strings(draft.canon_constraints, 8),
             "narration_guidance": _bounded_strings(draft.narration_guidance, 6),
             "ending_hook": _compact(draft.ending_hook),

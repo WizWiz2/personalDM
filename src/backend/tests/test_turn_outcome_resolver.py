@@ -108,3 +108,25 @@ def test_unknown_action_resolution_still_fails_closed() -> None:
 
     with pytest.raises(TurnPlanningError, match="unknown resolution"):
         normalize_outcome_draft(draft, _movement_contract())
+
+def test_typed_outcome_keeps_its_reaction_and_drops_an_unbound_beat() -> None:
+    draft = TurnOutcomeDecisionDraft.model_validate(
+        {
+            "action_outcomes": [
+                {
+                    "action_index": 0,
+                    "resolution": "auto_success",
+                    "safe_mundane": True,
+                    "observable_outcome": "Мария и Анна открыли ставни.",
+                    "reaction": "Мария на миг поднимает взгляд.",
+                }
+            ],
+            "character_beats": ["Мария и Анна продолжают свои обычные дела."],
+        }
+    )
+
+    decision = normalize_outcome_draft(draft, _movement_contract())
+
+    assert decision.character_beats == ["Мария на миг поднимает взгляд."]
+    assert "Мария и Анна открыли ставни." in decision.observable_consequences
+

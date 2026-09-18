@@ -5,6 +5,7 @@ import json
 import re
 from uuid import UUID
 
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
@@ -27,7 +28,10 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.session_zero_service import SessionZeroService
-from app.services.starter_identity import reconcile_starter_npcs
+from app.services.starter_identity import (
+    apply_established_starter_names,
+    reconcile_starter_npcs,
+)
 
 
 class SessionZeroInterviewIncompleteError(ValueError):
@@ -103,8 +107,8 @@ class SessionZeroAgent:
   starter_presence_confirmed=true.
 - Если в своей обычной реплике ты показываешь, что «владелица входит», «компаньон сидит
   напротив», «заказчик ждёт у двери» и т.п., этот же NPC обязан быть в starter_npcs.
-- role описывает его функцию в сцене; name указывай только если имя уже установлено.
-  Не придумывай имя только ради структуры. description/reason могут быть короткими.
+- role описывает функцию в сцене. Если игрок уже назвал человека, запиши это имя в name.
+  Description не заменяет name. Не придумывай имя, которого игрок не давал.
 - Не используй профессию или отдельное слово как доказательство физического присутствия:
   решай присутствие по смыслу всей стартовой ситуации.
 
@@ -337,6 +341,9 @@ class SessionZeroInterviewService:
             finalize_requested = finalize_requested or repaired_finalize
             model_decision = repaired
 
+        if finalize_requested:
+            merged = await self._bind_established_names(selection, merged, state)
+
         missing = self.missing_fields(merged)
         ready = finalize_requested and not missing
         decision = SessionZeroInterviewDecision(
@@ -356,6 +363,79 @@ class SessionZeroInterviewService:
         state.last_summary = decision.summary
         await self._save_state(campaign_id, state, commit=True)
         return decision
+
+
+    async def _bind_established_names(self, selection, draft, state):
+        """Ask the control model for personal names it already heard. Do not parse prose."""
+        pending = [
+            index
+            for index, npc in enumerate(draft.world.starter_npcs)
+            if npc.present_at_start and not self._text(npc.name)
+        ]
+        if not pending:
+            return draft
+        cards = [
+            {
+                "index": index,
+                "role": draft.world.starter_npcs[index].role,
+                "description": draft.world.starter_npcs[index].description,
+                "reason": draft.world.starter_npcs[index].reason,
+            }
+            for index in pending
+        ]
+        player_lines = [
+            item.get("content")
+            for item in state.messages
+            if item.get("role") == "user" and item.get("content")
+        ][-6:]
+
+        class _StarterName(BaseModel):
+            index: int
+            name: str | None = None
+
+        class _StarterNames(BaseModel):
+            names: list[_StarterName] = Field(default_factory=list)
+
+        try:
+            data = await self._router.generate_json(
+                self._provider,
+                selection,
+                [
+                    ChatMessage(
+                        role="system",
+                        content=(
+                            "Верни имена, которые игрок уже дал стартовым NPC. "
+                            "name — личное имя или null. Роль не является именем. "
+                            "Не придумывай имя, которого не было."
+                        ),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=json.dumps(
+                            {"starters": cards, "player_lines": player_lines},
+                            ensure_ascii=False,
+                        ),
+                    ),
+                ],
+                max_tokens=400,
+                temperature=0,
+                response_model=_StarterNames,
+            )
+            parsed = _StarterNames.model_validate(data)
+        except (LLMProviderError, ValueError, ValidationError):
+            return draft
+        return draft.model_copy(
+            update={
+                "world": draft.world.model_copy(
+                    update={
+                        "starter_npcs": apply_established_starter_names(
+                            draft.world.starter_npcs,
+                            [(item.index, item.name) for item in parsed.names],
+                        )
+                    }
+                )
+            }
+        )
 
     def _quality_feedback(
         self,

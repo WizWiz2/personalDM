@@ -7,6 +7,7 @@ from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.session_zero_interview import SessionZeroInterviewService
 from app.services.starter_identity import (
+    apply_established_starter_names,
     present_character_names,
     reconcile_starter_npcs,
     sanitize_existing_present_npc_introductions,
@@ -200,3 +201,15 @@ def test_explicit_unknown_contact_remains_supported_by_typed_npc_introduction():
     assert len(plan.npc_introductions) == 1
     assert plan.npc_introductions[0].canonical_name == "Прохожий"
     assert "CONTACT/IDENTITY" in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
+
+def test_control_model_name_is_kept_and_a_role_is_not() -> None:
+    specs = [
+        SessionZeroStarterNPC(role="Горничная", description="Мария, в рабочей одежде"),
+        SessionZeroStarterNPC(role="Горничная", description="Анна, в рабочей одежде"),
+    ]
+    named = apply_established_starter_names(
+        specs,
+        [(0, "Мария"), (1, "Горничная")],
+    )
+    assert [item.name for item in named] == ["Мария", None]
+

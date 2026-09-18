@@ -175,6 +175,7 @@ class PlayableBootstrapService:
                 raise ValueError(
                     "Structured starter NPC presence conflicts with explicitly solitary start"
                 )
+            claimed_starter_ids: set[UUID] = set()
             for spec in starter_npcs:
                 character, created = await self._ensure_structured_contact(
                     campaign_id,
@@ -183,7 +184,9 @@ class PlayableBootstrapService:
                     spec,
                     situation,
                     tone,
+                    claimed_starter_ids,
                 )
+                claimed_starter_ids.add(character.id)
                 if created and created_npc_id is None:
                     created_npc_id = character.id
         else:
@@ -294,29 +297,57 @@ class PlayableBootstrapService:
         spec: SessionZeroStarterNPC,
         situation: str,
         tone: str | None,
+        claimed_starter_ids: set[UUID] | None = None,
     ):
         preferred = self._starter_name(spec)
+        claimed = claimed_starter_ids or set()
+        explicit_name = bool(self._clean(spec.name))
         state = await self._state.require_valid(campaign_id, scene_id)
-        for participant_id in state.participant_ids:
-            participant = await self._entities.get_character(participant_id)
-            if participant and participant.canonical_name.casefold() == preferred.casefold():
+        if explicit_name:
+            for participant_id in state.participant_ids:
+                if participant_id in claimed:
+                    continue
+                participant = await self._entities.get_character(participant_id)
+                if participant and participant.canonical_name.casefold() == preferred.casefold():
+                    return participant, False
+        else:
+            # A shared role is not an identity. Two starter records stay two people.
+            # Reuse only the same structured record on a later bootstrap, never the role label.
+            role = self._clean(spec.role)
+            description = self._clean(spec.description)
+            for participant_id in state.participant_ids:
+                if participant_id in claimed:
+                    continue
+                participant = await self._entities.get_character(participant_id)
+                if participant is None:
+                    continue
+                fields = participant.custom_fields or {}
+                if fields.get('source') != self.STRUCTURED_SOURCE:
+                    continue
+                if self._clean(fields.get('role')) != role:
+                    continue
+                if self._clean(participant.description) != description:
+                    continue
                 return participant, False
 
-        # Idempotence without teleportation: an existing same-named character may be reused only
-        # if structured world state already places them at the opening location.
-        for entity in await self._entities.list_by_campaign(campaign_id):
-            if entity.entity_type != EntityType.CHARACTER.value:
-                continue
-            if entity.canonical_name.casefold() != preferred.casefold():
-                continue
-            character = await self._entities.get_character(entity.id)
-            if character and character.current_location_id == location_id:
-                await self._scenes.add_participant(
-                    scene_id,
-                    character.id,
-                    allow_movement=False,
-                )
-                return character, False
+        # A personal name can reuse the character already at this location. A role label cannot:
+        # two starter records with the same role are two people.
+        if explicit_name:
+            for entity in await self._entities.list_by_campaign(campaign_id):
+                if entity.id in claimed:
+                    continue
+                if entity.entity_type != EntityType.CHARACTER.value:
+                    continue
+                if entity.canonical_name.casefold() != preferred.casefold():
+                    continue
+                character = await self._entities.get_character(entity.id)
+                if character and character.current_location_id == location_id:
+                    await self._scenes.add_participant(
+                        scene_id,
+                        character.id,
+                        allow_movement=False,
+                    )
+                    return character, False
 
         name = await self._unique_name(campaign_id, EntityType.CHARACTER.value, preferred)
         role = self._clean(spec.role)

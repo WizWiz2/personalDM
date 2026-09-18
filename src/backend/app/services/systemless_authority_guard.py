@@ -274,6 +274,50 @@ def detect_contained_repetition(
     return None
 
 
+def _published_paragraphs(text: str) -> list[str]:
+    return [part.strip() for part in (text or "").split("\n\n") if part.strip()]
+
+
+def detect_prefixed_repetition(
+    candidate: str,
+    previous_responses: list[str],
+) -> RepetitionMatch | None:
+    """A new answer that opens with an already published paragraph is a reprint.
+
+    Containment only matches when the whole old answer sits inside the new one.
+    The live failure reprints one or more published paragraphs and then continues.
+    Equality is on those stored paragraphs. A short reply is not a scene paragraph.
+    """
+    candidate_parts = _published_paragraphs(candidate)
+    if not candidate_parts:
+        return None
+    best: RepetitionMatch | None = None
+    best_shared = 0
+    for previous in previous_responses:
+        previous_parts = _published_paragraphs(previous)
+        if not previous_parts:
+            continue
+        shared = 0
+        for left, right in zip(candidate_parts, previous_parts):
+            left_key = NarrationRepetitionGuard._normalized(left)  # noqa: SLF001
+            right_key = NarrationRepetitionGuard._normalized(right)  # noqa: SLF001
+            if not left_key or left_key != right_key:
+                break
+            shared += 1
+        if shared < 1:
+            continue
+        if shared == len(candidate_parts) and shared == len(previous_parts):
+            continue
+        if shared > best_shared:
+            best_shared = shared
+            best = RepetitionMatch(
+                previous_text=previous,
+                similarity=1.0,
+                exact=False,
+            )
+    return best
+
+
 def detect_self_repetition(candidate: str) -> RepetitionMatch | None:
     """Catch duplicated sentence/paragraph blocks inside one generated response."""
     seen: dict[str, str] = {}
@@ -396,6 +440,9 @@ def install() -> None:
         contained = detect_contained_repetition(candidate, previous_responses)
         if contained is not None:
             return contained
+        prefixed = detect_prefixed_repetition(candidate, previous_responses)
+        if prefixed is not None:
+            return prefixed
         return original_repetition_detect(
             self,
             candidate,
@@ -463,6 +510,7 @@ def install() -> None:
 __all__ = [
     "addressed_response_requested",
     "detect_contained_repetition",
+    "detect_prefixed_repetition",
     "detect_self_repetition",
     "ensure_distinct_physical_location",
     "input_uses_addressed_character",
