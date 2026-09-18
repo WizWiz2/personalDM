@@ -12,11 +12,13 @@ def test_generic_no_change_surface_is_classified_as_dead_turn():
     )
 
 
-def test_conservative_empty_plan_is_not_a_publishable_turn_contract():
-    empty = CoordinatedTurnPlan.conservative_fallback(
+def test_absent_marks_do_not_refuse_a_completed_plan():
+    # No steps, no consequences, no reply flag. That absence is not a refusal.
+    unmarked = CoordinatedTurnPlan.conservative_fallback(
         "Я пытаюсь поднять системные журналы и найти следы взлома"
     )
-    assert _is_empty_plan(empty)
+    assert not _is_empty_plan(unmarked)
+    assert _is_empty_plan(None)
 
     concrete = CoordinatedTurnPlan(
         player_intent="Проверить системные журналы на следы взлома.",

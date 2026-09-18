@@ -11,20 +11,12 @@ _INSTALLED = False
 
 
 def _is_empty_plan(plan) -> bool:
-    """Machine-provable absence of a current result; no semantic guessing lives here."""
-    if plan is None:
-        return True
-    if plan.observable_consequences:
-        return False
-    if plan.action_sequence.steps:
-        return False
-    if plan.scene_transition.required:
-        return False
-    if getattr(plan, "addressed_response_requested", False):
-        return False
-    if plan.character_beats:
-        return False
-    return not plan.narration_policy.pending_player_choice
+    """Only a missing plan object is empty.
+
+    An absent reply, gesture, refusal, step, or consequence is not a refusal.
+    Planner crashes are metadata status != completed, handled by the caller.
+    """
+    return plan is None
 
 
 def _is_dead_surface(value: object) -> bool:
@@ -64,7 +56,7 @@ def install() -> None:
             raise TurnPlanningError(f"Planner did not produce an authoritative turn ({reason}){detail}")
         if _is_empty_plan(plan):
             raise TurnPlanningError(
-                "Planner produced no concrete current-world result; refusing an empty narrative turn; "
+                "Planner returned no plan object; refusing to publish fiction; "
                 + _empty_plan_diagnostic(plan)
             )
         return plan, metadata
@@ -75,14 +67,14 @@ def install() -> None:
 
     @wraps(original_build)
     async def strict_authority(self, *args, **kwargs):
-        # A typed plan that reaches Authority empty is an upstream planning defect. Do not relabel it
-        # as generic "control-plane recovery": that message hid the actual frozen-intent failure in
-        # live contracts. Actor-scoped turns legitimately use plan=None and remain outside this rule.
+        # A completed plan with no typed mark is not a defect. Actor-scoped turns use plan=None
+        # and stay outside this rule. Only a missing plan object is empty; a planner crash is
+        # metadata status != completed, raised in strict_plan, and must not be published.
         plan = kwargs.get("plan")
         acting_character_id = kwargs.get("acting_character_id")
         if acting_character_id is None and plan is not None and _is_empty_plan(plan):
             raise TurnPlanningError(
-                "Typed plan reached authority without a concrete current-turn result; "
+                "Typed plan reached authority without a plan object; "
                 + _empty_plan_diagnostic(plan)
             )
         return await original_build(self, *args, **kwargs)

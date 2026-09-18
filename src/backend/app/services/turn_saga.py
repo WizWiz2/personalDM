@@ -124,7 +124,14 @@ class TurnSaga:
             "[TYPED TURN AUTHORITY — authoritative, not advisory]\n"
             + json.dumps(authority.narrator_payload(), ensure_ascii=False, indent=2)
             + "\nHard rules:\n"
-            "- Render this authority; do not create a competing interpretation.\n"
+            "- The sheet lists confirmed outcomes and bans. It is not the only prose you may write.\n"
+            "- People already present may speak, refuse, gesture, or move inside the current place. "
+            "Speech is not required, and a missing mark is not a ban.\n"
+            "- Do not invent a person who is not already present and not structurally authorized. "
+            "Do not contradict or overwrite established_state. "
+            "Do not write the protagonist's next voluntary choice, dialogue, or action. "
+            "Do not move anyone to another place without a typed trip. "
+            "A step inside the current room is not a trip.\n"
             "- The human player's voluntary actions/dialogue are limited to player_input.\n"
             "- allowed_new_npcs are approved structured first appearances; "
             "allowed_existing_npc_arrivals are known identities approved to be present here.\n"
@@ -151,7 +158,8 @@ class TurnSaga:
                     "Do not physically show, approach, or describe any other person, even if "
                     "older narrative prose mentioned one. Historical prose cannot create canon. "
                     "If established_state is present, those slots are already true and outrank "
-                    "the opening scene description."
+                    "the opening scene description. Older prose is not canon. "
+                    "People already present may speak, refuse, gesture, or move inside the current place. Speech is not required, and a missing mark is not a ban."
                 ),
             )
         )
