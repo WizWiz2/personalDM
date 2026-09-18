@@ -142,7 +142,7 @@ class TurnRepository(BaseRepository):
             query = query.where(Turn.status == "active")
         # SQLite timestamps can have equal precision for the two rows of a meta exchange. Keep a
         # stable role tie-breaker so reversing the newest-window query cannot expose the assistant
-        before its parent user turn.
+        # before its parent user turn.
         query = query.order_by(Turn.created_at.desc(), Turn.role.asc()).limit(limit)
 
         result = await self._session.execute(query)
