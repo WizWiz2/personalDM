@@ -85,6 +85,87 @@ class CanonApplier:
         )
         return receipt.scalar_one_or_none() is not None
 
+    async def _completed_world_outcome(self, campaign_id: UUID, turn_id: UUID | None) -> bool:
+        """A completed non-observation step owns world state for its source turn.
+
+        Observation is not a world change. A later prose proposal may not revise a slot
+        that one of these steps already established, unless the proposal itself comes
+        from a newer completed world step.
+        """
+        if turn_id is None:
+            return False
+        source_turn = await self._session.get(Turn, str(turn_id))
+        if source_turn is None or source_turn.campaign_id != str(campaign_id):
+            return False
+        trigger_id = source_turn.parent_turn_id
+        if not trigger_id:
+            return False
+        receipt = await self._session.execute(
+            select(ActionStep.id)
+            .join(ActionSequence, ActionStep.sequence_id == ActionSequence.id)
+            .where(
+                ActionSequence.campaign_id == str(campaign_id),
+                ActionSequence.trigger_turn_id == trigger_id,
+                ActionSequence.status.in_(("prepared", "applied")),
+                ActionStep.status == "completed",
+                ActionStep.action_type != "observation",
+                ActionStep.observable_outcome.is_not(None),
+            )
+            .limit(1)
+        )
+        return receipt.scalar_one_or_none() is not None
+
+    async def _prose_rewrites_completed_outcome(
+        self,
+        campaign_id: UUID,
+        payload: dict,
+        source_turn_id: UUID,
+        operation: str,
+    ) -> bool:
+        if operation not in {"assert", "revise", "contradict", "retract"}:
+            return False
+        if not payload.get("subject") or not payload.get("predicate"):
+            return False
+        try:
+            draft = FactCreate(
+                subject=payload.get("subject"),
+                predicate=payload.get("predicate"),
+                object_value=payload.get("object_value"),
+                truth_status=payload.get("truth_status", "true"),
+                scope=payload.get("scope", "campaign"),
+                scene_id=(
+                    UUID(payload["scene_id"]) if payload.get("scene_id") else None
+                ),
+                memory_kind=payload.get("memory_kind"),
+            )
+        except ValueError:
+            return False
+        current = await self._facts.find_current_by_key(
+            campaign_id,
+            draft.subject,
+            draft.predicate,
+            scope=draft.scope,
+            scene_id=draft.scene_id,
+            memory_kind=draft.memory_kind,
+        )
+        if not current:
+            return False
+        if operation == "assert":
+            object_key = FactRepository.normalize(draft.object_value)
+            truth_key = FactRepository.normalize(draft.truth_status)
+            if all(
+                FactRepository.normalize(fact.object_value) == object_key
+                and FactRepository.normalize(fact.truth_status) == truth_key
+                for fact in current
+            ):
+                return False
+        if await self._completed_world_outcome(campaign_id, source_turn_id):
+            return False
+        for fact in current:
+            if await self._completed_world_outcome(campaign_id, fact.source_turn_id):
+                return True
+        return False
+
     async def apply(
         self,
         campaign_id: UUID,
@@ -114,6 +195,14 @@ class CanonApplier:
             )
 
         operation = self._operation(payload)
+
+        if change_type == ChangeType.FACT and await self._prose_rewrites_completed_outcome(
+            campaign_id,
+            payload,
+            source_turn_id,
+            operation,
+        ):
+            return
 
         if change_type == ChangeType.FACT:
             await self._facts.apply_change(

@@ -7,8 +7,10 @@ import pytest
 
 from app.models.turn import ChatMessage
 from app.services.player_intent_interpreter import (
+    PlayerActionIntentDraft,
     PlayerIntentContractDraft,
     PlayerIntentInterpreter,
+    _IntentWire,
     normalize_intent_draft,
 )
 from app.services.turn_planner import TurnPlanningError
@@ -301,3 +303,43 @@ def test_description_request_does_not_spawn_an_npc() -> None:
     )
     assert plan.npc_introductions == []
     assert plan.observable_consequences == []
+
+
+def test_addressee_act_is_service_and_keeps_the_speaker() -> None:
+    player_input = "Анна, подай кувшин со стола. Я сам его не беру."
+    draft = PlayerIntentContractDraft(
+        summary="Анна просит кувшин со стола, но сама его не берет.",
+        actions=[
+            PlayerActionIntentDraft(
+                action_type="inventory",
+                actor_role="addressee",
+                intent="подай кувшин со стола",
+                item_id=str(uuid4()),
+                inventory_operation="take",
+            )
+        ],
+        addressed_character_name="Анна",
+    )
+    contract = normalize_intent_draft(draft, player_input)
+    assert len(contract.actions) == 1
+    action = contract.actions[0]
+    assert action.action_type == "service"
+    assert action.item_id is None
+    assert action.inventory_operation is None
+    assert action.intent == "подай кувшин со стола"
+    assert contract.summary == player_input
+    assert contract.addressed_response_requested is True
+    assert contract.addressed_character_name == "Анна"
+
+
+def test_actor_role_is_required_on_the_model_schema() -> None:
+    schema = _IntentWire.model_json_schema()
+    action_refs = [
+        item["$ref"]
+        for item in schema["properties"]["actions"]["items"]["anyOf"]
+    ]
+    for ref in action_refs:
+        name = ref.rsplit("/", 1)[-1]
+        definition = schema["$defs"][name]
+        assert "actor_role" in definition["properties"]
+        assert "actor_role" in definition["required"]

@@ -31,6 +31,13 @@ The contract contains only what the HUMAN actually committed to now:
   step. Represent expected dialogue with addressed_response_requested/addressed_character_name.
 - A plural imperative to other people (раздевайтесь, снимайте) is NOT the player's own action.
   Leave actions empty and set addressed_response_requested unless the human also acts.
+- Every action object MUST set actor_role to speaker or addressee. speaker means the human
+  character performs the act. addressee means the human asked someone else to perform it.
+  An addressee act is action_type=service for that person, never the speaker's inventory,
+  and the speaker's own refusal to act stays outside that action's intent. Set
+  addressed_response_requested and addressed_character_name to that person's current name.
+  The summary keeps the human as the one who asked. Do not recast the request as the other
+  person's own attempt.
 - A negative/stationary boundary ("не иду", "остаюсь здесь", "не проверяю") is not an action.
 - An unresolved alternative/condition is not executed. Preserve it in pending_player_choice and/or
   protected_player_decisions instead of choosing a branch.
@@ -90,6 +97,7 @@ class PlayerActionIntentDraft(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     action_type: IntentActionType
+    actor_role: Literal["speaker", "addressee"] = "speaker"
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     destination_reference: str | None = None
@@ -124,6 +132,9 @@ class PlayerIntentContractDraft(BaseModel):
 
 class _ActionWire(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    actor_role: Literal["speaker", "addressee"] = Field(
+        description="speaker performs the act; addressee was asked to perform it."
+    )
     intent: str = Field(
         min_length=2,
         max_length=500,
@@ -307,18 +318,31 @@ def normalize_intent_draft(
     fallback = _compact(player_input)
     summary = _compact(draft.summary) or fallback
     source_actions = retain_addressed_actions(player_input, draft.actions)
+    addressee_owned = False
+    for action in source_actions:
+        if action.actor_role == "addressee":
+            # The machine owns the role. An addressed act is service for that person,
+            # never an inventory mutation by the speaker, even if the human also refused
+            # to do it themselves.
+            action.action_type = "service"
+            action.item_id = None
+            action.inventory_operation = None
+            action.inventory_target_id = None
+            addressee_owned = True
     actions = [
         _normalized_action(player_input, action, fallback_intent=fallback)
         for action in source_actions
     ]
     dropped_all = bool(draft.actions) and not actions
-    if dropped_all:
+    if dropped_all or (source_actions and all(action.actor_role == "addressee" for action in source_actions)):
         summary = fallback
     return PlayerIntentContract.model_validate(
         {
             "summary": summary,
             "actions": actions,
-            "addressed_response_requested": bool(draft.addressed_response_requested) or dropped_all,
+            "addressed_response_requested": (
+                bool(draft.addressed_response_requested) or dropped_all or addressee_owned
+            ),
             "addressed_character_name": _compact(draft.addressed_character_name) or None,
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
