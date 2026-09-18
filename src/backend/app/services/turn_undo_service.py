@@ -5,10 +5,11 @@ from uuid import UUID
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Entity, Scene, SceneThesis
+from app.db.tables import Campaign, Character, Entity, Scene, SceneThesis, Turn
 from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
@@ -25,7 +26,54 @@ class TurnUndoService:
         self._scenes = SceneRepository(session)
         self._bridges = SceneBridgeService(session)
 
+    async def discard_failed_orphan_turn(self, campaign_id: UUID) -> bool:
+        """Remove a failed/cancelled orphan user turn + its generation_run.
+
+        Retry/Remove in the GUI must never undo the previous completed pair. When the latest
+        generation failed without an assistant reply, only that orphan input is discarded so
+        the campaign returns to the last successful user/assistant pair.
+        """
+        runs = GenerationRunRepository(self._session)
+        latest = await runs.list_for_campaign(campaign_id, limit=1)
+        if not latest:
+            return False
+        run = latest[0]
+        if run.status not in {"failed", "cancelled"}:
+            return False
+        if run.assistant_turn_id is not None:
+            return False
+
+        user_turn = await self._turns.get_by_id(run.user_turn_id)
+        if user_turn is None:
+            return False
+        if user_turn.status not in {"active", "failed"}:
+            return False
+        if user_turn.role not in {"user", "meta_user"}:
+            return False
+
+        # No published assistant child may exist for this orphan input.
+        child = (
+            await self._session.execute(
+                select(Turn.id)
+                .where(
+                    Turn.parent_turn_id == str(user_turn.id),
+                    Turn.status == "active",
+                    Turn.role.in_(("assistant", "meta_assistant")),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if child is not None:
+            return False
+
+        await self._turns.mark_undone(user_turn.id)
+        await runs.delete(run.id)
+        await self._session.flush()
+        return True
+
     async def undo_last_pair(self, campaign_id: UUID) -> bool:
+        if await self.discard_failed_orphan_turn(campaign_id):
+            return True
         pair = await self._turns.get_latest_undoable_pair(campaign_id)
         if pair is None:
             return False
