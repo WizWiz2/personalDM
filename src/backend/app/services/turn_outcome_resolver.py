@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.models.player_intent import (
     ActionOutcomeDecision,
@@ -59,10 +59,17 @@ Hard ownership boundaries:
 NPC authority:
 - Characters already listed in the context are existing identities, not npc_introductions. Never
   reintroduce them or move them from another scene. Ordinary travel, inventory transfers and waiting
-  normally have npc_introductions=[]. A new introduction needs a specific encounter/contact reason.
+  with no contact intent normally have npc_introductions=[]. A new introduction needs a specific
+  encounter/contact reason.
 - Only physically present characters may act unless this turn's frozen actions genuinely encounter,
   contact or cause the appearance of a new person.
-- A genuinely new responder/person must be typed in npc_introductions; Narrator may not invent one.
+- A genuinely new responder/person must be typed in npc_introductions; Narrator may not invent one
+  in prose.
+- When the frozen intent seeks contact, presence, company, service, or an encounter in the current
+  place (including speech-only turns with addressed_response_requested, looking for people, walking
+  into inhabited space), do NOT resolve as atmosphere-only emptiness. Either (a) a present person
+  acts/speaks, or (b) emit a grounded npc_introduction with temporary role identity and a concrete
+  observable beat. Empty velvet description with nobody responding is a defect for contact-seeking.
 - Addressing a new local person can be requested through addressed_response_requested even when
   actions=[] (speech is not an executable action). If such a person responds, create their typed
   introduction. Never replace that person with a named character located in another scene.
@@ -75,8 +82,10 @@ NPC authority:
 Narrative fields constrain only external presentation. They cannot authorize another player action.
 For a stationary acknowledgement or speech-only turn, actions may be empty but still supply a
 concrete external response, character beat or observable consequence. Do not add a player action.
-Do not manufacture a complication in a calm routine turn without an established source. If
-allow_new_complication=true, complication_source must identify that established source.
+Do not manufacture a complication in a calm routine turn that is not contact-seeking and has no
+established source. If allow_new_complication=true, complication_source must identify that source.
+Contact-seeking turns are not calm routine: prefer a typed introduction or a present-person beat
+over empty atmospheric filler.
 
 For an explicitly new route-discovered destination, destination_profile may describe stable public
 physical traits/ordinary purpose in 2-4 Russian sentences. It is enrichment only; never use it to
@@ -207,6 +216,23 @@ class TurnOutcomeDecisionDraft(BaseModel):
     dramatic_mode: str = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = None
+
+    @field_validator("npc_introductions", mode="before")
+    @classmethod
+    def drop_invalid_npc_introductions(cls, value):
+        """Drop ungrounded/CJK intros; keep usable outcomes instead of failing the draft."""
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return value
+        kept = []
+        for item in value:
+            try:
+                OutcomeNpcIntroductionDraft.model_validate(item)
+            except (ValidationError, ValueError, TypeError):
+                continue
+            kept.append(item)
+        return kept
 
 
 def _outcome_wire_model(

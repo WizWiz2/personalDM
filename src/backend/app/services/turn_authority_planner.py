@@ -736,7 +736,13 @@ short sentence. Return exactly the NpcContactDecision schema.
 
     @staticmethod
     def _sanitize_uncommitted_npc_introductions(plan: CoordinatedTurnPlan) -> None:
-        """Prevent a pure movement plan from creating a durable incidental character."""
+        """Keep typed encounter intros even on movement; only drop reasonless incidental ones.
+
+        Pure travel used to wipe every npc_introduction. That forced atmosphere-only walks when
+        the player entered inhabited space and the planner had already typed a grounded encounter.
+        Inventing people in prose stays banned; a typed introduction with a contact reason is the
+        allowed path. Reasonless intros on movement-only plans remain incidental and are dropped.
+        """
         if not plan.npc_introductions:
             return
         exposable_actions = {"interaction", "observation", "conversation", "actor_turn"}
@@ -745,11 +751,16 @@ short sentence. Return exactly the NpcContactDecision schema.
             or plan.addressed_response_requested
             or bool(plan.character_beats)
             or any(
-            step.action_type in exposable_actions for step in plan.action_sequence.steps
+                step.action_type in exposable_actions for step in plan.action_sequence.steps
             )
         ):
             return
-        plan.npc_introductions = []
+        kept = [
+            item
+            for item in plan.npc_introductions
+            if " ".join(str(getattr(item, "reason", "") or "").split())
+        ]
+        plan.npc_introductions = kept
 
     @staticmethod
     def _normalize_nontravel_location_moves(

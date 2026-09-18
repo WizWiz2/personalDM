@@ -15,10 +15,5 @@
 .play-page .context-toggle.btn.primary,.play-page .composer-mode.btn.primary,.play-page .turn-undo.btn.primary{color:#1d1710;background:linear-gradient(180deg,#dfaa61,#c7893d);border-color:#efc17d;font-weight:700;box-shadow:0 7px 24px rgba(194,132,53,.13)}
 
 .play-column{position:relative}
-.generation-failure-stack{width:min(var(--reading),100%);margin:0 auto 12px;display:grid;gap:10px}
-.generation-failure-stack .generation-failure-panel{margin:0;width:100%}
 .jump-latest-btn{position:fixed;left:50%;bottom:96px;z-index:14;transform:translateX(-50%);display:inline-flex;padding:8px 14px;border-radius:999px;border:1px solid #5c4a30;background:rgba(28,26,20,.94);color:#efc17d;font:12px/1 Inter,system-ui,sans-serif;letter-spacing:.04em;box-shadow:0 10px 28px rgba(0,0,0,.35);cursor:pointer}
 .jump-latest-btn:hover{border-color:#efc17d;background:#241f16}
-
-
-.generation-failure-stack .session-zero-error-actions{display:flex;flex-wrap:wrap;gap:8px}

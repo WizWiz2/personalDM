@@ -377,21 +377,6 @@ export function PlayPage() {
             </div>
           </div>
 
-          {failedGeneration && (
-            <div className="generation-failure-stack" role="alert">
-              <GenerationFailurePanel generation={failedGeneration} />
-              <div className="session-zero-error-actions">
-                <button className="btn primary" type="button" disabled={busy} onClick={() => void retryFailedTurn()}>
-                  Повторить ход
-                </button>
-                <button className="btn" type="button" disabled={busy} onClick={() => void undo()}>
-                  Убрать неудачный ход
-                </button>
-              </div>
-            </div>
-          )}
-          {error && <ErrorState message={error} />}
-
           <div className="timeline" aria-live="polite">
             {timelineTurns.length === 0 && <div className="story-empty">История начнётся с твоего первого действия.</div>}
             {timelineTurns.map((turn) => {
@@ -423,6 +408,21 @@ export function PlayPage() {
               К последнему ходу
             </button>
           )}
+
+          {failedGeneration && (
+            <div className="generation-failure-stack" role="alert">
+              <GenerationFailurePanel generation={failedGeneration} />
+              <div className="generation-failure-actions">
+                <button className="btn primary" type="button" disabled={busy} onClick={() => void retryFailedTurn()}>
+                  Повторить ход
+                </button>
+                <button className="btn" type="button" disabled={busy} onClick={() => void undo()}>
+                  Убрать неудачный ход
+                </button>
+              </div>
+            </div>
+          )}
+          {error && <ErrorState message={error} />}
 
           <form className="composer" ref={composerRef} onSubmit={send}>
             <div className="mode-row">

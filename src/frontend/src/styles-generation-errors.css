@@ -1,1 +1,68 @@
-.generation-failure-panel{width:min(var(--reading),100%);margin:14px auto 4px}.generation-technical-error{grid-column:1/-1;margin:8px 0 0;padding:11px 12px;border:1px solid #422f2d;border-radius:8px;background:#171211;color:#caa29d;font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:220px;overflow:auto}
+/* Failed-turn panel: sits above the composer, not above the timeline. */
+.generation-failure-stack{
+  width:min(var(--reading),100%);
+  margin:8px auto 10px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.generation-failure-panel{
+  width:100%;
+  margin:0;
+  padding:14px 16px;
+  border-radius:10px;
+  border:1px solid #5a3734;
+  background:#211716;
+  color:#d9b0aa;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  box-sizing:border-box;
+}
+.generation-failure-panel strong{
+  font-size:14px;
+  line-height:1.35;
+}
+.generation-failure-panel > span{
+  color:#b9908b;
+  font-size:12px;
+  line-height:1.5;
+}
+.generation-failure-tech{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  margin-top:2px;
+}
+.generation-failure-tech .btn{
+  width:auto;
+  max-width:100%;
+}
+.generation-failure-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  align-items:center;
+}
+.generation-failure-actions .btn{
+  width:auto;
+}
+.generation-technical-error{
+  margin:4px 0 0;
+  padding:11px 12px;
+  border:1px solid #422f2d;
+  border-radius:8px;
+  background:#171211;
+  color:#caa29d;
+  font:11px/1.5 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  max-height:220px;
+  overflow:auto;
+  width:100%;
+  box-sizing:border-box;
+}
+@media (max-width:620px){
+  .generation-failure-actions{flex-direction:column;align-items:stretch}
+  .generation-failure-actions .btn{width:100%;justify-content:center}
+}

@@ -53,10 +53,10 @@ export function GenerationFailurePanel({ generation }: { generation: GenerationR
       ? 'Генерация остановлена до завершения.'
       : technicalRaw
 
-  return <div className="session-zero-inline-error generation-failure-panel" role="alert">
+  return <div className="generation-failure-panel" role="alert">
     <strong>{generation.status === 'cancelled' ? 'Обработка хода остановлена.' : 'Мастер не смог обработать ход.'}</strong>
     <span>{failureSummary(generation)}</span>
-    <div className="session-zero-error-actions">
+    <div className="generation-failure-tech">
       <button
         className="btn ghost"
         type="button"
