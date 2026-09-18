@@ -299,7 +299,7 @@ export function CampaignLibraryPage() {
                                   setDeleteTarget(campaign)
                                 }}
                               >
-                                ⋯?????? ?????????
+                                Удалить кампанию
                               </button>
                             </div>
                           )}
@@ -339,7 +339,7 @@ export function CampaignLibraryPage() {
               </div>
               <button type="button" className="icon-btn" onClick={() => setDeleteTarget(null)} aria-label="Закрыть"><Icons.close /></button>
             </div>
-            <p className="modal-body-copy">??? ?????, ????, ????? ? ??????????? ???? ???????? ????? ??????? ??? ????Удалить кампанию?????.</p>
+            <p className="modal-body-copy">Ходы, факты, сцены и связанные данные кампании будут удалены безвозвратно. Удалить кампанию?</p>
             <div className="modal-actions">
               <button type="button" className="btn" onClick={() => setDeleteTarget(null)}>Отмена</button>
               <button
