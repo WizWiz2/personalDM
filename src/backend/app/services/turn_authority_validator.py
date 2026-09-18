@@ -42,8 +42,8 @@ Return repair_required only for concrete violations:
   as "чувствовать".
 - NPC OWNERSHIP: thoughts, emotions, facial expressions, gestures, posture, speech and local
   conversational behavior of a present/authorized NPC belong to that NPC, not to the protagonist.
-- PRESENT NPC DIALOGUE: a present response actor may answer naturally from their perspective. Their
-  sentences do not need to be prewritten in observable_consequences. Personal memories,
+- PRESENT NPC DIALOGUE: a person already present may answer naturally from their perspective. Their
+  sentences do not need to be prewritten in observable_consequences. No reply mark is required. Personal memories,
   observations, opinions, uncertainty, claims and lies are epistemic character claims, not objective
   canon merely because they contain new information. Never turn a legal answer into silence.
 - SPEAKER CONSISTENCY: when acting_character is set, new first-person NPC dialogue and its immediate
