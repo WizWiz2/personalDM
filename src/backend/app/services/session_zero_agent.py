@@ -28,6 +28,7 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.session_zero_service import SessionZeroService
+from app.services.session_zero_reply_quality import assistant_message_incomplete
 from app.services.starter_identity import (
     apply_established_starter_names,
     reconcile_starter_npcs,
@@ -51,8 +52,13 @@ class SessionZeroAgent:
     """
 
     MAX_HISTORY_MESSAGES = 12
-    MODEL_RESPONSE_TOKENS = 1200
+    MODEL_RESPONSE_TOKENS = 2000
     RATE_LIMIT_RETRY_CAP_SECONDS = 12.0
+
+
+    @classmethod
+    def _assistant_message_incomplete(cls, message: str) -> bool:
+        return assistant_message_incomplete(message)
     SYSTEM_PROMPT = """[PERSONAL DM — SESSION ZERO AGENT]
 Ты отдельный нейро-мастер, который проводит живую нулевую сессию для одного игрока.
 Это разговор, а не анкета и не последовательное заполнение полей.
@@ -474,7 +480,20 @@ class SessionZeroInterviewService:
                     "сделай содержательный следующий шаг."
                 ),
             }
+        if self._assistant_message_incomplete(message):
+            return {
+                "quality": "incomplete_reply",
+                "instruction": (
+                    "Реплика обрывается на середине фразы. Перепиши assistant_message "
+                    "целиком: закончи мысль и закрой предложение терминальной "
+                    "пунктуацией (. ! ? … или закрывающей кавычкой/скобкой)."
+                ),
+            }
         return None
+
+    @classmethod
+    def _assistant_message_incomplete(cls, message: str) -> bool:
+        return SessionZeroAgent._assistant_message_incomplete(message)
 
     @classmethod
     def _execute_tool_calls(

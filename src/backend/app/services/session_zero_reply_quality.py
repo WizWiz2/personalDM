@@ -20,11 +20,11 @@ def assistant_message_incomplete(message: str) -> bool:
         "\u2018",
         "\u2019",
         ")",
-        "）",
-        "］",
-        "】",
-        "〉",
-        "》",
+        "]",
+        "}",
+        "*",
+        "_",
+        "~",
     }
     trimmed = text.rstrip()
     while trimmed and trimmed[-1] in closers:
