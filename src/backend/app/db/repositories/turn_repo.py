@@ -142,7 +142,7 @@ class TurnRepository(BaseRepository):
             query = query.where(Turn.status == "active")
         # SQLite timestamps can have equal precision for the two rows of a meta exchange. Keep a
         # stable role tie-breaker so reversing the newest-window query cannot expose the assistant
-        # before its parent user turn.
+        before its parent user turn.
         query = query.order_by(Turn.created_at.desc(), Turn.role.asc()).limit(limit)
 
         result = await self._session.execute(query)
@@ -297,5 +297,17 @@ class TurnRepository(BaseRepository):
             return False
 
         db_turn.status = "failed"
+        await self._session.flush()
+        return True
+
+    async def mark_undone(self, turn_id: UUID) -> bool:
+        result = await self._session.execute(
+            select(Turn).where(Turn.id == str(turn_id))
+        )
+        db_turn = result.scalar_one_or_none()
+        if not db_turn:
+            return False
+
+        db_turn.status = "undone"
         await self._session.flush()
         return True
