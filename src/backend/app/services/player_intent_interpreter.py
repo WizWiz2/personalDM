@@ -67,6 +67,12 @@ The contract contains only what the HUMAN actually committed to now:
 - rest/wait may carry elapsed_time/time_after only when the human establishes it.
 - identity_reveal_requested=true when the human explicitly asks a present person for their name.
 - addressed_character_name must use the current known designation, never a future/invented answer.
+- If the human seeks contact with unspecified local people (searching the place for someone,
+  looking for company/service/attendants, trying to find people while walking), set
+  addressed_response_requested=true even when no specific name is known. Keep any real movement
+  actions, but never freeze such a turn as movement-only with addressed_response_requested=false:
+  seeking people is a contact commitment, not calm travel.
+- When seeking unspecified people, addressed_character_name may be null; do not invent a name.
 
 Do not encode consequences in the intent. No action here means the world is unchanged yet; a later
 outcome resolver owns external consequences.

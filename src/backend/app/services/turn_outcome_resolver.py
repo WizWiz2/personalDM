@@ -530,10 +530,24 @@ class TurnOutcomeResolver:
         contract: PlayerIntentContract,
     ) -> TurnOutcomeDecision:
         try:
+            # Ordinary-travel short-circuit only for pure reach-destination commitments.
+            # If the frozen summary carries more than the movement intents (e.g. seeking people
+            # while walking), use the full outcome resolver so contact intros remain possible.
+            action_focus = " ".join(
+                f"{action.intent or ''} {action.destination_location or ''}"
+                for action in contract.actions
+            ).strip()
+            summary = (contract.summary or "").strip()
+            pure_travel_summary = bool(action_focus) and (
+                summary == action_focus
+                or summary in action_focus
+                or action_focus in summary and len(summary) <= len(action_focus) + 24
+            )
             if (
                 contract.actions
                 and not contract.addressed_response_requested
                 and not contract.pending_player_choice
+                and pure_travel_summary
                 and all(action.action_type == "movement" and action.movement_method == "ordinary"
                         for action in contract.actions)
             ):
