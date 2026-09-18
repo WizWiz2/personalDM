@@ -53,8 +53,19 @@ def test_narrator_receives_one_typed_authority_without_legacy_plan_contract():
     assert "Дежурный ждёт вопроса" in system
     assert "not a ban" in system
     assert "may speak" in system
+    assert "refuse" in system
+    assert "gesture" in system
+    assert "inside the current place" in system
+    assert "Speech is not required" in system
+    assert "missing mark is not a ban" in system
+    assert "not already present and not structurally authorized" in system
+    assert "established_state" in system
+    assert "protagonist's next voluntary choice" in system
+    assert "typed trip" in system
+    assert "not a trip" in system
     assert messages[-1].role == "user"
     assert "Older prose is not canon" in messages[-1].content
+    assert "missing mark is not a ban" in messages[-1].content
 
 
 @pytest.mark.asyncio
