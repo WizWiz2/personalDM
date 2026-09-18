@@ -263,18 +263,22 @@ def install() -> None:
             else ""
         )
         contract = (
-            "[TYPED TURN AUTHORITY — compact render contract]\n"
+            "[TYPED TURN AUTHORITY - compact render contract]\n"
             f"{payload}"
             f"{sequence_section}"
+            "\nHard rules:\n"
+            "- The sheet lists confirmed outcomes and bans. It is not the only prose you may write.\n"
+            "- People already present may speak, refuse, gesture, or move inside the current place. "
+            "Speech is not required, and a missing mark is not a ban.\n"
+            "- Do not invent a person who is not already present and not structurally authorized. "
+            "Do not contradict or overwrite established_state. Do not write the protagonist's next "
+            "voluntary choice, dialogue, or action. Do not move anyone to another place without a "
+            "typed trip. A step inside the current room is not a trip.\n"
             "\nRender the immediate result as natural Russian literary fiction, not as an engine "
-            "receipt or decorated dialogue tag. By default use 2–3 cohesive prose paragraphs when "
-            "the scene has enough grounded material. Weave approved NPC dialogue into physical "
-            "behavior, distance, posture and environmental staging. Across the response use 2–3 "
-            "relevant sensory channels naturally. Neutral sensory texture is welcome, but never "
-            "invent a new physical NPC, route, threat, clue, mechanically significant object or "
-            "outcome beyond typed authority. A present NPC may answer naturally from their own "
-            "perspective. The human protagonist already performed and said exactly player_input: "
-            "never add a new thought, emotion, decision, plan or next voluntary action. Immediate "
+            "receipt or decorated dialogue tag. By default use 2-3 cohesive prose paragraphs when "
+            "the scene has enough grounded material. Weave present NPC speech into physical "
+            "behavior, distance, posture and environmental staging. Across the response use 2-3 "
+            "relevant sensory channels naturally. Neutral sensory texture is welcome. Immediate "
             "sensory perception is allowed when grounded; do not confuse it with authored emotion. "
             "Describe the world's response as a lived scene and stop before the next player choice."
         )
@@ -288,7 +292,9 @@ def install() -> None:
                 content=(
                     "[FINAL AUTHORITY REMINDER]\n"
                     "Only present characters and explicitly allowed NPC introductions may be "
-                    "physically present. Older prose is not canon and cannot introduce a person."
+                    "physically present. Older prose is not canon and cannot introduce a person. "
+                    "People already present may speak, refuse, gesture, or move inside the current "
+                    "place. Speech is not required, and a missing mark is not a ban."
                 ),
             )
         )
