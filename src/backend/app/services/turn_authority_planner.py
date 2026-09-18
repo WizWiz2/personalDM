@@ -213,9 +213,12 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   temporary_name and reason. When temporary_name=false, also provide personal_name_evidence: the
   exact current-turn or campaign statement that establishes the person's personal name. Leave it
   null for role/title-only identities.
-- addressed_response_requested: true only when the latest human input actually addresses, asks,
-  tells, or otherwise expects a response from the selected addressed character. This may be true on
-  a mixed world-action + dialogue turn. A sticky selected listener alone is not sufficient.
+- addressed_response_requested: true when the latest human input addresses, asks, tells, or
+  otherwise expects a reply from the selected addressed character. False is not a ban and not a
+  defect. A missing mark does not forbid speech or other present-person behavior, speech is not
+  required, and do not demand a typed reply, refusal, gesture, or step inside the current place.
+  Do not write a ban into canon_constraints. This may be true on a mixed world-action + dialogue
+  turn. A sticky selected listener alone is not sufficient.
 - personal_name_revealed: true only when the typed current-turn exchange explicitly establishes a
   present character's personal name (for example, that character answers a question about their
   name). Keep it false for greetings, ordinary replies, role/title descriptions, or a name merely
@@ -233,12 +236,12 @@ SYSTEMLESS RESOLUTION IS ABSOLUTE:
 - There is no dice/check/rules resolver. `requires_check` is NOT a legal output and is absent from
   the schema. Resolve uncertainty directly into fiction as success, partial success, failure, or an
   uncertain observable consequence that exists now.
-- Ordinary speech to an addressed present NPC is response ownership, not an action_sequence step.
-  For mixed input, place only real world actions in action_sequence and set
-  addressed_response_requested=true when the selected NPC should answer.
-- A purely conversational question or request addressed to a present character is complete when
-  response ownership is typed and the current exchange/request is stated as an observable
-  consequence; it needs no synthetic action_sequence step merely to be renderable.
+- Present-person behavior does not need response ownership, an action_sequence step, or an
+  observable consequence to be a valid plan. A missing mark is not a defect and not a ban, and
+  speech is not required. For mixed input, place only real world actions in action_sequence.
+  Set addressed_response_requested when a reply is expected; leaving it false is not a ban.
+- Do not invent a synthetic action_sequence step merely to render a present person's reply,
+  refusal, gesture, or step inside the current place.
 - Remembering a person, telling a present character about that memory, or asking a present character
   a question does not require a focus_transition; do not add one unless the human explicitly commits
   to a separate attention-changing world action.
@@ -328,10 +331,10 @@ Return repair_required only when the proposed typed plan semantically violates o
   branch, or author a new voluntary decision.
   A first-person declarative action that the human states as performed is not an unresolved choice;
   it is an authorized commitment and may be completed if no typed world blocker applies.
-- RENDERABLE OUTCOME: a resolved meaningful observation/interaction/world action must leave a
-  concrete typed current result for Narrator. For action_sequence, every completed auto_success step
-  needs observable_outcome unless its structured transition is itself the complete visible result.
-  Do not approve an "empty success" that can only render as a generic no-change fallback.
+- RENDERABLE OUTCOME: a completed auto_success step still needs observable_outcome unless its
+  structured transition is itself the complete visible result. Do not approve an "empty success"
+  that can only render as a generic no-change fallback. A missing typed reply, refusal, gesture,
+  or step inside the current place is not an empty success and is not a defect.
 - A completed interaction or inventory step already carries the required physical realization and
   may be rendered without a separate focus_transition. Do not demand focus_transition merely because
   the player looks at an object, touches it, turns attention toward it, or makes an object visible;
@@ -340,12 +343,11 @@ Return repair_required only when the proposed typed plan semantically violates o
   Наблюдение результата, присоединённое к тому же действию («лампа загорается, и я это вижу»,
   «я открываю дверь и вижу коридор»), является evidence/observable outcome этого действия, а не
   отдельным focus_transition или вторым шагом.
-- Ordinary speech, remembering someone, reporting information, or addressing a character who is
-  already physically present is not itself a movement/focus action. Represent it through response
-  ownership and the current conversation result; do not invent a focus_transition or action step
-  just to show that the speaker looked at the listener.
-  A question to that character is therefore not an insufficient plan solely because it has no
-  world-action step, provided the exchange and response ownership are explicit.
+- Ordinary speech, a refusal, a gesture, remembering someone, reporting information, or a step
+  inside the current place is not itself a movement or a change of place. Do not invent a
+  focus_transition or action step, and do not demand a typed mark, to show it.
+  A question to a person already present is not an insufficient plan because it has no world-action
+  step and no typed reply. A missing mark is not a defect.
   Обращение к уже присутствующему персонажу не означает подхода к нему: не требуй отдельного
   перемещения или focus_transition, если игрок явно не описал такой физический коммит.
   Прибытие в локацию, где этот персонаж находится, не является отдельным подходом к NPC.
@@ -379,8 +381,9 @@ Return repair_required only when the proposed typed plan semantically violates o
   путь до конечной локации.
 - CONTACT/IDENTITY: when contact with an unspecified person is resolved positively, a previously
   unknown physical responder must be typed in npc_introductions. If nobody answers/is found, the
-  negative outcome must be explicit. A known present addressed character needs response ownership,
-  not recreation as a new NPC.
+  negative outcome must be explicit. A known present addressed character is not a new NPC.
+  Missing response ownership is not a defect and is not a ban on their speech or other behavior
+  in the current place. Do not demand a typed reply, refusal, gesture, or in-place step.
 - PRESENCE CONSISTENCY: treat present_character_names plus npc_introductions as an exhaustive
   physical allowlist. If the proposed outcome, character beats, or interaction result says that an
   unnamed person/group responds, approaches, watches, or is physically encountered while the
@@ -394,13 +397,14 @@ Return repair_required only when the proposed typed plan semantically violates o
   exact.
 - DIALOGUE COMPLETENESS: the latest player speech is already represented by `player_input` in the
   authority envelope. For a direct question/address to a physically present NPC, do not require a
-  duplicated player-line field or an action_sequence step. It is sufficient that the typed plan
-  preserves the exchange and assigns the NPC reply to response ownership/observable consequence.
+  duplicated player-line field, an action_sequence step, or addressed_response_requested. A plan
+  that leaves a reply, refusal, gesture, or in-place step untyped is valid. A missing mark is not
+  a defect and is not a ban. Speech is not required.
 - CANON/COMPLICATION: new physical NPCs, routes, threats, clues and significant world outcomes require
   the typed permissions/established source appropriate to them.
 
-A semantically valid quiet/no-contact/failure outcome is acceptable. Do not demand drama. A quiet
-outcome still needs an explicit current-world result rather than an empty authority payload.
+A semantically valid quiet/no-contact/failure outcome is acceptable. Do not demand drama. A
+missing mark is not an empty authority payload, not a defect, and not a ban.
 Return exactly:
 {
   "verdict": "pass|repair_required",
@@ -901,8 +905,9 @@ short sentence. Return exactly the NpcContactDecision schema.
                         "Preserve player agency, identity, physical presence, action order and "
                         "all unaffected commitments. Only the listed defects may be repaired; "
                         "do not manufacture actions, participants or facts to appease a reviewer. "
-                        "Use typed transitions for movement/time, typed introductions for new "
-                        "physical participants and response ownership for dialogue. A claim is "
+                        "Use a typed trip only for a change of place or time, and typed "
+                        "introductions only for a person who is not already present. A missing "
+                        "reply, refusal, gesture, or in-place step is not a defect. A claim is "
                         "not an established world fact. Asking an existing participant's name "
                         "sets identity_reveal_requested and retains that participant's current "
                         "designation/ID; it never creates a named duplicate in npc_introductions. "
