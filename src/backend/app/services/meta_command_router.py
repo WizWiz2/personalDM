@@ -9,7 +9,12 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.models.turn import ChatMessage, TurnCreate
-from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.config import settings
+from app.providers.llm_provider import (
+    LLMProvider,
+    LLMProviderError,
+    LLMProviderTruncatedError,
+)
 from app.services.context_compiler import ContextCompiler
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
@@ -261,6 +266,10 @@ class MetaCommandRunner:
             yield "[Meta command failed: no LLM provider is configured for this campaign.]"
             return
 
+        meta_budget = max(
+            int(settings.META_RESPONSE_RESERVE_TOKENS),
+            int(settings.RESPONSE_RESERVE_TOKENS),
+        )
         answer = ""
         try:
             async for token in self._provider.generate_stream(
@@ -268,8 +277,21 @@ class MetaCommandRunner:
                 selection.config,
                 selection.api_key,
                 temperature=0.2,
+                max_tokens=meta_budget,
             ):
                 answer += token
+        except LLMProviderTruncatedError as exc:
+            partial = (exc.partial_text or "").strip()
+            # Accept a usable incomplete-stream meta answer rather than failing the turn.
+            if partial and (
+                LLMProvider._looks_complete(partial) or len(partial) >= 40
+            ):
+                answer = partial
+            else:
+                await self._turn_repo.mark_failed(user_turn.id)
+                await self._session.commit()
+                yield f"[Meta command failed: {exc}]"
+                return
         except LLMProviderError as exc:
             await self._turn_repo.mark_failed(user_turn.id)
             await self._session.commit()
@@ -302,8 +324,11 @@ class MetaCommandRunner:
                     selection.config,
                     selection.api_key,
                     temperature=0.1,
+                    max_tokens=meta_budget,
                 ):
                     repaired += token
+            except LLMProviderTruncatedError as exc:
+                repaired = (exc.partial_text or "").strip()
             except LLMProviderError:
                 repaired = ""
             if repaired.strip() and not looks_like_scene_narration(repaired):

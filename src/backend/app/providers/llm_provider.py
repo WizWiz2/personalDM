@@ -342,11 +342,23 @@ class LLMProvider:
         usage: dict[str, int],
         budget: int,
     ) -> bool:
+        """True only when generation actually hit the completion ceiling.
+
+        Providers (especially Ollama) sometimes report finish_reason=length on a
+        short, complete answer after context pressure. Trust usage near the
+        requested budget; without usage, do not treat a bare length stop as
+        exhausted — unfinished mid-sentence text is caught by _looks_complete.
+        """
+        completion_tokens = cls._completion_tokens(usage)
+        near_budget = bool(
+            completion_tokens and completion_tokens >= max(1, int(budget * 0.97))
+        )
         reason = (finish_reason or "").casefold()
         if reason in cls.TRUNCATION_REASONS:
-            return True
-        completion_tokens = cls._completion_tokens(usage)
-        return bool(completion_tokens and completion_tokens >= max(1, int(budget * 0.97)))
+            if completion_tokens:
+                return near_budget
+            return False
+        return near_budget
 
     @staticmethod
     def _openai_no_reasoning_payload(payload: dict[str, Any]) -> dict[str, Any]:

@@ -179,6 +179,21 @@ def test_usage_can_reveal_silent_budget_exhaustion():
     ) is False
 
 
+def test_length_finish_without_near_budget_usage_is_not_exhausted():
+    # Ollama sometimes reports length on a short complete answer.
+    assert LLMProvider._budget_exhausted(
+        "length",
+        {"completion_tokens": 48},
+        2048,
+    ) is False
+    assert LLMProvider._budget_exhausted(
+        "length",
+        {"completion_tokens": 2000},
+        2048,
+    ) is True
+    assert LLMProvider._budget_exhausted("length", {}, 2048) is False
+
+
 def test_openai_compatibility_variants_remove_optional_flags():
     payload = LLMProvider._openai_no_reasoning_payload(
         {
