@@ -63,10 +63,10 @@ class Settings(BaseSettings):
     CONTROL_LLM_MODEL: str = "qwen2.5:7b"
     CONTROL_LLM_API_KEY: str | None = None
     CONTROL_LLM_CONTEXT_WINDOW: int | None = None
-    # A structured control request must never monopolize a live turn for several minutes.
-    # The provider may internally repair malformed JSON, but the role boundary owns the total
-    # wall-clock budget for that request and converts timeout into a normal planner/validator error.
-    CONTROL_LLM_TIMEOUT_SECONDS: float = 60.0
+    # Structured control requests (intent/outcome/planner JSON) get one wall-clock budget.
+    # Local 7B control often exceeds 60s under load; 180s keeps turns alive without unbounded hangs.
+    # Timeout becomes a normal planner/validator error instead of a stuck generation.
+    CONTROL_LLM_TIMEOUT_SECONDS: float = 180.0
     # Waiting for another local model is measured separately from active inference.
     LOCAL_LLM_QUEUE_TIMEOUT_SECONDS: float = 120.0
     PLANNER_LLM_MODEL: str | None = None
