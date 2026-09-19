@@ -155,9 +155,14 @@ export const api = {
       { method: 'POST' },
     ),
 
-  listTurns: (campaignId: UUID, limit = 100, channel: 'all' | 'narrative' | 'meta' = 'all') =>
+  listTurns: (
+    campaignId: UUID,
+    limit = 100,
+    channel: 'all' | 'narrative' | 'meta' = 'all',
+    activeOnly = true,
+  ) =>
     request<Turn[]>(
-      `/api/campaigns/${campaignId}/turns?limit=${limit}&active_only=true&channel=${channel}`,
+      `/api/campaigns/${campaignId}/turns?limit=${limit}&active_only=${activeOnly}&channel=${channel}`,
     ),
   undoTurn: (campaignId: UUID) =>
     request<{ success: boolean }>(`/api/campaigns/${campaignId}/turns/undo`, { method: 'POST' }),

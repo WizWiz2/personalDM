@@ -44,8 +44,12 @@ class TurnUndoService:
             return False
 
         user_turn = await self._turns.get_by_id(run.user_turn_id)
-        if user_turn is None:
-            return False
+        # Generation row can outlive the turn (manual undo, partial cleanup). Always
+        # delete the failed/cancelled orphan run so the GUI is not stuck on it.
+        if user_turn is None or user_turn.status == "undone":
+            await runs.delete(run.id)
+            await self._session.flush()
+            return True
         if user_turn.status not in {"active", "failed"}:
             return False
         if user_turn.role not in {"user", "meta_user"}:

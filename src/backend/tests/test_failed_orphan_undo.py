@@ -105,3 +105,34 @@ async def test_undo_discards_failed_orphan_without_touching_previous_pair(
     assert pair is not None
     assert pair[0].id == completed_user.id
     assert pair[1].id == completed_assistant.id
+
+
+@pytest.mark.asyncio
+async def test_undo_clears_failed_generation_when_turn_already_undone(
+    db_session: AsyncSession,
+):
+    campaign_id = uuid4()
+    campaigns = CampaignRepository(db_session)
+    turns = TurnRepository(db_session)
+    runs = GenerationRunRepository(db_session)
+
+    await campaigns.create(campaign_id, CampaignCreate(name="Stuck failed generation"))
+    orphan = await turns.create(
+        campaign_id,
+        TurnCreate(role="user", content="Повтори этот ход."),
+    )
+    await turns.mark_undone(orphan.id)
+    failed_run = await runs.create(campaign_id, orphan.id)
+    await runs.set_status(failed_run.id, "failed", error="pipeline failed")
+    await db_session.commit()
+
+    success = await TurnUndoService(db_session).undo_last_pair(campaign_id)
+    assert success is True
+    await db_session.commit()
+
+    remaining = (
+        await db_session.execute(
+            select(GenerationRun).where(GenerationRun.id == str(failed_run.id))
+        )
+    ).scalar_one_or_none()
+    assert remaining is None

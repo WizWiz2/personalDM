@@ -306,9 +306,21 @@ export function PlayPage() {
 
   const retryFailedTurn = async () => {
     if (busy || !failedGeneration) return
-    const failedTurn = timelineTurns.find((turn) => turn.id === failedGeneration.user_turn_id)
-      || acceptedTurn
-    const raw = failedTurn?.content?.trim()
+    // Failed turns are active_only=false in history; timeline often lacks them after reload.
+    const failedTurn = (
+      turns.find((turn) => turn.id === failedGeneration.user_turn_id)
+      || timelineTurns.find((turn) => turn.id === failedGeneration.user_turn_id)
+      || (acceptedTurn?.id === failedGeneration.user_turn_id ? acceptedTurn : null)
+    )
+    let raw = failedTurn?.content?.trim() || ''
+    if (!raw) {
+      try {
+        const history = await api.listTurns(campaign.id, 50, 'all', false)
+        raw = history.find((turn) => turn.id === failedGeneration.user_turn_id)?.content?.trim() || ''
+      } catch {
+        raw = ''
+      }
+    }
     if (!raw) {
       setError('Не удалось найти текст неудачного хода для повтора.')
       return
