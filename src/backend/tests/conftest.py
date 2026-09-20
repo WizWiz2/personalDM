@@ -25,6 +25,22 @@ from app.services.turn_planner import TurnPlan, TurnPlanner
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
 
+@pytest.fixture(autouse=True)
+def scene_development_transport(request):
+    """Existing tests own their historical planning seams; opt in to the new phase explicitly."""
+    if request.node.get_closest_marker("scene_development_enforced"):
+        yield
+        return
+    from app.models.scene_development import SceneDevelopment
+    from app.services.scene_development import SceneDevelopmentService
+
+    with patch.object(SceneDevelopmentService, "plan", new_callable=AsyncMock,
+                      return_value=(SceneDevelopment(
+                          disposition="quiet", reason="Deterministic test pacing.", actions=[],
+                      ), {"status": "test_transport"})):
+        yield
+
+
 @pytest.fixture(scope="session")
 def event_loop():
     """Create an instance of the default event loop for each test case."""

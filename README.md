@@ -106,6 +106,7 @@ user input
 → TurnAuthorityPlanner
 → deterministic structured execution
 → TurnAuthority
+→ развитие сцены: инициатива NPC или обоснованная пауза
 → Narrator draft
 → repetition/agency guards
 → Narration Validator
@@ -116,6 +117,10 @@ user input
 ```
 
 Главный принцип: **Planner/engine владеют исходом, Narrator владеет только формой**. Если проза противоречит уже выполненному structured outcome, исправляется проза, а не состояние мира.
+
+Инициатива NPC планируется отдельно от действий игрока, по целям персонажей и текущей ситуации,
+уже в фактической сцене после перехода. Контракт, хранение и ограничения описаны в
+[`docs/architecture/scene-development.md`](docs/architecture/scene-development.md).
 
 ## Debugging и прозрачность
 

@@ -32,6 +32,7 @@ from app.services.turn_outcome_materializer import (
     TurnOutcomeMaterializer,
 )
 from app.services.turn_planner import TurnPlanningError
+from app.services.scene_development import SceneDevelopmentService
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -139,6 +140,10 @@ class TurnSaga:
             "- Never complete a scene boundary absent from scene_disposition/transition_type.\n"
             "- Preserve observable_consequences, canon_constraints and completed action steps.\n"
             "- narration_guidance and ending_hook affect prose only; they never override state.\n"
+            "- scene_development actions are approved NPC-owned acts AFTER the executed outcome. "
+            "Render them concretely, preserving the actor and leaving player_opportunity open. "
+            "They do not authorize accepting an offer for the hero or changing physical state. "
+            "A quiet disposition needs no added hook or explanation.\n"
             "- End before inventing the protagonist's next voluntary response.\n"
         )
         result = [
@@ -288,6 +293,9 @@ class TurnSaga:
             # Before PREPARED all structured writes belong to one still-uncommitted transaction.
             await self._session.rollback()
             return
+        # Publication and its event receipts are atomic even when prepare made no mutations.
+        # The specialized compensators below may otherwise be no-ops and commit a partial answer.
+        await self._session.rollback()
         await self._rollback_materialization(materializer, materialized_outcome)
         await self._rollback_prepared_transition(transition_executor, applied_transition)
         await self._set_phase(run_id, GenerationPhase.COMPENSATED)
@@ -475,6 +483,11 @@ class TurnSaga:
                 max_budget_override=max_budget_override,
             )
 
+            # World agency is decided against the actual destination and prepared participants.
+            # Route-graph fast paths and blocked sequences share this phase with all other turns.
+            development_service = SceneDevelopmentService(self._session)
+            development, development_metadata = await development_service.plan(authority, role_router)
+            authority = authority.model_copy(update={"scene_development": development})
             narrator_messages = self._inject_authority(narrator_messages, authority)
             context_metadata = dict(context_metadata)
             lifecycle = await self._generation_lifecycle.get(generation_run.id)
@@ -489,6 +502,7 @@ class TurnSaga:
                     "turn_planner": planner_metadata,
                     "scene_transition": transition_metadata,
                     "turn_authority": authority.model_dump(mode="json"),
+                    "scene_development": development_metadata,
                     "turn_materialization": {
                         "status": (
                             "prepared_before_narration"
@@ -520,6 +534,16 @@ class TurnSaga:
                 narrator_selection=narrator_selection,
                 authority=authority,
             )
+            publication = (narration.telemetry.get("narration_validation") or {}).get(
+                "publication_guard", {}
+            )
+            if development.actions and (
+                narration.validation_status == "safe_fallback"
+                or publication.get("validated_surface") is False
+            ):
+                raise TurnPlanningError(
+                    "Scene development needs validated prose; refusing to record unpublished NPC acts"
+                )
             await self._set_phase(generation_run.id, GenerationPhase.NARRATED)
 
             context_metadata["provider_telemetry"] = narration.telemetry
@@ -544,6 +568,10 @@ class TurnSaga:
                     token_count=token_count,
                 ),
             )
+
+            # The action becomes durable only together with the validated published answer.
+            # It records behavior, never promotes the content of an NPC claim into objective canon.
+            await development_service.publish(authority, saved_assistant.id)
 
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(

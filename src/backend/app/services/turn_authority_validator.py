@@ -77,6 +77,11 @@ Concrete violations:
   an item as falling back to the floor after an authoritative `take`). The correction must preserve
   the typed resulting ownership/location; do not reinterpret the player's action.
 - CURRENT TURN: prose answers/repeats a previous turn instead of current player_input/current result.
+- SCENE DEVELOPMENT: render each approved scene_development action in the target scene after the
+  executed outcome, preserving its actor. Omitting it or substituting a vague setup is incomplete.
+  Its purpose is private motivation, not public knowledge; an NPC claim does not establish its truth.
+  An open player_opportunity must remain open: never accept, decide or act for the protagonist.
+  A quiet disposition requires no artificial hook. An approved local offer is not itself a new threat.
 - COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
 - META LANGUAGE: player-facing prose talks about game/engine causality instead of the fictional
   moment, e.g. explains that an internal action caused no external changes, says information was

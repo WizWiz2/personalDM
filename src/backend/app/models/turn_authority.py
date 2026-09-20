@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.models.scene_development import SceneDevelopment
+
 
 class PlannedNpcIntroduction(BaseModel):
     """One previously unknown NPC that this turn is allowed to introduce."""
@@ -83,6 +85,7 @@ class TurnAuthority(BaseModel):
     allow_new_complication: bool = False
     complication_source: str | None = None
     action_sequence: dict | None = None
+    scene_development: SceneDevelopment | None = None
 
     @staticmethod
     def _player_facing_blocking_reason(value: object) -> str | None:
@@ -265,6 +268,10 @@ class TurnAuthority(BaseModel):
             "allow_new_complication": self.allow_new_complication,
             "complication_source": self.complication_source,
             "action_sequence": self.action_sequence,
+            "scene_development": (
+                self.scene_development.model_dump(mode="json")
+                if self.scene_development else None
+            ),
         }
         if self.acting_character_id and self.acting_character_name:
             from app.services.mixed_actor_response_guard import actor_response_contract
@@ -277,6 +284,16 @@ class TurnAuthority(BaseModel):
     def narrator_payload(self) -> dict:
         """Complete prose rendering contract derived from the same authority object."""
         payload = self.validator_payload()
+        if self.scene_development:
+            # Private purposes/source references are audit data, not omniscient prose to publish.
+            payload["scene_development"] = {
+                "disposition": self.scene_development.disposition,
+                "actions": [
+                    {"actor_id": str(action.actor_id), "action": action.action,
+                     "player_opportunity": action.player_opportunity}
+                    for action in self.scene_development.actions
+                ],
+            }
         payload.update(
             {
                 "allowed_new_npcs": [

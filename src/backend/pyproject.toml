@@ -28,6 +28,7 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 markers = [
+    "scene_development_enforced: exercise the real post-execution world-agency phase",
     "session_zero_enforced: run through the real mandatory session-zero gate",
     "narration_validator_enforced: exercise the legacy narration validator instead of the deterministic endpoint-test seam",
     "interagent_contract_enforced: exercise the real authority planner/validator hand-off with deterministic model transport",

@@ -97,6 +97,10 @@ World authority rules:
   mention or quotation of past speech is not physical presence.
 
 Turn-completeness rules:
+- scene_development contains separately approved NPC actions after the resolved player action.
+  Require their concrete rendering with the correct actor and an open player opportunity. Never
+  repair away this initiative merely because it is absent from the player's action_sequence.
+  Private purpose is not public knowledge, and a character claim does not establish objective truth.
 - The candidate must resolve the current player input to the extent TURN AUTHORITY already resolved
   it. If observable_consequences or completed action-sequence results exist, prose must communicate
   them in the current answer before any ending hook.

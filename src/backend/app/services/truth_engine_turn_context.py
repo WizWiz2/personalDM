@@ -103,7 +103,7 @@ class SemanticTurnContextReader:
                     .join(Event, Event.id == TruthEventRecord.event_id)
                     .where(
                         TruthEventRecord.source_turn_id == str(source_turn_id),
-                        TruthEventRecord.source_kind == "executor_receipt",
+                        TruthEventRecord.source_kind.in_(("executor_receipt", "scene_development")),
                         TruthEventRecord.status == "active",
                     )
                     .order_by(TruthEventRecord.sequence, TruthEventRecord.event_id)

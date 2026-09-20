@@ -55,6 +55,8 @@ Hard ownership boundaries:
 - reaction is optional manner of that same outcome: a look, a pause, a line. It is not another
   result. If the action happens, reaction cannot say it did not. When any action_outcome exists,
   leave character_beats empty; the reaction belongs on the action.
+  Independent NPC initiative belongs to the subsequent scene-development phase, which sees the
+  executed result and destination. Do not invent player actions to make room for that initiative.
 
 NPC authority:
 - Characters already listed in the context are existing identities, not npc_introductions. Never
