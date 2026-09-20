@@ -225,9 +225,26 @@ def install() -> None:
         )
         if review.verdict != "pass":
             return review
+        solitary = len(_unique_presence_keys(context_messages)) <= 1
+        if (
+            solitary
+            and bool(getattr(plan, "addressed_response_requested", False))
+            and not plan.npc_introductions
+        ):
+            issue = (
+                "NPC/PRESENCE: игрок ищет или адресует локальный контакт, но при "
+                "единственной физически присутствующей личности npc_introductions пуст. "
+                "Типизируй нового присутствующего NPC в npc_introductions; пустой "
+                "no-contact при явном поиске людей недопустим."
+            )
+            return SemanticPlanReview(
+                verdict="repair_required",
+                summary="Контакт-seeking требует typed npc_introductions при пустом касте.",
+                issues=[issue],
+            )
         if plan.npc_introductions or not plan.character_beats:
             return review
-        if len(_unique_presence_keys(context_messages)) > 1:
+        if not solitary:
             return review
         issue = (
             "NPC/PRESENCE: character_beats описывают действие/ответ внешнего персонажа, но при "

@@ -84,8 +84,8 @@ For a stationary acknowledgement or speech-only turn, actions may be empty but s
 concrete external response, character beat or observable consequence. Do not add a player action.
 Do not manufacture a complication in a calm routine turn that is not contact-seeking and has no
 established source. If allow_new_complication=true, complication_source must identify that source.
-Contact-seeking turns are not calm routine: prefer a typed introduction or a present-person beat
-over empty atmospheric filler.
+Contact-seeking turns are not calm routine: when the physical presence allowlist is player-only,
+npc_introductions must be non-empty. Empty atmospheric filler or "nobody is here" is invalid.
 
 For an explicitly new route-discovered destination, destination_profile may describe stable public
 physical traits/ordinary purpose in 2-4 Russian sentences. It is enrichment only; never use it to
@@ -522,6 +522,20 @@ class TurnOutcomeResolver:
         )
         return normalized
 
+
+    @staticmethod
+    def _requires_contact_introduction(
+        contract: PlayerIntentContract,
+        context_messages: list[ChatMessage],
+        decision: TurnOutcomeDecision,
+    ) -> bool:
+        """Contact-seeking with a player-only allowlist must type a new local person."""
+        if not contract.addressed_response_requested:
+            return False
+        if decision.npc_introductions:
+            return False
+        return len(present_character_names(context_messages)) <= 1
+
     async def resolve(
         self,
         selection: RoleModelSelection,
@@ -601,6 +615,52 @@ class TurnOutcomeResolver:
             decision = normalize_outcome_draft(draft, contract)
             self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
+            if self._requires_contact_introduction(contract, context_messages, decision):
+                # One forced re-resolve: models often choose empty-room for seeking turns.
+                force = (
+                    "\n\n[CONTACT COMMITMENT]\n"
+                    "The human seeks or addresses local people and the physical presence "
+                    "allowlist is player-only. Empty npc_introductions is invalid. Return at "
+                    "least one complete npc_introductions entry for a grounded local person "
+                    "who becomes present now, with role/description/appearance/reason."
+                )
+                data = await self._router.generate_json(
+                    self._provider,
+                    selection,
+                    [
+                        ChatMessage(
+                            role="system",
+                            content=_OUTCOME_PROMPT
+                            + "\n\n[OUTPUT JSON SCHEMA]\n"
+                            + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
+                        ),
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                "[AUTHORITATIVE CONTEXT]\n"
+                                + self._context(context_messages)
+                                + "\n\n[LATEST HUMAN INPUT — evidence only, actions are frozen below]\n"
+                                + player_input
+                                + "\n\n[PLAYER INTENT CONTRACT — immutable]\n"
+                                + contract.model_dump_json()
+                                + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
+                                + json.dumps(response_contract, ensure_ascii=False)
+                                + force
+                            ),
+                        ),
+                    ],
+                    max_tokens=1200,
+                    temperature=0.0,
+                    response_model=response_model,
+                )
+                draft = response_model.model_validate(data)
+                decision = normalize_outcome_draft(draft, contract)
+                self._validate_coverage(contract, decision)
+                decision = self._normalize_temporary_identities(decision)
+                if self._requires_contact_introduction(contract, context_messages, decision):
+                    raise TurnPlanningError(
+                        "contact-seeking with player-only presence requires npc_introductions"
+                    )
             self.audit.append(
                 {
                     "phase": "outcome",

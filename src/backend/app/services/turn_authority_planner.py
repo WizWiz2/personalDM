@@ -380,8 +380,9 @@ Return repair_required only when the proposed typed plan semantically violates o
   отдельный шаг «подойти к человеку у стойки»: typed location_transition покрывает весь заявленный
   путь до конечной локации.
 - CONTACT/IDENTITY: when contact with an unspecified person is resolved positively, a previously
-  unknown physical responder must be typed in npc_introductions. If nobody answers/is found, the
-  negative outcome must be explicit. A known present addressed character is not a new NPC.
+  unknown physical responder must be typed in npc_introductions. When the human actively seeks or
+  addresses local people and the physical allowlist is player-only, empty no-contact is a defect:
+  type at least one grounded npc_introduction. A known present addressed character is not a new NPC.
   Missing response ownership is not a defect and is not a ban on their speech or other behavior
   in the current place. Do not demand a typed reply, refusal, gesture, or in-place step.
 - PRESENCE CONSISTENCY: treat present_character_names plus npc_introductions as an exhaustive
@@ -403,8 +404,9 @@ Return repair_required only when the proposed typed plan semantically violates o
 - CANON/COMPLICATION: new physical NPCs, routes, threats, clues and significant world outcomes require
   the typed permissions/established source appropriate to them.
 
-A semantically valid quiet/no-contact/failure outcome is acceptable. Do not demand drama. A
-missing mark is not an empty authority payload, not a defect, and not a ban.
+A semantically valid quiet/no-contact/failure outcome is acceptable only when the human did not
+seek or address local people, or when a present non-player person already covers the contact.
+Do not demand drama. A missing mark is not an empty authority payload, not a defect, and not a ban.
 Return exactly:
 {
   "verdict": "pass|repair_required",

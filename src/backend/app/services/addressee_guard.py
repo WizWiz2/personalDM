@@ -59,9 +59,15 @@ def is_look_request(player_input: str) -> bool:
 
 
 def scrub_uninvited_spawn(plan, player_input: str) -> None:
-    """A request to describe people already present is not a new arrival or a player action."""
+    """A request to describe people already present is not a new arrival or a player action.
+
+    Contact-seeking (addressed_response_requested) must keep typed npc_introductions: looking for
+    people who are not yet present is an encounter commitment, not a describe-present scrub.
+    """
 
     if not is_look_request(player_input):
+        return
+    if getattr(plan, "addressed_response_requested", False):
         return
     if getattr(plan, "npc_introductions", None):
         plan.npc_introductions = []
