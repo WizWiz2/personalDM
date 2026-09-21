@@ -288,16 +288,33 @@ class TurnSaga:
         materializer: TurnOutcomeMaterializer | None,
         materialized_outcome: MaterializedTurnOutcome | None,
         prepared: bool,
+        campaign_id: UUID | None = None,
     ) -> None:
         if not prepared:
-            # Before PREPARED all structured writes belong to one still-uncommitted transaction.
+            # Before PREPARED, structural mutations roll back — but PLANNED may already have
+            # committed a pending director selection. Clear it so failed plans do not advance
+            # rhythm later via a stale pending commit.
             await self._session.rollback()
+            if campaign_id is not None:
+                try:
+                    from app.services.master_service import MasterService
+
+                    await MasterService(self._session).rewind_pending_rhythm(campaign_id)
+                except Exception:
+                    pass
             return
         # Publication and its event receipts are atomic even when prepare made no mutations.
         # The specialized compensators below may otherwise be no-ops and commit a partial answer.
         await self._session.rollback()
         await self._rollback_materialization(materializer, materialized_outcome)
         await self._rollback_prepared_transition(transition_executor, applied_transition)
+        if campaign_id is not None:
+            try:
+                from app.services.master_service import MasterService
+
+                await MasterService(self._session).rewind_pending_rhythm(campaign_id)
+            except Exception:
+                pass
         await self._set_phase(run_id, GenerationPhase.COMPENSATED)
 
     async def run_turn_stream(
@@ -486,7 +503,34 @@ class TurnSaga:
             # World agency is decided against the actual destination and prepared participants.
             # Route-graph fast paths and blocked sequences share this phase with all other turns.
             development_service = SceneDevelopmentService(self._session)
-            development, development_metadata = await development_service.plan(authority, role_router)
+            disposition_bias = None
+            gm_meta = (planner_metadata.get("telemetry") or {}).get("game_master")
+            if not isinstance(gm_meta, dict):
+                gm_meta = planner_metadata.get("game_master")
+            if isinstance(gm_meta, dict):
+                from app.models.game_master import DirectorMoveSelection
+                from app.services.master_director import scene_development_disposition_bias
+
+                moves = gm_meta.get("moves") or []
+                if moves:
+                    disposition_bias = scene_development_disposition_bias(
+                        DirectorMoveSelection(
+                            moves=moves[:2],
+                            obligations=[],
+                            forced_introduce_contact=bool(
+                                gm_meta.get("forced_introduce_contact")
+                            ),
+                            master_id=str(gm_meta.get("id") or "unknown"),
+                            master_display_name=str(
+                                gm_meta.get("display_name") or "unknown"
+                            ),
+                        )
+                    )
+            development, development_metadata = await development_service.plan(
+                authority,
+                role_router,
+                disposition_bias=disposition_bias,
+            )
             authority = authority.model_copy(update={"scene_development": development})
             narrator_messages = self._inject_authority(narrator_messages, authority)
             context_metadata = dict(context_metadata)
@@ -613,6 +657,14 @@ class TurnSaga:
             )
             processor = PostTurnProcessor(self._session)
             await processor.enqueue(campaign_id, saved_assistant.id)
+            # Advance Game Master rhythm only after a successful published turn.
+            try:
+                from app.services.master_service import MasterService
+
+                await MasterService(self._session).commit_rhythm_for_selection(campaign_id)
+            except Exception:
+                # Rhythm bookkeeping must never roll back a published turn.
+                pass
             await self._session.commit()
 
             PostTurnDispatcher.schedule(self._session.bind, saved_assistant.id)
@@ -626,6 +678,7 @@ class TurnSaga:
                 materializer,
                 materialized_outcome,
                 prepared,
+                campaign_id=campaign_id,
             )
             await self._generation_runs.set_status(
                 generation_run.id,
@@ -642,6 +695,7 @@ class TurnSaga:
                 materializer,
                 materialized_outcome,
                 prepared,
+                campaign_id=campaign_id,
             )
             await self._generation_runs.set_status(
                 generation_run.id,

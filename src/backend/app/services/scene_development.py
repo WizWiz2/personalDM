@@ -219,7 +219,13 @@ class SceneDevelopmentService:
                 if source.get("owner_id") not in (None, str(action.actor_id)):
                     raise TurnPlanningError("Scene development uses another NPC's private motive")
 
-    async def plan(self, authority: TurnAuthority, router) -> tuple[SceneDevelopment, dict]:
+    async def plan(
+        self,
+        authority: TurnAuthority,
+        router,
+        *,
+        disposition_bias: str | None = None,
+    ) -> tuple[SceneDevelopment, dict]:
         context = await self.context(authority)
         if not context["actors"]:
             return SceneDevelopment(
@@ -230,9 +236,22 @@ class SceneDevelopmentService:
         if selection is None:
             raise TurnPlanningError("Scene development has no control model")
         context, budget_audit = self.fit_context(context, selection.config.context_window)
+        bias_note = ""
+        if disposition_bias == "act":
+            bias_note = (
+                "\n[DIRECTOR BIAS]\nEligible NPCs are present. Prefer disposition=act with a "
+                "grounded agenda-backed initiative unless a concrete quiet reason applies."
+            )
+            context = {**context, "director_disposition_bias": "act"}
+        elif disposition_bias == "quiet":
+            bias_note = (
+                "\n[DIRECTOR BIAS]\nPrefer disposition=quiet unless an already-pressing "
+                "situation clearly requires a brief NPC act."
+            )
+            context = {**context, "director_disposition_bias": "quiet"}
         data = await router.generate_json(
             LLMProvider(), selection,
-            [ChatMessage(role="system", content=DEVELOPMENT_PROMPT),
+            [ChatMessage(role="system", content=DEVELOPMENT_PROMPT + bias_note),
              ChatMessage(role="user", content=json.dumps(context, ensure_ascii=False))],
             max_tokens=1100, temperature=0.2, response_model=SceneDevelopment,
         )
@@ -241,6 +260,7 @@ class SceneDevelopmentService:
         return decision, {
             "status": "completed", "model_name": selection.config.model_name,
             "agenda": context["agenda"], "actor_ids": [a["id"] for a in context["actors"]],
+            "director_disposition_bias": disposition_bias,
             **budget_audit,
         }
 

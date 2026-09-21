@@ -587,11 +587,20 @@ class TurnOutcomeResolver:
         contract: PlayerIntentContract,
         context_messages: list[ChatMessage],
         decision: TurnOutcomeDecision,
+        *,
+        force_introduce_contact: bool = False,
     ) -> bool:
-        """Contact-seeking with a player-only allowlist must type a new local person."""
-        if not contract.addressed_response_requested:
-            return False
+        """Contact-seeking with a player-only allowlist must type a new local person.
+
+        Director ``force_introduce_contact`` (seek + empty companion cast) uses the same
+        recovery path even when addressed_response_requested was not frozen.
+        """
         if decision.npc_introductions:
+            return False
+        if not (
+            force_introduce_contact
+            or contract.addressed_response_requested
+        ):
             return False
         return len(present_character_names(context_messages)) <= 1
 
@@ -601,11 +610,17 @@ class TurnOutcomeResolver:
         context_messages: list[ChatMessage],
         player_input: str,
         contract: PlayerIntentContract,
+        *,
+        force_introduce_contact: bool = False,
     ) -> TurnOutcomeDecision:
         try:
+            solo_cast = solo_physical_presence(context_messages)
             # Ordinary-travel short-circuit only for pure reach-destination commitments.
             # If the frozen summary carries more than the movement intents (e.g. seeking people
             # while walking), use the full outcome resolver so contact intros remain possible.
+            # Director-forced introduce also skips the travel short-circuit.
+            if force_introduce_contact:
+                solo_cast = True
             action_focus = " ".join(
                 f"{action.intent or ''} {action.destination_location or ''}"
                 for action in contract.actions
@@ -618,6 +633,7 @@ class TurnOutcomeResolver:
             )
             if (
                 not solo_cast
+                and not force_introduce_contact
                 and contract.actions
                 and not contract.addressed_response_requested
                 and not contract.pending_player_choice
@@ -639,7 +655,7 @@ class TurnOutcomeResolver:
                 "seeks_contact_or_presence": seeks_contact_or_presence(contract),
             }
             empty_cast_guidance = ""
-            if solo_cast and seeks_contact_or_presence(contract):
+            if (solo_cast and seeks_contact_or_presence(contract)) or force_introduce_contact:
                 empty_cast_guidance = (
                     "\n[EMPTY CAST / CONTACT-SEEKING]\n"
                     "The authoritative scene currently has no other physically present people. "
@@ -692,7 +708,10 @@ class TurnOutcomeResolver:
             decision = normalize_outcome_draft(draft, contract)
             self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
-            if self._requires_contact_introduction(contract, context_messages, decision):
+            if self._requires_contact_introduction(
+                contract, context_messages, decision,
+                force_introduce_contact=force_introduce_contact,
+            ):
                 # One forced re-resolve: models often choose empty-room for seeking turns.
                 force = (
                     "\n\n[CONTACT COMMITMENT]\n"
@@ -734,7 +753,10 @@ class TurnOutcomeResolver:
                 decision = normalize_outcome_draft(draft, contract)
                 self._validate_coverage(contract, decision)
                 decision = self._normalize_temporary_identities(decision)
-                if self._requires_contact_introduction(contract, context_messages, decision):
+                if self._requires_contact_introduction(
+                contract, context_messages, decision,
+                force_introduce_contact=force_introduce_contact,
+            ):
                     raise TurnPlanningError(
                         "contact-seeking with player-only presence requires npc_introductions"
                     )
