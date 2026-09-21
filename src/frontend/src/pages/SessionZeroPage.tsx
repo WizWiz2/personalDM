@@ -8,6 +8,7 @@ import {
 } from '../api/client'
 import type { Campaign, SessionZero } from '../api/types'
 import { BrandLogo } from '../components/BrandLogo'
+import { MasterPicker } from '../components/MasterPicker'
 import { Icons } from '../components/Icons'
 import { ErrorState, LoadingState } from '../components/States'
 
@@ -266,6 +267,7 @@ export function SessionZeroPage() {
               <span className="eyebrow">Итоговые договорённости</span>
               <p>{dedupeSummaryText(summary || interview.state.last_summary || 'Нулевая сессия завершена.')}</p>
             </div>
+            <MasterPicker campaignId={campaignId} heading="Кто ведёт эту историю" compact />
             <div className="session-zero-ready">
               <div>
                 <span className="eyebrow">Готово</span>

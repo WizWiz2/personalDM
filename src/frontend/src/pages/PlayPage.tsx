@@ -2,7 +2,7 @@
 import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import { submitDetachedTurn } from '../api/turnRuntime'
-import type { SceneState, Turn } from '../api/types'
+import type { GameMasterPersona, SceneState, Turn } from '../api/types'
 import { friendlyVisualError, visualApi, visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
 import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
@@ -56,6 +56,7 @@ export function PlayPage() {
   const [acceptedTurn, setAcceptedTurn] = useState<Turn | null>(() => readStoredTurn(acceptedKey))
   const [scene, setScene] = useState<SceneState | null>(null)
   const [playerName, setPlayerName] = useState('')
+  const [master, setMaster] = useState<GameMasterPersona | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mode, setMode] = useState<Mode>(() => readStoredMode(modeKey))
@@ -87,7 +88,11 @@ export function PlayPage() {
     if (showLoader) setLoading(true)
     setError('')
     try {
-      const setup = await api.getSessionZero(campaign.id)
+      const [setup, campaignMaster] = await Promise.all([
+        api.getSessionZero(campaign.id),
+        api.getCampaignGameMaster(campaign.id).catch(() => null),
+      ])
+      if (campaignMaster) setMaster(campaignMaster.resolved)
       if (setup.status !== 'completed') {
         navigate(`/campaigns/${campaign.id}/session-zero`, { replace: true })
         return
@@ -370,7 +375,14 @@ export function PlayPage() {
   return (
     <div className="workspace-page play-page">
       <header className="workspace-topbar">
-        <div><h1>{campaign.name}</h1><p>{topbarSubtitle}</p></div>
+        <div className="play-title-row">
+          {master && (
+            <div className="play-master-portrait" title={master.display_name}>
+              <img src={master.portrait_pixel} alt={master.display_name} />
+            </div>
+          )}
+          <div><h1>{campaign.name}</h1><p>{topbarSubtitle}{master ? ` · ${master.display_name}` : ''}</p></div>
+        </div>
         <div className="topbar-actions">
           <button className="btn primary context-toggle" type="button" aria-expanded={drawer} aria-controls="play-scene-context" onClick={() => setDrawer(true)}>Сейчас</button>
           <button className="btn primary scene-generate" type="button" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода: текстовая и графическая модели делят видеопамять' : sceneGenerating ? 'Рисуем в фоне. Можно отправлять ход — графика подождёт и продолжит после ответа мастера.' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'} aria-label={sceneGenerating ? 'Рисуем сцену' : 'Сгенерировать сцену'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
