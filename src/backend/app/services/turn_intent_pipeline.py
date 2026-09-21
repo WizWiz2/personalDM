@@ -9,7 +9,10 @@ from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_outcome_resolver import TurnOutcomeResolver
 from app.services.master_service import MasterService
-from app.services.master_director import apply_moves_to_narration_guidance
+from app.services.master_director import (
+    apply_moves_to_narration_guidance,
+    apply_moves_to_outcome_decision,
+)
 from app.services.turn_outcome_resolver import (
     seeks_contact_or_presence,
     solo_physical_presence,
@@ -51,6 +54,18 @@ class TurnIntentPlanningPipeline:
                 str(location.id): location.canonical_name for location in locations
             },
         )
+        # Director moves are selected before outcome resolution so force_introduce_contact
+        # can drive the existing contact-seeking recovery path. Rhythm is NOT persisted here.
+        seek_contact = seeks_contact_or_presence(contract)
+        empty_cast = solo_physical_presence(context_messages)
+        master_service = MasterService(self._session)
+        persona, director, rhythm_before = await master_service.select_moves_for_turn(
+            campaign_id,
+            seek_contact=seek_contact,
+            empty_companion_cast=empty_cast,
+            persist_rhythm=False,
+        )
+
         decision = await self._compiler.resolve_known_travel(campaign_id, contract)
         outcome_owner = "route_graph" if decision is not None else "external_resolver"
         if decision is None:
@@ -59,7 +74,19 @@ class TurnIntentPlanningPipeline:
                 context_messages,
                 user_input,
                 contract,
+                force_introduce_contact=director.forced_introduce_contact,
             )
+        elif director.forced_introduce_contact and not decision.npc_introductions:
+            # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver
+            # so forced contact-seeking still requires typed introductions.
+            decision = await self._outcomes.resolve(
+                selection,
+                context_messages,
+                user_input,
+                contract,
+                force_introduce_contact=True,
+            )
+            outcome_owner = "external_resolver_forced_intro"
         missing = await self._compiler.missing_destination_profiles(
             campaign_id,
             contract,
@@ -72,24 +99,14 @@ class TurnIntentPlanningPipeline:
                 decision,
                 missing,
             )
-        # Deterministic Game Master director moves — structural obligations, no extra LLM.
-        seek_contact = seeks_contact_or_presence(contract)
-        empty_cast = solo_physical_presence(context_messages)
-        persona, director = await MasterService(self._session).select_moves_for_turn(
-            campaign_id,
-            seek_contact=seek_contact,
-            empty_companion_cast=empty_cast,
-            persist_rhythm=True,
-        )
+
+        # Primary: structural authority levers. Secondary: narration_guidance seasoning.
+        decision = apply_moves_to_outcome_decision(decision, director)
         guidance = apply_moves_to_narration_guidance(
             list(decision.narration_guidance),
             director,
         )
         decision = decision.model_copy(update={"narration_guidance": guidance})
-        if director.forced_introduce_contact and not decision.npc_introductions:
-            # Keep existing contact-seeking contracts: force introduce_contact bias as guidance.
-            # Typed introductions still come from the outcome resolver / recovery path.
-            pass
 
         plan = await self._compiler.compile(campaign_id, contract, decision)
         return plan, {
@@ -104,6 +121,8 @@ class TurnIntentPlanningPipeline:
                 "display_name": persona.display_name,
                 "moves": list(director.moves),
                 "forced_introduce_contact": director.forced_introduce_contact,
+                "rhythm_pending": True,
+                "rhythm_before": rhythm_before.model_dump(mode="json"),
             },
         }
 

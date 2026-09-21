@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import random
+from typing import TYPE_CHECKING
+
 from app.models.game_master import (
     DIRECTOR_MOVE_LABELS_RU,
     DIRECTOR_MOVES,
@@ -11,6 +15,9 @@ from app.models.game_master import (
     MasterRhythmState,
     MovePolicy,
 )
+
+if TYPE_CHECKING:
+    from app.models.player_intent import TurnOutcomeDecision
 
 PRESSURE_MOVES: frozenset[DirectorMove] = frozenset(
     {
@@ -32,6 +39,9 @@ PRESSURE_THRESHOLD_BY_MASTER: dict[str, int] = {
     "intrigue_puppeteer": 3,
 }
 DEFAULT_PRESSURE_THRESHOLD = 3
+
+_DRAMATIC_RANK = {"calm": 0, "routine": 1, "tense": 2, "dangerous": 3}
+_RANK_TO_DRAMATIC = {value: key for key, value in _DRAMATIC_RANK.items()}
 
 
 def _obligation_text(move: DirectorMove) -> str:
@@ -98,25 +108,57 @@ def adjust_weights(
     return weights
 
 
+def sampling_seed(
+    *,
+    campaign_id: str | None,
+    turn_index: int,
+    master_id: str,
+) -> int:
+    """Stable seed so Chaos Dice can vary across turns without live RNG drift."""
+    material = f"{campaign_id or 'campaign'}|{master_id}|{int(turn_index)}"
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
+    return int(digest[:16], 16)
+
+
 def pick_moves(
     weights: dict[DirectorMove, float],
     *,
     count: int = 2,
     force_introduce_contact: bool = False,
+    seed: int | None = None,
 ) -> list[DirectorMove]:
-    ranked = sorted(
-        weights.items(),
-        key=lambda item: (-item[1], DIRECTOR_MOVES.index(item[0])),
-    )
+    """Pick up to ``count`` moves via seeded weighted sampling (no live wall-clock RNG).
+
+    When ``seed`` is None, falls back to deterministic top-weight ranking for backward-compatible
+    callers/tests that omit a seed. Force-introduce always wins the first slot.
+    """
     chosen: list[DirectorMove] = []
     if force_introduce_contact:
         chosen.append("introduce_contact")
-    for move, weight in ranked:
-        if weight <= 0 or move in chosen:
-            continue
-        chosen.append(move)
-        if len(chosen) >= count:
-            break
+
+    remaining = {
+        move: weight
+        for move, weight in weights.items()
+        if weight > 0 and move not in chosen
+    }
+    if seed is None:
+        ranked = sorted(
+            remaining.items(),
+            key=lambda item: (-item[1], DIRECTOR_MOVES.index(item[0])),
+        )
+        for move, _weight in ranked:
+            chosen.append(move)
+            if len(chosen) >= count:
+                break
+    else:
+        rng = random.Random(seed)
+        while remaining and len(chosen) < count:
+            moves = list(remaining.keys())
+            totals = [remaining[move] for move in moves]
+            pick = rng.choices(moves, weights=totals, k=1)[0]
+            chosen.append(pick)
+            del remaining[pick]
+
     if not chosen:
         chosen = ["quiet"]
     return chosen[:count]
@@ -128,6 +170,8 @@ def select_director_moves(
     *,
     seek_contact: bool = False,
     empty_companion_cast: bool = False,
+    campaign_id: str | None = None,
+    seed: int | None = None,
 ) -> DirectorMoveSelection:
     force = bool(seek_contact and empty_companion_cast)
     policy_owner = master.id if master.is_preset else (master.base_preset_id or "custom")
@@ -138,7 +182,19 @@ def select_director_moves(
         seek_contact=seek_contact,
         empty_companion_cast=empty_companion_cast,
     )
-    moves = pick_moves(weights, count=2, force_introduce_contact=force)
+    effective_seed = seed
+    if effective_seed is None and campaign_id is not None:
+        effective_seed = sampling_seed(
+            campaign_id=campaign_id,
+            turn_index=rhythm.turn_index,
+            master_id=master.id,
+        )
+    moves = pick_moves(
+        weights,
+        count=2,
+        force_introduce_contact=force,
+        seed=effective_seed,
+    )
     return DirectorMoveSelection(
         moves=moves,
         obligations=[_obligation_text(move) for move in moves],
@@ -179,6 +235,148 @@ def apply_moves_to_narration_guidance(
     return merged[:limit]
 
 
+def _raise_dramatic(current: str, floor: str) -> str:
+    return _RANK_TO_DRAMATIC[
+        max(_DRAMATIC_RANK.get(current, 0), _DRAMATIC_RANK.get(floor, 0))
+    ]
+
+
+def _cap_dramatic(current: str, ceiling: str) -> str:
+    return _RANK_TO_DRAMATIC[
+        min(_DRAMATIC_RANK.get(current, 0), _DRAMATIC_RANK.get(ceiling, 3))
+    ]
+
+
+def _append_constraint(constraints: list[str], text: str, *, limit: int = 8) -> list[str]:
+    if text not in constraints:
+        constraints.append(text)
+    return constraints[:limit]
+
+
+def apply_moves_to_outcome_decision(
+    decision: TurnOutcomeDecision,
+    selected: DirectorMoveSelection,
+) -> TurnOutcomeDecision:
+    """Map closed director moves onto existing TurnOutcomeDecision authority levers.
+
+    Narration guidance remains secondary seasoning; dramatic_mode, complication policy,
+    and canon_constraints are the primary structural effects.
+    """
+    moves = set(selected.moves)
+    dramatic = decision.dramatic_mode
+    allow_complication = decision.allow_new_complication
+    complication_source = decision.complication_source
+    constraints = list(decision.canon_constraints)
+    ending_hook = decision.ending_hook
+
+    pressureish = moves & {
+        "advance_conflict",
+        "harden_consequence",
+        "intrigue_reveal",
+        "escalate_chaos",
+    }
+    quietish = moves & QUIET_MOVES
+
+    if "escalate_chaos" in moves:
+        dramatic = _raise_dramatic(dramatic, "dangerous")
+        constraints = _append_constraint(
+            constraints,
+            "[DIRECTOR STRUCTURAL: escalate_chaos] High-variance beat allowed only from "
+            "already-established tension/sources; keep the turn answerable.",
+        )
+    if "harden_consequence" in moves:
+        dramatic = _raise_dramatic(dramatic, "tense")
+        constraints = _append_constraint(
+            constraints,
+            "[DIRECTOR STRUCTURAL: harden_consequence] Softeners are banned this turn; "
+            "failure and cost land without sentimental cushioning.",
+        )
+    if "advance_conflict" in moves:
+        dramatic = _raise_dramatic(dramatic, "tense")
+        constraints = _append_constraint(
+            constraints,
+            "[DIRECTOR STRUCTURAL: advance_conflict] Advance an existing tension; do not "
+            "dissolve established stakes into atmosphere-only filler.",
+        )
+        if not " ".join(str(ending_hook or "").split()):
+            ending_hook = (
+                "Existing tension remains unresolved and presses for a player-facing response."
+            )
+    if "intrigue_reveal" in moves:
+        dramatic = _raise_dramatic(dramatic, "tense")
+        constraints = _append_constraint(
+            constraints,
+            "[DIRECTOR STRUCTURAL: intrigue_reveal] Surface a secret, faction pressure, or "
+            "offscreen agenda already implied by established state — no exposition dump.",
+        )
+        if not " ".join(str(ending_hook or "").split()):
+            ending_hook = (
+                "A hinted agenda or secret now touches the observable scene and awaits response."
+            )
+
+    if "introduce_contact" in moves or selected.forced_introduce_contact:
+        constraints = _append_constraint(
+            constraints,
+            "[DIRECTOR STRUCTURAL: introduce_contact] A typed npc_introductions entry is "
+            "required when the companion cast is empty and contact is sought.",
+        )
+
+    if "npc_initiative" in moves:
+        constraints = _append_constraint(
+            constraints,
+            "[DIRECTOR STRUCTURAL: npc_initiative] Prefer SceneDevelopment disposition=act "
+            "when eligible present NPCs exist; quiet only with a concrete reason.",
+        )
+
+    if quietish and not pressureish:
+        dramatic = _cap_dramatic(dramatic, "calm" if "quiet" in moves else "routine")
+        allow_complication = False
+        complication_source = None
+        if "soften_blow" in moves:
+            constraints = _append_constraint(
+                constraints,
+                "[DIRECTOR STRUCTURAL: soften_blow] Do not stack new harsh costs this turn; "
+                "cushion consequence landing while preserving established facts.",
+            )
+        if "quiet" in moves:
+            constraints = _append_constraint(
+                constraints,
+                "[DIRECTOR STRUCTURAL: quiet] Low plot push; do not invent a new major "
+                "conflict or complication this turn.",
+            )
+    elif "soften_blow" in moves and "harden_consequence" not in moves:
+        # Softener loses to harden when both somehow appear; otherwise dampen escalation.
+        dramatic = _cap_dramatic(dramatic, "routine")
+        constraints = _append_constraint(
+            constraints,
+            "[DIRECTOR STRUCTURAL: soften_blow] Prefer cushioned consequence landing.",
+        )
+
+    return decision.model_copy(
+        update={
+            "dramatic_mode": dramatic,
+            "allow_new_complication": allow_complication,
+            "complication_source": complication_source if allow_complication else None,
+            "canon_constraints": constraints,
+            "ending_hook": ending_hook,
+        }
+    )
+
+
+def scene_development_disposition_bias(
+    selected: DirectorMoveSelection | None,
+) -> str | None:
+    """Return 'act', 'quiet', or None for SceneDevelopment preference."""
+    if selected is None:
+        return None
+    moves = set(selected.moves)
+    if "npc_initiative" in moves:
+        return "act"
+    if moves & QUIET_MOVES and not (moves & {"npc_initiative", "advance_conflict", "escalate_chaos"}):
+        return "quiet"
+    return None
+
+
 def narrator_persona_block(master: GameMasterPersona) -> str:
     phrases = " | ".join(master.catchphrases[:5])
     return (
@@ -198,7 +396,10 @@ __all__ = [
     "advance_rhythm",
     "adjust_weights",
     "apply_moves_to_narration_guidance",
+    "apply_moves_to_outcome_decision",
     "narrator_persona_block",
     "pick_moves",
+    "sampling_seed",
+    "scene_development_disposition_bias",
     "select_director_moves",
 ]

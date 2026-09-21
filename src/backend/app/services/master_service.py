@@ -14,6 +14,7 @@ from app.models.game_master import (
     CustomMasterInput,
     DirectorMoveSelection,
     GameMasterPersona,
+    MasterRhythmState,
     SetCampaignMasterRequest,
 )
 from app.services.master_catalog import (
@@ -29,6 +30,7 @@ from app.services.master_director import (
 )
 
 GAME_MASTER_FIELD = "game_master"
+PENDING_DIRECTOR_FIELD = "pending_director_selection"
 
 
 class MasterService:
@@ -107,7 +109,9 @@ class MasterService:
     ) -> CampaignMasterRead:
         row = await self._ensure_setup(campaign_id)
         custom = dict(self._setups.decode_dict(row.custom_fields))
-        previous = self._read_state(custom)
+
+        # Changing master resets rhythm so pressure/quiet debt does not carry across personas.
+        fresh_rhythm = MasterRhythmState()
 
         if request.kind == "preset":
             if get_preset(request.preset_id or "") is None:
@@ -116,7 +120,7 @@ class MasterService:
                 kind="preset",
                 preset_id=request.preset_id,
                 custom=None,
-                rhythm=previous.rhythm,
+                rhythm=fresh_rhythm,
             )
         else:
             assert request.custom is not None
@@ -124,10 +128,11 @@ class MasterService:
                 kind="custom",
                 preset_id=None,
                 custom=self._build_custom_persona(request.custom),
-                rhythm=previous.rhythm,
+                rhythm=fresh_rhythm,
             )
 
         custom[GAME_MASTER_FIELD] = state.model_dump(mode="json")
+        custom.pop(PENDING_DIRECTOR_FIELD, None)
         await self._setups.update(row, {"custom_fields": custom})
         await self._session.flush()
         return CampaignMasterRead(
@@ -142,28 +147,85 @@ class MasterService:
         *,
         seek_contact: bool,
         empty_companion_cast: bool,
-        persist_rhythm: bool = True,
-    ) -> tuple[GameMasterPersona, DirectorMoveSelection]:
+        persist_rhythm: bool = False,
+        seed: int | None = None,
+    ) -> tuple[GameMasterPersona, DirectorMoveSelection, MasterRhythmState]:
+        """Select director moves for planning.
+
+        Rhythm is NOT advanced by default — failed/undone plans must not consume pressure debt.
+        Call ``commit_rhythm_for_selection`` only after a successful turn publication.
+        When ``persist_rhythm`` is True (legacy), advances immediately (tests/compat).
+
+        Returns ``(persona, selection, rhythm_before)`` so callers can snapshot undo state.
+        """
         row = await self._ensure_setup(campaign_id)
         custom = dict(self._setups.decode_dict(row.custom_fields))
         state = self._read_state(custom)
         persona = self.resolve_persona(state)
+        rhythm_before = state.rhythm.model_copy(deep=True)
         selected = select_director_moves(
             persona,
             state.rhythm,
             seek_contact=seek_contact,
             empty_companion_cast=empty_companion_cast,
+            campaign_id=str(campaign_id),
+            seed=seed,
         )
+        # Stash pending selection + pre-commit rhythm so undo can rewind if needed.
+        custom[PENDING_DIRECTOR_FIELD] = {
+            "selection": selected.model_dump(mode="json"),
+            "rhythm_before": rhythm_before.model_dump(mode="json"),
+        }
         if persist_rhythm:
             state.rhythm = advance_rhythm(state.rhythm, selected)
             custom[GAME_MASTER_FIELD] = state.model_dump(mode="json")
-            await self._setups.update(row, {"custom_fields": custom})
-            await self._session.flush()
-        return persona, selected
+            custom.pop(PENDING_DIRECTOR_FIELD, None)
+        else:
+            custom[GAME_MASTER_FIELD] = state.model_dump(mode="json")
+        await self._setups.update(row, {"custom_fields": custom})
+        await self._session.flush()
+        return persona, selected, rhythm_before
+
+    async def commit_rhythm_for_selection(
+        self,
+        campaign_id: UUID,
+        selected: DirectorMoveSelection | None = None,
+    ) -> MasterRhythmState:
+        """Advance and persist rhythm after a successful turn commit."""
+        row = await self._ensure_setup(campaign_id)
+        custom = dict(self._setups.decode_dict(row.custom_fields))
+        state = self._read_state(custom)
+        pending = custom.get(PENDING_DIRECTOR_FIELD)
+        if selected is None and isinstance(pending, dict) and pending.get("selection"):
+            selected = DirectorMoveSelection.model_validate(pending["selection"])
+        if selected is None:
+            return state.rhythm
+        state.rhythm = advance_rhythm(state.rhythm, selected)
+        custom[GAME_MASTER_FIELD] = state.model_dump(mode="json")
+        custom.pop(PENDING_DIRECTOR_FIELD, None)
+        await self._setups.update(row, {"custom_fields": custom})
+        await self._session.flush()
+        return state.rhythm
+
+    async def rewind_pending_rhythm(self, campaign_id: UUID) -> bool:
+        """Drop pending selection without advancing; restore rhythm_before if present."""
+        row = await self._ensure_setup(campaign_id)
+        custom = dict(self._setups.decode_dict(row.custom_fields))
+        pending = custom.pop(PENDING_DIRECTOR_FIELD, None)
+        if not isinstance(pending, dict):
+            return False
+        before = pending.get("rhythm_before")
+        if isinstance(before, dict):
+            state = self._read_state(custom)
+            state.rhythm = MasterRhythmState.model_validate(before)
+            custom[GAME_MASTER_FIELD] = state.model_dump(mode="json")
+        await self._setups.update(row, {"custom_fields": custom})
+        await self._session.flush()
+        return True
 
     async def narrator_persona_suffix(self, campaign_id: UUID) -> str:
         current = await self.get(campaign_id)
         return narrator_persona_block(current.resolved)
 
 
-__all__ = ["GAME_MASTER_FIELD", "MasterService"]
+__all__ = ["GAME_MASTER_FIELD", "PENDING_DIRECTOR_FIELD", "MasterService"]
