@@ -61,6 +61,8 @@ def test_narrator_receives_one_typed_authority_without_legacy_plan_contract():
     assert "not already present and not structurally authorized" in system
     assert "established_state" in system
     assert "protagonist's next voluntary choice" in system
+    assert "allowed_speakers" in system or "Only allowed_speakers" in system
+    assert authority.allowed_speakers == ["Дежурный фабрики"]
     assert "typed trip" in system
     assert "not a trip" in system
     assert messages[-1].role == "user"

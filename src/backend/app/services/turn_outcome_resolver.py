@@ -20,6 +20,11 @@ from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
 from app.services.turn_planner import TurnPlanningError
 from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
+from app.services.narrator_authority_contracts import (
+    description_used_as_identity_name,
+    is_usable_short_designation,
+    repair_introduction_identity,
+)
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.entity_identity import identity_key
 from app.services.player_intent_contract import contains_cjk
@@ -76,9 +81,12 @@ NPC authority:
 - Addressing a new local person can be requested through addressed_response_requested even when
   actions=[] (speech is not an executable action). If such a person responds, create their typed
   introduction. Never replace that person with a named character located in another scene.
-- Role/title-only identity is temporary: use temporary_name=true, canonical_name equal to a grounded
-  role/designation (not an invented personal name), personal_name_evidence=null, and provide concrete
-  description/appearance. Stable personal identity requires explicit current campaign evidence.
+- Identity naming: canonical_name MUST be a short personal name OR a short role title (roughly
+  2-40 characters, no descriptive clauses). Keep role and description in their own fields.
+  Never copy description/appearance into canonical_name. Role/title-only identity is temporary:
+  temporary_name=true, canonical_name = short grounded role/designation (not an invented personal
+  name), personal_name_evidence=null, and provide concrete description/appearance. Stable personal
+  identity requires explicit current campaign evidence and a proper name distinct from role/description.
 - Asking an existing character's name never creates a duplicate NPC; the published self-identification
   is handled after narration.
 
@@ -250,6 +258,21 @@ class OutcomeNpcIntroductionDraft(BaseModel):
             identity_key(value) for value in NpcIntroductionResolver.SYNTHETIC_PLACEHOLDERS
         }:
             raise ValueError("NPC identity needs a short readable grounded role")
+        if not is_usable_short_designation(self.role):
+            raise ValueError("NPC role must be a short designation, not a description blurb")
+        if description_used_as_identity_name(
+            self.canonical_name, role=self.role, description=self.description
+        ):
+            # Prefer repairing to the short role rather than dropping a contact intro entirely.
+            # Mutate in place: pydantic __init__ ignores a replaced model returned from validators.
+            repaired = repair_introduction_identity(self)
+            self.canonical_name = repaired.canonical_name
+            self.temporary_name = True
+            self.personal_name_evidence = None
+        if not is_usable_short_designation(self.canonical_name):
+            raise ValueError(
+                "NPC canonical_name must be a short personal name or short role, not a description"
+            )
         NpcIntroductionResolver.sanitize_introductions([self])
         return self
 
@@ -437,6 +460,16 @@ def normalize_outcome_draft(
         # Missing evidence cannot promote a personal identity. Downgrading to a temporary role is
         # conservative and preserves the person without inventing stable canon.
         temporary_name = bool(npc.temporary_name) or not evidence
+        if description_used_as_identity_name(
+            canonical_name, role=role, description=description
+        ) or not is_usable_short_designation(canonical_name):
+            if not is_usable_short_designation(role):
+                raise TurnPlanningError(
+                    f"NPC introduction {index} uses description-as-name without a short role"
+                )
+            canonical_name = role[0].upper() + role[1:]
+            temporary_name = True
+            evidence = None
         introductions.append(
             {
                 "canonical_name": canonical_name,

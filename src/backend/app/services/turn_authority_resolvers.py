@@ -11,6 +11,11 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.tables import Character, Turn
 from app.models.turn_authority import ExistingNpcArrival
 from app.services.entity_identity import exact_identity_matches, identity_key, resolve_character_candidates
+from app.services.narrator_authority_contracts import (
+    description_used_as_identity_name,
+    is_usable_short_designation,
+    repair_introduction_identity,
+)
 from app.services.player_intent_contract import contains_cjk
 
 
@@ -87,23 +92,37 @@ class NpcIntroductionResolver:
         placeholder_keys = {identity_key(value) for value in cls.SYNTHETIC_PLACEHOLDERS}
 
         for introduction in introductions:
+            # Reject description-as-name / long role-blurb identities before other repairs.
+            try:
+                introduction = repair_introduction_identity(introduction)
+            except ValueError as exc:
+                raise AuthorityResolutionError(str(exc)) from exc
+
             canonical = " ".join(str(introduction.canonical_name or "").split())
             canonical_key = identity_key(canonical)
             evidence = " ".join(str(introduction.personal_name_evidence or "").split())
             role = " ".join(str(introduction.role or "").split())
             usable_role = bool(
-                2 <= len(role) <= 120
-                and not contains_cjk(role) and identity_key(role) not in placeholder_keys
+                is_usable_short_designation(role)
+                and not contains_cjk(role)
+                and identity_key(role) not in placeholder_keys
             )
             unsupported_stable_name = not introduction.temporary_name and not evidence
             # A temporary flag is not evidence. An invented personal label must still collapse
             # to the grounded role before publication, or identity binding fail-closes the turn.
             unproven_personal_label = not evidence and usable_role
+            description_as_name = description_used_as_identity_name(
+                canonical,
+                role=role,
+                description=getattr(introduction, "description", None),
+            )
             needs_repair = (
                 contains_cjk(canonical)
                 or canonical_key in placeholder_keys
                 or unsupported_stable_name
                 or unproven_personal_label
+                or description_as_name
+                or not is_usable_short_designation(canonical)
             )
 
             if needs_repair:
@@ -116,7 +135,7 @@ class NpcIntroductionResolver:
                 index = 2
                 while identity_key(candidate) in used:
                     suffix = f" {index}"
-                    candidate = f"{base[:120 - len(suffix)]}{suffix}"
+                    candidate = f"{base[: max(2, 120 - len(suffix))]}{suffix}"
                     index += 1
                 introduction = introduction.model_copy(
                     update={
@@ -251,6 +270,13 @@ class NpcIntroductionResolver:
                 "Известный персонаж не может появиться без структурного перемещения: "
                 f"{existing.canonical_name} находится в {location}, target location = {target}"
             )
+
+        # Authorized first appearances are physically present for narrator/validator this turn.
+        for introduction in new_introductions:
+            key = identity_key(introduction.canonical_name)
+            if key and key not in present_keys:
+                names.append(introduction.canonical_name)
+                present_keys.add(key)
 
         return NpcIntroductionResolution(
             new_introductions=new_introductions,

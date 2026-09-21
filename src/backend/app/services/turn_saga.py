@@ -126,6 +126,8 @@ class TurnSaga:
             + json.dumps(authority.narrator_payload(), ensure_ascii=False, indent=2)
             + "\nHard rules:\n"
             "- The sheet lists confirmed outcomes and bans. It is not the only prose you may write.\n"
+            "- Only allowed_speakers may receive new dialogue; the player is never an allowed "
+            "speaker. Protagonist speech stays limited to player_input.\n"
             "- People already present may speak, refuse, gesture, or move inside the current place. "
             "Speech is not required, and a missing mark is not a ban.\n"
             "- Do not invent a person who is not already present and not structurally authorized. "
