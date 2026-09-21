@@ -228,6 +228,19 @@ class TurnAuthority(BaseModel):
     def allowed_existing_npc_arrival_names(self) -> list[str]:
         return [item.canonical_name for item in self.allowed_existing_npc_arrivals]
 
+    @property
+    def allowed_speakers(self) -> list[str]:
+        """Non-player present cast + typed intros/arrivals. Never the player character."""
+        from app.services.narrator_authority_contracts import allowed_speakers_from_authority
+
+        return allowed_speakers_from_authority(self)
+
+    @property
+    def authorized_physical_cast_names(self) -> list[str]:
+        from app.services.narrator_authority_contracts import authorized_physical_cast_names
+
+        return authorized_physical_cast_names(self)
+
     def validator_payload(self) -> dict:
         """Compact authority for continuity judging, without competing prompt prose."""
         payload = {
@@ -240,6 +253,7 @@ class TurnAuthority(BaseModel):
             "target_location": self.target_location_path,
             "present_characters": self.present_character_names,
             "known_absent_characters": self.known_absent_character_names,
+            "allowed_speakers": self.allowed_speakers,
             "allowed_new_npcs": [
                 {
                     "canonical_name": item.canonical_name,
@@ -308,6 +322,8 @@ class TurnAuthority(BaseModel):
                     "do_not_extend_player_voluntary_action": True,
                     "do_not_assign_player_thoughts_emotions_or_decisions": True,
                     "do_not_invent_player_dialogue": True,
+                    "do_not_perform_protagonist_speech": True,
+                    "allowed_speakers_only": True,
                     "perspective": "second_person_only_for_immediate_perception_or_external_effect",
                     "stop_before_next_player_choice": True,
                 },

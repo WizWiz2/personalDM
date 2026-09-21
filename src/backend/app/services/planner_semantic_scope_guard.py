@@ -6,6 +6,10 @@ from uuid import UUID
 from app.models.character import CharacterUpdate
 from app.models.turn import ChatMessage
 from app.services.entity_identity import identity_key
+from app.services.narrator_authority_contracts import (
+    description_used_as_identity_name,
+    is_usable_short_designation,
+)
 from app.services.starter_identity import present_character_names
 from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
 from app.services.turn_undo_service import TurnUndoService
@@ -83,30 +87,54 @@ def _normalize_unproven_npc_introductions(plan):
             continue
 
         role = " ".join(str(introduction.role or "").split())
+        description = " ".join(str(getattr(introduction, "description", None) or "").split())
         if not role:
             normalized.append(introduction)
             if canonical_key:
                 used.add(canonical_key)
             continue
 
-        base = role[0].upper() + role[1:] if role else role
-        candidate = base
-        index = 2
-        while identity_key(candidate) in used:
-            candidate = f"{base} {index}"
-            index += 1
-
-        normalized.append(
-            introduction.model_copy(
-                update={
-                    "canonical_name": candidate,
-                    "temporary_name": True,
-                    "personal_name_evidence": None,
-                }
+        # Prefer collapsing to a short role. Description-shaped roles must not become identity.
+        if is_usable_short_designation(role) and identity_key(role) != identity_key(description or ""):
+            base = role[0].upper() + role[1:] if role else role
+            candidate = base
+            index = 2
+            while identity_key(candidate) in used:
+                candidate = f"{base} {index}"
+                index += 1
+            normalized.append(
+                introduction.model_copy(
+                    update={
+                        "canonical_name": candidate,
+                        "temporary_name": True,
+                        "personal_name_evidence": None,
+                    }
+                )
             )
-        )
-        used.add(identity_key(candidate))
-        changed = True
+            used.add(identity_key(candidate))
+            changed = True
+            continue
+
+        # Role unusable: keep a clean short temporary designation if already typed; otherwise leave.
+        if (
+            is_usable_short_designation(canonical)
+            and not description_used_as_identity_name(
+                canonical, role=role, description=description
+            )
+        ):
+            repaired = introduction.model_copy(
+                update={"temporary_name": True, "personal_name_evidence": None}
+            )
+            normalized.append(repaired)
+            if canonical_key:
+                used.add(canonical_key)
+            if repaired != introduction:
+                changed = True
+            continue
+
+        normalized.append(introduction)
+        if canonical_key:
+            used.add(canonical_key)
 
     if changed:
         # CoordinatedTurnPlan is intentionally mutable during pre-execution normalization. Mutating

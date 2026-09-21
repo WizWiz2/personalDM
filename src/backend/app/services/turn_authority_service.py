@@ -8,6 +8,7 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
+from app.services.narrator_authority_contracts import presence_vs_solitude_constraint
 from app.services.scene_state_service import SceneStateService
 from app.services.outcome_fact_authority import established_state_lines, established_subjects
 from app.services.turn_authority_planner import CoordinatedTurnPlan
@@ -203,6 +204,13 @@ class TurnAuthorityService:
                 "явно произнесено самим персонажем и только такое самоназывание может стабилизировать "
                 "его личность."
             )
+
+        presence_constraint = presence_vs_solitude_constraint(authority)
+        if presence_constraint:
+            constraints = list(authority.canon_constraints)
+            if presence_constraint not in constraints:
+                constraints.append(presence_constraint)
+            authority = authority.model_copy(update={"canon_constraints": constraints})
 
         # Sticky `/talk` identifies a possible listener, not unconditional ownership of every later
         # player action. Explicit actor-scoped internal callers remain authoritative; public routing

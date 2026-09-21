@@ -68,6 +68,7 @@ def compact_narrator_payload(authority) -> dict:
         "target_location": authority.target_location_path[-1:] if authority.target_location_path else [],
         "present_characters": authority.present_character_names,
         "known_absent_characters": authority.known_absent_character_names,
+        "allowed_speakers": list(authority.allowed_speakers),
         "allowed_new_npcs": [
             {"canonical_name": item.canonical_name, "role": item.role}
             for item in authority.allowed_new_npcs
@@ -268,6 +269,12 @@ def install() -> None:
             f"{sequence_section}"
             "\nHard rules:\n"
             "- The sheet lists confirmed outcomes and bans. It is not the only prose you may write.\n"
+            "- Only allowed_speakers may receive new dialogue. The player character is never an "
+            "allowed speaker; protagonist speech and voluntary actions stay limited to player_input. "
+            "Do not perform the hero's spoken lines (no narrated 'your voice' and no quoting "
+            "player_input as performed speech).\n"
+            "- People in present_characters / allowed_new_npcs are physically here. If that cast is "
+            "non-empty beyond the player, do not claim the place is empty of people or 'only us'.\n"
             "- People already present may speak, refuse, gesture, or move inside the current place. "
             "Speech is not required, and a missing mark is not a ban.\n"
             "- Do not invent a person who is not already present and not structurally authorized. "
@@ -293,6 +300,9 @@ def install() -> None:
                     "[FINAL AUTHORITY REMINDER]\n"
                     "Only present characters and explicitly allowed NPC introductions may be "
                     "physically present. Older prose is not canon and cannot introduce a person. "
+                    "Only allowed_speakers may get new dialogue; never write the protagonist's "
+                    "spoken lines. If authorized people are present, do not claim solitude or an "
+                    "empty room of people. "
                     "People already present may speak, refuse, gesture, or move inside the current "
                     "place. Speech is not required, and a missing mark is not a ban."
                 ),

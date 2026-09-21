@@ -19,6 +19,10 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import evidence_supported
 from app.services.entity_identity import identity_key, resolve_character_candidates
+from app.services.narrator_authority_contracts import (
+    description_used_as_identity_name,
+    is_usable_short_designation,
+)
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
 
@@ -185,7 +189,7 @@ class EntityRegistrar:
 - Уже известного персонажа можно вернуть, чтобы отметить его присутствие или уход; используй его точное известное имя.
 - Персонаж со status=dead/destroyed не может снова физически появиться только из-за текста Narrator. Для исторического упоминания используй mentioned_only.
 - Не возвращай персонажа игрока, если он уже есть среди известных сущностей.
-- canonical_name должно быть устойчивым именем ИЛИ точным временным обозначением, реально присутствующим в тексте ответа.
+- canonical_name должно быть коротким личным именем ИЛИ коротким ролевым обозначением (без описательных придаточных), реально присутствующим в тексте ответа. Не копируй description в canonical_name.
 - Не придумывай canonical_name, которого нет в тексте ответа. Запрещены синтетические ярлыки вроде «Городской Диктатор» или «Безымянный собеседник», если Narrator буквально так персонажа не назвал.
 - Для пока безымянного важного NPC допустимо точное временное обозначение вроде «бармен Медного Котла»; тогда temporary_name=true.
 - Если временный NPC позже назван по имени, верни новое имя, ту же role и temporary_name=false: движок сам повысит временную идентичность до постоянной.
@@ -239,6 +243,18 @@ class EntityRegistrar:
             name = self._clean_name(mention.canonical_name)
             if not name:
                 continue
+            # Never persist description/blurb text as the durable entity identity label.
+            if description_used_as_identity_name(
+                name, role=mention.role, description=mention.description
+            ):
+                role = self._clean_name(mention.role or "")
+                if is_usable_short_designation(role):
+                    name = role
+                    mention = mention.model_copy(
+                        update={"canonical_name": name, "temporary_name": True}
+                    )
+                else:
+                    continue
 
             entity = index.get(identity_key(name))
             matched_contextually = False
