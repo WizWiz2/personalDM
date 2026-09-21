@@ -33,6 +33,14 @@ function failureSummary(generation: GenerationRun): string {
   if (/provider|http \d{3}|api request|connection refused|connection reset|\bconnect\b/.test(error)) {
     return 'Сбой на соединении с моделью провайдера во время обработки. Ход сохранён и не считается выполненным.'
   }
+  if (/scene development|agenda source|unpublished npc|npc initiative/.test(error)) {
+    return 'Служебный этап развития сцены не смог безопасно зафиксировать инициативу NPC. Ход сохранён как необработанный.'
+  }
+  const raw = (generation.error ?? '').trim()
+  if (raw) {
+    const short = raw.length > 220 ? `${raw.slice(0, 220)}…` : raw
+    return `Игровой pipeline не смог завершить этот ход. Техническая причина: ${short}`
+  }
   return 'Игровой pipeline не смог завершить этот ход. Ход сохранён как необработанный и не считается выполненным.'
 }
 

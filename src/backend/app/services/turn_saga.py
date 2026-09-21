@@ -587,9 +587,21 @@ class TurnSaga:
                 narration.validation_status == "safe_fallback"
                 or publication.get("validated_surface") is False
             ):
-                raise TurnPlanningError(
-                    "Scene development needs validated prose; refusing to record unpublished NPC acts"
+                # Player outcome already resolved; omit unpublished NPC acts instead of
+                # compensating the whole prepared turn saga.
+                omitted = len(development.actions)
+                development = SceneDevelopmentService.quiet_without_acts(
+                    "NPC initiative omitted: narration lacked a validated surface for those acts."
                 )
+                authority = authority.model_copy(update={"scene_development": development})
+                development_metadata = {
+                    **development_metadata,
+                    "status": "degraded_unpublished_acts",
+                    "omitted_act_count": omitted,
+                    "sanitize_status": "degraded_quiet",
+                }
+                context_metadata["turn_authority"] = authority.model_dump(mode="json")
+                context_metadata["scene_development"] = development_metadata
             await self._set_phase(generation_run.id, GenerationPhase.NARRATED)
 
             context_metadata["provider_telemetry"] = narration.telemetry
