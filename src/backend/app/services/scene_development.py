@@ -167,7 +167,11 @@ class SceneDevelopmentService:
 
     @staticmethod
     def fit_context(context: dict, context_window: int) -> tuple[dict, dict]:
-        """Reserve decision essentials first; optional material cannot evict every NPC's motive."""
+        """Reserve decision essentials first; in-play agenda outranks recent history.
+
+        Optional recent developments cannot evict every NPC's motive, and they also cannot
+        push out other in-play agenda sources before those sources have been considered.
+        """
         system_tokens = count_tokens(DEVELOPMENT_PROMPT) + count_tokens(
             json.dumps(SceneDevelopment.model_json_schema(), ensure_ascii=False)
         )
@@ -188,17 +192,18 @@ class SceneDevelopmentService:
             raise TurnPlanningError(
                 "Scene decision essentials exceed control context window; increase context capacity"
             )
-        for development in reversed(context["recent_developments"]):
-            result["recent_developments"].insert(0, development)
-            if size() > budget:
-                result["recent_developments"].pop(0)
-                break
+        # Keep closed-world agenda visible before spending budget on recent history.
         for ref, value in agenda.items():
             if ref in required:
                 continue
             required[ref] = value
             if size() > budget:
                 del required[ref]
+        for development in reversed(context["recent_developments"]):
+            result["recent_developments"].insert(0, development)
+            if size() > budget:
+                result["recent_developments"].pop(0)
+                break
         return result, {
             "context_tokens": size(), "context_budget": budget,
             "omitted_source_refs": [ref for ref in agenda if ref not in required],
@@ -207,17 +212,66 @@ class SceneDevelopmentService:
         }
 
     @staticmethod
-    def validate(decision: SceneDevelopment, context: dict) -> None:
+    def quiet_without_acts(reason: str) -> SceneDevelopment:
+        return SceneDevelopment(disposition="quiet", reason=reason, actions=[])
+
+    @classmethod
+    def sanitize(
+        cls, decision: SceneDevelopment, context: dict,
+    ) -> tuple[SceneDevelopment, dict]:
+        """Drop unauthorized NPC acts instead of aborting the player turn saga.
+
+        Closed-world agenda ownership still applies: unknown refs and foreign private motives
+        cannot authorize an act. Ineligible actors likewise cannot own initiative. Those
+        failures degrade to filtered acts or quiet rather than TurnPlanningError, so narration
+        can still publish the already-resolved player outcome.
+        """
         actors = {actor["id"] for actor in context["actors"]}
+        agenda = context["agenda"]
+        kept = []
+        dropped = []
         for action in decision.actions:
             if str(action.actor_id) not in actors:
-                raise TurnPlanningError("Scene development actor is not an eligible present NPC")
+                dropped.append({
+                    "reason": "ineligible_actor", "actor_id": str(action.actor_id),
+                })
+                continue
+            invalid = None
             for ref in action.source_refs:
-                source = context["agenda"].get(ref)
+                source = agenda.get(ref)
                 if source is None:
-                    raise TurnPlanningError("Scene development cites an unknown agenda source")
+                    invalid = {"reason": "unknown_agenda_source", "ref": ref}
+                    break
                 if source.get("owner_id") not in (None, str(action.actor_id)):
-                    raise TurnPlanningError("Scene development uses another NPC's private motive")
+                    invalid = {"reason": "foreign_private_motive", "ref": ref}
+                    break
+            if invalid is not None:
+                dropped.append({**invalid, "actor_id": str(action.actor_id)})
+                continue
+            kept.append(action)
+        if not dropped:
+            return decision, {"sanitize_status": "unchanged", "dropped_actions": []}
+        if not kept:
+            quiet = cls.quiet_without_acts(
+                "NPC initiative omitted: scene development could not authorize cited acts."
+            )
+            return quiet, {
+                "sanitize_status": "degraded_quiet",
+                "dropped_actions": dropped,
+                "original_disposition": decision.disposition,
+            }
+        filtered = decision.model_copy(update={"actions": kept, "disposition": "act"})
+        return filtered, {
+            "sanitize_status": "actions_filtered",
+            "dropped_actions": dropped,
+            "original_disposition": decision.disposition,
+        }
+
+    @classmethod
+    def validate(cls, decision: SceneDevelopment, context: dict) -> SceneDevelopment:
+        """Sanitize unauthorized acts; never abort the player turn for soft SD contract misses."""
+        sanitized, _audit = cls.sanitize(decision, context)
+        return sanitized
 
     async def plan(
         self,
@@ -227,6 +281,7 @@ class SceneDevelopmentService:
         disposition_bias: str | None = None,
     ) -> tuple[SceneDevelopment, dict]:
         context = await self.context(authority)
+        full_agenda = dict(context["agenda"])
         if not context["actors"]:
             return SceneDevelopment(
                 disposition="quiet", reason="No eligible present NPC in the resolved scene.",
@@ -256,12 +311,21 @@ class SceneDevelopmentService:
             max_tokens=1100, temperature=0.2, response_model=SceneDevelopment,
         )
         decision = SceneDevelopment.model_validate(data)
-        self.validate(decision, context)
+        # Authorize citations against the full in-play agenda even if budget omitted text;
+        # unknown or foreign refs degrade to quiet/filtered acts instead of aborting the turn.
+        authority_context = {**context, "agenda": full_agenda}
+        decision, sanitize_audit = self.sanitize(decision, authority_context)
+        status = "completed"
+        if sanitize_audit["sanitize_status"] == "degraded_quiet":
+            status = "degraded_quiet"
+        elif sanitize_audit["sanitize_status"] == "actions_filtered":
+            status = "actions_filtered"
         return decision, {
-            "status": "completed", "model_name": selection.config.model_name,
+            "status": status, "model_name": selection.config.model_name,
             "agenda": context["agenda"], "actor_ids": [a["id"] for a in context["actors"]],
             "director_disposition_bias": disposition_bias,
             **budget_audit,
+            **sanitize_audit,
         }
 
     async def publish(self, authority: TurnAuthority, assistant_turn_id: UUID) -> None:

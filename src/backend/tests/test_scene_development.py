@@ -24,7 +24,6 @@ from app.models.turn import TurnCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.scene_development import SceneDevelopmentService
 from app.services.truth_engine_turn_context import SemanticTurnContextReader
-from app.services.turn_planner import TurnPlanningError
 from app.services.turn_undo_service import TurnUndoService
 
 pytestmark = [pytest.mark.scene_development_enforced, pytest.mark.asyncio]
@@ -111,22 +110,51 @@ async def test_cannot_authorize_hero_or_absent_npc(db_session, bad_actor):
     decision.actions[0].actor_id = (
         authority.player_character_id if bad_actor == "hero" else absent.id
     )
-    with pytest.raises(TurnPlanningError, match="eligible present NPC"):
-        service.validate(decision, context)
+    sanitized, audit = service.sanitize(decision, context)
+    assert sanitized.disposition == "quiet"
+    assert sanitized.actions == []
+    assert audit["sanitize_status"] == "degraded_quiet"
+    assert audit["dropped_actions"][0]["reason"] == "ineligible_actor"
 
 
-async def test_requires_existing_owned_agenda_source(db_session):
+async def test_unknown_agenda_degrades_without_aborting_plan(db_session):
     authority, npc, absent, goal = await world(db_session)
     service = SceneDevelopmentService(db_session)
     context = await service.context(authority)
     decision = initiative(npc, goal)
     decision.actions[0].source_refs = ["goal:invented"]
-    with pytest.raises(TurnPlanningError, match="unknown agenda"):
-        service.validate(decision, context)
+    sanitized, audit = service.sanitize(decision, context)
+    assert sanitized.disposition == "quiet"
+    assert sanitized.actions == []
+    assert audit["dropped_actions"][0]["reason"] == "unknown_agenda_source"
     context["agenda"]["goal:other"] = {"owner_id": str(absent.id)}
     decision.actions[0].source_refs = ["goal:other"]
-    with pytest.raises(TurnPlanningError, match="another NPC"):
-        service.validate(decision, context)
+    sanitized, audit = service.sanitize(decision, context)
+    assert sanitized.disposition == "quiet"
+    assert audit["dropped_actions"][0]["reason"] == "foreign_private_motive"
+
+    captured = {}
+
+    async def generate(_provider, _selection, messages, **kwargs):
+        captured["context"] = json.loads(messages[1].content)
+        return initiative(npc, goal).model_dump(mode="json") | {
+            "actions": [{
+                **initiative(npc, goal).actions[0].model_dump(mode="json"),
+                "source_refs": ["goal:invented"],
+            }],
+        }
+
+    router = SimpleNamespace(
+        resolve=AsyncMock(return_value=SimpleNamespace(config=SimpleNamespace(
+            model_name="test", context_window=8192,
+        ))),
+        generate_json=AsyncMock(side_effect=generate),
+    )
+    result, audit = await service.plan(authority, router)
+    assert result.disposition == "quiet"
+    assert result.actions == []
+    assert audit["status"] == "degraded_quiet"
+    assert audit["sanitize_status"] == "degraded_quiet"
 
 
 async def test_quiet_requires_reason_and_cannot_hide_actions(db_session):
@@ -290,10 +318,17 @@ async def test_full_turn_develops_destination_after_route_fast_path(db_session, 
         TruthEventRecord.source_kind == "scene_development",
     ))).scalars().all()
     if fallback:
-        assert "Generation failed" in output
+        assert "Generation failed" not in output
+        assert "Лада предлагает" in output or output.strip()
         assert records == []
         campaign = await CampaignRepository(db_session).get_by_id(authority.campaign_id)
-        assert campaign.current_scene_id == source.id
+        # Prepared travel survives: unpublished NPC acts are omitted, not saga-compensated.
+        assert campaign.current_scene_id != source.id
+        from app.db.tables import Turn
+        assistant = (await db_session.execute(select(Turn).where(Turn.role == "assistant"))).scalars().all()
+        assert len(assistant) == 1
+        snap = json.loads(assistant[0].context_snapshot or "{}")
+        assert snap.get("scene_development", {}).get("status") == "degraded_unpublished_acts"
     else:
         assert "Лада предлагает" in output
         assert len(records) == 1
@@ -335,3 +370,97 @@ async def test_receipt_failure_cannot_commit_partial_answer_without_transition(d
     assert "publication transaction interrupted" in output
     assert (await db_session.execute(select(TruthEventRecord))).scalars().all() == []
     assert (await db_session.execute(select(Turn).where(Turn.role == "assistant"))).scalars().all() == []
+
+async def test_fit_context_prefers_agenda_over_recent_history(db_session):
+    authority, npc, absent, goal = await world(db_session)
+    context = await SceneDevelopmentService(db_session).context(authority)
+    context["agenda"]["thesis:keep-me"] = {"text": "Короткий конфликт на месте.", "kind": "conflict"}
+    context["recent_developments"] = [
+        {"disposition": "act", "actions": [{"actor_id": str(npc.id), "action": ("Повтор. " * 80)}]}
+        for _ in range(8)
+    ]
+    fitted, audit = SceneDevelopmentService.fit_context(context, 3500)
+    assert "thesis:keep-me" in fitted["agenda"]
+    assert f"goal:{goal.id}" in fitted["agenda"]
+    assert audit["omitted_recent_developments"] >= 1 or len(fitted["recent_developments"]) < 8
+
+
+async def test_unpublished_acts_do_not_fail_saga_and_error_remains_on_hard_failure(
+    db_session, monkeypatch,
+):
+    from app.db.repositories.job_repo import GenerationRunRepository
+    from app.db.repositories.provider_config_repo import ProviderConfigRepository
+    from app.db.tables import Turn
+    from app.models.provider_config import ProviderConfigCreate
+    from app.services.authority_narration_pipeline import AuthorityNarrationPipeline, AuthorityNarrationResult
+    from app.services.post_turn_dispatcher import PostTurnDispatcher
+    from app.services.post_turn_processor import PostTurnProcessor
+    from app.services.role_model_router import RoleModelRouter
+    from app.services.turn_saga import TurnSaga
+
+    authority, npc, absent, goal = await world(db_session)
+    await ProviderConfigRepository(db_session).create_or_update(
+        authority.campaign_id, ProviderConfigCreate(
+            base_url="http://localhost:11434/v1", model_name="test", context_window=8192,
+        ),
+    )
+    # Same wiring as receipt_failure: planner falls back when generate_json returns SD,
+    # then SceneDevelopment consumes the next structured call.
+    monkeypatch.setattr(RoleModelRouter, "generate_json", AsyncMock(
+        return_value=initiative(npc, goal).model_dump(mode="json"),
+    ))
+    monkeypatch.setattr(AuthorityNarrationPipeline, "generate", AsyncMock(return_value=AuthorityNarrationResult(
+        text="Ты слушаешь. Комната тиха.",
+        telemetry={"narration_validation": {"publication_guard": {"validated_surface": False}}},
+        validation_status="safe_fallback",
+    )))
+    monkeypatch.setattr(PostTurnProcessor, "enqueue", AsyncMock())
+    monkeypatch.setattr(PostTurnDispatcher, "schedule", lambda *args: None)
+    await db_session.commit()
+    output = "".join([part async for part in TurnSaga(db_session).run_turn_stream(
+        authority.campaign_id, TurnCreate(role="user", content="Я слушаю.", scene_id=authority.target_scene_id),
+    )])
+    assert "Generation failed" not in output
+    assert (await db_session.execute(select(TruthEventRecord))).scalars().all() == []
+    assistants = (await db_session.execute(select(Turn).where(Turn.role == "assistant"))).scalars().all()
+    assert len(assistants) == 1
+    snap = json.loads(assistants[0].context_snapshot or "{}")
+    assert snap.get("scene_development", {}).get("status") == "degraded_unpublished_acts"
+    runs = await GenerationRunRepository(db_session).list_for_campaign(authority.campaign_id, limit=1)
+    assert runs and runs[0].status == "completed"
+    assert runs[0].error is None
+
+
+async def test_hard_failure_exposes_error_on_generation_read(db_session, monkeypatch):
+    """Failed-turn API payload must carry generation_runs.error for live debugging."""
+    from app.db.repositories.provider_config_repo import ProviderConfigRepository
+    from app.models.provider_config import ProviderConfigCreate
+    from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+    from app.services.detached_turn_dispatcher import DetachedTurnDispatcher
+    from app.services.role_model_router import RoleModelRouter
+    from app.services.turn_saga import TurnSaga
+
+    authority, npc, absent, goal = await world(db_session)
+    await ProviderConfigRepository(db_session).create_or_update(
+        authority.campaign_id, ProviderConfigCreate(
+            base_url="http://localhost:11434/v1", model_name="test", context_window=8192,
+        ),
+    )
+    monkeypatch.setattr(RoleModelRouter, "generate_json", AsyncMock(
+        return_value=initiative(npc, goal).model_dump(mode="json"),
+    ))
+    monkeypatch.setattr(
+        AuthorityNarrationPipeline, "generate",
+        AsyncMock(side_effect=RuntimeError("simulated narrator hard failure")),
+    )
+    await db_session.commit()
+    output = "".join([part async for part in TurnSaga(db_session).run_turn_stream(
+        authority.campaign_id, TurnCreate(role="user", content="Я слушаю.", scene_id=authority.target_scene_id),
+    )])
+    assert "Generation failed" in output
+    latest = await DetachedTurnDispatcher.latest_generation(authority.campaign_id, db_session)
+    assert latest is not None
+    assert latest.status == "failed"
+    assert latest.error and "simulated narrator hard failure" in latest.error
+    assert latest.phase in {None, "compensated", "prepared", "planned", "received"}
+

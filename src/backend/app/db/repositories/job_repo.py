@@ -6,9 +6,19 @@ from sqlalchemy import select, update
 from app.db.repositories.base import BaseRepository
 from app.db.tables import GenerationRun, PostTurnJob
 from app.models.jobs import GenerationRunRead, PostTurnJobRead
+from app.db.generation_lifecycle_table import GenerationLifecycle
 
 
 class GenerationRunRepository(BaseRepository):
+    async def _read(self, row: GenerationRun | None) -> GenerationRunRead | None:
+        if row is None:
+            return None
+        payload = GenerationRunRead.model_validate(row)
+        lifecycle = await self._session.get(GenerationLifecycle, row.id)
+        if lifecycle is not None:
+            payload = payload.model_copy(update={"phase": lifecycle.phase})
+        return payload
+
     async def create(self, campaign_id: UUID, user_turn_id: UUID) -> GenerationRunRead:
         db_run = GenerationRun(
             campaign_id=str(campaign_id),
@@ -18,14 +28,14 @@ class GenerationRunRepository(BaseRepository):
         )
         self._session.add(db_run)
         await self._session.flush()
-        return GenerationRunRead.model_validate(db_run)
+        return await self._read(db_run)
 
     async def get_by_user_turn(self, user_turn_id: UUID) -> GenerationRunRead | None:
         result = await self._session.execute(
             select(GenerationRun).where(GenerationRun.user_turn_id == str(user_turn_id))
         )
         row = result.scalar_one_or_none()
-        return GenerationRunRead.model_validate(row) if row else None
+        return await self._read(row)
 
     async def start_or_resume(
         self, campaign_id: UUID, user_turn_id: UUID
@@ -42,7 +52,7 @@ class GenerationRunRepository(BaseRepository):
         row.assistant_turn_id = None
         row.updated_at = datetime.utcnow()
         await self._session.flush()
-        return GenerationRunRead.model_validate(row)
+        return await self._read(row)
 
     async def is_cancel_requested(self, run_id: UUID) -> bool:
         result = await self._session.execute(
@@ -93,7 +103,7 @@ class GenerationRunRepository(BaseRepository):
             .order_by(GenerationRun.created_at.desc())
             .limit(limit)
         )
-        return [GenerationRunRead.model_validate(row) for row in result.scalars().all()]
+        return [item for row in result.scalars().all() if (item := await self._read(row))]
 
     async def has_any_running(self) -> bool:
         result = await self._session.execute(

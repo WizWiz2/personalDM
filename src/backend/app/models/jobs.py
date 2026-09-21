@@ -23,6 +23,7 @@ class GenerationRunRead(BaseModel):
     status: str
     cancel_requested: bool
     error: str | None
+    phase: GenerationPhase | str | None = None
     created_at: datetime
     updated_at: datetime
 
