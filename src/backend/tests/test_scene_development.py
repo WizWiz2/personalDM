@@ -23,6 +23,7 @@ from app.models.scene_development import NpcSceneAction, SceneDevelopment
 from app.models.turn import TurnCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.scene_development import SceneDevelopmentService
+from app.services.turn_planner import TurnPlanningError
 from app.services.truth_engine_turn_context import SemanticTurnContextReader
 from app.services.turn_undo_service import TurnUndoService
 
@@ -464,3 +465,122 @@ async def test_hard_failure_exposes_error_on_generation_read(db_session, monkeyp
     assert latest.error and "simulated narrator hard failure" in latest.error
     assert latest.phase in {None, "compensated", "prepared", "planned", "received"}
 
+
+def _fat_sd_context(*, cast_size: int = 10, with_history: bool = True) -> dict:
+    """Large post-seek cast + bloated resolved_turn (live Harem name-question shape)."""
+    actors = []
+    agenda = {}
+    for index in range(cast_size):
+        actor_id = f"00000000-0000-0000-0000-0000000000{index:02d}"
+        actors.append({
+            "id": actor_id,
+            "name": f"NPC-{index}",
+            "knowledge": [f"World fact {j} " * 5 for j in range(3)],
+        })
+        agenda[f"actor:{actor_id}"] = {
+            "owner_id": actor_id,
+            "kind": "motive",
+            "text": {
+                "description": ("A richly described companion living in the estate. " * 8)[:240],
+                "personality": ("Warm, jealous, strategic and talkative personality. " * 8)[:240],
+                "intentions": [
+                    ("Win the hero's favor this evening somehow. " * 3)[:160]
+                    for _ in range(3)
+                ],
+                "desires": [
+                    ("Be chosen above the others tonight somehow. " * 3)[:160]
+                    for _ in range(3)
+                ],
+            },
+        }
+        agenda[f"goal:{actor_id}"] = {
+            "owner_id": actor_id,
+            "kind": "motive",
+            "text": ("Private goal text that is quite long and detailed. " * 10)[:400],
+            "private": True,
+        }
+    for index in range(6):
+        agenda[f"thesis:{index}"] = {
+            "kind": "conflict",
+            "text": ("Scene thesis conflict detail. " * 20)[:400],
+            "visibility": "dm",
+            "related_entity_ids": [],
+        }
+    # Keys match TurnAuthority.validator_payload / fit_context compact sets.
+    resolved = {
+        "player_character": "Hero",
+        "player_input": "Как тебя зовут?",
+        "present_characters": [f"NPC-{i}" for i in range(cast_size)] + ["Hero"],
+        "known_absent_characters": [f"Absent-{i}" for i in range(20)],
+        "allowed_speakers": [f"NPC-{i}" for i in range(cast_size)],
+        "allowed_new_npcs": [
+            {"canonical_name": f"New{i}", "role": "guest", "reason": "intro " * 20}
+            for i in range(5)
+        ],
+        "observable_consequences": [
+            ("After seeking contact, you met several people. " * 5) for _ in range(8)
+        ],
+        "canon_constraints": [
+            "[DIRECTOR STRUCTURAL: npc_initiative] Prefer act " + ("x" * 80),
+            "Do not invent travel. " * 20,
+        ] * 3,
+        "established_state": [
+            f"Slot {i}: someone is present and named already. " * 4 for i in range(15)
+        ],
+        "established_subjects": [f"subject-{i}" for i in range(30)],
+        "objects_here": [f"obj-{i}" for i in range(20)],
+        "resolution": "partial",
+        "dramatic_mode": "routine",
+        "protected_player_decisions": ["Don't decide for player"] * 5,
+        "pending_player_choice": True,
+        "allow_new_complication": False,
+        "source_location": ["Estate", "Hall"],
+        "target_location": ["Estate", "Hall"],
+    }
+    recent = []
+    if with_history:
+        recent = [
+            {
+                "disposition": "act",
+                "actions": [{"actor_id": actors[0]["id"], "action": "Hello. " * 40}],
+            }
+            for _ in range(4)
+        ]
+    return {
+        "player_input": "Как тебя зовут?",
+        "response_actor_id": None,
+        "resolved_turn": resolved,
+        "actors": actors,
+        "agenda": agenda,
+        "recent_developments": recent,
+    }
+
+
+async def test_fit_context_compresses_essentials_before_hard_overflow():
+    """Name-question after seek: fat cast must fit via compression, not abort the turn."""
+    from app.services.base_context_compiler import count_tokens
+
+    context = _fat_sd_context()
+    fitted, audit = SceneDevelopmentService.fit_context(context, 4096)
+    tokens = count_tokens(json.dumps(fitted, ensure_ascii=False))
+    assert tokens == audit["context_tokens"]
+    assert tokens <= audit["context_budget"]
+    assert audit["compressed_resolved_turn_level"] >= 1
+    assert (
+        audit["compressed_motive_level"] >= 1
+        or audit["compressed_actors_level"] >= 1
+    )
+    assert len(fitted["actors"]) == 10  # cast roster preserved
+    assert any(ref.startswith("actor:") for ref in fitted["agenda"])
+    # Optional established_state is shrunk or dropped under pressure.
+    established = fitted["resolved_turn"].get("established_state")
+    assert established is None or len(established) <= 4
+
+
+async def test_fit_context_hard_overflow_still_reports_clearly():
+    context = _fat_sd_context(cast_size=10)
+    with pytest.raises(
+        TurnPlanningError,
+        match="Scene decision essentials exceed control context window",
+    ):
+        SceneDevelopmentService.fit_context(context, 2048)

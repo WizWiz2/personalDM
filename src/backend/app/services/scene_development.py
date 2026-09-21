@@ -166,49 +166,250 @@ class SceneDevelopmentService:
         }
 
     @staticmethod
-    def fit_context(context: dict, context_window: int) -> tuple[dict, dict]:
-        """Reserve decision essentials first; in-play agenda outranks recent history.
+    def _clip_text(value: object, limit: int) -> str:
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        return text if len(text) <= limit else text[: max(0, limit - 1)].rstrip() + "…"
 
-        Optional recent developments cannot evict every NPC's motive, and they also cannot
-        push out other in-play agenda sources before those sources have been considered.
+    @classmethod
+    def _compact_resolved_turn(cls, resolved: dict, *, level: int) -> dict:
+        """Shrink optional authority blocks while keeping decision-critical fields."""
+        if level <= 0 or not isinstance(resolved, dict):
+            return resolved
+        keep = {
+            "player_character", "acting_character", "player_input", "scene_disposition",
+            "transition_type", "source_location", "target_location", "present_characters",
+            "allowed_speakers", "resolution", "dramatic_mode", "observable_consequences",
+            "pending_player_choice", "allow_new_complication", "actor_turn_contract",
+            "identity_reveal_requested",
+        }
+        optional_short = {
+            "known_absent_characters", "objects_here", "established_subjects",
+            "allowed_new_npcs", "allowed_existing_npc_arrivals", "canon_constraints",
+            "established_state", "protected_player_decisions", "complication_source",
+        }
+        out: dict = {}
+        for key, value in resolved.items():
+            if key in keep:
+                out[key] = value
+            elif level == 1 and key in optional_short:
+                if isinstance(value, list):
+                    clipped = []
+                    for item in value[:4]:
+                        if isinstance(item, str):
+                            clipped.append(cls._clip_text(item, 160))
+                        elif isinstance(item, dict):
+                            clipped.append({
+                                k: cls._clip_text(v, 80) if isinstance(v, str) else v
+                                for k, v in list(item.items())[:4]
+                            })
+                        else:
+                            clipped.append(item)
+                    if clipped:
+                        out[key] = clipped
+                elif isinstance(value, str) and value:
+                    out[key] = cls._clip_text(value, 160)
+                elif value not in (None, "", [], {}):
+                    out[key] = value
+        if level >= 2:
+            consequences = out.get("observable_consequences")
+            if isinstance(consequences, list):
+                out["observable_consequences"] = [
+                    cls._clip_text(item, 120) if isinstance(item, str) else item
+                    for item in consequences[:3]
+                ]
+            for path_key in ("source_location", "target_location"):
+                path = out.get(path_key)
+                if isinstance(path, list) and len(path) > 1:
+                    out[path_key] = path[-1:]
+        return out
+
+    @classmethod
+    def _compact_agenda_value(cls, ref: str, value: dict, *, level: int) -> dict:
+        """Compress motive / goal text; keep ownership and kind for closed-world cites."""
+        if level <= 0 or not isinstance(value, dict):
+            return value
+        compact = {
+            key: value[key]
+            for key in ("owner_id", "kind", "private", "visibility")
+            if key in value
+        }
+        text = value.get("text")
+        if ref.startswith("goal:"):
+            compact["text"] = cls._clip_text(text, 160 if level == 1 else 80)
+            return compact
+        if isinstance(text, dict):
+            if level == 1:
+                compact["text"] = {
+                    "description": cls._clip_text(text.get("description", ""), 120),
+                    "personality": cls._clip_text(text.get("personality", ""), 80),
+                    "intentions": [
+                        cls._clip_text(item, 80)
+                        for item in list(text.get("intentions") or [])[:1]
+                    ],
+                    "desires": [
+                        cls._clip_text(item, 80)
+                        for item in list(text.get("desires") or [])[:1]
+                    ],
+                }
+            else:
+                stub = text.get("description") or text.get("personality") or ""
+                if not stub:
+                    intentions = text.get("intentions") or []
+                    stub = intentions[0] if intentions else ""
+                compact["text"] = cls._clip_text(stub, 100)
+            return compact
+        compact["text"] = cls._clip_text(text, 100 if level >= 2 else 160)
+        return compact
+
+    @classmethod
+    def _compact_actors(cls, actors: list, *, level: int) -> list:
+        if level <= 0:
+            return actors
+        out = []
+        for actor in actors:
+            if not isinstance(actor, dict):
+                out.append(actor)
+                continue
+            entry = {"id": actor.get("id"), "name": actor.get("name")}
+            if level == 1:
+                knowledge = actor.get("knowledge") or []
+                entry["knowledge"] = [
+                    cls._clip_text(item, 80) for item in list(knowledge)[:1]
+                ]
+            else:
+                entry["knowledge"] = []
+            out.append(entry)
+        return out
+
+    @staticmethod
+    def fit_context(context: dict, context_window: int) -> tuple[dict, dict]:
+        """Reserve decision essentials first; compress before hard capacity failure.
+
+        Prefer fitting by shrinking optional resolved_turn blocks and motive prose,
+        then filling remaining in-play agenda before recent history. Closed-world
+        authorization still uses the full agenda outside this fitted prompt slice.
+        Hard error only if a minimal decision core still cannot fit.
         """
         system_tokens = count_tokens(DEVELOPMENT_PROMPT) + count_tokens(
             json.dumps(SceneDevelopment.model_json_schema(), ensure_ascii=False)
         )
         budget = context_window - 1100 - max(128, context_window // 10) - system_tokens
         agenda = context["agenda"]
-        required = {ref: value for ref, value in agenda.items() if ref.startswith("actor:")}
-        owners = set()
+        required_full = {
+            ref: value for ref, value in agenda.items() if ref.startswith("actor:")
+        }
+        owners: set[str] = set()
         for ref, value in agenda.items():
             if ref.startswith("goal:") and value["owner_id"] not in owners:
-                required[ref] = value
+                required_full[ref] = value
                 owners.add(value["owner_id"])
-        result = {**context, "agenda": required, "recent_developments": []}
 
-        def size():
-            return count_tokens(json.dumps(result, ensure_ascii=False))
+        resolved = context.get("resolved_turn") or {}
+        actors = context.get("actors") or []
+        compress_resolved = 0
+        compress_motives = 0
+        compress_actors = 0
 
-        if size() > budget:
+        def compact_req(req: dict) -> dict:
+            return {
+                ref: SceneDevelopmentService._compact_agenda_value(
+                    ref, value, level=compress_motives,
+                )
+                for ref, value in req.items()
+            }
+
+        def build(req: dict) -> dict:
+            # `req` must already hold compacted agenda values for the active level.
+            return {
+                **context,
+                "resolved_turn": SceneDevelopmentService._compact_resolved_turn(
+                    resolved, level=compress_resolved,
+                ),
+                "actors": SceneDevelopmentService._compact_actors(
+                    actors, level=compress_actors,
+                ),
+                "agenda": dict(req),
+                "recent_developments": [],
+            }
+
+        def measure(payload: dict) -> int:
+            return count_tokens(json.dumps(payload, ensure_ascii=False))
+
+        required = compact_req(required_full)
+        result = build(required)
+        for step in (
+            ("resolved", 1), ("actors", 1), ("motives", 1),
+            ("resolved", 2), ("actors", 2), ("motives", 2),
+        ):
+            if measure(result) <= budget:
+                break
+            kind, level = step
+            if kind == "resolved":
+                compress_resolved = max(compress_resolved, level)
+            elif kind == "actors":
+                compress_actors = max(compress_actors, level)
+            else:
+                compress_motives = max(compress_motives, level)
+            required = compact_req(required_full)
+            result = build(required)
+
+        if measure(result) > budget:
+            # Last resort: keep prioritized stubs (response actor first). Cast roster
+            # stays in `actors` even when some motive refs are omitted from the prompt.
+            response_actor = context.get("response_actor_id")
+            actor_refs: list = []
+            goal_refs: list = []
+            compacted_full = compact_req(required_full)
+            for ref, value in compacted_full.items():
+                owner = value.get("owner_id") or ref.split(":", 1)[-1]
+                bucket = actor_refs if ref.startswith("actor:") else goal_refs
+                bucket.append((0 if owner == response_actor else 1, ref, value))
+            actor_refs.sort(key=lambda item: item[0])
+            goal_refs.sort(key=lambda item: item[0])
+            kept: dict = {}
+            fitted = None
+            for _prio, ref, value in actor_refs + goal_refs:
+                kept[ref] = value
+                candidate = build(kept)
+                if measure(candidate) <= budget:
+                    fitted = candidate
+                    required = dict(kept)
+                else:
+                    del kept[ref]
+            if fitted is None:
+                required = {}
+                fitted = build(required)
+            result = fitted
+
+        if measure(result) > budget:
             raise TurnPlanningError(
                 "Scene decision essentials exceed control context window; increase context capacity"
             )
-        # Keep closed-world agenda visible before spending budget on recent history.
+
         for ref, value in agenda.items():
             if ref in required:
                 continue
-            required[ref] = value
-            if size() > budget:
+            compacted = SceneDevelopmentService._compact_agenda_value(
+                ref, value, level=compress_motives,
+            )
+            required[ref] = compacted
+            result["agenda"] = required
+            if measure(result) > budget:
                 del required[ref]
+                result["agenda"] = required
         for development in reversed(context["recent_developments"]):
             result["recent_developments"].insert(0, development)
-            if size() > budget:
+            if measure(result) > budget:
                 result["recent_developments"].pop(0)
                 break
         return result, {
-            "context_tokens": size(), "context_budget": budget,
+            "context_tokens": measure(result), "context_budget": budget,
             "omitted_source_refs": [ref for ref in agenda if ref not in required],
             "omitted_recent_developments": len(context["recent_developments"])
             - len(result["recent_developments"]),
+            "compressed_resolved_turn_level": compress_resolved,
+            "compressed_motive_level": compress_motives,
+            "compressed_actors_level": compress_actors,
         }
 
     @staticmethod
