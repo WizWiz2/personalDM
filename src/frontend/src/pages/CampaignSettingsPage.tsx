@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
 import { Icons } from '../components/Icons'
+import { MasterPicker } from '../components/MasterPicker'
 import { RuntimeProviderSettings } from '../components/RuntimeProviderSettings'
 import { ErrorState } from '../components/States'
 
@@ -64,6 +65,8 @@ export function CampaignSettingsPage() {
           <label>Стиль повествования<textarea rows={3} value={style} onChange={(e) => setStyle(e.target.value)} /></label>
           <button className="btn primary">Сохранить</button>
         </form>
+
+        <MasterPicker campaignId={campaign.id} heading="Мастер этой кампании" />
 
         <RuntimeProviderSettings
           campaignId={campaign.id}

@@ -319,6 +319,21 @@ class ContextCompiler:
             else NARRATOR_EXECUTION_BOUNDARY
         )
         system_msg = ChatMessage(role="system", content=f"{system_instr}{style}{boundary}")
+        if not actor_mode:
+            try:
+                from app.services.master_service import MasterService
+
+                persona_suffix = await MasterService(self._session).narrator_persona_suffix(
+                    campaign_id
+                )
+                if persona_suffix.strip():
+                    system_msg = ChatMessage(
+                        role="system",
+                        content=f"{system_msg.content}{persona_suffix}",
+                    )
+            except Exception:
+                # Master selection must never block narration compilation.
+                pass
         current_budget_used = count_tokens(system_msg.content)
         reserved_user_tokens = (
             count_tokens(current_user_content)

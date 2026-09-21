@@ -259,3 +259,76 @@ export interface Fact {
   created_at: string
   updated_at: string
 }
+
+
+export type DirectorMove =
+  | 'quiet'
+  | 'advance_conflict'
+  | 'introduce_contact'
+  | 'npc_initiative'
+  | 'harden_consequence'
+  | 'intrigue_reveal'
+  | 'soften_blow'
+  | 'escalate_chaos'
+
+export interface MovePolicy {
+  quiet: number
+  advance_conflict: number
+  introduce_contact: number
+  npc_initiative: number
+  harden_consequence: number
+  intrigue_reveal: number
+  soften_blow: number
+  escalate_chaos: number
+}
+
+export interface GameMasterPersona {
+  id: string
+  display_name: string
+  blurb: string
+  brief: string
+  voice_style: string
+  catchphrases: string[]
+  portrait_pixel: string
+  portrait_engraving: string
+  move_policy: MovePolicy
+  gender: 'male' | 'female' | 'neutral'
+  is_preset: boolean
+  base_preset_id: string | null
+}
+
+export interface CampaignMasterState {
+  kind: 'preset' | 'custom'
+  preset_id: string | null
+  custom: GameMasterPersona | null
+  rhythm: {
+    turn_index: number
+    turns_since_pressure: number
+    turns_since_quiet: number
+  }
+}
+
+export interface CampaignMasterRead {
+  campaign_id: string
+  state: CampaignMasterState
+  resolved: GameMasterPersona
+}
+
+export interface CustomMasterInput {
+  display_name: string
+  blurb: string
+  brief: string
+  voice_style: string
+  catchphrases: string[]
+  base_preset_id?: string | null
+  move_policy?: MovePolicy | null
+  portrait_pixel?: string | null
+  portrait_engraving?: string | null
+  gender?: 'male' | 'female' | 'neutral'
+}
+
+export interface SetCampaignMasterRequest {
+  kind: 'preset' | 'custom'
+  preset_id?: string | null
+  custom?: CustomMasterInput | null
+}

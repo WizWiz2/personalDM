@@ -14,6 +14,7 @@ from app.api.campaigns import router as campaigns_router
 from app.api.debugger import router as debugger_router
 from app.api.entities import router as entities_router
 from app.api.locations import router as locations_router
+from app.api.masters import router as masters_router
 from app.api.memory import router as memory_router
 from app.api.runtime_providers import router as runtime_providers_router
 from app.api.scene_state import router as scene_state_router
@@ -107,6 +108,7 @@ app.include_router(scene_state_router)
 app.include_router(entities_router)
 app.include_router(locations_router)
 app.include_router(memory_router)
+app.include_router(masters_router)
 app.include_router(world_state_router)
 app.include_router(debugger_router)
 app.include_router(archive_router)

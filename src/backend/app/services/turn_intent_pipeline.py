@@ -8,6 +8,12 @@ from app.services.player_intent_interpreter import PlayerIntentInterpreter
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_outcome_resolver import TurnOutcomeResolver
+from app.services.master_service import MasterService
+from app.services.master_director import apply_moves_to_narration_guidance
+from app.services.turn_outcome_resolver import (
+    seeks_contact_or_presence,
+    solo_physical_presence,
+)
 from app.services.turn_planner import ActionSequencePlan, TurnPlanningError
 
 _INSTALLED = False
@@ -66,6 +72,25 @@ class TurnIntentPlanningPipeline:
                 decision,
                 missing,
             )
+        # Deterministic Game Master director moves — structural obligations, no extra LLM.
+        seek_contact = seeks_contact_or_presence(contract)
+        empty_cast = solo_physical_presence(context_messages)
+        persona, director = await MasterService(self._session).select_moves_for_turn(
+            campaign_id,
+            seek_contact=seek_contact,
+            empty_companion_cast=empty_cast,
+            persist_rhythm=True,
+        )
+        guidance = apply_moves_to_narration_guidance(
+            list(decision.narration_guidance),
+            director,
+        )
+        decision = decision.model_copy(update={"narration_guidance": guidance})
+        if director.forced_introduce_contact and not decision.npc_introductions:
+            # Keep existing contact-seeking contracts: force introduce_contact bias as guidance.
+            # Typed introductions still come from the outcome resolver / recovery path.
+            pass
+
         plan = await self._compiler.compile(campaign_id, contract, decision)
         return plan, {
             "architecture": "frozen_player_intent_v1",
@@ -74,6 +99,12 @@ class TurnIntentPlanningPipeline:
             "outcome_decision": decision.model_dump(mode="json"),
             "intent_audit": list(self._intent.audit),
             "outcome_audit": list(self._outcomes.audit),
+            "game_master": {
+                "id": persona.id,
+                "display_name": persona.display_name,
+                "moves": list(director.moves),
+                "forced_introduce_contact": director.forced_introduce_contact,
+            },
         }
 
 

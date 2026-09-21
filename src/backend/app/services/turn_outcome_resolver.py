@@ -19,7 +19,8 @@ from app.services.planning_context import planning_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
 from app.services.turn_planner import TurnPlanningError
-from app.services.turn_authority_resolvers import NpcIntroductionResolver
+from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
+from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.entity_identity import identity_key
 from app.services.player_intent_contract import contains_cjk
 
@@ -145,6 +146,62 @@ def _travel_wire_model(action_count: int, *, evidence: str = ""):
             return self
 
     return OrdinaryTravelObstacles
+
+
+def solo_physical_presence(context_messages: list[ChatMessage]) -> bool:
+    """True when the authoritative scene lists at most one physically present character.
+
+    Empty companion cast is structural identity from scene state, not a genre keyword scan.
+    """
+    return len(present_character_names(context_messages)) <= 1
+
+
+def seeks_contact_or_presence(contract: PlayerIntentContract) -> bool:
+    """Contact/presence/exploration intent from frozen IR signals only."""
+    if contract.addressed_response_requested:
+        return True
+    return any(
+        action.action_type in {"interaction", "service", "observation", "movement"}
+        for action in contract.actions
+    )
+
+
+def _is_dead_or_blank(value: object) -> bool:
+    clean = " ".join(str(value or "").split()).strip()
+    if not clean:
+        return True
+    return bool(NarrationPublicationGuard.DEAD_TURN_PATTERN.fullmatch(clean))
+
+
+def _is_mundane_travel_outcome(value: object) -> bool:
+    clean = " ".join(str(value or "").split()).strip()
+    return clean.startswith("Переход в место") and clean.endswith("завершён.")
+
+
+def has_plot_bearing_outcome(decision: TurnOutcomeDecision) -> bool:
+    """Reject atmosphere-only control payloads for contact-seeking turns.
+
+    A grounded npc_introduction, character beat, complication, concrete blocker, or non-dead
+    observable consequence is enough. Explicit no-contact counts; velvet / «ничего не происходит»
+    does not. Missing intro alone is not a ban when another real beat exists.
+    """
+    if decision.npc_introductions:
+        return True
+    if any(" ".join(str(beat or "").split()) for beat in decision.character_beats):
+        return True
+    if decision.allow_new_complication and " ".join(str(decision.complication_source or "").split()):
+        return True
+    for text in decision.observable_consequences:
+        if not _is_dead_or_blank(text):
+            return True
+    for outcome in decision.action_outcomes:
+        if outcome.resolution == "blocked" and " ".join(str(outcome.blocking_reason or "").split()):
+            return True
+        oo = outcome.observable_outcome
+        if oo and not _is_dead_or_blank(oo) and not _is_mundane_travel_outcome(oo):
+            return True
+    return False
+
 
 _ACTION_RESOLUTIONS = {"auto_success", "requires_choice", "blocked"}
 _TURN_RESOLUTIONS = {
@@ -560,7 +617,8 @@ class TurnOutcomeResolver:
                 or action_focus in summary and len(summary) <= len(action_focus) + 24
             )
             if (
-                contract.actions
+                not solo_cast
+                and contract.actions
                 and not contract.addressed_response_requested
                 and not contract.pending_player_choice
                 and pure_travel_summary
@@ -577,7 +635,23 @@ class TurnOutcomeResolver:
                 "response_requested": contract.addressed_response_requested,
                 "addressed_designation": contract.addressed_character_name,
                 "physically_present": sorted(present_character_names(context_messages)),
+                "solo_physical_cast": solo_cast,
+                "seeks_contact_or_presence": seeks_contact_or_presence(contract),
             }
+            empty_cast_guidance = ""
+            if solo_cast and seeks_contact_or_presence(contract):
+                empty_cast_guidance = (
+                    "\n[EMPTY CAST / CONTACT-SEEKING]\n"
+                    "The authoritative scene currently has no other physically present people. "
+                    "Do not resolve this as atmosphere-only filler. Prefer either (1) a complete "
+                    "grounded npc_introductions entry for a newly encountered local person with a "
+                    "role (temporary_name=true unless the human already supplied a personal name), "
+                    "or (2) a concrete observable consequence / character beat / complication such "
+                    "as an explicit no-contact result, a discovered obstacle, or another plot beat. "
+                    "Inventing people only in prose is banned; typed introductions are required for "
+                    "anyone who answers or appears. «Ничего не происходит» is not an acceptable "
+                    "control outcome here."
+                )
             data = await self._router.generate_json(
                 self._provider,
                 selection,
@@ -599,6 +673,7 @@ class TurnOutcomeResolver:
                             + contract.model_dump_json()
                             + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
                             + json.dumps(response_contract, ensure_ascii=False)
+                            + empty_cast_guidance
                             + "\nResolve an explicitly requested ordinary local exchange now. "
                             "Anyone outside this physical presence list who responds or acts MUST "
                             "have a complete npc_introductions entry. Historical names and prose "
@@ -669,6 +744,7 @@ class TurnOutcomeResolver:
                     "draft": draft.model_dump(mode="json"),
                     "decision": decision.model_dump(mode="json"),
                     "normalization": "deterministic",
+                    "solo_physical_cast": solo_cast,
                 }
             )
             return decision
@@ -739,6 +815,10 @@ class TurnOutcomeResolver:
 
 
 __all__ = [
+    "solo_physical_presence",
+    "seeks_contact_or_presence",
+    "has_plot_bearing_outcome",
+
     "ActionOutcomeDraft",
     "OutcomeNpcIntroductionDraft",
     "TurnOutcomeDecisionDraft",

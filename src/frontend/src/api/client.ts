@@ -1,5 +1,8 @@
 import type {
   Campaign,
+  CampaignMasterRead,
+  GameMasterPersona,
+  SetCampaignMasterRequest,
   CampaignCreate,
   Character,
   CharacterCard,
@@ -138,6 +141,15 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+
+  listGameMasterPresets: () => request<GameMasterPersona[]>('/api/game-masters/presets'),
+  getCampaignGameMaster: (campaignId: UUID) =>
+    request<CampaignMasterRead>(`/api/campaigns/${campaignId}/game-master`),
+  setCampaignGameMaster: (campaignId: UUID, data: SetCampaignMasterRequest) =>
+    request<CampaignMasterRead>(`/api/campaigns/${campaignId}/game-master`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
   getSessionZero: (campaignId: UUID) =>
     request<SessionZero>(`/api/campaigns/${campaignId}/session-zero`),
   getSessionZeroInterview: (campaignId: UUID) =>
