@@ -3,12 +3,13 @@
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.entity_identity import identity_key
 from app.services.name_identity_contract import (
-    NEEDS_NAME_DISPLAY,
     NEEDS_NAME_FIELD,
+    NEEDS_NAME_TOKEN,
     description_used_as_identity_name,
     designation_locale_mismatch,
     extract_leading_short_designation,
     identity_display_label,
+    is_needs_name_token,
     is_usable_short_designation,
     occupied_canonical_keys,
     repair_introduction_identity,
@@ -30,6 +31,10 @@ def test_short_role_ok_description_blurb_rejected():
     assert not is_usable_short_designation(
         "Служанка, ответственная за уход за покоями господина"
     )
+    assert not is_usable_short_designation(NEEDS_NAME_TOKEN)
+    assert not is_usable_short_designation(f"{NEEDS_NAME_TOKEN} 2")
+    assert is_needs_name_token(NEEDS_NAME_TOKEN)
+    assert is_needs_name_token(f"{NEEDS_NAME_TOKEN} 3")
     assert description_used_as_identity_name(
         "Ответственная за уход и обслуживание дома",
         role="Ответственная за уход и обслуживание дома",
@@ -90,23 +95,37 @@ def test_persisted_repair_splits_blurb_without_inventing_personal_name():
     )
     assert blocked.needs_name
     assert blocked.custom_fields.get(NEEDS_NAME_FIELD) is True
-    assert identity_display_label(
+    assert not is_needs_name_token(blocked.canonical_name)
+    label = identity_display_label(
         blocked.canonical_name,
         description=blocked.description,
         role=blocked.role,
         custom_fields=blocked.custom_fields,
-    ) == NEEDS_NAME_DISPLAY
+    )
+    assert not is_needs_name_token(label)
+    assert label != NEEDS_NAME_TOKEN
 
 
-def test_display_never_promotes_description_into_identity_slot():
+def test_display_never_promotes_description_or_machine_token():
     label = identity_display_label(
         "Ответственная за уход и обслуживание дома",
         description="Ответственная за уход и обслуживание дома",
         role=None,
         custom_fields={},
     )
-    assert label == NEEDS_NAME_DISPLAY
+    assert not is_needs_name_token(label)
     assert label != "Ответственная за уход и обслуживание дома"
+    # No short role / clause and no localized placeholder → empty fail-soft.
+    assert label == ""
+
+    legacy = identity_display_label(
+        NEEDS_NAME_TOKEN,
+        description="Строгое выражение лица.",
+        role="служанка",
+        custom_fields={NEEDS_NAME_FIELD: True},
+    )
+    assert legacy == "Служанка"
+    assert not is_needs_name_token(legacy)
 
 
 def test_persisted_repair_collision_does_not_twin_short_role():
@@ -123,10 +142,21 @@ def test_persisted_repair_collision_does_not_twin_short_role():
     assert first.needs_name
     assert first.canonical_name != "Служанка"
     assert identity_key(first.canonical_name) not in occupied
-    # Provenance blurb kept when it does not itself collide.
-    assert "ответственн" in (first.canonical_name or "").casefold() or first.canonical_name.startswith(
-        NEEDS_NAME_DISPLAY
+    assert not is_needs_name_token(first.canonical_name)
+    assert first.custom_fields.get(NEEDS_NAME_FIELD) is True
+    # Human-facing indexed role (or other provisional), never the machine token.
+    assert first.canonical_name == "Служанка 2" or "ответственн" in (
+        first.canonical_name or ""
+    ).casefold()
+    display = identity_display_label(
+        first.canonical_name,
+        description=first.description,
+        role=first.role,
+        custom_fields=first.custom_fields,
+        occupied_canonical_keys=occupied,
     )
+    assert not is_needs_name_token(display)
+    assert display != ""
 
 
 def test_two_blurbs_repair_sequentially_without_duplicate_canonical():
@@ -145,6 +175,7 @@ def test_two_blurbs_repair_sequentially_without_duplicate_canonical():
     ]
     live = [{"id": r["id"], "canonical_name": r["canonical_name"]} for r in rows]
     names = []
+    displays = []
     for index, row in enumerate(rows):
         occupied = occupied_canonical_keys(live, exclude_entity_id=row["id"])
         repair = repair_persisted_character_identity(
@@ -156,9 +187,22 @@ def test_two_blurbs_repair_sequentially_without_duplicate_canonical():
         )
         live[index] = {"id": row["id"], "canonical_name": repair.canonical_name}
         names.append(repair.canonical_name)
+        displays.append(
+            identity_display_label(
+                repair.canonical_name,
+                description=repair.description,
+                role=repair.role,
+                custom_fields=repair.custom_fields,
+                occupied_canonical_keys=occupied,
+            )
+        )
     keys = [identity_key(name) for name in names]
     assert len(keys) == len(set(keys)), names
     assert sum(1 for name in names if identity_key(name) == identity_key("Служанка")) <= 1
+    assert all(not is_needs_name_token(name) for name in names)
+    assert all(not is_needs_name_token(label) for label in displays)
+    assert "Служанка" in names
+    assert "Служанка 2" in names
 
 
 def test_existing_twin_short_roles_demote_without_inventing_person():
@@ -179,6 +223,49 @@ def test_existing_twin_short_roles_demote_without_inventing_person():
     assert demoted.needs_name
     assert demoted.canonical_name != "Служанка"
     assert identity_key(demoted.canonical_name) not in occupied
+    assert not is_needs_name_token(demoted.canonical_name)
+    assert demoted.canonical_name == "Служанка 2"
+    assert identity_display_label(
+        demoted.canonical_name,
+        description=demoted.description,
+        role=demoted.role,
+        custom_fields=demoted.custom_fields,
+        occupied_canonical_keys=occupied,
+    ) == "Служанка 2"
+
+
+def test_legacy_needs_name_token_repaired_on_read():
+    occupied = occupied_canonical_keys(
+        [{"id": "a", "canonical_name": "Служанка"}]
+    )
+    repaired = repair_persisted_character_identity(
+        canonical_name=NEEDS_NAME_TOKEN,
+        description="Стоит у двери флигеля.",
+        role="служанка",
+        custom_fields={NEEDS_NAME_FIELD: True, "temporary_name": True, "role": "служанка"},
+        occupied_canonical_keys=occupied,
+    )
+    assert repaired.needs_name
+    assert repaired.changed
+    assert repaired.canonical_name == "Служанка 2"
+    assert not is_needs_name_token(repaired.canonical_name)
+    assert identity_display_label(
+        repaired.canonical_name,
+        description=repaired.description,
+        role=repaired.role,
+        custom_fields=repaired.custom_fields,
+        occupied_canonical_keys=occupied,
+    ) == "Служанка 2"
+
+    lone = repair_persisted_character_identity(
+        canonical_name=f"{NEEDS_NAME_TOKEN} 2",
+        description="Тихий голос.",
+        role="горничная",
+        custom_fields={NEEDS_NAME_FIELD: True},
+        occupied_canonical_keys=frozenset(),
+    )
+    assert lone.canonical_name == "Горничная"
+    assert not is_needs_name_token(lone.canonical_name)
 
 
 def test_intro_repair_collision_uses_needs_name_not_twin_role():
@@ -196,6 +283,8 @@ def test_intro_repair_collision_uses_needs_name_not_twin_role():
     assert repaired.canonical_name != "Служанка"
     assert identity_key(repaired.canonical_name) not in occupied
     assert repaired.temporary_name
+    assert not is_needs_name_token(repaired.canonical_name)
+    assert repaired.canonical_name == "Служанка 2"
 
 
 def test_intro_batch_sanitize_no_duplicate_canonical():
@@ -217,6 +306,10 @@ def test_intro_batch_sanitize_no_duplicate_canonical():
     keys = [identity_key(item.canonical_name) for item in resolved]
     assert len(keys) == len(set(keys))
     assert sum(1 for key in keys if key == identity_key("Служанка")) <= 1
+    assert all(not is_needs_name_token(item.canonical_name) for item in resolved)
+    names = [item.canonical_name for item in resolved]
+    assert "Служанка" in names
+    assert "Служанка 2" in names
 
 
 def test_locale_rejects_latin_role_when_ru_signal_present():
@@ -231,9 +324,11 @@ def test_locale_rejects_latin_role_when_ru_signal_present():
         locale_text="Служанка стоит у двери покоев господина.",
     )
     assert blocked.needs_name or blocked.canonical_name != "Serving Maid"
-    assert "Serving Maid" != identity_display_label(
+    label = identity_display_label(
         blocked.canonical_name,
         description=blocked.description,
         role=blocked.role,
         custom_fields=blocked.custom_fields,
-    ) or blocked.needs_name
+    )
+    assert not is_needs_name_token(label)
+    assert label != "Serving Maid" or blocked.needs_name

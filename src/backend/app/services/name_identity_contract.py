@@ -10,8 +10,9 @@ designation can be derived without invention, surfaces mark needs_name and fail 
 on display rather than hallucinating a person.
 
 Campaign invariant: a repaired/registered short designation used as canonical_name
-must not collide with another live entity's canonical_name. Collision fails soft to
-needs_name (unique machine marker) — never twin role labels, never invented people.
+must not collide with another live entity's canonical_name. Collision fails soft with
+needs_name *status* (custom_fields) plus a human-facing unique provisional label —
+never twin role labels, never invented people, never the raw machine token as identity.
 """
 
 from __future__ import annotations
@@ -29,18 +30,38 @@ _MAX_SHORT_DESIGNATION_WORDS = 5
 _CYRILLIC_RE = re.compile(r"[а-яё]", re.IGNORECASE)
 _LATIN_RE = re.compile(r"[a-z]", re.IGNORECASE)
 
-# Machine marker for fail-soft display — not a personal name and not inventable cast.
+# Status key in custom_fields — never a canonical_name / participant_names label.
 NEEDS_NAME_FIELD = "needs_name"
-NEEDS_NAME_DISPLAY = "needs_name"
+# Legacy machine token formerly persisted/projected as identity; detect + repair only.
+NEEDS_NAME_TOKEN = "needs_name"
+# Back-compat alias for callers/tests that still import the old constant name.
+NEEDS_NAME_DISPLAY = NEEDS_NAME_TOKEN
 
 
 def _compact(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
+def is_needs_name_token(value: object) -> bool:
+    """True for the raw machine status token formerly misused as canonical_name."""
+    text = _compact(value)
+    if not text:
+        return False
+    folded = text.casefold()
+    base = NEEDS_NAME_TOKEN.casefold()
+    if folded == base:
+        return True
+    if folded.startswith(base + " "):
+        rest = text[len(NEEDS_NAME_TOKEN) :].strip()
+        return rest.isdigit()
+    return False
+
+
 def is_usable_short_designation(value: object) -> bool:
     """True for a short personal name or short role title usable as entity identity."""
     text = _compact(value)
+    if is_needs_name_token(text):
+        return False
     if not (2 <= len(text) <= _MAX_SHORT_DESIGNATION_LEN):
         return False
     if "," in text or ";" in text or ":" in text:
@@ -170,22 +191,114 @@ def designation_locale_mismatch(
     return latin > 0 and cyrillic == 0
 
 
-def allocate_needs_name_canonical(
+def allocate_unique_designation(
+    base: object,
     occupied_keys: Collection[str] | None = None,
-) -> str:
-    """Unique machine-marker canonical — fail-soft, not a personal name or role twin."""
+) -> str | None:
+    """Return titled base, or ``Base N`` when the plain base collides.
+
+    Structural disambiguation from an existing short designation — not a personal-name
+    invention and not the needs_name machine token.
+    """
+    text = _compact(base)
+    if not is_usable_short_designation(text):
+        return None
+    titled = _title_role(text)
     occupied = set(occupied_keys or ())
-    base = NEEDS_NAME_DISPLAY
-    if identity_key(base) not in occupied:
-        return base
+    if identity_key(titled) not in occupied:
+        return titled
     index = 2
-    while True:
-        # Colon form stays machine-shaped; is_usable_short_designation rejects ":" so
-        # callers treat these only as needs_name markers, never as role identity.
-        label = f"{base} {index}"
-        if identity_key(label) not in occupied:
+    while index < 1000:
+        label = f"{titled} {index}"
+        if is_usable_short_designation(label) and identity_key(label) not in occupied:
             return label
         index += 1
+    return None
+
+
+def failsoft_canonical_label(
+    *,
+    role: object = None,
+    description: object = None,
+    previous: object = None,
+    occupied_canonical_keys: Collection[str] | None = None,
+    locale_text: object = None,
+) -> str:
+    """Human-facing unique label when short identity is missing or collides.
+
+    Preference (no invented personal names, no machine token):
+    1. unique non-colliding short role (plain, else indexed ``Role N``);
+    2. stable provisional from leading short clause of role / previous / description;
+    3. non-colliding previous when it is already a usable short designation;
+    4. empty string — contract has no localized player placeholder to invent.
+    """
+    occupied = occupied_canonical_keys
+    locale = locale_text
+    role_text = _compact(role)
+    prev = _compact(previous)
+    if is_needs_name_token(prev):
+        prev = ""
+    desc = _compact(description)
+
+    # 1. Short role (unique / indexed).
+    if is_usable_short_designation(role_text):
+        if not designation_locale_mismatch(role_text, locale_text=locale):
+            allocated = allocate_unique_designation(role_text, occupied)
+            if allocated is not None:
+                return allocated
+
+    # 2. Leading-clause provisional from structured fields.
+    for source in (role_text, prev, desc):
+        extracted = extract_leading_short_designation(source)
+        if not extracted:
+            continue
+        if designation_locale_mismatch(extracted, locale_text=locale):
+            continue
+        if identity_key(extracted) == identity_key(desc) and not is_usable_short_designation(desc):
+            # Do not promote a description-shaped whole blurb via trivial extract.
+            continue
+        allocated = allocate_unique_designation(extracted, occupied)
+        if allocated is not None:
+            return allocated
+
+    # 3. Previous usable short designation, uniquely allocated.
+    if prev and is_usable_short_designation(prev):
+        if not designation_locale_mismatch(prev, locale_text=locale):
+            allocated = allocate_unique_designation(prev, occupied)
+            if allocated is not None:
+                return allocated
+
+    # 4. No localized generic placeholder exists in this contract.
+    return ""
+
+
+def allocate_needs_name_canonical(
+    occupied_keys: Collection[str] | None = None,
+    *,
+    role: object = None,
+    description: object = None,
+    previous: object = None,
+    locale_text: object = None,
+) -> str:
+    """Fail-soft unique canonical for needs_name status — never the machine token.
+
+    Prefer a human-facing designation derived from role/desc/previous. When nothing
+    usable exists, keep a non-colliding previous label for provenance uniqueness;
+    only then may the result be empty (callers must not project empty as a person).
+    """
+    label = failsoft_canonical_label(
+        role=role,
+        description=description,
+        previous=previous,
+        occupied_canonical_keys=occupied_keys,
+        locale_text=locale_text,
+    )
+    if label:
+        return label
+    prev = _compact(previous)
+    if prev and not is_needs_name_token(prev) and not designation_collides(prev, occupied_keys):
+        return prev
+    return ""
 
 
 def accept_short_canonical(
@@ -218,8 +331,9 @@ def repair_introduction_identity(
     """Prefer a short role designation over description-as-name; fail closed otherwise.
 
     Returns a repaired copy, or raises ValueError when no usable short identity exists.
-    Colliding or locale-mismatched short roles become a needs_name marker (no twin roles,
-    no invented personal names).
+    Colliding or locale-mismatched short roles become needs_name *status* with a
+    human-facing unique fail-soft label (no twin roles, no invented personal names,
+    no raw needs_name token as canonical_name).
     """
     canonical = _compact(getattr(introduction, "canonical_name", None))
     role = _compact(getattr(introduction, "role", None))
@@ -243,10 +357,16 @@ def repair_introduction_identity(
             if accepted == canonical:
                 return introduction
             return introduction.model_copy(update={"canonical_name": accepted})
-        # Occupied personal label: fail soft to needs_name rather than inventing a twin.
+        # Occupied personal label: fail soft (human unique label) rather than inventing a twin.
         return introduction.model_copy(
             update={
-                "canonical_name": allocate_needs_name_canonical(occupied_canonical_keys),
+                "canonical_name": allocate_needs_name_canonical(
+                    occupied_canonical_keys,
+                    role=role,
+                    description=description,
+                    previous=canonical,
+                    locale_text=locale,
+                ) or canonical,
                 "temporary_name": True,
                 "personal_name_evidence": None,
             }
@@ -260,9 +380,16 @@ def repair_introduction_identity(
             allow_locale_mismatch=False,
         )
         if accepted is None:
+            failsoft = allocate_needs_name_canonical(
+                occupied_canonical_keys,
+                role=role or label,
+                description=description,
+                previous=canonical,
+                locale_text=locale,
+            )
             return introduction.model_copy(
                 update={
-                    "canonical_name": allocate_needs_name_canonical(occupied_canonical_keys),
+                    "canonical_name": failsoft or _compact(label) or canonical,
                     "temporary_name": True,
                     "personal_name_evidence": None,
                 }
@@ -305,7 +432,13 @@ def repair_introduction_identity(
     if accepted is None:
         return _as_temporary_role(role) if is_usable_short_designation(role) else introduction.model_copy(
             update={
-                "canonical_name": allocate_needs_name_canonical(occupied_canonical_keys),
+                "canonical_name": allocate_needs_name_canonical(
+                    occupied_canonical_keys,
+                    role=role,
+                    description=description,
+                    previous=canonical,
+                    locale_text=locale,
+                ) or canonical,
                 "temporary_name": True,
                 "personal_name_evidence": None,
             }
@@ -344,16 +477,27 @@ def _needs_name_repair(
     role_text: str,
     fields: dict[str, Any],
     occupied_canonical_keys: Collection[str] | None,
+    locale_text: object = None,
 ) -> PersistedIdentityRepair:
     fields = dict(fields)
     fields[NEEDS_NAME_FIELD] = True
     if role_text:
         fields.setdefault("role", role_text)
-    # Prefer keeping a non-colliding previous label for provenance; else machine marker.
-    if previous and not designation_collides(previous, occupied_canonical_keys):
-        new_name = previous
-    else:
-        new_name = allocate_needs_name_canonical(occupied_canonical_keys)
+    # Status in custom_fields; canonical stays human-facing and unique — never the token.
+    prior = "" if is_needs_name_token(previous) else previous
+    new_name = allocate_needs_name_canonical(
+        occupied_canonical_keys,
+        role=role_text,
+        description=desc,
+        previous=prior,
+        locale_text=locale_text,
+    )
+    if not new_name and prior and not designation_collides(prior, occupied_canonical_keys):
+        new_name = prior
+    if not new_name:
+        # Last-resort uniqueness without inventing a personal name or using the token:
+        # keep prior blurb when present even if description-shaped; else empty.
+        new_name = prior
     return PersistedIdentityRepair(
         canonical_name=new_name,
         description=desc,
@@ -379,7 +523,10 @@ def repair_persisted_character_identity(
     Prefer: keep blurb in description; set name to an already-structured short role
     token; else extract a leading short designation. Never invent a personal name.
     If impossible — or the short designation collides with another live canonical_name —
-    keep a fail-soft needs_name marker rather than hallucinating one or twinning roles.
+    set needs_name status and a human-facing unique fail-soft label rather than
+    hallucinating a person, twinning roles, or persisting the raw needs_name token.
+    Legacy rows whose canonical_name is literally needs_name / needs_name N are
+    repaired on this same path.
     """
     previous = _compact(canonical_name)
     desc = _compact(description) or None
@@ -389,6 +536,17 @@ def repair_persisted_character_identity(
         part for part in (desc or "", role_text, previous) if part
     )
     temporary = bool(fields.get("temporary_name"))
+
+    # Legacy machine token in the identity slot → rewrite to human failsoft + status.
+    if is_needs_name_token(previous):
+        return _needs_name_repair(
+            previous=previous,
+            desc=desc,
+            role_text=role_text,
+            fields=fields,
+            occupied_canonical_keys=occupied_canonical_keys,
+            locale_text=locale,
+        )
 
     if previous and not description_used_as_identity_name(
         previous, role=role_text, description=desc
@@ -406,6 +564,20 @@ def repair_persisted_character_identity(
                 role_text=role_text,
                 fields=fields,
                 occupied_canonical_keys=occupied_canonical_keys,
+                locale_text=locale,
+            )
+        # Preserve intentional needs_name status (provisional / collision failsoft).
+        if fields.get(NEEDS_NAME_FIELD):
+            kept = dict(fields)
+            kept[NEEDS_NAME_FIELD] = True
+            return PersistedIdentityRepair(
+                canonical_name=accepted,
+                description=desc,
+                role=role_text or None,
+                custom_fields=kept,
+                needs_name=True,
+                changed=accepted != previous or is_needs_name_token(previous),
+                previous_name=previous,
             )
         cleaned = {k: v for k, v in fields.items() if k != NEEDS_NAME_FIELD}
         changed = cleaned != dict(fields) or accepted != previous
@@ -470,6 +642,7 @@ def repair_persisted_character_identity(
         role_text=role_text,
         fields=fields,
         occupied_canonical_keys=occupied_canonical_keys,
+        locale_text=locale,
     )
 
 
@@ -481,22 +654,39 @@ def identity_display_label(
     custom_fields: Mapping[str, Any] | None = None,
     occupied_canonical_keys: Collection[str] | None = None,
 ) -> str:
-    """Prefer a canonical short name; never silently promote description into identity."""
+    """Prefer a canonical short name; never return the needs_name machine token.
+
+    Display rule: human-facing unique short designation when available; on needs_name
+    status / legacy token, same fail-soft preference as persistence (role → leading
+    clause provisional → indexed role); never promote description blurbs; never emit
+    ``needs_name`` / ``needs_name N`` to API clients. Empty string only when the
+    contract cannot derive a human label and has no localized placeholder.
+    """
     fields = custom_fields if isinstance(custom_fields, Mapping) else {}
     role_text = _role_from_fields(role, fields)
     name = _compact(canonical_name)
-    if fields.get(NEEDS_NAME_FIELD):
-        # Keep unique machine markers distinguishable; never show a colliding role twin
-        # or silently promote a description/blurb into the identity display slot.
-        name_key = identity_key(name)
-        if name_key and name_key.startswith(identity_key(NEEDS_NAME_DISPLAY)):
-            return name
+
+    def _human_failsoft(candidate_name: str, candidate_role: str | None, candidate_desc: object) -> str:
+        label = failsoft_canonical_label(
+            role=candidate_role,
+            description=candidate_desc,
+            previous=candidate_name if not is_needs_name_token(candidate_name) else "",
+            occupied_canonical_keys=occupied_canonical_keys,
+        )
+        if label and not is_needs_name_token(label):
+            return label
         if (
-            is_usable_short_designation(role_text)
-            and not designation_collides(role_text, occupied_canonical_keys)
+            candidate_name
+            and not is_needs_name_token(candidate_name)
+            and is_usable_short_designation(candidate_name)
+            and not designation_collides(candidate_name, occupied_canonical_keys)
         ):
-            return _title_role(role_text)
-        return NEEDS_NAME_DISPLAY
+            return candidate_name
+        return ""
+
+    if fields.get(NEEDS_NAME_FIELD) or is_needs_name_token(name):
+        return _human_failsoft(name, role_text, description)
+
     if name and not description_used_as_identity_name(
         name, role=role_text, description=description
     ):
@@ -509,30 +699,30 @@ def identity_display_label(
         custom_fields=fields,
         occupied_canonical_keys=occupied_canonical_keys,
     )
-    if repaired.needs_name:
-        repaired_key = identity_key(repaired.canonical_name)
-        if repaired_key and repaired_key.startswith(identity_key(NEEDS_NAME_DISPLAY)):
-            return repaired.canonical_name
-        if (
-            is_usable_short_designation(repaired.role)
-            and not designation_collides(repaired.role, occupied_canonical_keys)
-        ):
-            return _title_role(repaired.role)
-        return NEEDS_NAME_DISPLAY
+    if repaired.needs_name or is_needs_name_token(repaired.canonical_name):
+        return _human_failsoft(
+            repaired.canonical_name,
+            repaired.role,
+            repaired.description,
+        )
     return repaired.canonical_name
 
 
 __all__ = [
     "NEEDS_NAME_DISPLAY",
     "NEEDS_NAME_FIELD",
+    "NEEDS_NAME_TOKEN",
     "PersistedIdentityRepair",
     "accept_short_canonical",
     "allocate_needs_name_canonical",
+    "allocate_unique_designation",
     "description_used_as_identity_name",
     "designation_collides",
     "designation_locale_mismatch",
     "extract_leading_short_designation",
+    "failsoft_canonical_label",
     "identity_display_label",
+    "is_needs_name_token",
     "is_usable_short_designation",
     "occupied_canonical_keys",
     "repair_introduction_identity",
