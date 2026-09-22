@@ -27,7 +27,10 @@ NPC — durable identity, а не имя, случайно появившеес�
 - длинное description/blurb, comma-heavy designation и duty-clause shape не занимают
   identity slot;
 - при ремонте blurb остаётся в `description`/`role`; short role token допустим;
-- без короткого designation — `needs_name` + fail-soft display, без выдумывания личного имени.
+- без короткого designation — `needs_name` + fail-soft display, без выдумывания личного имени;
+- **уникальность canonical_name:** short designation, выставляемый repair/intro/registrar,
+  не должен совпадать с `canonical_name` другой live-сущности в кампании; при коллизии —
+  `needs_name` (уникальный machine marker), а не twin `Служанка`/`Служанка` и не выдуманное имя.
 
 ## Текущая реализация
 

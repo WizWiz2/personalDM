@@ -16,6 +16,10 @@ from app.services.narrator_authority_contracts import (
     is_usable_short_designation,
     repair_introduction_identity,
 )
+from app.services.name_identity_contract import (
+    accept_short_canonical,
+    allocate_needs_name_canonical,
+)
 from app.services.player_intent_contract import contains_cjk
 
 
@@ -79,22 +83,31 @@ class NpcIntroductionResolver:
         self._entities = EntityRepository(session)
 
     @classmethod
-    def sanitize_introductions(cls, introductions: list) -> list:
+    def sanitize_introductions(
+        cls,
+        introductions: list,
+        *,
+        occupied_canonical_keys: set[str] | frozenset[str] | None = None,
+    ) -> list:
         """Keep planner identities readable without canonizing unsupported personal names.
 
         Planner control models occasionally leak CJK/synthetic names or claim a stable personal
         identity without current/campaign evidence. At the final authority boundary we derive the
         grounded role identity and keep it temporary. If no usable role exists, fail closed rather
-        than persisting an invented stable name.
+        than persisting an invented stable name. Short designations that collide with occupied
+        campaign/batch keys fail soft to needs_name via the shared name-identity contract.
         """
-        used: set[str] = set()
+        used: set[str] = set(occupied_canonical_keys or ())
         result = []
         placeholder_keys = {identity_key(value) for value in cls.SYNTHETIC_PLACEHOLDERS}
 
         for introduction in introductions:
             # Reject description-as-name / long role-blurb identities before other repairs.
             try:
-                introduction = repair_introduction_identity(introduction)
+                introduction = repair_introduction_identity(
+                    introduction,
+                    occupied_canonical_keys=used,
+                )
             except ValueError as exc:
                 raise AuthorityResolutionError(str(exc)) from exc
 
@@ -130,13 +143,21 @@ class NpcIntroductionResolver:
                     raise AuthorityResolutionError(
                         "Planner returned an unsupported NPC identity without a usable grounded role"
                     )
-                base = role[0].upper() + role[1:] if role else role
-                candidate = base
-                index = 2
-                while identity_key(candidate) in used:
-                    suffix = f" {index}"
-                    candidate = f"{base[: max(2, 120 - len(suffix))]}{suffix}"
-                    index += 1
+                accepted = accept_short_canonical(
+                    role,
+                    occupied_canonical_keys=used,
+                    locale_text=" ".join(
+                        part
+                        for part in (
+                            getattr(introduction, "description", None) or "",
+                            role,
+                            canonical,
+                        )
+                        if part
+                    ),
+                    allow_locale_mismatch=False,
+                )
+                candidate = accepted or allocate_needs_name_canonical(used)
                 introduction = introduction.model_copy(
                     update={
                         "canonical_name": candidate,
@@ -147,6 +168,7 @@ class NpcIntroductionResolver:
                 canonical_key = identity_key(candidate)
 
             if canonical_key in used:
+                # Shared contract already preferred needs_name; remaining duplicates fail closed.
                 raise AuthorityResolutionError(
                     f"Planner returned duplicate NPC identity: {introduction.canonical_name}"
                 )
@@ -166,12 +188,20 @@ class NpcIntroductionResolver:
             getattr(item, "identity_reference", None) or item.canonical_name
             for item in introductions
         ]
-        introductions = self.sanitize_introductions(introductions)
         names = list(present_names)
         present_keys = {identity_key(value) for value in names}
         all_characters = await self._entities.list_by_campaign(
             campaign_id,
             entity_type="character",
+        )
+        reserved_for_sanitize = {
+            identity_key(value)
+            for entity in all_characters
+            for value in (entity.canonical_name, *entity.aliases)
+        }
+        introductions = self.sanitize_introductions(
+            introductions,
+            occupied_canonical_keys=reserved_for_sanitize,
         )
 
         ids = [str(entity.id) for entity in all_characters]
@@ -227,16 +257,34 @@ class NpcIntroductionResolver:
                     f"{introduction.canonical_name}: {candidate_names}"
                 )
             if not unique_matches:
-                # Materialization uses campaign-unique labels. Keep the role intact for
-                # subsequent local identity joins, but disambiguate a new local person.
+                # Campaign-unique labels via shared contract: never twin another live
+                # canonical_name; collide → needs_name marker (no invented personal name).
                 base = introduction.canonical_name
-                candidate = base
-                index = 2
-                while identity_key(candidate) in reserved_names:
-                    suffix = f" {index}"
-                    candidate = f"{base[:120 - len(suffix)]}{suffix}"
-                    index += 1
-                introduction = introduction.model_copy(update={"canonical_name": candidate})
+                accepted = accept_short_canonical(
+                    base,
+                    occupied_canonical_keys=reserved_names,
+                    locale_text=" ".join(
+                        part
+                        for part in (
+                            getattr(introduction, "description", None) or "",
+                            getattr(introduction, "role", None) or "",
+                            base,
+                        )
+                        if part
+                    ),
+                    allow_locale_mismatch=bool(
+                        getattr(introduction, "personal_name_evidence", None)
+                    ),
+                )
+                candidate = accepted or allocate_needs_name_canonical(reserved_names)
+                introduction = introduction.model_copy(
+                    update={
+                        "canonical_name": candidate,
+                        "temporary_name": True
+                        if accepted is None
+                        else introduction.temporary_name,
+                    }
+                )
                 reserved_names.add(identity_key(candidate))
                 new_introductions.append(introduction)
                 continue

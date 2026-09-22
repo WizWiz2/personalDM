@@ -20,8 +20,9 @@ from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import evidence_supported
 from app.services.entity_identity import identity_key, resolve_character_candidates
 from app.services.name_identity_contract import (
+    accept_short_canonical,
     description_used_as_identity_name,
-    is_usable_short_designation,
+    occupied_canonical_keys,
 )
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
@@ -244,12 +245,28 @@ class EntityRegistrar:
             if not name:
                 continue
             # Never persist description/blurb text as the durable entity identity label.
+            # Shared contract collision check: do not twin another live canonical_name.
+            occupied = occupied_canonical_keys(character_entities)
             if description_used_as_identity_name(
                 name, role=mention.role, description=mention.description
             ):
                 role = self._clean_name(mention.role or "")
-                if is_usable_short_designation(role):
-                    name = role
+                accepted = accept_short_canonical(
+                    role,
+                    occupied_canonical_keys=occupied,
+                    locale_text=" ".join(
+                        part
+                        for part in (
+                            mention.description or "",
+                            mention.role or "",
+                            assistant_content[:400],
+                        )
+                        if part
+                    ),
+                    allow_locale_mismatch=False,
+                )
+                if accepted:
+                    name = accepted
                     mention = mention.model_copy(
                         update={"canonical_name": name, "temporary_name": True}
                     )

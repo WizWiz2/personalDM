@@ -12,6 +12,7 @@ from app.db.scene_state_table import LocationExit, SceneRuntimeState
 from app.db.tables import Campaign, Character, Entity, Item, Scene, SceneParticipant
 from app.services.name_identity_contract import (
     identity_display_label,
+    occupied_canonical_keys,
     repair_persisted_character_identity,
 )
 from app.models.scene_state import (
@@ -44,11 +45,17 @@ class SceneStateService:
             return {}
         return data if isinstance(data, dict) else {}
 
-    def _repair_character_identity_row(self, entity: Entity) -> str:
+    def _repair_character_identity_row(
+        self,
+        entity: Entity,
+        *,
+        occupied_keys: frozenset[str] | set[str] | None = None,
+    ) -> str:
         """Apply shared name-identity contract to a persisted cast member.
 
         Prefers a short role designation over description-as-name. Never invents a
-        personal name; marks needs_name and fail-soft display when repair is impossible.
+        personal name; marks needs_name and fail-soft display when repair is impossible
+        or the short designation would collide with another live canonical_name.
         Returns the identity label safe for presence / authority surfaces.
         """
         fields = self._decode_custom_fields(entity.custom_fields)
@@ -57,6 +64,16 @@ class SceneStateService:
             description=entity.description,
             role=fields.get("role"),
             custom_fields=fields,
+            occupied_canonical_keys=occupied_keys,
+            locale_text=" ".join(
+                part
+                for part in (
+                    entity.description or "",
+                    str(fields.get("role") or ""),
+                    entity.canonical_name or "",
+                )
+                if part
+            ),
         )
         if repair.changed:
             entity.canonical_name = repair.canonical_name
@@ -67,6 +84,7 @@ class SceneStateService:
             description=repair.description,
             role=repair.role,
             custom_fields=repair.custom_fields,
+            occupied_canonical_keys=occupied_keys,
         )
 
     async def ensure_runtime_state(self, scene_id: UUID) -> SceneRuntimeState:
@@ -203,10 +221,18 @@ class SceneStateService:
         participant_ids = [UUID(entity.id) for entity, _ in participant_rows]
         participant_names = []
         identity_changed = False
-        for entity, _ in participant_rows:
+        # Live occupancy grows as each row is repaired so later siblings cannot twin
+        # the short designation claimed by an earlier cast member.
+        live_rows = [
+            {"id": entity.id, "canonical_name": entity.canonical_name}
+            for entity, _ in participant_rows
+        ]
+        for index, (entity, _) in enumerate(participant_rows):
+            occupied = occupied_canonical_keys(live_rows, exclude_entity_id=entity.id)
             before = entity.canonical_name
-            label = self._repair_character_identity_row(entity)
+            label = self._repair_character_identity_row(entity, occupied_keys=occupied)
             participant_names.append(label)
+            live_rows[index] = {"id": entity.id, "canonical_name": entity.canonical_name}
             if entity.canonical_name != before or label != before:
                 identity_changed = True
         if identity_changed:
