@@ -614,7 +614,7 @@ def test_look_request_naming_present_npc_is_not_response_obligation():
     )
 
 def test_addressed_atmosphere_without_response_beat_fails():
-    """Substance obligation unmet: name in sensory filler without speech/refusal/gesture beat."""
+    """Substance obligation unmet: name in sensory filler without quote/dialogue beat."""
     authority = _authority(
         player_character_name="Эйдан",
         player_input="Управляющая домом, есть ли работа по найму?",
@@ -667,8 +667,8 @@ def test_addressed_response_beat_with_surrounding_atmosphere_passes():
     assert result.verdict == "pass"
 
 
-def test_addressed_refusal_gesture_without_quote_counts_as_beat():
-    """Closed refusal/gesture discourse frame near the addressee satisfies the obligation."""
+def test_addressed_gesture_without_quote_does_not_count_as_beat():
+    """Gesture/refusal lexicon without quote or dialogue frame is not a structural beat."""
     authority = _authority(
         player_character_name="Эйдан",
         player_input="Управляющая домом, назови хозяина дома.",
@@ -677,6 +677,23 @@ def test_addressed_refusal_gesture_without_quote_counts_as_beat():
     )
     candidate = (
         "Управляющая домом качает головой и отказывается отвечать на этот вопрос."
+    )
+    assert addressed_response_beat_present(candidate, "Управляющая домом") is False
+    spans = addressed_response_erasure_spans(candidate, authority)
+    assert any("no_response_beat" in span for span in spans)
+
+
+def test_addressed_quoted_refusal_near_addressee_counts_as_beat():
+    """Quoted refusal attributed near the addressee satisfies the obligation structurally."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Управляющая домом, назови хозяина дома.",
+        present_character_names=["Эйдан", "Управляющая домом"],
+        addressed_response_obligation="Управляющая домом",
+    )
+    candidate = (
+        "Управляющая домом складывает руки: "
+        "«На этот вопрос я отвечать не стану.»"
     )
     assert addressed_response_beat_present(candidate, "Управляющая домом") is True
     assert addressed_response_erasure_spans(candidate, authority) == []
