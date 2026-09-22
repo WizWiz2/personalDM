@@ -454,7 +454,8 @@ short sentence. Return exactly the NpcContactDecision schema.
             return
         try:
             plan.npc_introductions = NpcIntroductionResolver.sanitize_introductions(
-                plan.npc_introductions
+                plan.npc_introductions,
+                locale_text=player_input,
             )
             return
         except AuthorityResolutionError:
@@ -462,7 +463,10 @@ short sentence. Return exactly the NpcContactDecision schema.
             for introduction in plan.npc_introductions:
                 try:
                     kept.extend(
-                        NpcIntroductionResolver.sanitize_introductions([introduction])
+                        NpcIntroductionResolver.sanitize_introductions(
+                            [introduction],
+                            locale_text=player_input,
+                        )
                     )
                 except AuthorityResolutionError:
                     continue

@@ -95,3 +95,54 @@ def test_planner_rejects_unreadable_identity_instead_of_inventing_placeholder():
         "безымян" not in item.canonical_name.casefold()
         for item in plan.npc_introductions
     )
+
+def test_latin_only_housekeeper_rejected_on_russian_player_turn():
+    """Invent-people orthography: RU player turn must not materialize EN twin Housekeeper."""
+    intro = PlannedNpcIntroduction(
+        canonical_name="Housekeeper",
+        role="Housekeeper",
+        description="She offers you a position in the household staff.",
+        reason="Model invented an English steward twin.",
+        temporary_name=True,
+    )
+
+    with pytest.raises(AuthorityResolutionError):
+        NpcIntroductionResolver.sanitize_introductions(
+            [intro],
+            locale_text="Лира, где здесь хлеб? Ответь коротко именно ты, Лира.",
+        )
+
+
+def test_planner_drops_latin_only_housekeeper_on_russian_input():
+    plan = _planner_plan(
+        PlannedNpcIntroduction(
+            canonical_name="Housekeeper",
+            role="Housekeeper",
+            description="Hiring speech.",
+            reason="EN twin.",
+            temporary_name=True,
+        )
+    )
+    TurnAuthorityPlanner._sanitize_npc_names(
+        plan,
+        "Лира, где здесь хлеб? Ответь коротко именно ты, Лира.",
+    )
+    assert plan.npc_introductions == []
+
+
+def test_russian_role_survives_when_canonical_was_latin_on_russian_turn():
+    intro = PlannedNpcIntroduction(
+        canonical_name="Housekeeper",
+        role="управляющая домом",
+        description="Женщина в переднике.",
+        reason="Role is grounded in Russian.",
+        temporary_name=True,
+    )
+    normalized = NpcIntroductionResolver.sanitize_introductions(
+        [intro],
+        locale_text="Поговорить с управляющей.",
+    )
+    assert len(normalized) == 1
+    assert normalized[0].canonical_name == "Управляющая домом"
+    assert normalized[0].temporary_name is True
+
