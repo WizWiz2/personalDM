@@ -829,21 +829,24 @@ def addressed_response_obligation_constraint(addressee: str) -> str:
     name = _compact(addressee)
     return (
         f"{_ADDRESSED_OBLIGATION_MARKER} {name} is directly addressed and present. "
-        "This turn must give them a response opportunity: speech, refusal, deflection, or "
-        "gesture-with-answer. Do not erase them into atmosphere or claim they are out of view / "
-        "unreachable / unanswered. If a truthful reply would require an unauthorized person, "
-        "refuse or deflect without inventing or naming that person."
+        "This turn must land their response beat: speech, refusal, deflection, or "
+        "gesture-with-answer. Atmosphere may season the voice but cannot satisfy the turn alone "
+        "— naming them in sensory filler without a response beat is banned. Do not claim they "
+        "are out of view / unreachable / unanswered. If a truthful reply would require an "
+        "unauthorized person, refuse or deflect without inventing or naming that person."
     )
 
 
 def addressed_response_obligation_guidance(addressee: str) -> str:
     name = _compact(addressee)
     return (
-        f"Игрок прямо обращается к присутствующему персонажу «{name}»: у этого адресата должна "
-        "быть возможность ответа — реплика, отказ, уклонение или жест с содержанием ответа. "
-        "Не растворяй адресата в атмосфере и не утверждай, что его нет в поле зрения или что "
-        "ответа не будет. Если правдивый ответ потребовал бы неавторизованного человека, "
-        "пусть адресат откажется или уклонится, не изобретая и не называя такого человека."
+        f"Игрок прямо обращается к присутствующему персонажу «{name}»: сначала должен "
+        "приземлиться их ответный такт — реплика, отказ, уклонение или жест с содержанием ответа. "
+        "Атмосфера может быть голосом сцены, но сама по себе ход не закрывает: нельзя оставить "
+        "только сенсорный фон с именем адресата без ответного такта. Не утверждай, что его нет "
+        "в поле зрения или что ответа не будет. Если правдивый ответ потребовал бы "
+        "неавторизованного человека, пусть адресат откажется или уклонится, не изобретая и не "
+        "называя такого человека."
     )
 
 
@@ -860,11 +863,74 @@ def addressed_response_obligation_addressee(authority) -> str | None:
     return None
 
 
-def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
-    """Reject soft-silence erasure of an obligated present addressee.
+def _cast_name_span_iter(text: str, cast_name: str):
+    """Yield (start, end) spans that soft-match a cast name (stem + Cyrillic endings)."""
+    tokens = [token for token in _compact(cast_name).split() if token]
+    if not tokens:
+        return
+    parts: list[str] = []
+    for token in tokens:
+        stem = token[: max(4, len(token) - 2)] if len(token) >= 4 else token
+        parts.append(re.escape(stem) + r"[А-Яа-яЁёA-Za-z]*")
+    pattern = re.compile(r"(?<![А-Яа-яЁёA-Za-z])" + r"\s+".join(parts) + r"(?![А-Яа-яЁёA-Za-z])")
+    for match in pattern.finditer(text or ""):
+        yield match.start(), match.end()
 
-    Structural: obligation addressee must not be omitted entirely, and unreachability /
-    no-answer claims about a present obligated addressee are canon_conflict.
+
+# Closed discourse frames for speech / refusal / gesture-with-answer near an obligated addressee.
+# Structural attribution only (same family as protagonist speech frames) — not an atmosphere lexicon.
+_ADDRESSEE_RESPONSE_FRAME_RE = re.compile(
+    r"(?:"
+    r"говорит|отвечает|произносит|шепчет|спрашивает|замечает|добавляет|"
+    r"отказывает(?:ся)?|уклоняет(?:ся)?|"
+    r"качает\s+головой|покачивает\s+головой|кивает|"
+    r"жестом\s+(?:отвечает|указывает|показывает|да[её]т\s+знать)|"
+    r"молча\s+(?:указывает|кивает|качает)|"
+    r"да[её]т\s+(?:знак|ответ)"
+    r")",
+    flags=re.IGNORECASE,
+)
+
+
+def addressed_response_beat_present(candidate: str, addressee: str) -> bool:
+    """True when prose gives the obligated addressee a speech/refusal/gesture-answer beat.
+
+    Atmosphere may surround the beat; atmosphere alone (name standing in sensory filler
+    without a response opportunity) does not satisfy the obligation.
+    """
+    text = candidate or ""
+    name = _compact(addressee)
+    if not name or not text.strip():
+        return False
+
+    for match in _QUOTE_RE.finditer(text):
+        left = max(0, match.start() - 180)
+        right = min(len(text), match.end() + 100)
+        if _cast_name_mentioned_in_input(text[left:right], name):
+            return True
+    for match in _DIALOGUE_LINE_RE.finditer(text):
+        left = max(0, match.start() - 180)
+        if _cast_name_mentioned_in_input(text[left:match.end()], name):
+            return True
+
+    for start, end in _cast_name_span_iter(text, name):
+        after = text[end : end + 120]
+        before = text[max(0, start - 120) : start]
+        if _ADDRESSEE_RESPONSE_FRAME_RE.search(after) or _ADDRESSEE_RESPONSE_FRAME_RE.search(before):
+            return True
+        if re.match(r"\s*:", after):
+            nearby = text[end : end + 220]
+            if _QUOTE_RE.search(nearby) or _DIALOGUE_LINE_RE.search(nearby):
+                return True
+    return False
+
+
+def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
+    """Reject soft-erasure of an obligated present addressee's required response beat.
+
+    Structural: addressee must appear; unreachability / no-answer claims are banned; and a
+    speech / refusal / deflection / gesture-with-answer beat must be present. Atmosphere may
+    season the voice — atmosphere alone (name in sensory filler without a response beat) fails.
     """
     addressee = addressed_response_obligation_addressee(authority)
     if not addressee:
@@ -880,12 +946,17 @@ def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
         value = _compact(match.group(0))
         if value and value not in spans:
             spans.append(value)
+    if spans:
+        return spans
+    if not addressed_response_beat_present(text, addressee):
+        spans.append(f"addressed:{addressee}:no_response_beat")
     return spans
 
 
 
 
 __all__ = [
+    "addressed_response_beat_present",
     "addressed_response_erasure_spans",
     "addressed_response_obligation_addressee",
     "addressed_response_obligation_constraint",

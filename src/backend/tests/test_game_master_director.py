@@ -26,11 +26,13 @@ from app.services.master_director import (
     advance_rhythm,
     apply_moves_to_narration_guidance,
     apply_moves_to_outcome_decision,
+    has_substance_stamp,
     narrator_persona_block,
     pick_moves,
     sampling_seed,
     scene_development_disposition_bias,
     select_director_moves,
+    subordinate_quiet_guidance_to_substance,
 )
 
 from app.models.player_intent import PlayerActionIntent, PlayerIntentContract
@@ -542,3 +544,40 @@ def test_honor_travel_also_stamps_without_quiet_moves() -> None:
     decided = apply_moves_to_outcome_decision(base, pressure, committed_travel=True)
     assert any("honor_travel" in item for item in decided.canon_constraints)
     assert decided.action_outcomes[0].resolution == "blocked"
+
+def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
+    """Soft Keeper quiet stays voice seasoning; substance stamp rewrites atmospheric quiet tip."""
+    quiet = DirectorMoveSelection(
+        moves=["quiet", "soften_blow"],
+        obligations=[
+            "[DIRECTOR MOVE: quiet / Тихий атмосферный такт] Atmospheric beat with low plot push. "
+            "Do not invent a new major conflict this turn."
+        ],
+        master_id="soft_keeper",
+        master_display_name="Мягкий хранитель",
+    )
+    plain = apply_moves_to_narration_guidance(["keep stakes"], quiet, substance_active=False)
+    assert any("Atmospheric beat with low plot push" in item for item in plain)
+
+    stamped = apply_moves_to_narration_guidance(["keep stakes"], quiet, substance_active=True)
+    assert any("subordinated" in item for item in stamped)
+    assert not any("Atmospheric beat with low plot push" in item for item in stamped)
+    assert has_substance_stamp(committed_travel=True) is True
+    assert has_substance_stamp(
+        addressed_response_obligation="Управляющая домом",
+    ) is True
+    assert has_substance_stamp(
+        canon_constraints=["[DIRECTOR STRUCTURAL: honor_travel] Arrive or hard-block."],
+    ) is True
+    assert has_substance_stamp() is False
+
+    rewritten = subordinate_quiet_guidance_to_substance(
+        [
+            "[DIRECTOR MOVE: quiet / x] Atmospheric beat with low plot push.",
+            "other tip",
+        ],
+        substance_active=True,
+    )
+    assert rewritten[0].startswith("[DIRECTOR MOVE: quiet / subordinated]")
+    assert "other tip" in rewritten
+

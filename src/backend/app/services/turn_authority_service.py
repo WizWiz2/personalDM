@@ -220,10 +220,17 @@ class TurnAuthorityService:
             ),
         )
         if addressee:
+            from app.services.master_director import subordinate_quiet_guidance_to_substance
+
             guidance = list(authority.narration_guidance)
             tip = addressed_response_obligation_guidance(addressee)
             if tip not in guidance:
                 guidance.append(tip)
+            # Soft Keeper quiet may keep atmospheric voice, but not before the response beat.
+            guidance = subordinate_quiet_guidance_to_substance(
+                guidance,
+                substance_active=True,
+            )
             constraints = list(authority.canon_constraints)
             constraint = addressed_response_obligation_constraint(addressee)
             if constraint not in constraints:
