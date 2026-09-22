@@ -877,26 +877,16 @@ def _cast_name_span_iter(text: str, cast_name: str):
         yield match.start(), match.end()
 
 
-# Closed discourse frames for speech / refusal / gesture-with-answer near an obligated addressee.
-# Structural attribution only (same family as protagonist speech frames) — not an atmosphere lexicon.
-_ADDRESSEE_RESPONSE_FRAME_RE = re.compile(
-    r"(?:"
-    r"говорит|отвечает|произносит|шепчет|спрашивает|замечает|добавляет|"
-    r"отказывает(?:ся)?|уклоняет(?:ся)?|"
-    r"качает\s+головой|покачивает\s+головой|кивает|"
-    r"жестом\s+(?:отвечает|указывает|показывает|да[её]т\s+знать)|"
-    r"молча\s+(?:указывает|кивает|качает)|"
-    r"да[её]т\s+(?:знак|ответ)"
-    r")",
-    flags=re.IGNORECASE,
-)
-
-
 def addressed_response_beat_present(candidate: str, addressee: str) -> bool:
-    """True when prose gives the obligated addressee a speech/refusal/gesture-answer beat.
+    """True when prose lands a structural discourse beat for the obligated addressee.
 
-    Atmosphere may surround the beat; atmosphere alone (name standing in sensory filler
-    without a response opportunity) does not satisfy the obligation.
+    Accepted forms (punctuation/structure family only — no speech-verb or gesture lexicon):
+    - quote (`_QUOTE_RE`) with addressee name in the nearby attribution window
+    - dialogue line (`_DIALOGUE_LINE_RE`) with addressee name nearby
+    - cast-name span followed by `:` then a quote/dialogue nearby
+
+    Atmosphere alone (name in sensory filler) does not satisfy the obligation.
+    Gesture/refusal narration without a quote or dialogue frame does not count.
     """
     text = candidate or ""
     name = _compact(addressee)
@@ -915,9 +905,6 @@ def addressed_response_beat_present(candidate: str, addressee: str) -> bool:
 
     for start, end in _cast_name_span_iter(text, name):
         after = text[end : end + 120]
-        before = text[max(0, start - 120) : start]
-        if _ADDRESSEE_RESPONSE_FRAME_RE.search(after) or _ADDRESSEE_RESPONSE_FRAME_RE.search(before):
-            return True
         if re.match(r"\s*:", after):
             nearby = text[end : end + 220]
             if _QUOTE_RE.search(nearby) or _DIALOGUE_LINE_RE.search(nearby):
@@ -929,7 +916,7 @@ def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
     """Reject soft-erasure of an obligated present addressee's required response beat.
 
     Structural: addressee must appear; unreachability / no-answer claims are banned; and a
-    speech / refusal / deflection / gesture-with-answer beat must be present. Atmosphere may
+    quote/dialogue attribution beat near the addressee must be present. Atmosphere may
     season the voice — atmosphere alone (name in sensory filler without a response beat) fails.
     """
     addressee = addressed_response_obligation_addressee(authority)
