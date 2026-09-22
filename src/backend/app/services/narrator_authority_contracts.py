@@ -21,9 +21,12 @@ from app.services.name_identity_contract import (
 
 # Discourse frames that attribute NEW spoken lines to the second-person protagonist.
 # Structural attribution only — not a plot/emotion lexicon.
+# (a) 2nd-person possessive speech nouns, (b) ты leading into a quote/colon,
+# (c) closed speech-act tags with ты. Verb tags stay small; overlap handles echoes.
 _PROTAGONIST_SPEECH_FRAME_RE = re.compile(
     r"(?:"
-    r"твой\s+голос|"
+    r"тво(?:й|я|ё|е|и)\s+(?:голос|вопрос|ответ|ш[её]пот|крик|слова|реплик\w*)|"
+    r"\bты\b(?=[^\.\n]{0,48}[«\"“:])|"
     r"ты\s+(?:говоришь|спрашиваешь|отвечаешь|произносишь|шепчешь|кричишь|"
     r"добавляешь|замечаешь|произн[её]с|сказал[аи]?|спросил[аи]?|ответил[аи]?)|"
     r"(?:говоришь|спрашиваешь|отвечаешь|сказал[аи]?|спросил[аи]?)\s+ты|"
@@ -33,6 +36,14 @@ _PROTAGONIST_SPEECH_FRAME_RE = re.compile(
 )
 
 _QUOTE_RE = re.compile(r"«([^»]{1,1600})»|“([^”]{1,1600})”|\"([^\"]{1,1600})\"")
+_DIALOGUE_LINE_RE = re.compile(r"(?m)^[ \t]*[—\-–]\s*(\S.+)$")
+_LEADING_FIRST_PERSON_STAGE_RE = re.compile(
+    r"^(?:я\s+[^.»!?]+[.»!?]+(?:\s+|$))+",
+    flags=re.IGNORECASE,
+)
+_MIN_ECHO_KEY_LEN = 8
+_MIN_ECHO_TOKENS = 3
+_ECHO_TOKEN_COVERAGE = 0.8
 
 # Empty-of-people / solitude claims (cast contradiction), not furniture emptiness.
 _SOLITUDE_CLAIM_RE = re.compile(
@@ -118,17 +129,79 @@ def presence_vs_solitude_constraint(authority) -> str | None:
         f"{named}. Claiming the place is empty of people, that nobody is here, or "
         "'only us'/solitude against that cast is forbidden."
     )
+
+
+def _player_speech_cores(player_input: object) -> list[str]:
+    """Dialogue-shaped fragments of player_input for structural echo checks."""
+    raw = str(player_input or "")
+    cores: list[str] = []
+    seen: set[str] = set()
+
+    def add_core(value: object) -> None:
+        text = _compact(value)
+        key = identity_key(text)
+        if not text or not key or len(key) < _MIN_ECHO_KEY_LEN or key in seen:
+            return
+        seen.add(key)
+        cores.append(text)
+
+    for match in _QUOTE_RE.finditer(raw):
+        quote = next((group for group in match.groups() if group is not None), "")
+        add_core(quote)
+    for match in _DIALOGUE_LINE_RE.finditer(raw):
+        add_core(match.group(1))
+
+    compact = _compact(raw)
+    add_core(compact)
+    if compact:
+        stripped = _LEADING_FIRST_PERSON_STAGE_RE.sub("", compact).strip(" -—–")
+        add_core(stripped)
+    return cores
+
+
+def _quote_echoes_player_speech(quote: str, cores: list[str], player_key: str) -> bool:
+    """True when a narrated quote is a near-copy of player speech (structural overlap)."""
+    quote_text = _compact(quote)
+    quote_key = identity_key(quote_text)
+    if not quote_key or len(quote_key) < _MIN_ECHO_KEY_LEN:
+        return False
+    if player_key and (
+        quote_key == player_key
+        or quote_key in player_key
+        or (len(player_key) >= _MIN_ECHO_KEY_LEN and player_key in quote_key)
+    ):
+        return True
+    quote_tokens = set(quote_key.split())
+    for core in cores:
+        core_key = identity_key(core)
+        if not core_key:
+            continue
+        if quote_key == core_key or quote_key in core_key or core_key in quote_key:
+            return True
+        core_tokens = set(core_key.split())
+        if len(quote_tokens) < _MIN_ECHO_TOKENS or not core_tokens:
+            continue
+        shared = quote_tokens & core_tokens
+        if len(shared) >= _MIN_ECHO_TOKENS and (
+            len(shared) / len(quote_tokens) >= _ECHO_TOKEN_COVERAGE
+        ):
+            return True
+    return False
+
+
 def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
     """Spans where narrator attributes new dialogue to the hero/player.
 
-    Second-person speech performance is never on allowed_speakers. Quotes that merely
-    echo player_input as performed speech are also unauthorized.
+    Invariant: protagonist dialogue must not survive publication as narrated performance.
+    Second-person speech frames are never on allowed_speakers. Quotes that are a
+    structural near-copy of player_input are unauthorized even without a local frame.
     """
     text = candidate or ""
     if not text.strip():
         return []
-    player_input = _compact(getattr(authority, "player_input", None))
-    player_key = identity_key(player_input)
+    player_input = getattr(authority, "player_input", None)
+    player_key = identity_key(_compact(player_input))
+    speech_cores = _player_speech_cores(player_input)
     spans: list[str] = []
     seen: set[str] = set()
 
@@ -146,26 +219,15 @@ def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
         window = text[start:end]
         add(window if len(window) <= 220 else match.group(0))
 
-    if player_key:
+    if player_key or speech_cores:
         for match in _QUOTE_RE.finditer(text):
             quote = next((group for group in match.groups() if group is not None), "")
-            quote = _compact(quote)
-            if not quote:
+            if not _quote_echoes_player_speech(quote, speech_cores, player_key):
                 continue
-            quote_key = identity_key(quote)
-            # Re-performing the player's own words as spoken dialogue.
-            if quote_key == player_key or (
-                len(quote_key) >= 8 and quote_key in player_key
-            ) or (
-                len(player_key) >= 8 and player_key in quote_key
-            ):
-                left = max(0, match.start() - 48)
-                right = min(len(text), match.end() + 24)
-                neighborhood = text[left:right]
-                if _PROTAGONIST_SPEECH_FRAME_RE.search(neighborhood) or re.search(
-                    r"\bты\b", neighborhood, flags=re.IGNORECASE
-                ):
-                    add(neighborhood if len(neighborhood) <= 220 else quote)
+            left = max(0, match.start() - 48)
+            right = min(len(text), match.end() + 24)
+            neighborhood = text[left:right]
+            add(neighborhood if len(neighborhood) <= 220 else _compact(quote))
 
     return spans
 
