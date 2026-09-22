@@ -30,6 +30,46 @@ class TurnAuthorityError(ValueError):
     """The planned turn cannot be represented as one coherent authority object."""
 
 
+def _location_id_key(value: object) -> str | None:
+    """Stable comparison key for location ids (UUID or str); None if unset/invalid."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return str(UUID(text))
+    except (TypeError, ValueError):
+        return None
+
+
+def _address_repair_colocated(
+    *,
+    scene_location_id: object,
+    character_location_id: object,
+    player_location_id: object,
+) -> bool:
+    """True when the named campaign entity shares the active scene's physical place.
+
+    Live residual after #187: kitchen scenes may lack ``scene_location_links`` (null
+    ``location_id``). Requiring both ids then never promotes a co-located addressee, so
+    obligation never stamps and rival prose can publish. Anchor order:
+    1. scene location when set;
+    2. else PC location when set (unstructured scene, placed cast);
+    3. else both character and PC unplaced on an unstructured scene — same null-location
+       bag as the live kitchen (not a cross-map teleport of a placed character).
+    """
+    scene = _location_id_key(scene_location_id)
+    character = _location_id_key(character_location_id)
+    player = _location_id_key(player_location_id)
+    anchor = scene or player
+    if anchor is not None and character is not None:
+        return anchor == character
+    if scene is None and character is None and player is None:
+        return True
+    return False
+
+
 class TurnAuthorityService:
     """Assemble the sole narrator/validator authority from structured state plus the plan.
 
@@ -154,7 +194,14 @@ class TurnAuthorityService:
                 char_loc = (
                     getattr(character, "current_location_id", None) if character else None
                 )
-                if target_loc and char_loc and char_loc == target_loc:
+                player_loc = (
+                    getattr(player, "current_location_id", None) if player else None
+                )
+                if _address_repair_colocated(
+                    scene_location_id=target_loc,
+                    character_location_id=char_loc,
+                    player_location_id=player_loc,
+                ):
                     present_names.append(match.canonical_name)
                     present_keys.add(identity_key(match.canonical_name))
                     presence_arrivals.append(
