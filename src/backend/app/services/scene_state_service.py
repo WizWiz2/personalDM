@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from sqlalchemy import select
@@ -9,6 +10,10 @@ from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_state_table import LocationExit, SceneRuntimeState
 from app.db.tables import Campaign, Character, Entity, Item, Scene, SceneParticipant
+from app.services.name_identity_contract import (
+    identity_display_label,
+    repair_persisted_character_identity,
+)
 from app.models.scene_state import (
     LocationExitCreate,
     LocationExitRead,
@@ -25,6 +30,44 @@ class SceneStateService:
         self._session = session
         self._locations = LocationRepository(session)
         self._scenes = SceneRepository(session)
+
+
+    @staticmethod
+    def _decode_custom_fields(raw: object) -> dict:
+        if isinstance(raw, dict):
+            return dict(raw)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else {}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _repair_character_identity_row(self, entity: Entity) -> str:
+        """Apply shared name-identity contract to a persisted cast member.
+
+        Prefers a short role designation over description-as-name. Never invents a
+        personal name; marks needs_name and fail-soft display when repair is impossible.
+        Returns the identity label safe for presence / authority surfaces.
+        """
+        fields = self._decode_custom_fields(entity.custom_fields)
+        repair = repair_persisted_character_identity(
+            canonical_name=entity.canonical_name,
+            description=entity.description,
+            role=fields.get("role"),
+            custom_fields=fields,
+        )
+        if repair.changed:
+            entity.canonical_name = repair.canonical_name
+            entity.description = repair.description
+            entity.custom_fields = json.dumps(repair.custom_fields, ensure_ascii=False)
+        return identity_display_label(
+            repair.canonical_name,
+            description=repair.description,
+            role=repair.role,
+            custom_fields=repair.custom_fields,
+        )
 
     async def ensure_runtime_state(self, scene_id: UUID) -> SceneRuntimeState:
         state = await self._session.get(SceneRuntimeState, str(scene_id))
@@ -158,7 +201,16 @@ class SceneStateService:
             )
         ).all()
         participant_ids = [UUID(entity.id) for entity, _ in participant_rows]
-        participant_names = [entity.canonical_name for entity, _ in participant_rows]
+        participant_names = []
+        identity_changed = False
+        for entity, _ in participant_rows:
+            before = entity.canonical_name
+            label = self._repair_character_identity_row(entity)
+            participant_names.append(label)
+            if entity.canonical_name != before or label != before:
+                identity_changed = True
+        if identity_changed:
+            await self._session.flush()
 
         object_rows = []
         if location_id:

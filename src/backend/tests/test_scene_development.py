@@ -158,25 +158,53 @@ async def test_unknown_agenda_degrades_without_aborting_plan(db_session):
     assert audit["sanitize_status"] == "degraded_quiet"
 
 
-async def test_quiet_requires_reason_and_cannot_hide_actions(db_session):
+async def test_disposition_actions_coerce_to_legal_pair_without_abort(db_session):
+    """disposition↔actions is a soft contract: coerce before hard failure aborts the turn."""
     authority, npc, absent, goal = await world(db_session)
     data = initiative(npc, goal).model_dump()
-    data["disposition"] = "quiet"
-    with pytest.raises(ValidationError):
-        SceneDevelopment.model_validate(data)
+    data["disposition"] = "quiet"  # misfire: actions present
+    coerced = SceneDevelopment.model_validate(data)
+    assert coerced.disposition == "act"
+    assert len(coerced.actions) == 1
+
+    empty_act = {
+        "disposition": "act",
+        "reason": "Модель заявила act без поступков.",
+        "actions": [],
+    }
+    quieted = SceneDevelopment.model_validate(empty_act)
+    assert quieted.disposition == "quiet"
+    assert quieted.actions == []
+
+    # Valid pairs unchanged.
+    valid_quiet = SceneDevelopment.model_validate({
+        "disposition": "quiet",
+        "reason": "Герой отдыхает; предложение уже прозвучало.",
+        "actions": [],
+    })
+    assert valid_quiet.disposition == "quiet"
+    valid_act = SceneDevelopment.model_validate(initiative(npc, goal).model_dump())
+    assert valid_act.disposition == "act" and valid_act.actions
+
+    # Empty reason still hard-fails (not part of disposition↔actions coerce).
     with pytest.raises(ValidationError):
         SceneDevelopment(disposition="quiet", reason="", actions=[])
+
+    # Plan path: quiet+actions from the model must not raise TurnPlanningError.
     router = SimpleNamespace(
         resolve=AsyncMock(return_value=SimpleNamespace(config=SimpleNamespace(
             model_name="test", context_window=8192,
         ))),
         generate_json=AsyncMock(return_value={
-            "disposition": "quiet", "reason": "Герой отдыхает; предложение уже прозвучало.",
-            "actions": [],
+            "disposition": "quiet",
+            "reason": "Мisfire label with a well-formed act.",
+            "actions": initiative(npc, goal).model_dump()["actions"],
         }),
     )
-    decision, _ = await SceneDevelopmentService(db_session).plan(authority, router)
-    assert decision.actions == []
+    decision, audit = await SceneDevelopmentService(db_session).plan(authority, router)
+    assert decision.disposition == "act"
+    assert decision.actions
+    assert audit["status"] == "completed"
 
 
 async def test_development_survives_blocked_sequence_and_hides_private_purpose(db_session):
