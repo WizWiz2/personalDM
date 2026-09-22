@@ -256,11 +256,16 @@ def _append_constraint(constraints: list[str], text: str, *, limit: int = 8) -> 
 def apply_moves_to_outcome_decision(
     decision: TurnOutcomeDecision,
     selected: DirectorMoveSelection,
+    *,
+    committed_travel: bool = False,
 ) -> TurnOutcomeDecision:
     """Map closed director moves onto existing TurnOutcomeDecision authority levers.
 
     Narration guidance remains secondary seasoning; dramatic_mode, complication policy,
     and canon_constraints are the primary structural effects.
+
+    When ``committed_travel`` is true, Soft Keeper quiet/soften may keep a calm beat but
+    cannot soft-refuse or atmosphere-stall the typed move — travel must land or hard-block.
     """
     moves = set(selected.moves)
     dramatic = decision.dramatic_mode
@@ -352,6 +357,16 @@ def apply_moves_to_outcome_decision(
             "[DIRECTOR STRUCTURAL: soften_blow] Prefer cushioned consequence landing.",
         )
 
+    if committed_travel and not any(
+        "honor_travel" in item for item in constraints
+    ):
+        constraints = _append_constraint(
+            constraints,
+            "[DIRECTOR STRUCTURAL: honor_travel] Committed player travel must complete as "
+            "typed auto_success or hard-blocked with concrete evidence; soft refusal, "
+            "lingering, or atmosphere-only stall that leaves the player unmoved is banned.",
+        )
+
     return decision.model_copy(
         update={
             "dramatic_mode": dramatic,
@@ -365,13 +380,21 @@ def apply_moves_to_outcome_decision(
 
 def scene_development_disposition_bias(
     selected: DirectorMoveSelection | None,
+    *,
+    committed_travel: bool = False,
 ) -> str | None:
-    """Return 'act', 'quiet', or None for SceneDevelopment preference."""
+    """Return 'act', 'quiet', or None for SceneDevelopment preference.
+
+    Committed travel outranks Soft Keeper quiet disposition: arrival must not be
+    soft-stalled into atmosphere-only quiet when the player just moved.
+    """
     if selected is None:
         return None
     moves = set(selected.moves)
     if "npc_initiative" in moves:
         return "act"
+    if committed_travel:
+        return None
     if moves & QUIET_MOVES and not (moves & {"npc_initiative", "advance_conflict", "escalate_chaos"}):
         return "quiet"
     return None

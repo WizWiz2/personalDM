@@ -526,12 +526,22 @@ class TurnSaga:
                             master_display_name=str(
                                 gm_meta.get("display_name") or "unknown"
                             ),
-                        )
+                        ),
+                        committed_travel=bool(gm_meta.get("committed_travel")),
                     )
             # Direct address to a present cast member outranks Soft Keeper quiet bias:
             # atmosphere-only quiet must not erase an obligated addressee.
             if getattr(authority, "addressed_response_obligation", None) and disposition_bias == "quiet":
                 disposition_bias = None
+            # Committed travel outranks Soft Keeper quiet bias: do not soft-stall arrival.
+            if disposition_bias == "quiet":
+                travel_flag = (
+                    isinstance(gm_meta, dict) and bool(gm_meta.get("committed_travel"))
+                )
+                source_path = list(getattr(authority, "source_location_path", None) or [])
+                target_path = list(getattr(authority, "target_location_path", None) or [])
+                if travel_flag or (target_path and target_path != source_path):
+                    disposition_bias = None
             development, development_metadata = await development_service.plan(
                 authority,
                 role_router,

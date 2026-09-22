@@ -33,6 +33,12 @@ from app.services.master_director import (
     select_director_moves,
 )
 
+from app.models.player_intent import PlayerActionIntent, PlayerIntentContract
+from app.services.turn_outcome_resolver import (
+    is_pure_ordinary_travel,
+    seeks_contact_or_presence,
+)
+
 
 def test_catalog_exposes_five_russian_presets() -> None:
     presets = list_presets()
@@ -423,3 +429,116 @@ async def test_set_master_resets_rhythm() -> None:
     assert result.state.rhythm.turn_index == 0
     assert result.state.rhythm.turns_since_pressure == 0
     assert result.state.preset_id == "chaos_dice"
+
+
+def test_pure_ordinary_travel_is_not_contact_seeking() -> None:
+    """Movement-only ordinary intent must not force Soft Keeper introduce_contact."""
+    contract = PlayerIntentContract(
+        summary="Иду на улицу",
+        actions=[
+            PlayerActionIntent(
+                action_type="movement",
+                intent="Иду на улицу",
+                destination_location="улица",
+                movement_method="ordinary",
+            )
+        ],
+    )
+    assert is_pure_ordinary_travel(contract) is True
+    assert seeks_contact_or_presence(contract) is False
+
+    master = get_preset("soft_keeper")
+    assert master is not None
+    selected = select_director_moves(
+        master,
+        MasterRhythmState(),
+        seek_contact=seeks_contact_or_presence(contract),
+        empty_companion_cast=True,
+    )
+    assert selected.forced_introduce_contact is False
+    assert selected.moves[0] != "introduce_contact"
+
+
+def test_travel_plus_observation_still_seeks_contact() -> None:
+    contract = PlayerIntentContract(
+        summary="Иду в бар и ищу хозяина",
+        actions=[
+            PlayerActionIntent(
+                action_type="movement",
+                intent="Иду в бар",
+                destination_location="бар",
+                movement_method="ordinary",
+            ),
+            PlayerActionIntent(
+                action_type="observation",
+                intent="Ищу хозяина",
+            ),
+        ],
+    )
+    assert is_pure_ordinary_travel(contract) is False
+    assert seeks_contact_or_presence(contract) is True
+
+
+def test_soft_keeper_quiet_cannot_soft_stall_committed_travel() -> None:
+    """Quiet Soft Keeper may keep calm atmosphere but must stamp honor_travel."""
+    base = TurnOutcomeDecision.model_validate(
+        {
+            "action_outcomes": [
+                {
+                    "action_index": 0,
+                    "resolution": "auto_success",
+                    "safe_mundane": True,
+                    "observable_outcome": "Переход в место «улица» завершён.",
+                }
+            ],
+            "resolution": "sequence",
+            "dramatic_mode": "routine",
+            "allow_new_complication": False,
+            "canon_constraints": [],
+            "narration_guidance": [],
+            "ending_hook": "",
+        }
+    )
+    quiet = DirectorMoveSelection(
+        moves=["quiet", "soften_blow"],
+        obligations=["y"],
+        master_id="soft_keeper",
+        master_display_name="Мягкий хранитель",
+    )
+    decided = apply_moves_to_outcome_decision(base, quiet, committed_travel=True)
+    assert decided.dramatic_mode == "calm"  # Soft Keeper may keep calm
+    assert any("honor_travel" in item for item in decided.canon_constraints)
+    assert any("quiet" in item for item in decided.canon_constraints)
+    # Outcomes must remain typed success — quiet must not rewrite travel.
+    assert decided.action_outcomes[0].resolution == "auto_success"
+    assert scene_development_disposition_bias(quiet, committed_travel=True) is None
+    assert scene_development_disposition_bias(quiet, committed_travel=False) == "quiet"
+
+
+def test_honor_travel_also_stamps_without_quiet_moves() -> None:
+    base = TurnOutcomeDecision.model_validate(
+        {
+            "action_outcomes": [
+                {
+                    "action_index": 0,
+                    "resolution": "blocked",
+                    "blocking_reason": "Дверь заперта изнутри.",
+                }
+            ],
+            "resolution": "sequence",
+            "dramatic_mode": "tense",
+            "allow_new_complication": False,
+            "canon_constraints": [],
+            "narration_guidance": [],
+            "ending_hook": "",
+        }
+    )
+    pressure = DirectorMoveSelection(
+        moves=["advance_conflict", "npc_initiative"],
+        obligations=["z"],
+        master_id="iron_chronicler",
+        master_display_name="Железный хронист",
+    )
+    decided = apply_moves_to_outcome_decision(base, pressure, committed_travel=True)
+    assert any("honor_travel" in item for item in decided.canon_constraints)
+    assert decided.action_outcomes[0].resolution == "blocked"

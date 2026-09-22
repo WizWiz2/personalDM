@@ -14,6 +14,7 @@ from app.services.master_director import (
     apply_moves_to_outcome_decision,
 )
 from app.services.turn_outcome_resolver import (
+    is_pure_ordinary_travel,
     seeks_contact_or_presence,
     solo_physical_presence,
 )
@@ -101,7 +102,15 @@ class TurnIntentPlanningPipeline:
             )
 
         # Primary: structural authority levers. Secondary: narration_guidance seasoning.
-        decision = apply_moves_to_outcome_decision(decision, director)
+        # Pure ordinary travel stamps honor_travel so Soft Keeper quiet cannot soft-stall.
+        committed_travel = is_pure_ordinary_travel(contract) or any(
+            action.action_type == "movement" for action in contract.actions
+        )
+        decision = apply_moves_to_outcome_decision(
+            decision,
+            director,
+            committed_travel=committed_travel,
+        )
         guidance = apply_moves_to_narration_guidance(
             list(decision.narration_guidance),
             director,
@@ -121,6 +130,7 @@ class TurnIntentPlanningPipeline:
                 "display_name": persona.display_name,
                 "moves": list(director.moves),
                 "forced_introduce_contact": director.forced_introduce_contact,
+                "committed_travel": committed_travel,
                 "rhythm_pending": True,
                 "rhythm_before": rhythm_before.model_dump(mode="json"),
             },
