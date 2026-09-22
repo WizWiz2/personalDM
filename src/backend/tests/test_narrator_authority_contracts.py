@@ -784,11 +784,64 @@ def test_response_beat_must_attribute_to_obligated_addressee_not_other_cast():
         "Управляющая домом складывает руки и спокойно отвечает: "
         "«Наймом распоряжаюсь я.»"
     )
-    assert addressed_response_beat_present(candidate, "Лира") is False
+    assert addressed_response_beat_present(
+        candidate, "Лира", rival_names=["Управляющая домом"]
+    ) is False
     spans = addressed_response_erasure_spans(candidate, authority)
     assert any("omitted" in span or "no_response_beat" in span for span in spans)
     result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
         _pass(), authority, candidate
     )
     assert result.verdict == "repair_required"
+
+
+def test_named_lira_obligation_rejects_sluzhanka_quote_with_prior_hiring_bleed():
+    """Live Soft Keeper kitchen: naming Лира near a Служанка quote is not Лира's beat.
+
+    Prior hiring-answer content spoken by another cast member must not satisfy a Лира obligation.
+    """
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Лира, где здесь хлеб?",
+        present_character_names=["Эйдан", "Лира", "Служанка", "Управляющая домом"],
+        addressed_response_obligation="Лира",
+    )
+    candidate = (
+        "Лира поднимает взгляд. Служанка вытирает руки о фартук и спокойно отвечает: "
+        "«Я — та, кто нанимает слуг. Хлеб лежит на полке у очага.»"
+    )
+    rivals = ["Служанка", "Управляющая домом"]
+    assert addressed_response_beat_present(candidate, "Лира", rival_names=rivals) is False
+    assert addressed_response_beat_present(candidate, "Служанка", rival_names=["Лира"]) is True
+    spans = addressed_response_erasure_spans(candidate, authority)
+    assert any("no_response_beat" in span for span in spans)
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+    assert result.verdict == "repair_required"
+
+    landed = (
+        "Лира кивает на полку у очага и коротко отвечает: "
+        "«Хлеб там, на деревянной полке.»"
+    )
+    assert addressed_response_beat_present(landed, "Лира", rival_names=rivals) is True
+    assert addressed_response_erasure_spans(landed, authority) == []
+
+
+def test_explicit_personal_name_beats_role_token_soft_overlap():
+    """When both a personal name and a role designation are present, explicit name wins."""
+    cast = ["Эйдан", "Лира", "Служанка", "Управляющая домом"]
+    assert resolve_addressed_present_npc(
+        "Лира, где здесь хлеб?",
+        cast,
+        player_name="Эйдан",
+        hinted_name="Служанка",
+    ) == "Лира"
+    assert should_assign_addressed_response_obligation(
+        "Лира, где здесь хлеб?",
+        cast,
+        player_name="Эйдан",
+        hinted_name="Управляющая домом",
+        addressed_response_requested=True,
+    ) == "Лира"
 

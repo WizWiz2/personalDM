@@ -258,28 +258,60 @@ class TurnAuthorityService:
                 constraints.append(presence_constraint)
             authority = authority.model_copy(update={"canon_constraints": constraints})
 
-        # Sticky `/talk` identifies a possible listener, not unconditional ownership of every later
-        # player action. Explicit actor-scoped internal callers remain authoritative; public routing
-        # may assign a response actor only when the current input actually addresses that character.
-        if acting_character_id is None and authority.acting_character_id is not None:
+        # Response ownership follows THIS turn's obligated addressee. Sticky `/talk` is only
+        # input provenance: it must not keep a prior listener (and their dialogue history) when
+        # the player names a different present cast member. Explicit actor-scoped callers
+        # (acting_character_id argument) remain authoritative.
+        if acting_character_id is None:
             from app.services.systemless_authority_guard import addressed_response_requested
 
             obligated = authority.addressed_response_obligation
-            keep_for_obligation = bool(
-                obligated
-                and authority.acting_character_name
-                and obligated == authority.acting_character_name
-            )
-            if not addressed_response_requested(player_input, plan) and not keep_for_obligation:
-                update = {
-                    "acting_character_id": None,
-                    "acting_character_name": None,
-                }
-                if authority.scene_disposition == "actor_turn":
-                    update["scene_disposition"] = planned_disposition
-                    if planned_disposition == "stay":
-                        update["transition_type"] = "none"
-                authority = authority.model_copy(update=update)
+            if obligated:
+                obligated_key = identity_key(obligated)
+                obligated_entity = next(
+                    (
+                        entity
+                        for entity in all_characters
+                        if identity_key(entity.canonical_name) == obligated_key
+                        and identity_key(entity.canonical_name) in present_keys
+                    ),
+                    None,
+                )
+                if obligated_entity is not None:
+                    if authority.acting_character_id != obligated_entity.id:
+                        update = {
+                            "acting_character_id": obligated_entity.id,
+                            "acting_character_name": obligated_entity.canonical_name,
+                        }
+                        if planned_disposition == "stay":
+                            update["scene_disposition"] = "actor_turn"
+                            update["transition_type"] = "none"
+                        authority = authority.model_copy(update=update)
+                elif authority.acting_character_id is not None:
+                    # Obligated designation is not a resolvable present entity — drop sticky
+                    # so a prior listener's answered topic cannot bleed into this turn.
+                    update = {
+                        "acting_character_id": None,
+                        "acting_character_name": None,
+                    }
+                    if authority.scene_disposition == "actor_turn":
+                        update["scene_disposition"] = planned_disposition
+                        if planned_disposition == "stay":
+                            update["transition_type"] = "none"
+                    authority = authority.model_copy(update=update)
+            elif authority.acting_character_id is not None:
+                # No obligation: sticky listener stays only when the planner marks addressed
+                # response ownership for this turn; otherwise clear.
+                if not addressed_response_requested(player_input, plan):
+                    update = {
+                        "acting_character_id": None,
+                        "acting_character_name": None,
+                    }
+                    if authority.scene_disposition == "actor_turn":
+                        update["scene_disposition"] = planned_disposition
+                        if planned_disposition == "stay":
+                            update["transition_type"] = "none"
+                    authority = authority.model_copy(update=update)
 
         lines = await established_state_lines(
             self._session,
