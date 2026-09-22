@@ -702,26 +702,43 @@ _QUESTION_OR_DIALOGUE_SHAPE_RE = re.compile(
 )
 
 
-def _cast_name_mentioned_in_input(player_input: str, cast_name: str) -> bool:
-    """True when cast_name (or its tokens) soft-matches inside player_input identity keys."""
+def _cast_mention_strength(player_input: str, cast_name: str) -> int:
+    """How strongly player_input names cast_name.
+
+    0 = no match
+    1 = soft-token inflection match only
+    2 = explicit identity containment / exact token set
+
+    Explicit beats soft so a personal name token cannot collapse into a different
+    cast member via role-token soft overlap.
+    """
     needle = identity_key(cast_name)
     hay = identity_key(player_input)
     if not needle or not hay:
-        return False
+        return 0
     if needle in hay:
-        return True
+        return 2
     padded = f" {hay} "
     if f" {needle} " in padded:
-        return True
-    # Inflected multi-token roles: every cast token soft-matches some input token.
+        return 2
     cast_tokens = [token for token in needle.split() if len(token) >= 3]
     input_tokens = [token for token in hay.split() if len(token) >= 3]
     if not cast_tokens or not input_tokens:
-        return False
-    return all(
+        return 0
+    input_set = set(input_tokens)
+    if all(token in input_set for token in cast_tokens):
+        return 2
+    if all(
         any(_identity_token_soft_match(cast_token, input_token) for input_token in input_tokens)
         for cast_token in cast_tokens
-    )
+    ):
+        return 1
+    return 0
+
+
+def _cast_name_mentioned_in_input(player_input: str, cast_name: str) -> bool:
+    """True when cast_name (or its tokens) matches inside player_input identity keys."""
+    return _cast_mention_strength(player_input, cast_name) > 0
 
 
 def _unique_short_role_hit(player_input: str, present_names: list[str], player_name: str | None) -> str | None:
@@ -774,10 +791,17 @@ def resolve_addressed_present_npc(
         key = identity_key(name)
         return bool(key) and key != player_key
 
-    mentioned = [
-        name for name in cast
-        if is_nonplayer(name) and _cast_name_mentioned_in_input(player_input, name)
+    scored = [
+        (name, _cast_mention_strength(player_input, name))
+        for name in cast
+        if is_nonplayer(name)
     ]
+    scored = [(name, strength) for name, strength in scored if strength > 0]
+    # Explicit name tokens win over soft role-token overlap across distinct cast ids.
+    explicit = [name for name, strength in scored if strength >= 2]
+    soft_only = [name for name, strength in scored if strength == 1]
+    mentioned = explicit or soft_only
+
     if hinted_name and is_nonplayer(hinted_name):
         hint_key = identity_key(hinted_name)
         hinted_matches = [name for name in mentioned if identity_key(name) == hint_key]
@@ -872,52 +896,167 @@ def addressed_response_obligation_addressee(authority) -> str | None:
     return None
 
 
-def _cast_name_span_iter(text: str, cast_name: str):
-    """Yield (start, end) spans that soft-match a cast name (stem + Cyrillic endings)."""
+def _cast_name_pattern(cast_name: str) -> re.Pattern[str] | None:
+    """Stem + Cyrillic/Latin ending pattern for a cast designation."""
     tokens = [token for token in _compact(cast_name).split() if token]
     if not tokens:
-        return
+        return None
     parts: list[str] = []
     for token in tokens:
         stem = token[: max(4, len(token) - 2)] if len(token) >= 4 else token
         parts.append(re.escape(stem) + r"[А-Яа-яЁёA-Za-z]*")
-    pattern = re.compile(r"(?<![А-Яа-яЁёA-Za-z])" + r"\s+".join(parts) + r"(?![А-Яа-яЁёA-Za-z])")
+    return re.compile(
+        r"(?<![А-Яа-яЁёA-Za-z])" + r"\s+".join(parts) + r"(?![А-Яа-яЁёA-Za-z])",
+        flags=re.IGNORECASE,
+    )
+
+
+def _cast_name_span_iter(text: str, cast_name: str):
+    """Yield (start, end) spans that soft-match a cast name (stem + endings)."""
+    pattern = _cast_name_pattern(cast_name)
+    if not pattern:
+        return
     for match in pattern.finditer(text or ""):
         yield match.start(), match.end()
 
 
-def addressed_response_beat_present(candidate: str, addressee: str) -> bool:
-    """True when prose lands a structural discourse beat for the obligated addressee.
+def _post_quote_dash_attributed_to(after: str, cast_name: str) -> bool:
+    pattern = _cast_name_pattern(cast_name)
+    if not pattern:
+        return False
+    return bool(re.match(rf"[,.]?\s*[—\-–]\s*(?:{pattern.pattern})", after or "", flags=re.IGNORECASE))
+
+
+def _dialogue_line_trailing_attr(line: str, cast_name: str) -> bool:
+    pattern = _cast_name_pattern(cast_name)
+    if not pattern:
+        return False
+    return bool(
+        re.search(
+            rf"[—\-–]\s*(?:{pattern.pattern})\s*$",
+            (line or "").rstrip(),
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _rightmost_cast_span_end(window: str, cast_name: str) -> int:
+    best = -1
+    for _start, end in _cast_name_span_iter(window, cast_name):
+        if end > best:
+            best = end
+    return best
+
+
+def _structural_speaker_for_beat(
+    text: str,
+    beat_start: int,
+    beat_end: int,
+    candidates: list[str],
+    *,
+    dialogue_line: str | None = None,
+) -> str | None:
+    """Return the unique structural speaker among candidates for one quote/dialogue beat.
+
+    Attribution family (no speech-verb lexicon):
+    - tight post-quote / trailing-line dash to a cast name
+    - otherwise the rightmost cast span in the pre-window that has ``:`` before the beat
+      or sits in the same short clause (≤48 chars, no sentence break)
+
+    When several cast members appear near a quote, the rightmost structural owner wins —
+    a prior name in atmosphere does not steal another cast member's reply.
+    """
+    if not candidates:
+        return None
+    after = text[beat_end : beat_end + 80]
+    dash_hits = [name for name in candidates if _post_quote_dash_attributed_to(after, name)]
+    if dialogue_line is not None:
+        dash_hits.extend(
+            name for name in candidates if _dialogue_line_trailing_attr(dialogue_line, name)
+        )
+    # Preserve order, unique by identity_key
+    seen: set[str] = set()
+    unique_dash: list[str] = []
+    for name in dash_hits:
+        key = identity_key(name)
+        if key and key not in seen:
+            seen.add(key)
+            unique_dash.append(name)
+    if len(unique_dash) == 1:
+        return unique_dash[0]
+    if len(unique_dash) > 1:
+        return None
+
+    left = max(0, beat_start - 180)
+    pre = text[left:beat_start]
+    best_name: str | None = None
+    best_abs_end = -1
+    for name in candidates:
+        end = _rightmost_cast_span_end(pre, name)
+        if end < 0:
+            continue
+        abs_end = left + end
+        if abs_end > best_abs_end:
+            best_abs_end = abs_end
+            best_name = name
+    if best_name is None or best_abs_end < 0:
+        return None
+    between = text[best_abs_end:beat_start]
+    if ":" in between:
+        return best_name
+    if len(between) <= 48 and "\n" not in between and not re.search(r"[.!?]", between):
+        return best_name
+    return None
+
+
+def addressed_response_beat_present(
+    candidate: str,
+    addressee: str,
+    *,
+    rival_names: list[str] | tuple[str, ...] | None = None,
+) -> bool:
+    """True when prose lands a structural discourse beat attributable to the obligated addressee.
 
     Accepted forms (punctuation/structure family only — no speech-verb or gesture lexicon):
-    - quote (`_QUOTE_RE`) with addressee name in the nearby attribution window
-    - dialogue line (`_DIALOGUE_LINE_RE`) with addressee name nearby
-    - cast-name span followed by `:` then a quote/dialogue nearby
+    - quote / dialogue whose structural speaker among present cast is the addressee
+      (rightmost name with ``:`` / short clause, or tight post-quote dash attribution)
+    - cast-name span followed by ``:`` then a quote/dialogue nearby (when no rival is closer)
 
-    Atmosphere alone (name in sensory filler) does not satisfy the obligation.
-    Gesture/refusal narration without a quote or dialogue frame does not count.
+    Atmosphere alone (name in sensory filler near another cast member's quote) does not
+    satisfy the obligation. Gesture/refusal narration without a quote or dialogue frame
+    does not count.
     """
     text = candidate or ""
     name = _compact(addressee)
     if not name or not text.strip():
         return False
 
+    rivals = [_compact(item) for item in list(rival_names or []) if _compact(item)]
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for item in [name, *rivals]:
+        key = identity_key(item)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append(item)
+
     for match in _QUOTE_RE.finditer(text):
-        left = max(0, match.start() - 180)
-        right = min(len(text), match.end() + 100)
-        if _cast_name_mentioned_in_input(text[left:right], name):
+        speaker = _structural_speaker_for_beat(
+            text, match.start(), match.end(), candidates
+        )
+        if speaker and identity_key(speaker) == identity_key(name):
             return True
     for match in _DIALOGUE_LINE_RE.finditer(text):
-        left = max(0, match.start() - 180)
-        if _cast_name_mentioned_in_input(text[left:match.end()], name):
+        speaker = _structural_speaker_for_beat(
+            text,
+            match.start(),
+            match.end(),
+            candidates,
+            dialogue_line=match.group(0),
+        )
+        if speaker and identity_key(speaker) == identity_key(name):
             return True
-
-    for start, end in _cast_name_span_iter(text, name):
-        after = text[end : end + 120]
-        if re.match(r"\s*:", after):
-            nearby = text[end : end + 220]
-            if _QUOTE_RE.search(nearby) or _DIALOGUE_LINE_RE.search(nearby):
-                return True
     return False
 
 
@@ -926,7 +1065,8 @@ def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
 
     Structural only (no unreachability phrase list):
     - addressee omitted from prose, OR
-    - addressee present but no quote/dialogue attribution beat (`addressed_response_beat_present`).
+    - addressee present but no quote/dialogue attribution beat for THAT addressee
+      (`addressed_response_beat_present`, rivals = other present non-player cast).
     Atmosphere alone (name in sensory filler without a response beat) fails.
     """
     addressee = addressed_response_obligation_addressee(authority)
@@ -937,7 +1077,15 @@ def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
     if not _cast_name_mentioned_in_input(text, addressee):
         spans.append(f"addressed:{addressee}:omitted")
         return spans
-    if not addressed_response_beat_present(text, addressee):
+    player_key = identity_key(getattr(authority, "player_character_name", None) or "")
+    rivals = [
+        name
+        for name in list(getattr(authority, "present_character_names", None) or [])
+        if _compact(name)
+        and identity_key(name) != identity_key(addressee)
+        and (not player_key or identity_key(name) != player_key)
+    ]
+    if not addressed_response_beat_present(text, addressee, rival_names=rivals):
         spans.append(f"addressed:{addressee}:no_response_beat")
     return spans
 
