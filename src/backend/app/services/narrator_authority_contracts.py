@@ -2,7 +2,9 @@
 
 These helpers encode machine-checkable authority/identity rules. They do not invent story
 semantics from keyword game logic: speaker allowlists come from typed cast/intros, solitude
-rejection compares authorized cast size to empty-of-people claims, and intro naming delegates description-as-identity checks to name_identity_contract.
+rejection compares authorized cast size to empty-of-people claims, intro naming delegates
+description-as-identity checks to name_identity_contract, and proper-name spans in published
+prose must resolve to the typed presence/intro identity set (no invented off-cast people).
 """
 
 from __future__ import annotations
@@ -135,6 +137,16 @@ _SOLITUDE_CLAIM_RE = re.compile(
     r"безлюдн"
     r")",
     flags=re.IGNORECASE,
+)
+
+# Cyrillic proper-name shape (same family as session_zero_interview explicit-name recovery).
+# Require ≥2 capitalized tokens so sentence-initial common words are not treated as people.
+_PROPER_NAME_SPAN_RE = re.compile(
+    r"(?<![А-Яа-яЁё])([А-ЯЁ][а-яё-]{2,}(?:\s+[А-ЯЁ][а-яё-]{2,}){1,2})(?![А-Яа-яЁё-])"
+)
+# Mid-clause single capitalized token (after lowercase/close-quote): personal names in running prose.
+_MIDCLAUSE_PROPER_NAME_RE = re.compile(
+    r'(?<=[а-яё»"\)])\s+([А-ЯЁ][а-яё-]{2,})(?![А-Яа-яЁё-])'
 )
 
 
@@ -539,6 +551,123 @@ def solitude_claim_violation_spans(candidate: str, authority) -> list[str]:
     return spans
 
 
+def _authorized_identity_keys(authority) -> set[str]:
+    """identity_key set for cast/intros/roles plus places/objects (FP suppression)."""
+    labels: list[str] = []
+    labels.extend(authorized_physical_cast_names(authority))
+    pc = _compact(getattr(authority, "player_character_name", None))
+    if pc:
+        labels.append(pc)
+    for intro in list(getattr(authority, "allowed_new_npcs", None) or []):
+        for attr in ("canonical_name", "identity_reference", "role"):
+            value = _compact(getattr(intro, attr, None))
+            if value:
+                labels.append(value)
+    for arrival in list(getattr(authority, "allowed_existing_npc_arrivals", None) or []):
+        value = _compact(getattr(arrival, "canonical_name", None))
+        if value:
+            labels.append(value)
+    for path in (
+        list(getattr(authority, "source_location_path", None) or []),
+        list(getattr(authority, "target_location_path", None) or []),
+    ):
+        for segment in path:
+            value = _compact(segment)
+            if value:
+                labels.append(value)
+    for obj in list(getattr(authority, "object_names", None) or []):
+        value = _compact(obj)
+        if value:
+            labels.append(value)
+
+    keys: set[str] = set()
+    for label in labels:
+        key = identity_key(label)
+        if not key:
+            continue
+        keys.add(key)
+        for token in key.split():
+            if len(token) >= 3:
+                keys.add(token)
+    return keys
+
+
+def _identity_token_soft_match(left: str, right: str) -> bool:
+    """True when tokens share a stem under light Russian inflection (≤2-char tail)."""
+    if left == right:
+        return True
+    if len(left) < 3 or len(right) < 3:
+        return False
+    shared = 0
+    for a, b in zip(left, right):
+        if a != b:
+            break
+        shared += 1
+    return shared >= 3 and shared >= min(len(left), len(right)) - 2
+
+
+def _span_matches_authorized_identity(span: str, authorized: set[str]) -> bool:
+    key = identity_key(span)
+    if not key:
+        return True
+    if key in authorized:
+        return True
+    padded = f" {key} "
+    for auth in authorized:
+        if len(auth) < 3:
+            continue
+        if f" {auth} " in padded:
+            return True
+    # Inflected cast/place labels: each span token soft-matches an authorized token.
+    auth_tokens = [item for item in authorized if " " not in item and len(item) >= 3]
+    span_tokens = key.split()
+    if not span_tokens or not auth_tokens:
+        return False
+    return all(
+        any(_identity_token_soft_match(token, auth) for auth in auth_tokens)
+        for token in span_tokens
+    )
+
+
+def unauthorized_named_person_spans(candidate: str, authority) -> list[str]:
+    """Proper-name-like spans in prose that are outside the typed identity set.
+
+    Extends the existing invent-person ban with a deterministic publication gate: a
+    Capitalized multi-token (or mid-clause single) mention must resolve to
+    present_character_names / allowed_new_npcs / allowed_existing_npc_arrivals
+    (plus PC name, intro role/identity_reference, and location/object labels so
+    places and on-cast role titles do not false-positive). Reuses identity_key —
+    not a parallel NER subsystem.
+    """
+    text = candidate or ""
+    if not text.strip():
+        return []
+    authorized = _authorized_identity_keys(authority)
+    spans: list[str] = []
+    seen: set[str] = set()
+    covered: list[tuple[int, int]] = []
+
+    def add(raw: str, start: int, end: int) -> None:
+        value = _compact(raw)
+        key = identity_key(value)
+        if not value or not key or key in seen:
+            return
+        if _span_matches_authorized_identity(value, authorized):
+            return
+        for left, right in covered:
+            if start >= left and end <= right:
+                return
+        seen.add(key)
+        covered.append((start, end))
+        spans.append(value)
+
+    for match in _PROPER_NAME_SPAN_RE.finditer(text):
+        add(match.group(1), match.start(1), match.end(1))
+    for match in _MIDCLAUSE_PROPER_NAME_RE.finditer(text):
+        add(match.group(1), match.start(1), match.end(1))
+    return spans
+
+
 __all__ = [
     "allowed_speakers_from_authority",
     "authorized_nonplayer_count",
@@ -553,4 +682,5 @@ __all__ = [
     "repair_introduction_identity",
     "repair_persisted_character_identity",
     "solitude_claim_violation_spans",
+    "unauthorized_named_person_spans",
 ]
