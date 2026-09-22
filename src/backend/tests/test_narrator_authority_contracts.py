@@ -402,3 +402,57 @@ def test_pc_name_speech_act_tag_restages_player_question():
     assert result.verdict == "repair_required"
     assert any(item.violation_type == "player_agency" for item in result.violations)
 
+def test_invented_third_person_pc_physical_act_fails_validation():
+    """Live residual after #177: invented 3p PC move not in player_input must fail."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я перевожу взгляд на Служанку 2. Кто здесь старшая?",
+        present_character_names=["Эйдан", "Служанка 2"],
+    )
+    candidate = (
+        "Эйдан уверенно подошел к окну и заглянул на улицу. "
+        "Ты отрываешь взгляд и смотришь на Служанку 2. Она отвечает: «Старшая — Марта»."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_invented_third_person_pc_act_second_person_only_still_ok():
+    """House style: 2nd-person alone (no 3p PC agency) stays allowed."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я перевожу взгляд на Служанку 2. Кто здесь старшая?",
+        present_character_names=["Эйдан", "Служанка 2"],
+    )
+    candidate = (
+        "Ты отрываешь взгляд и смотришь на Служанку 2. Она спокойно отвечает: "
+        "«Старшая — Марта»."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "pass"
+
+
+def test_pc_name_state_copula_without_finite_agency_still_ok():
+    """Nominative PC name + copula/state is not voluntary performance agency."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я перевожу взгляд на Лиру.",
+        present_character_names=["Эйдан", "Лира"],
+    )
+    candidate = "Эйдан был у стены, когда Лира кивает: «Я здесь»."
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "pass"
+

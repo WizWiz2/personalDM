@@ -113,6 +113,12 @@ _PREPOSITION_BEFORE_RE = re.compile(
     r"(?i)(?:^|[\s,;:—\-–])(?:на|к|ко|с|со|у|от|для|о|об|про|перед|за|под|над|при|"
     r"без|до|из|по|во?|обо|через|между|среди)\s+$"
 )
+# Morphological 3p finite-verb token (past / present-future), not a verb lexicon.
+_PC_FINITE_VERB_TOKEN_RE = re.compile(
+    r"(?i)^(?:[а-яё-]*[а-яё]л(?:а|о|и)?(?:сь|ся)?|[а-яё-]*[а-яё](?:ет|ёт|ит|ут|ют|ат|ят)(?:ся)?)$"
+)
+# Tiny closed copula set — existence/state, not voluntary performance.
+_PC_COPULA = frozenset({"был", "была", "было", "были"})
 
 # Empty-of-people / solitude claims (cast contradiction), not furniture emptiness.
 _SOLITUDE_CLAIM_RE = re.compile(
@@ -409,14 +415,35 @@ def _window_restages_player(
     return False
 
 
+def _window_has_pc_finite_agency(window: str, pc_name: str) -> bool:
+    """PC-name subject + nearby 3p finite-verb morphology (no verb lexicon)."""
+    cleaned = _compact(window)
+    match = re.search(
+        rf"(?i)(?<!\w){re.escape(pc_name)}(?!\w)\s+(.+)",
+        cleaned,
+    )
+    if not match:
+        return False
+    tokens = re.findall(r"[А-Яа-яЁё]+", match.group(1))
+    for tok in tokens[:4]:
+        folded = tok.lower().replace("ё", "е")
+        if folded in _PC_COPULA:
+            continue
+        if _PC_FINITE_VERB_TOKEN_RE.match(tok):
+            return True
+    return False
+
+
 def protagonist_action_restage_violation_spans(candidate: str, authority) -> list[str]:
-    """Spans that restage player_input voluntary action/speech via 3rd-person PC attribution.
+    """Spans that attribute 3rd-person PC voluntary action/speech outside player_input.
 
     Invariant (publication gate shared with speech echoes): prose must not attribute
     voluntary action or speech *performance* to the player character by canonical name
-    (or a clear 3rd-person PC reference after that name) in a way that restages
-    player_input. Second-person house style describing results remains allowed.
-    Overlap reuses player_input action/speech cores — not a large verb lexicon.
+    (or a clear 3rd-person PC reference after that name) when that act is not grounded
+    in player_input. Covers restage-of-input (core overlap) and invented moves (name +
+    3p finite-verb agency with no overlap). Second-person house style and oblique
+    PC-name mentions without agency remain allowed. Detection uses morphology near the
+    PC name — not a large verb lexicon.
     """
     text = candidate or ""
     pc_name = _compact(getattr(authority, "player_character_name", None))
@@ -429,8 +456,6 @@ def protagonist_action_restage_violation_spans(candidate: str, authority) -> lis
     player_input = getattr(authority, "player_input", None)
     action_cores = _player_action_cores(player_input)
     speech_cores = _player_speech_cores(player_input)
-    if not action_cores and not speech_cores:
-        return []
 
     spans: list[str] = []
     seen: set[str] = set()
@@ -466,14 +491,14 @@ def protagonist_action_restage_violation_spans(candidate: str, authority) -> lis
         if clause:
             end = match.end() + clause.start() + 1
         window = text[start:end]
-        if not _window_restages_player(
+        restages = _window_restages_player(
             window,
             action_cores=action_cores,
             speech_cores=speech_cores,
             pc_name=pc_name,
-        ):
-            continue
-        add(window if len(window) <= 220 else _compact(window[:220]))
+        )
+        if restages or _window_has_pc_finite_agency(window, pc_name):
+            add(window if len(window) <= 220 else _compact(window[:220]))
 
     # Clear 3rd-person PC reference: pronoun speech-performance after a PC-name mention
     # in the same paragraph, when player_input supplied speech.
