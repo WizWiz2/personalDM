@@ -138,6 +138,15 @@ def literary_surgical_repair_candidate(
     if not errors:
         return None, {"strategy": "deterministic_span_removal", "reason": "no_error_violations"}
 
+    # Missing obligated response beat cannot be fixed by deleting prose — fail closed.
+    if any(str(item.evidence or "").startswith("addressed:") for item in errors):
+        return None, {
+            "strategy": "deterministic_span_removal",
+            "status": "skipped",
+            "reason": "addressed_response_obligation_not_surgically_repairable",
+            "error_count": len(errors),
+        }
+
     evidence = [guard_cls._key(item.evidence) for item in errors]
     original_paragraphs = _paragraphs(candidate)
     literary_surface = len(original_paragraphs) >= 2

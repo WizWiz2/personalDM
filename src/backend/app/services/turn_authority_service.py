@@ -6,12 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
-from app.models.turn_authority import TurnAuthority
+from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
 from app.services.entity_identity import identity_key
 from app.services.narrator_authority_contracts import (
     addressed_response_obligation_constraint,
     addressed_response_obligation_guidance,
     presence_vs_solitude_constraint,
+    resolve_addressed_present_npc,
     should_assign_addressed_response_obligation,
 )
 from app.services.scene_state_service import SceneStateService
@@ -119,12 +120,53 @@ class TurnAuthorityService:
                 present_names=present_names,
             )
 
-        present_names = npc_resolution.present_names
+        present_names = list(npc_resolution.present_names)
         present_keys = {identity_key(value) for value in present_names}
         all_characters = await self._entities.list_by_campaign(
             campaign_id,
             entity_type="character",
         )
+        # Co-located known entities named in player_input but missing from scene participants
+        # are repaired into present cast (no inventing people, no cross-location teleport).
+        presence_arrivals: list[ExistingNpcArrival] = []
+        campaign_cast = [
+            entity.canonical_name
+            for entity in all_characters
+            if str(entity.canonical_name or "").strip()
+        ]
+        named = resolve_addressed_present_npc(
+            player_input,
+            campaign_cast,
+            player_name=(player.canonical_name if player else None),
+        )
+        if named and identity_key(named) not in present_keys:
+            match = next(
+                (
+                    entity
+                    for entity in all_characters
+                    if identity_key(entity.canonical_name) == identity_key(named)
+                ),
+                None,
+            )
+            if match is not None:
+                character = await self._entities.get_character(match.id)
+                target_loc = target_state.location_id if target_state else None
+                char_loc = (
+                    getattr(character, "current_location_id", None) if character else None
+                )
+                if target_loc and char_loc and char_loc == target_loc:
+                    present_names.append(match.canonical_name)
+                    present_keys.add(identity_key(match.canonical_name))
+                    presence_arrivals.append(
+                        ExistingNpcArrival(
+                            entity_id=match.id,
+                            canonical_name=match.canonical_name,
+                            reason=(
+                                "Addressed known character is already at this location "
+                                "but was missing from scene participants."
+                            ),
+                        )
+                    )
         absent_names = [
             entity.canonical_name
             for entity in all_characters
@@ -169,7 +211,10 @@ class TurnAuthorityService:
             present_character_names=present_names,
             known_absent_character_names=absent_names,
             allowed_new_npcs=npc_resolution.new_introductions,
-            allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
+            allowed_existing_npc_arrivals=[
+                *npc_resolution.existing_arrivals,
+                *presence_arrivals,
+            ],
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
             identity_reveal_requested=(

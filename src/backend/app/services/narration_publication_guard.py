@@ -158,7 +158,6 @@ class NarrationPublicationGuard:
 
 
     @staticmethod
-    @staticmethod
     def _sentences(text: str) -> list[str]:
         chunks: list[str] = []
         buf: list[str] = []
@@ -230,6 +229,15 @@ class NarrationPublicationGuard:
         ]
         if not errors:
             return None, {"strategy": "not_applicable", "reason": "no_error_violations"}
+
+        # Missing obligated response beat cannot be fixed by deleting prose — fail closed.
+        if any(str(item.evidence or "").startswith("addressed:") for item in errors):
+            return None, {
+                "strategy": "deterministic_span_removal",
+                "status": "skipped",
+                "reason": "addressed_response_obligation_not_surgically_repairable",
+                "error_count": len(errors),
+            }
 
         cleaned, matched = cls._drop_flagged_segments(candidate, validation)
         cleaned = cls._clean(cleaned)

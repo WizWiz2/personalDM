@@ -343,3 +343,153 @@ async def test_obligation_to_named_npc_remaps_sticky_prior_listener_actor(monkey
     assert authority.acting_character_id == lira_id
     assert authority.acting_character_name == "Лира"
     assert authority.scene_disposition == "actor_turn"
+
+
+@pytest.mark.asyncio
+async def test_named_colocated_npc_missing_from_participants_stamps_obligation(monkeypatch):
+    """Campaign entity at kitchen location but absent from participants still gets obligation.
+
+    Live residual after #186: player names Лира; she is a known co-located character; stale
+    participant list must not prevent addressed_response_obligation from stamping.
+    """
+    async def _no_lines(*_args, **_kwargs):
+        return []
+
+    async def _no_subjects(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.turn_authority_service.established_state_lines",
+        _no_lines,
+    )
+    monkeypatch.setattr(
+        "app.services.turn_authority_service.established_subjects",
+        _no_subjects,
+    )
+    campaign_id = uuid4()
+    hero_id = uuid4()
+    lira_id = uuid4()
+    steward_id = uuid4()
+    scene_id = uuid4()
+    location_id = uuid4()
+
+    user_row = SimpleNamespace(
+        context_snapshot=json.dumps(
+            {
+                "input_routing": {
+                    "addressed_character_id": str(steward_id),
+                    "planner_bypass": False,
+                    "user_actor": "player_character",
+                }
+            }
+        )
+    )
+    session = SimpleNamespace(get=AsyncMock(return_value=user_row))
+    service = TurnAuthorityService.__new__(TurnAuthorityService)
+    service._session = session
+    service._campaigns = SimpleNamespace(
+        get_by_id=AsyncMock(return_value=SimpleNamespace(player_character_id=hero_id))
+    )
+
+    hero = SimpleNamespace(id=hero_id, canonical_name="Эйдан", current_location_id=location_id)
+    lira = SimpleNamespace(id=lira_id, canonical_name="Лира", current_location_id=location_id)
+    steward = SimpleNamespace(
+        id=steward_id, canonical_name="Управляющая домом", current_location_id=location_id
+    )
+    by_id = {hero_id: hero, lira_id: lira, steward_id: steward}
+    service._entities = SimpleNamespace(
+        get_character=AsyncMock(side_effect=lambda value: by_id.get(value)),
+        list_by_campaign=AsyncMock(
+            return_value=[
+                _entity(hero_id, "Эйдан"),
+                _entity(lira_id, "Лира"),
+                _entity(steward_id, "Управляющая домом"),
+            ]
+        ),
+    )
+    # Stale participants: kitchen has steward/hero but Лира missing despite co-location.
+    state = _scene(scene_id, location_id, ["Эйдан", "Управляющая домом"])
+    service._scene_state = SimpleNamespace(get=AsyncMock(return_value=state))
+
+    plan = CoordinatedTurnPlan(
+        player_intent="Спросить Лиру где хлеб",
+        resolution="conversation",
+        addressed_response_requested=True,
+        response_ownership_reason="Игрок прямо называет Лиру.",
+    )
+
+    authority = await service.build(
+        campaign_id=campaign_id,
+        trigger_turn_id=uuid4(),
+        player_input="Лира, где здесь хлеб?",
+        source_scene_id=scene_id,
+        target_scene_id=scene_id,
+        plan=plan,
+        acting_character_id=None,
+    )
+
+    assert "Лира" in authority.present_character_names
+    assert authority.addressed_response_obligation == "Лира"
+    assert authority.acting_character_id == lira_id
+    assert any(item.canonical_name == "Лира" for item in authority.allowed_existing_npc_arrivals)
+
+
+@pytest.mark.asyncio
+async def test_named_npc_elsewhere_is_not_teleported_into_present(monkeypatch):
+    """Naming a known entity in another location must not invent presence."""
+    async def _no_lines(*_args, **_kwargs):
+        return []
+
+    async def _no_subjects(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.turn_authority_service.established_state_lines",
+        _no_lines,
+    )
+    monkeypatch.setattr(
+        "app.services.turn_authority_service.established_subjects",
+        _no_subjects,
+    )
+    campaign_id = uuid4()
+    hero_id = uuid4()
+    lira_id = uuid4()
+    scene_id = uuid4()
+    kitchen_id = uuid4()
+    hall_id = uuid4()
+
+    session = SimpleNamespace(get=AsyncMock(return_value=SimpleNamespace(context_snapshot=None)))
+    service = TurnAuthorityService.__new__(TurnAuthorityService)
+    service._session = session
+    service._campaigns = SimpleNamespace(
+        get_by_id=AsyncMock(return_value=SimpleNamespace(player_character_id=hero_id))
+    )
+    hero = SimpleNamespace(id=hero_id, canonical_name="Эйдан", current_location_id=kitchen_id)
+    lira = SimpleNamespace(id=lira_id, canonical_name="Лира", current_location_id=hall_id)
+    by_id = {hero_id: hero, lira_id: lira}
+    service._entities = SimpleNamespace(
+        get_character=AsyncMock(side_effect=lambda value: by_id.get(value)),
+        list_by_campaign=AsyncMock(
+            return_value=[_entity(hero_id, "Эйдан"), _entity(lira_id, "Лира")]
+        ),
+    )
+    state = _scene(scene_id, kitchen_id, ["Эйдан"])
+    service._scene_state = SimpleNamespace(get=AsyncMock(return_value=state))
+
+    plan = CoordinatedTurnPlan(
+        player_intent="Спросить Лиру",
+        resolution="conversation",
+        addressed_response_requested=True,
+    )
+    authority = await service.build(
+        campaign_id=campaign_id,
+        trigger_turn_id=uuid4(),
+        player_input="Лира, где здесь хлеб?",
+        source_scene_id=scene_id,
+        target_scene_id=scene_id,
+        plan=plan,
+        acting_character_id=None,
+    )
+    assert "Лира" not in authority.present_character_names
+    assert authority.addressed_response_obligation is None
+

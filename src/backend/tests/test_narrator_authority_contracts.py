@@ -7,6 +7,8 @@ from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.narrator_authority_contracts import (
     addressed_response_beat_present,
     addressed_response_erasure_spans,
+    addressed_response_obligation_addressee,
+    addressed_response_obligation_constraint,
     allowed_speakers_from_authority,
     description_used_as_identity_name,
     is_usable_short_designation,
@@ -20,7 +22,8 @@ from app.services.narrator_authority_contracts import (
     _structural_pc_name_speech_spans,
     _structural_second_person_speech_spans,
 )
-from app.services.narrator_quality_recovery_guard import compact_narrator_payload
+from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narrator_quality_recovery_guard import compact_narrator_payload, install as install_quality_recovery
 from app.services.turn_authority_resolvers import (
     AuthorityResolutionError,
     NpcIntroductionResolver,
@@ -845,3 +848,60 @@ def test_explicit_personal_name_beats_role_token_soft_overlap():
         addressed_response_requested=True,
     ) == "Лира"
 
+def test_addressee_parse_one_path_bare_or_marker_field():
+    """Field may store bare name or marker constraint text — one parse path yields bare name."""
+    bare = _authority(
+        present_character_names=["Эйдан", "Лира"],
+        addressed_response_obligation="Лира",
+    )
+    assert addressed_response_obligation_addressee(bare) == "Лира"
+
+    marker = addressed_response_obligation_constraint("Лира")
+    from_field = _authority(
+        present_character_names=["Эйдан", "Лира"],
+        addressed_response_obligation=marker,
+    )
+    assert addressed_response_obligation_addressee(from_field) == "Лира"
+
+    from_constraint_only = _authority(
+        present_character_names=["Эйдан", "Лира"],
+        addressed_response_obligation=None,
+        canon_constraints=[marker],
+    )
+    assert addressed_response_obligation_addressee(from_constraint_only) == "Лира"
+
+
+def test_rival_speaker_erasure_blocks_publish_not_surgical():
+    """Wrong-cast reply with obligation stamped → canon_conflict; no soft surgical publish."""
+    install_quality_recovery()
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Лира, где здесь хлеб?",
+        present_character_names=["Эйдан", "Лира", "Управляющая домом"],
+        addressed_response_obligation="Лира",
+        scene_disposition="actor_turn",
+        acting_character_name="Лира",
+        character_beats=[
+            "Лира получает прямое обращение и даёт ответ, отказывает, "
+            "уклоняется или жестом сообщает ответ."
+        ],
+    )
+    candidate = (
+        "Управляющая домом складывает руки и спокойно отвечает: "
+        "«Наймом распоряжаюсь я.»"
+    )
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+    assert result.verdict == "repair_required"
+    assert any(v.violation_type == "canon_conflict" for v in result.violations)
+    assert any(str(v.evidence).startswith("addressed:") for v in result.violations)
+
+    surgical, audit = NarrationPublicationGuard.surgical_repair_candidate(candidate, result)
+    assert surgical is None
+    assert audit["reason"] == "addressed_response_obligation_not_surgically_repairable"
+
+    published, pub = NarrationPublicationGuard.publish(authority, candidate, result)
+    assert pub["candidate_discarded"] is True
+    assert pub["mode"] == "authority_projection"
+    assert "Наймом распоряжаюсь" not in published
