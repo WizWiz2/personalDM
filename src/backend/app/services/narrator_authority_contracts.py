@@ -21,20 +21,10 @@ from app.services.name_identity_contract import (
     repair_persisted_character_identity,
 )
 
-# Discourse frames that attribute NEW spoken lines to the second-person protagonist.
-# Structural attribution only — not a plot/emotion lexicon.
-# (a) 2nd-person possessive speech nouns, (b) ты leading into a quote/colon,
-# (c) closed speech-act tags with ты. Verb tags stay small; overlap handles echoes.
-_PROTAGONIST_SPEECH_FRAME_RE = re.compile(
-    r"(?:"
-    r"тво(?:й|я|ё|е|и)\s+(?:голос|вопрос|ответ|ш[её]пот|крик|слова|реплик\w*)|"
-    r"\bты\b(?=[^\.\n]{0,48}[«\"“:])|"
-    r"ты\s+(?:говоришь|спрашиваешь|отвечаешь|произносишь|шепчешь|кричишь|"
-    r"добавляешь|замечаешь|произн[её]с|сказал[аи]?|спросил[аи]?|ответил[аи]?)|"
-    r"(?:говоришь|спрашиваешь|отвечаешь|сказал[аи]?|спросил[аи]?)\s+ты|"
-    r"[—\-]\s*(?:сказал[аи]?|спросил[аи]?|ответил[аи]?)\s+ты\b"
-    r")",
-    flags=re.IGNORECASE,
+# 2nd-person deixis for quote/dialogue attribution windows.
+# Person morphology only — not a speech-verb or plot lexicon.
+_SECOND_PERSON_ATTR_RE = re.compile(
+    r"(?i)(?<![А-Яа-яЁёA-Za-z])(?:ты|тебе|тебя|тобой|тво(?:й|я|ё|е|и))(?![А-Яа-яЁёA-Za-z])"
 )
 
 _QUOTE_RE = re.compile(r"«([^»]{1,1600})»|“([^”]{1,1600})”|\"([^\"]{1,1600})\"")
@@ -99,23 +89,14 @@ _ACTION_STOPWORDS = frozenset(
         "eshchyo",
     }
 )
-# Closed 3rd-person speech-act tags after PC name (mirrors 2nd-person frames; not a plot lexicon).
-_PC_SPEECH_ACT_AFTER_NAME = (
-    r"(?:спрашивает|говорит|отвечает|произносит|шепчет|кричит|"
-    r"добавляет|замечает|зада[её]т)"
-)
-_PC_PRONOUN_SPEECH_RE = re.compile(
-    r"(?:"
-    r"\bон\b\s+(?:зада[её]т\s+вопрос|спрашивает|говорит|отвечает|произносит)|"
-    r"когда\s+он\s+зада[её]т\s+вопрос"
-    r")",
-    flags=re.IGNORECASE,
-)
 _PREPOSITION_BEFORE_RE = re.compile(
     r"(?i)(?:^|[\s,;:—\-–])(?:на|к|ко|с|со|у|от|для|о|об|про|перед|за|под|над|при|"
     r"без|до|из|по|во?|обо|через|между|среди)\s+$"
 )
-# Morphological 3p finite-verb token (past / present-future), not a verb lexicon.
+# Morphological 3p finite-verb token by suffix shape only (past -л/-ла/-ло/-ли,
+# present/future -ет/-ёт/-ит/-ут/-ют/-ат/-ят, optional -ся/-сь). Not a verb
+# lemma lexicon: any token matching the ending shape counts, so this stays as a
+# morphology helper for voluntary-agency restage — never enumerate speech verbs here.
 _PC_FINITE_VERB_TOKEN_RE = re.compile(
     r"(?i)^(?:[а-яё-]*[а-яё]л(?:а|о|и)?(?:сь|ся)?|[а-яё-]*[а-яё](?:ет|ёт|ит|ут|ют|ат|ят)(?:ся)?)$"
 )
@@ -276,11 +257,148 @@ def _quote_echoes_player_speech(quote: str, cores: list[str], player_key: str) -
     return False
 
 
+
+def _span_add(spans: list[str], seen: set[str], span: str) -> None:
+    value = _compact(span)
+    key = identity_key(value)
+    if not value or not key or key in seen:
+        return
+    seen.add(key)
+    spans.append(value)
+
+
+def _structural_second_person_speech_spans(text: str) -> list[str]:
+    """Quotes/dialogue structurally attributed to the 2nd-person PC.
+
+    Same punctuation/structure family as addressed_response_beat_present — no speech verbs.
+    Windows stay tight so ordinary 2nd-person result narration near a later NPC quote
+    does not false-positive:
+
+    - quote whose short pre-quote window (≤48 chars, same clause) contains 2nd-person deixis
+    - quote with tight post-quote dash attribution to ``ты`` / ``тебе`` / ``тобой``
+    - dialogue line with 2nd-person deixis in the short pre-line window, or trailing ``— ты``
+    - ``ты`` followed by ``:`` then a quote/dialogue nearby
+    """
+    spans: list[str] = []
+    seen: set[str] = set()
+    if not (text or "").strip():
+        return spans
+
+    post_quote_ty_re = re.compile(
+        r"(?i)^[,.]?\s*[—\-–]\s*(?:ты|тебе|тобой)(?![А-Яа-яЁёA-Za-z])"
+    )
+
+    def _clause_tail(prefix: str, limit: int = 48) -> str:
+        chunk = prefix[-limit:] if len(prefix) > limit else prefix
+        parts = re.split(r"[.\n]", chunk)
+        return parts[-1] if parts else chunk
+
+    for match in _QUOTE_RE.finditer(text):
+        pre = _clause_tail(text[: match.start()])
+        hit = bool(_SECOND_PERSON_ATTR_RE.search(pre))
+        if not hit:
+            after = text[match.end() : match.end() + 40]
+            hit = bool(post_quote_ty_re.match(after))
+        if not hit:
+            continue
+        left = max(0, match.start() - 48)
+        right = min(len(text), match.end() + 40)
+        window = text[left:right]
+        _span_add(spans, seen, window if len(window) <= 220 else match.group(0))
+
+    for match in _DIALOGUE_LINE_RE.finditer(text):
+        pre = _clause_tail(text[: match.start()])
+        line = match.group(0)
+        hit = bool(_SECOND_PERSON_ATTR_RE.search(pre))
+        if not hit and re.search(
+            r"(?i)[—\-–]\s*(?:ты|тебе|тобой)\s*$",
+            line.rstrip(),
+        ):
+            hit = True
+        if not hit:
+            continue
+        left = max(0, match.start() - 48)
+        right = min(len(text), match.end() + 24)
+        window = text[left:right]
+        _span_add(spans, seen, window if len(window) <= 220 else line)
+
+    for match in re.finditer(
+        r"(?i)(?<![А-Яа-яЁёA-Za-z])ты(?![А-Яа-яЁёA-Za-z])",
+        text,
+    ):
+        after = text[match.end() : match.end() + 120]
+        if not re.match(r"\s*:", after):
+            continue
+        nearby = text[match.end() : match.end() + 220]
+        if not (_QUOTE_RE.search(nearby) or _DIALOGUE_LINE_RE.search(nearby)):
+            continue
+        start = match.start()
+        end = min(len(text), match.end() + 220)
+        window = text[start:end]
+        _span_add(spans, seen, window if len(window) <= 220 else match.group(0))
+    return spans
+
+
+
+def _structural_pc_name_speech_spans(text: str, pc_name: str) -> list[str]:
+    """Quotes/dialogue structurally attributed to the PC canonical name.
+
+    Accepted forms (no speech-verb lexicon):
+    - PC name followed by ``:`` then a quote/dialogue nearby
+    - quote with a tight post-quote dash attribution to the PC name
+      (``«…» — Name`` / ``«…», — Name``)
+    - dialogue line whose trailing dash attribution is the PC name
+    """
+    spans: list[str] = []
+    seen: set[str] = set()
+    name = _compact(pc_name)
+    if not name or not (text or "").strip():
+        return spans
+    post_quote_attr_re = re.compile(
+        rf"(?i)^[,.]?\s*[—\-–]\s*{re.escape(name)}(?!\w)"
+    )
+
+    for start, end in _cast_name_span_iter(text, name):
+        after = text[end : end + 120]
+        if not re.match(r"\s*:", after):
+            continue
+        nearby = text[end : end + 220]
+        if not (_QUOTE_RE.search(nearby) or _DIALOGUE_LINE_RE.search(nearby)):
+            continue
+        window = text[start : min(len(text), end + 220)]
+        _span_add(spans, seen, window if len(window) <= 220 else text[start:end])
+
+    for match in _QUOTE_RE.finditer(text):
+        after = text[match.end() : match.end() + 80]
+        if not post_quote_attr_re.match(after):
+            continue
+        left = max(0, match.start() - 24)
+        right = min(len(text), match.end() + 80)
+        window = text[left:right]
+        _span_add(spans, seen, window if len(window) <= 220 else match.group(0))
+
+    for match in _DIALOGUE_LINE_RE.finditer(text):
+        line = match.group(0)
+        # Trailing attribution on the same dialogue line: "— … — Name" / "— …, — Name"
+        if not re.search(
+            rf"(?i)[—\-–]\s*{re.escape(name)}\s*$",
+            line.rstrip(),
+        ):
+            continue
+        left = max(0, match.start() - 24)
+        right = min(len(text), match.end() + 24)
+        window = text[left:right]
+        _span_add(spans, seen, window if len(window) <= 220 else line)
+    return spans
+
+
 def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
     """Spans that violate protagonist-speech / player-input content authority.
 
     Two separate invariants (do not collapse them):
-    1) Attribution frames: second-person speech performance is never on allowed_speakers.
+    1) Structural attribution: quotes/dialogue attributed to the 2nd-person PC via
+       deixis or ``ты`` + ``:`` + quote/dialogue (same family as
+       addressed_response_beat_present — no speech-verb lexicon).
     2) Player-speech-core echo: a quoted or dialogue-shaped line that near-copies
        player_input speech cores is invalid regardless of attributed speaker (hero OR
        NPC). player_input is the only authorized source of the protagonist's voluntary
@@ -298,18 +416,10 @@ def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
     seen: set[str] = set()
 
     def add(span: str) -> None:
-        value = _compact(span)
-        key = identity_key(value)
-        if not value or not key or key in seen:
-            return
-        seen.add(key)
-        spans.append(value)
+        _span_add(spans, seen, span)
 
-    for match in _PROTAGONIST_SPEECH_FRAME_RE.finditer(text):
-        start = max(0, match.start() - 12)
-        end = min(len(text), match.end() + 160)
-        window = text[start:end]
-        add(window if len(window) <= 220 else match.group(0))
+    for span in _structural_second_person_speech_spans(text):
+        add(span)
 
     if player_key or speech_cores:
         for match in _QUOTE_RE.finditer(text):
@@ -451,11 +561,14 @@ def protagonist_action_restage_violation_spans(candidate: str, authority) -> lis
 
     Invariant (publication gate shared with speech echoes): prose must not attribute
     voluntary action or speech *performance* to the player character by canonical name
-    (or a clear 3rd-person PC reference after that name) when that act is not grounded
-    in player_input. Covers restage-of-input (core overlap) and invented moves (name +
-    3p finite-verb agency with no overlap). Second-person house style and oblique
-    PC-name mentions without agency remain allowed. Detection uses morphology near the
-    PC name — not a large verb lexicon.
+    when that act is not grounded in player_input. Covers:
+    - structural speech attribution (name + ``:`` + quote/dialogue, or tight post-quote
+      dash attribution to the PC name — no speech-verb lexicon)
+    - restage-of-input (player_input action/speech-core overlap near the PC name)
+    - invented moves (PC name + nearby 3p finite-verb morphology with no overlap)
+
+    Second-person house style and oblique PC-name mentions without agency remain allowed.
+    ``_PC_FINITE_VERB_TOKEN_RE`` is suffix-shape morphology only, not a verb lemma list.
     """
     text = candidate or ""
     pc_name = _compact(getattr(authority, "player_character_name", None))
@@ -473,26 +586,18 @@ def protagonist_action_restage_violation_spans(candidate: str, authority) -> lis
     seen: set[str] = set()
 
     def add(span: str) -> None:
-        value = _compact(span)
-        key = identity_key(value)
-        if not value or not key or key in seen:
-            return
-        seen.add(key)
-        spans.append(value)
+        _span_add(spans, seen, span)
 
-    speech_act_re = re.compile(
-        rf"(?i)(?<!\w){re.escape(pc_name)}(?!\w)\s+{_PC_SPEECH_ACT_AFTER_NAME}"
-    )
-    for match in speech_act_re.finditer(text):
-        start = max(0, match.start() - 8)
-        end = min(len(text), match.end() + 80)
-        add(text[start:end] if end - start <= 220 else match.group(0))
+    for span in _structural_pc_name_speech_spans(text, pc_name):
+        add(span)
 
     for match in name_re.finditer(text):
         prefix = text[max(0, match.start() - 24) : match.start()]
         if _PREPOSITION_BEFORE_RE.search(prefix):
             continue
         # Subject-like: name followed by a word (verb/adverb), not punctuation-only.
+        # Colon is handled by structural speech attribution above; skip here so we do not
+        # double-count name + ':' as finite-agency.
         after = text[match.end() : match.end() + 1]
         if after and after in {'.', ',', ';', ':', '!', '?', '»', '"', "'", ')'}:
             continue
@@ -511,21 +616,6 @@ def protagonist_action_restage_violation_spans(candidate: str, authority) -> lis
         )
         if restages or _window_has_pc_finite_agency(window, pc_name):
             add(window if len(window) <= 220 else _compact(window[:220]))
-
-    # Clear 3rd-person PC reference: pronoun speech-performance after a PC-name mention
-    # in the same paragraph, when player_input supplied speech.
-    if speech_cores:
-        for name_match in name_re.finditer(text):
-            para_end = text.find("\n\n", name_match.end())
-            if para_end < 0:
-                para_end = len(text)
-            region = text[name_match.start() : para_end]
-            for speech_match in _PC_PRONOUN_SPEECH_RE.finditer(region):
-                abs_start = name_match.start() + speech_match.start()
-                abs_end = name_match.start() + speech_match.end()
-                left = max(name_match.start(), abs_start - 40)
-                right = min(len(text), abs_end + 24)
-                add(text[left:right] if right - left <= 220 else speech_match.group(0))
 
     return spans
 
