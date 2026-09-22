@@ -54,9 +54,10 @@ class SceneStateService:
         """Apply shared name-identity contract to a persisted cast member.
 
         Prefers a short role designation over description-as-name. Never invents a
-        personal name; marks needs_name and fail-soft display when repair is impossible
-        or the short designation would collide with another live canonical_name.
-        Returns the identity label safe for presence / authority surfaces.
+        personal name; marks needs_name status and a human-facing fail-soft label when
+        repair is impossible or the short designation would collide. Never projects the
+        raw needs_name token into participant_names. Returns the identity label safe for
+        presence / authority surfaces.
         """
         fields = self._decode_custom_fields(entity.custom_fields)
         repair = repair_persisted_character_identity(

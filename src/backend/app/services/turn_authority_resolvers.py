@@ -95,7 +95,7 @@ class NpcIntroductionResolver:
         identity without current/campaign evidence. At the final authority boundary we derive the
         grounded role identity and keep it temporary. If no usable role exists, fail closed rather
         than persisting an invented stable name. Short designations that collide with occupied
-        campaign/batch keys fail soft to needs_name via the shared name-identity contract.
+        campaign/batch keys fail soft to needs_name status + human failsoft via the shared contract.
         """
         used: set[str] = set(occupied_canonical_keys or ())
         result = []
@@ -157,7 +157,16 @@ class NpcIntroductionResolver:
                     ),
                     allow_locale_mismatch=False,
                 )
-                candidate = accepted or allocate_needs_name_canonical(used)
+                candidate = accepted or allocate_needs_name_canonical(
+                    used,
+                    role=role,
+                    description=getattr(introduction, "description", None),
+                    previous=canonical,
+                )
+                if not candidate:
+                    raise AuthorityResolutionError(
+                        "Planner returned an unsupported NPC identity without a usable grounded role"
+                    )
                 introduction = introduction.model_copy(
                     update={
                         "canonical_name": candidate,
@@ -258,16 +267,18 @@ class NpcIntroductionResolver:
                 )
             if not unique_matches:
                 # Campaign-unique labels via shared contract: never twin another live
-                # canonical_name; collide → needs_name marker (no invented personal name).
+                # canonical_name; collide → needs_name status + human failsoft label.
                 base = introduction.canonical_name
+                role_text = getattr(introduction, "role", None)
+                desc_text = getattr(introduction, "description", None)
                 accepted = accept_short_canonical(
                     base,
                     occupied_canonical_keys=reserved_names,
                     locale_text=" ".join(
                         part
                         for part in (
-                            getattr(introduction, "description", None) or "",
-                            getattr(introduction, "role", None) or "",
+                            desc_text or "",
+                            role_text or "",
                             base,
                         )
                         if part
@@ -276,7 +287,16 @@ class NpcIntroductionResolver:
                         getattr(introduction, "personal_name_evidence", None)
                     ),
                 )
-                candidate = accepted or allocate_needs_name_canonical(reserved_names)
+                candidate = accepted or allocate_needs_name_canonical(
+                    reserved_names,
+                    role=role_text,
+                    description=desc_text,
+                    previous=base,
+                )
+                if not candidate:
+                    raise AuthorityResolutionError(
+                        "Planner NPC identity collided without a usable fail-soft designation"
+                    )
                 introduction = introduction.model_copy(
                     update={
                         "canonical_name": candidate,
