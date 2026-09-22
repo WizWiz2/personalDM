@@ -11,10 +11,14 @@ from app.services.narrator_authority_contracts import (
     description_used_as_identity_name,
     is_usable_short_designation,
     presence_vs_solitude_constraint,
+    protagonist_action_restage_violation_spans,
+    protagonist_speech_violation_spans,
     repair_introduction_identity,
     resolve_addressed_present_npc,
     should_assign_addressed_response_obligation,
     unauthorized_named_person_spans,
+    _structural_pc_name_speech_spans,
+    _structural_second_person_speech_spans,
 )
 from app.services.narrator_quality_recovery_guard import compact_narrator_payload
 from app.services.turn_authority_resolvers import (
@@ -94,8 +98,10 @@ def test_hero_attributed_dialogue_fails_speaker_validation():
 
 
 def test_hero_asked_quote_as_performed_speech_fails_validation():
+    """Structural: 2nd-person deixis near a quote attributes speech (verbs in prose are irrelevant)."""
     authority = _authority(player_input="Кто здесь?")
     candidate = "Ты спрашиваешь: «Кто здесь?», и тишина отвечает эхом."
+    assert _structural_second_person_speech_spans(candidate)
 
     result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
         _pass(), authority, candidate
@@ -335,17 +341,19 @@ def test_third_person_pc_name_action_restage_fails_validation():
     assert any(item.violation_type == "player_agency" for item in result.violations)
 
 
-def test_third_person_pc_pronoun_speech_restage_after_name_fails():
-    """Live residual: 'когда он задает вопрос' after PC name restages player speech performance."""
+def test_third_person_pc_name_quote_attribution_restage_fails():
+    """Structural rule: PC name + ':' + quote attributes speech performance to the PC."""
     authority = _authority(
         player_character_name="Эйдан",
         player_input="Я перевожу взгляд на Лиру. Кто здесь старшая?",
         present_character_names=["Эйдан", "Лира"],
     )
     candidate = (
-        "Эйдан молчит мгновение, и когда он задает вопрос, Лира поднимает взгляд: "
+        "Эйдан: «Кто здесь старшая?» Лира поднимает взгляд: "
         "«Старшая — Марта»."
     )
+    assert _structural_pc_name_speech_spans(candidate, "Эйдан")
+    assert protagonist_action_restage_violation_spans(candidate, authority)
 
     result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
         _pass(), authority, candidate
@@ -353,6 +361,17 @@ def test_third_person_pc_pronoun_speech_restage_after_name_fails():
 
     assert result.verdict == "repair_required"
     assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_pc_speech_verb_without_quote_is_not_structural_speech():
+    """Speech-verb narration without quote/dialogue is outside the structural speech detectors.
+
+    Voluntary 3p agency may still trip morphology restage when the PC name is the subject;
+    that path is suffix-shape morphology, not a speech-verb lexicon.
+    """
+    bare = "Эйдан спрашивает, и Лира кивает."
+    assert _structural_pc_name_speech_spans(bare, "Эйдан") == []
+    assert _structural_second_person_speech_spans("Ты спрашиваешь громко.") == []
 
 
 def test_second_person_result_narration_still_ok_with_action_overlap():
@@ -392,13 +411,34 @@ def test_pc_name_oblique_mention_without_restage_still_ok():
     assert result.verdict == "pass"
 
 
-def test_pc_name_speech_act_tag_restages_player_question():
+def test_pc_name_colon_quote_restages_player_question():
+    """Structural rule: PC name + ':' + quote (no speech-verb lexicon) restages player speech."""
     authority = _authority(
         player_character_name="Эйдан",
         player_input="Кто здесь старшая?",
         present_character_names=["Эйдан", "Лира"],
     )
-    candidate = "Эйдан спрашивает, и Лира отвечает: «Старшая — Марта»."
+    candidate = "Эйдан: «Кто здесь старшая?» Лира отвечает: «Старшая — Марта»."
+    assert _structural_pc_name_speech_spans(candidate, "Эйдан")
+    assert protagonist_speech_violation_spans(candidate, authority)  # echo of player line
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_pc_name_post_quote_dash_attribution_fails():
+    """Tight post-quote dash attribution to the PC name is structural speech performance."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Кто здесь старшая?",
+        present_character_names=["Эйдан", "Лира"],
+    )
+    candidate = "«Кто здесь старшая?» — Эйдан. Лира кивает: «Старшая — Марта»."
+    assert _structural_pc_name_speech_spans(candidate, "Эйдан")
 
     result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
         _pass(), authority, candidate
