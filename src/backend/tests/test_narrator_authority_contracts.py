@@ -5,6 +5,7 @@ from uuid import uuid4
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.narrator_authority_contracts import (
+    addressed_response_beat_present,
     addressed_response_erasure_spans,
     allowed_speakers_from_authority,
     description_used_as_identity_name,
@@ -611,3 +612,72 @@ def test_look_request_naming_present_npc_is_not_response_obligation():
         )
         is None
     )
+
+def test_addressed_atmosphere_without_response_beat_fails():
+    """Substance obligation unmet: name in sensory filler without speech/refusal/gesture beat."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Управляющая домом, есть ли работа по найму?",
+        present_character_names=[
+            "Эйдан",
+            "Лира",
+            "Служанка",
+            "Управляющая домом",
+        ],
+        addressed_response_obligation="Управляющая домом",
+    )
+    candidate = (
+        "В зале гулко. Свет льётся сквозь портьеры. Пыль кружится в лучах. "
+        "Управляющая домом стоит у колонны. Холодный камень под ногами, шорох ткани."
+    )
+
+    assert addressed_response_beat_present(candidate, "Управляющая домом") is False
+    spans = addressed_response_erasure_spans(candidate, authority)
+    assert any("no_response_beat" in span for span in spans)
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "canon_conflict" for item in result.violations)
+
+
+def test_addressed_response_beat_with_surrounding_atmosphere_passes():
+    """Atmosphere around a landed reply is style, not erasure — beat presence is enough."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Управляющая домом, кто распоряжается наймом?",
+        present_character_names=[
+            "Эйдан",
+            "Лира",
+            "Управляющая домом",
+        ],
+        addressed_response_obligation="Управляющая домом",
+    )
+    candidate = (
+        "Свет режет пыль в воздухе. Где-то скрипит дерево. "
+        "Управляющая домом складывает руки и спокойно отвечает: "
+        "«Наймом распоряжаюсь я.» За окном снова тянет холодом."
+    )
+
+    assert addressed_response_beat_present(candidate, "Управляющая домом") is True
+    assert addressed_response_erasure_spans(candidate, authority) == []
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+    assert result.verdict == "pass"
+
+
+def test_addressed_refusal_gesture_without_quote_counts_as_beat():
+    """Closed refusal/gesture discourse frame near the addressee satisfies the obligation."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Управляющая домом, назови хозяина дома.",
+        present_character_names=["Эйдан", "Управляющая домом"],
+        addressed_response_obligation="Управляющая домом",
+    )
+    candidate = (
+        "Управляющая домом качает головой и отказывается отвечать на этот вопрос."
+    )
+    assert addressed_response_beat_present(candidate, "Управляющая домом") is True
+    assert addressed_response_erasure_spans(candidate, authority) == []
+

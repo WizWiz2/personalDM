@@ -81,7 +81,7 @@ Concrete violations:
   actor. A deliberate quoted mention of another person is fine when attribution is explicit.
 - CHARACTER PRESENCE: a known_absent_character physically acts/speaks/appears. Characters in
   present_characters, allowed_new_npcs and allowed_existing_npc_arrivals are authorized physically.
-- ADDRESSED RESPONSE: when addressed_response_obligation names a present cast member, prose must give them a speak/refuse/deflect/gesture-with-answer opportunity. Erasing them into atmosphere or claiming they are out of view / unreachable / unanswered is canon_conflict. Refusal may omit unauthorized people rather than invent them.
+- ADDRESSED RESPONSE: when addressed_response_obligation names a present cast member, prose must land their response beat (speech, refusal, deflection, or gesture-with-answer). Naming them only inside sensory/atmosphere filler without that beat — or claiming they are out of view / unreachable / unanswered — is canon_conflict. Atmosphere may season the voice after the beat. Refusal may omit unauthorized people rather than invent them.
 - UNPLANNED NPC: a genuinely new physical person appears without typed NPC authority. A new proper-named person (title+name or multi-token capitalized identity) outside present_characters / allowed_new_npcs / allowed_existing_npc_arrivals is canon_conflict.
 - SCENE TEXTURE: neutral local sensory/furnishing detail is allowed when it does not create a new
   character, route, threat, clue, mechanically/causally significant object or action outcome.
@@ -415,13 +415,14 @@ Return exactly:
                     severity="error",
                     evidence=span[:500],
                     correction=(
-                        "Адресат из addressed_response_obligation присутствует и обязан получить "
-                        "возможность ответа (реплика, отказ, уклонение или жест с ответом). "
-                        "Нельзя растворять его в атмосфере или утверждать, что он вне поля зрения "
-                        "/ недоступен / без ответа."
+                        "Адресат из addressed_response_obligation присутствует: сначала "
+                        "приземли ответный такт (реплика, отказ, уклонение или жест с ответом). "
+                        "Атмосфера/сенсорика не заменяет ответный такт. Нельзя оставлять только "
+                        "имя в фоне или утверждать, что адресат вне поля зрения / недоступен / "
+                        "без ответа."
                     ),
                 ),
-                "Наррация стёрла адресованного присутствующего NPC в мягкое молчание.",
+                "Наррация не приземлила обязательный ответный такт адресата (атмосфера/стирание).",
             )
 
         return result

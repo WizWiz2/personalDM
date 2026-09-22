@@ -222,16 +222,72 @@ def advance_rhythm(
     return next_state
 
 
+_SUBSTANCE_FIRST_QUIET = (
+    "[DIRECTOR MOVE: quiet / subordinated] Atmosphere may season the voice only after the "
+    "turn's stamped substance beat lands (addressed reply, travel arrival/block, or other "
+    "canon obligation). Atmosphere-only prose that leaves the obligated beat unmet is banned."
+)
+
+
+def has_substance_stamp(
+    *,
+    committed_travel: bool = False,
+    addressed_response_obligation: str | None = None,
+    canon_constraints: list[str] | None = None,
+) -> bool:
+    """True when a machine-stamped substance obligation outranks Soft Keeper quiet padding."""
+    if committed_travel:
+        return True
+    if " ".join(str(addressed_response_obligation or "").split()):
+        return True
+    for item in list(canon_constraints or []):
+        text = " ".join(str(item or "").split())
+        if "honor_travel" in text or "[ADDRESSED RESPONSE OBLIGATION]" in text:
+            return True
+    return False
+
+
+def subordinate_quiet_guidance_to_substance(
+    guidance: list[str] | None,
+    *,
+    substance_active: bool,
+) -> list[str]:
+    """Keep quiet/atmosphere as style seasoning; do not let it replace a stamped substance beat."""
+    items = list(guidance or [])
+    if not substance_active:
+        return items
+    out: list[str] = []
+    replaced = False
+    for item in items:
+        text = str(item or "")
+        quietish = (
+            text.startswith("[DIRECTOR MOVE: quiet")
+            or text.startswith("[DIRECTOR STRUCTURAL: quiet]")
+        )
+        if quietish:
+            if not replaced:
+                out.append(_SUBSTANCE_FIRST_QUIET)
+                replaced = True
+            continue
+        out.append(text)
+    return out
+
+
 def apply_moves_to_narration_guidance(
     guidance: list[str] | None,
     selected: DirectorMoveSelection,
     *,
     limit: int = 6,
+    substance_active: bool = False,
 ) -> list[str]:
     merged = list(guidance or [])
     for obligation in selected.obligations:
         if obligation not in merged:
             merged.append(obligation)
+    merged = subordinate_quiet_guidance_to_substance(
+        merged,
+        substance_active=substance_active,
+    )
     return merged[:limit]
 
 
@@ -344,11 +400,19 @@ def apply_moves_to_outcome_decision(
                 "cushion consequence landing while preserving established facts.",
             )
         if "quiet" in moves:
-            constraints = _append_constraint(
-                constraints,
-                "[DIRECTOR STRUCTURAL: quiet] Low plot push; do not invent a new major "
-                "conflict or complication this turn.",
-            )
+            if committed_travel:
+                constraints = _append_constraint(
+                    constraints,
+                    "[DIRECTOR STRUCTURAL: quiet] Low plot push after honor_travel lands; "
+                    "do not invent a new major conflict, and do not replace arrival/block "
+                    "with atmosphere-only lingering.",
+                )
+            else:
+                constraints = _append_constraint(
+                    constraints,
+                    "[DIRECTOR STRUCTURAL: quiet] Low plot push; do not invent a new major "
+                    "conflict or complication this turn.",
+                )
     elif "soften_blow" in moves and "harden_consequence" not in moves:
         # Softener loses to harden when both somehow appear; otherwise dampen escalation.
         dramatic = _cap_dramatic(dramatic, "routine")
@@ -420,9 +484,11 @@ __all__ = [
     "adjust_weights",
     "apply_moves_to_narration_guidance",
     "apply_moves_to_outcome_decision",
+    "has_substance_stamp",
     "narrator_persona_block",
     "pick_moves",
     "sampling_seed",
     "scene_development_disposition_bias",
     "select_director_moves",
+    "subordinate_quiet_guidance_to_substance",
 ]

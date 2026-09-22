@@ -114,6 +114,7 @@ class TurnIntentPlanningPipeline:
         guidance = apply_moves_to_narration_guidance(
             list(decision.narration_guidance),
             director,
+            substance_active=committed_travel,
         )
         decision = decision.model_copy(update={"narration_guidance": guidance})
 
