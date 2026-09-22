@@ -214,11 +214,12 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   exact current-turn or campaign statement that establishes the person's personal name. Leave it
   null for role/title-only identities.
 - addressed_response_requested: true when the latest human input addresses, asks, tells, or
-  otherwise expects a reply from the selected addressed character. False is not a ban and not a
-  defect. A missing mark does not forbid speech or other present-person behavior, speech is not
-  required, and do not demand a typed reply, refusal, gesture, or step inside the current place.
-  Do not write a ban into canon_constraints. This may be true on a mixed world-action + dialogue
-  turn. A sticky selected listener alone is not sufficient.
+  otherwise expects a reply from a present cast member (canonical/display name or unique short
+  role) or the selected addressed character. False is not a ban on other present-person behavior.
+  When the addressed person is already in the present cast, the engine assigns a structural
+  response obligation (speak, refuse, deflect, or gesture-with-answer); do not rely on quiet
+  atmosphere to erase them, and do not invent absent people to answer. A sticky selected listener
+  alone is not sufficient. This may be true on a mixed world-action + dialogue turn.
 - personal_name_revealed: true only when the typed current-turn exchange explicitly establishes a
   present character's personal name (for example, that character answers a question about their
   name). Keep it false for greetings, ordinary replies, role/title descriptions, or a name merely
@@ -236,10 +237,11 @@ SYSTEMLESS RESOLUTION IS ABSOLUTE:
 - There is no dice/check/rules resolver. `requires_check` is NOT a legal output and is absent from
   the schema. Resolve uncertainty directly into fiction as success, partial success, failure, or an
   uncertain observable consequence that exists now.
-- Present-person behavior does not need response ownership, an action_sequence step, or an
-  observable consequence to be a valid plan. A missing mark is not a defect and not a ban, and
-  speech is not required. For mixed input, place only real world actions in action_sequence.
-  Set addressed_response_requested when a reply is expected; leaving it false is not a ban.
+- Present-person behavior does not need an action_sequence step or observable consequence to be a
+  valid plan. A missing addressed_response_requested mark is not a ban on other present-person
+  behavior. However, when the human directly addresses a person already in the present cast, set
+  addressed_response_requested and treat a speak/refuse/deflect/gesture-with-answer opportunity as
+  required for that addressee. For mixed input, place only real world actions in action_sequence.
 - Do not invent a synthetic action_sequence step merely to render a present person's reply,
   refusal, gesture, or step inside the current place.
 - Remembering a person, telling a present character about that memory, or asking a present character

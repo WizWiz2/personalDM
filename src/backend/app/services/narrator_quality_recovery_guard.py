@@ -74,6 +74,7 @@ def compact_narrator_payload(authority) -> dict:
             for item in authority.allowed_new_npcs
         ],
         "identity_reveal_requested": authority.identity_reveal_requested,
+        "addressed_response_obligation": authority.addressed_response_obligation,
         "resolution": authority.resolution,
         "observable_consequences": authority.observable_consequences,
         "canon_constraints": authority.canon_constraints,

@@ -668,7 +668,228 @@ def unauthorized_named_person_spans(candidate: str, authority) -> list[str]:
     return spans
 
 
+_ADDRESSED_OBLIGATION_MARKER = "[ADDRESSED RESPONSE OBLIGATION]"
+
+# Soft-silence / unreachability claims that erase a present obligated addressee.
+# Closed structural surface (view/answerability), not a speech-verb lexicon.
+_ADDRESSEE_UNREACHABLE_RE = re.compile(
+    r"(?:"
+    r"не\s+в\s+(?:прямой\s+)?(?:видимости|поле\s+зрения)|"
+    r"вне\s+(?:поля\s+зрения|досягаемости|видимости)|"
+    r"не\s+слыш\w*|"
+    r"не\s+отвеча\w*|"
+    r"нет\s+ответа|"
+    r"без\s+ответа|"
+    r"оста[её]тся\s+без\s+ответа|"
+    r"недоступн\w*"
+    r")",
+    flags=re.IGNORECASE,
+)
+
+_QUESTION_OR_DIALOGUE_SHAPE_RE = re.compile(
+    r"(?:\?|^\s*[-—–]|[\n\r]\s*[-—–])",
+)
+
+
+def _cast_name_mentioned_in_input(player_input: str, cast_name: str) -> bool:
+    """True when cast_name (or its tokens) soft-matches inside player_input identity keys."""
+    needle = identity_key(cast_name)
+    hay = identity_key(player_input)
+    if not needle or not hay:
+        return False
+    if needle in hay:
+        return True
+    padded = f" {hay} "
+    if f" {needle} " in padded:
+        return True
+    # Inflected multi-token roles: every cast token soft-matches some input token.
+    cast_tokens = [token for token in needle.split() if len(token) >= 3]
+    input_tokens = [token for token in hay.split() if len(token) >= 3]
+    if not cast_tokens or not input_tokens:
+        return False
+    return all(
+        any(_identity_token_soft_match(cast_token, input_token) for input_token in input_tokens)
+        for cast_token in cast_tokens
+    )
+
+
+def _unique_short_role_hit(player_input: str, present_names: list[str], player_name: str | None) -> str | None:
+    """If a single cast member owns a unique multi-char role token that appears in input, return them."""
+    player_key = identity_key(player_name) if player_name else None
+    candidates = [
+        name for name in present_names
+        if identity_key(name) and identity_key(name) != player_key
+    ]
+    # Map token -> cast names containing it
+    owners: dict[str, list[str]] = {}
+    for name in candidates:
+        for token in identity_key(name).split():
+            if len(token) < 4:
+                continue
+            owners.setdefault(token, []).append(name)
+    hay_tokens = [token for token in identity_key(player_input).split() if len(token) >= 4]
+    hits: list[str] = []
+    for token in hay_tokens:
+        for owner_token, names in owners.items():
+            if len(names) != 1:
+                continue
+            if _identity_token_soft_match(token, owner_token):
+                hits.append(names[0])
+    # Unique addressee only
+    unique = {identity_key(name): name for name in hits}
+    if len(unique) == 1:
+        return next(iter(unique.values()))
+    return None
+
+
+def resolve_addressed_present_npc(
+    player_input: str,
+    present_names: list[str] | tuple[str, ...] | None,
+    *,
+    player_name: str | None = None,
+    hinted_name: str | None = None,
+) -> str | None:
+    """Return the present-cast NPC addressed in player_input, if uniquely resolvable.
+
+    Matching is structural identity against present cast (canonical/display name or unique
+    short role token), not a speech-verb word list. Player character is never returned.
+    """
+    cast = [name for name in list(present_names or []) if _compact(name)]
+    if not cast:
+        return None
+    player_key = identity_key(player_name) if player_name else None
+
+    def is_nonplayer(name: str) -> bool:
+        key = identity_key(name)
+        return bool(key) and key != player_key
+
+    mentioned = [
+        name for name in cast
+        if is_nonplayer(name) and _cast_name_mentioned_in_input(player_input, name)
+    ]
+    if hinted_name and is_nonplayer(hinted_name):
+        hint_key = identity_key(hinted_name)
+        hinted_matches = [name for name in mentioned if identity_key(name) == hint_key]
+        if len(hinted_matches) == 1:
+            return hinted_matches[0]
+        # Sticky listener name may not be repeated; keep as candidate only when uniquely in cast.
+        sticky = [name for name in cast if identity_key(name) == hint_key]
+        if len(sticky) == 1 and not mentioned:
+            return sticky[0]
+
+    if len(mentioned) == 1:
+        return mentioned[0]
+    if len(mentioned) > 1:
+        # Prefer the longest identity_key match (most specific designation).
+        mentioned.sort(key=lambda name: len(identity_key(name)), reverse=True)
+        top = mentioned[0]
+        top_len = len(identity_key(top))
+        tied = [name for name in mentioned if len(identity_key(name)) == top_len]
+        if len(tied) == 1:
+            return top
+
+    return _unique_short_role_hit(player_input, cast, player_name)
+
+
+def should_assign_addressed_response_obligation(
+    player_input: str,
+    present_names: list[str] | tuple[str, ...] | None,
+    *,
+    player_name: str | None = None,
+    hinted_name: str | None = None,
+    addressed_response_requested: bool = False,
+) -> str | None:
+    """When a present authorized NPC is clearly addressed, return their cast name for obligation.
+
+    Allowed-unless-banned still permits quiet turns in general; a direct address to a present
+    cast member is the structural exception that creates a speak/refuse/deflect/gesture opportunity.
+    """
+    from app.services.addressee_guard import is_look_request
+
+    addressee = resolve_addressed_present_npc(
+        player_input,
+        present_names,
+        player_name=player_name,
+        hinted_name=hinted_name,
+    )
+    if not addressee:
+        return None
+    if addressed_response_requested:
+        return addressee
+    # Sticky listener alone is not enough (allowed-unless-banned). Require dialogue/question shape
+    # naming or selecting that present person — not a pure look/describe.
+    if _QUESTION_OR_DIALOGUE_SHAPE_RE.search(player_input or ""):
+        if is_look_request(player_input or ""):
+            return None
+        return addressee
+    return None
+
+
+def addressed_response_obligation_constraint(addressee: str) -> str:
+    name = _compact(addressee)
+    return (
+        f"{_ADDRESSED_OBLIGATION_MARKER} {name} is directly addressed and present. "
+        "This turn must give them a response opportunity: speech, refusal, deflection, or "
+        "gesture-with-answer. Do not erase them into atmosphere or claim they are out of view / "
+        "unreachable / unanswered. If a truthful reply would require an unauthorized person, "
+        "refuse or deflect without inventing or naming that person."
+    )
+
+
+def addressed_response_obligation_guidance(addressee: str) -> str:
+    name = _compact(addressee)
+    return (
+        f"Игрок прямо обращается к присутствующему персонажу «{name}»: у этого адресата должна "
+        "быть возможность ответа — реплика, отказ, уклонение или жест с содержанием ответа. "
+        "Не растворяй адресата в атмосфере и не утверждай, что его нет в поле зрения или что "
+        "ответа не будет. Если правдивый ответ потребовал бы неавторизованного человека, "
+        "пусть адресат откажется или уклонится, не изобретая и не называя такого человека."
+    )
+
+
+def addressed_response_obligation_addressee(authority) -> str | None:
+    value = _compact(getattr(authority, "addressed_response_obligation", None))
+    if value:
+        return value
+    for item in list(getattr(authority, "canon_constraints", None) or []):
+        text = _compact(item)
+        if text.startswith(_ADDRESSED_OBLIGATION_MARKER):
+            remainder = text[len(_ADDRESSED_OBLIGATION_MARKER):].strip()
+            name = remainder.split(" is directly addressed", 1)[0].strip()
+            return name or None
+    return None
+
+
+def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
+    """Reject soft-silence erasure of an obligated present addressee.
+
+    Structural: obligation addressee must not be omitted entirely, and unreachability /
+    no-answer claims about a present obligated addressee are canon_conflict.
+    """
+    addressee = addressed_response_obligation_addressee(authority)
+    if not addressee:
+        return []
+    text = candidate or ""
+    spans: list[str] = []
+    if not _cast_name_mentioned_in_input(text, addressee):
+        # Entire omission of the obligated addressee is soft silence.
+        spans.append(f"addressed:{addressee}:omitted")
+        return spans
+    for match in _ADDRESSEE_UNREACHABLE_RE.finditer(text):
+        # Present-cast obligation: unreachability / no-answer claims are soft-silence erasure.
+        value = _compact(match.group(0))
+        if value and value not in spans:
+            spans.append(value)
+    return spans
+
+
+
+
 __all__ = [
+    "addressed_response_erasure_spans",
+    "addressed_response_obligation_addressee",
+    "addressed_response_obligation_constraint",
+    "addressed_response_obligation_guidance",
     "allowed_speakers_from_authority",
     "authorized_nonplayer_count",
     "authorized_physical_cast_names",
@@ -681,6 +902,8 @@ __all__ = [
     "protagonist_speech_violation_spans",
     "repair_introduction_identity",
     "repair_persisted_character_identity",
+    "resolve_addressed_present_npc",
+    "should_assign_addressed_response_obligation",
     "solitude_claim_violation_spans",
     "unauthorized_named_person_spans",
 ]

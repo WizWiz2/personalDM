@@ -5,11 +5,14 @@ from uuid import uuid4
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.narrator_authority_contracts import (
+    addressed_response_erasure_spans,
     allowed_speakers_from_authority,
     description_used_as_identity_name,
     is_usable_short_designation,
     presence_vs_solitude_constraint,
     repair_introduction_identity,
+    resolve_addressed_present_npc,
+    should_assign_addressed_response_obligation,
     unauthorized_named_person_spans,
 )
 from app.services.narrator_quality_recovery_guard import compact_narrator_payload
@@ -512,3 +515,99 @@ def test_authorized_cast_names_and_role_titles_still_ok():
 
     assert result.verdict == "pass"
     assert unauthorized_named_person_spans(candidate, authority) == []
+
+
+def test_address_present_cast_member_assigns_obligation_name():
+    """Player naming a present cast role/title creates a structural addressee obligation."""
+    cast = ["Эйдан", "Лира", "Управляющая домом", "Служанка"]
+    player_input = "Управляющая домом, есть ли у вас работа по найму?"
+
+    addressee = should_assign_addressed_response_obligation(
+        player_input,
+        cast,
+        player_name="Эйдан",
+        addressed_response_requested=False,
+    )
+    assert addressee == "Управляющая домом"
+    assert resolve_addressed_present_npc(player_input, cast, player_name="Эйдан") == (
+        "Управляющая домом"
+    )
+
+
+def test_non_address_quiet_turn_does_not_force_obligation():
+    """Atmosphere/quiet without addressing a present NPC stays allowed-unless-banned."""
+    cast = ["Эйдан", "Лира", "Управляющая домом"]
+    assert (
+        should_assign_addressed_response_obligation(
+            "Я стою у колонны и слушаю тишину зала.",
+            cast,
+            player_name="Эйдан",
+            addressed_response_requested=False,
+        )
+        is None
+    )
+
+
+def test_addressed_soft_silence_erasure_fails_validation():
+    """Live residual: present obligated addressee erased into out-of-view / no-answer atmosphere."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Управляющая домом, есть ли работа по найму?",
+        present_character_names=[
+            "Эйдан",
+            "Лира",
+            "Служанка",
+            "Управляющая домом",
+        ],
+        addressed_response_obligation="Управляющая домом",
+    )
+    candidate = (
+        "В зале гулко и пустовато. Управляющая домом не в поле зрения, и ответа нет — "
+        "только шорох портьер и холодный свет из окон."
+    )
+
+    assert addressed_response_erasure_spans(candidate, authority)
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "canon_conflict" for item in result.violations)
+
+
+def test_addressed_npc_reply_without_invented_people_passes():
+    """Addressee may refuse/deflect without inventing unauthorized spouses/lords."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Управляющая домом, кто распоряжается наймом?",
+        present_character_names=[
+            "Эйдан",
+            "Лира",
+            "Управляющая домом",
+        ],
+        addressed_response_obligation="Управляющая домом",
+    )
+    candidate = (
+        "Управляющая домом складывает руки и спокойно отвечает: "
+        "«Наймом распоряжаюсь я. О других лицах говорить не стану»."
+    )
+
+    assert addressed_response_erasure_spans(candidate, authority) == []
+    assert unauthorized_named_person_spans(candidate, authority) == []
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+    assert result.verdict == "pass"
+
+
+def test_look_request_naming_present_npc_is_not_response_obligation():
+    """Describe/look at a present NPC must not mint a speaking obligation."""
+    cast = ["Эйдан", "Управляющая домом"]
+    assert (
+        should_assign_addressed_response_obligation(
+            "Опиши управляющую домом подробнее.",
+            cast,
+            player_name="Эйдан",
+            addressed_response_requested=False,
+        )
+        is None
+    )

@@ -72,6 +72,8 @@ class TurnAuthority(BaseModel):
 
     resolution: str = "conversation"
     identity_reveal_requested: bool = False
+    # Present-cast NPC that must receive a speak/refuse/deflect/gesture opportunity.
+    addressed_response_obligation: str | None = None
     dramatic_mode: str = "calm"
     observable_consequences: list[str] = Field(default_factory=list)
     character_beats: list[str] = Field(default_factory=list)
@@ -252,6 +254,7 @@ class TurnAuthority(BaseModel):
             "source_location": self.source_location_path,
             "target_location": self.target_location_path,
             "present_characters": self.present_character_names,
+            "addressed_response_obligation": self.addressed_response_obligation,
             "known_absent_characters": self.known_absent_character_names,
             "allowed_speakers": self.allowed_speakers,
             "allowed_new_npcs": [
