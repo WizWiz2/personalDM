@@ -16,6 +16,7 @@ from app.services.narrator_authority_contracts import (
     protagonist_action_restage_violation_spans,
     protagonist_speech_violation_spans,
     solitude_claim_violation_spans,
+    unauthorized_named_person_spans,
 )
 from app.services.player_intent_contract import language_mismatch
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
@@ -79,7 +80,7 @@ Concrete violations:
   actor. A deliberate quoted mention of another person is fine when attribution is explicit.
 - CHARACTER PRESENCE: a known_absent_character physically acts/speaks/appears. Characters in
   present_characters, allowed_new_npcs and allowed_existing_npc_arrivals are authorized physically.
-- UNPLANNED NPC: a genuinely new physical person appears without typed NPC authority.
+- UNPLANNED NPC: a genuinely new physical person appears without typed NPC authority. A new proper-named person (title+name or multi-token capitalized identity) outside present_characters / allowed_new_npcs / allowed_existing_npc_arrivals is canon_conflict.
 - SCENE TEXTURE: neutral local sensory/furnishing detail is allowed when it does not create a new
   character, route, threat, clue, mechanically/causally significant object or action outcome.
 - MOVEMENT/TIME: prose moves someone to another place, or completes a time or scene-boundary change,
@@ -387,6 +388,21 @@ Return exactly:
                     ),
                 ),
                 "Наррация противоречит авторизованному присутствию персонажей.",
+            )
+        for span in unauthorized_named_person_spans(candidate_text, authority):
+            result = cls._append_error(
+                result,
+                NarrationViolation(
+                    violation_type="canon_conflict",
+                    severity="error",
+                    evidence=span[:500],
+                    correction=(
+                        "Убрать изобретённое имя человека вне авторизованного каста: допустимы "
+                        "только present_character_names, allowed_new_npcs и "
+                        "allowed_existing_npc_arrivals (и имя героя)."
+                    ),
+                ),
+                "Нарратор ввёл новое имя человека вне авторизованного присутствия.",
             )
         return result
 

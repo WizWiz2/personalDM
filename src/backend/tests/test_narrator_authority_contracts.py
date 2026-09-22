@@ -10,6 +10,7 @@ from app.services.narrator_authority_contracts import (
     is_usable_short_designation,
     presence_vs_solitude_constraint,
     repair_introduction_identity,
+    unauthorized_named_person_spans,
 )
 from app.services.narrator_quality_recovery_guard import compact_narrator_payload
 from app.services.turn_authority_resolvers import (
@@ -456,3 +457,58 @@ def test_pc_name_state_copula_without_finite_agency_still_ok():
 
     assert result.verdict == "pass"
 
+
+
+def test_unauthorized_named_person_lord_thorn_fails_validation():
+    """Live residual: narrator invented «Лорд Торн» (house manager's husband) off-cast."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я перевожу взгляд на Управляющую домом.",
+        present_character_names=[
+            "Эйдан",
+            "Лира",
+            "Служанка",
+            "Служанка 2",
+            "Управляющая домом",
+        ],
+    )
+    candidate = (
+        "Управляющая домом складывает руки. «Муж мой, Лорд Торн, сегодня в городе», "
+        "— говорит она спокойно. Лира молчит у стены."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "canon_conflict" for item in result.violations)
+    assert any("Торн" in item.evidence for item in result.violations)
+
+
+def test_authorized_cast_names_and_role_titles_still_ok():
+    """Titles/roles already in cast and PC name must not trip invent-people gate."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я смотрю на Лиру и Служанку 2.",
+        present_character_names=[
+            "Эйдан",
+            "Лира",
+            "Служанка",
+            "Служанка 2",
+            "Управляющая домом",
+        ],
+        object_names=["Большой Зал"],
+        source_location_path=["Поместье", "Большой Зал"],
+    )
+    candidate = (
+        "Ты смотришь на Лиру. Управляющая домом кивает, Служанка 2 поправляет фартук. "
+        "В Большом Зале тихо. Эйдан был у колонны, когда Лира отвечает: «Я здесь»."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "pass"
+    assert unauthorized_named_person_spans(candidate, authority) == []
