@@ -44,6 +44,75 @@ _LEADING_FIRST_PERSON_STAGE_RE = re.compile(
 _MIN_ECHO_KEY_LEN = 8
 _MIN_ECHO_TOKENS = 3
 _ECHO_TOKEN_COVERAGE = 0.8
+_MIN_ACTION_TOKENS = 2
+_ACTION_TOKEN_COVERAGE = 0.5
+# Pronouns / function words dropped from action-overlap (structural, not a verb lexicon).
+_ACTION_STOPWORDS = frozenset(
+    {
+        "ya",
+        "ty",
+        "on",
+        "ona",
+        "oni",
+        "my",
+        "vy",
+        "i",
+        "a",
+        "no",
+        "da",
+        "ne",
+        "ni",
+        "zhe",
+        "by",
+        "li",
+        "v",
+        "vo",
+        "na",
+        "s",
+        "so",
+        "k",
+        "ko",
+        "u",
+        "o",
+        "ob",
+        "po",
+        "ot",
+        "do",
+        "za",
+        "iz",
+        "dlya",
+        "pro",
+        "pri",
+        "bez",
+        "nad",
+        "pod",
+        "eto",
+        "kak",
+        "chto",
+        "togda",
+        "kogda",
+        "uzhe",
+        "eshche",
+        "tolko",
+        "eshchyo",
+    }
+)
+# Closed 3rd-person speech-act tags after PC name (mirrors 2nd-person frames; not a plot lexicon).
+_PC_SPEECH_ACT_AFTER_NAME = (
+    r"(?:спрашивает|говорит|отвечает|произносит|шепчет|кричит|"
+    r"добавляет|замечает|зада[её]т)"
+)
+_PC_PRONOUN_SPEECH_RE = re.compile(
+    r"(?:"
+    r"\bон\b\s+(?:зада[её]т\s+вопрос|спрашивает|говорит|отвечает|произносит)|"
+    r"когда\s+он\s+зада[её]т\s+вопрос"
+    r")",
+    flags=re.IGNORECASE,
+)
+_PREPOSITION_BEFORE_RE = re.compile(
+    r"(?i)(?:^|[\s,;:—\-–])(?:на|к|ко|с|со|у|от|для|о|об|про|перед|за|под|над|при|"
+    r"без|до|из|по|во?|обо|через|между|среди)\s+$"
+)
 
 # Empty-of-people / solitude claims (cast contradiction), not furniture emptiness.
 _SOLITUDE_CLAIM_RE = re.compile(
@@ -246,6 +315,184 @@ def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
     return spans
 
 
+
+def _content_tokens(key: str) -> list[str]:
+    return [tok for tok in key.split() if tok and tok not in _ACTION_STOPWORDS and len(tok) >= 3]
+
+
+def _soft_token_match(left: str, right: str) -> bool:
+    """Prefix-tolerant token match so conjugated Russian verbs still overlap cores."""
+    if left == right:
+        return True
+    if len(left) < 4 or len(right) < 4:
+        return False
+    limit = min(len(left), len(right))
+    shared = 0
+    while shared < limit and left[shared] == right[shared]:
+        shared += 1
+    return shared >= 4 and shared >= int(0.65 * min(len(left), len(right)))
+
+
+def _soft_token_overlap(window_key: str, core_key: str) -> bool:
+    window_tokens = _content_tokens(window_key)
+    core_tokens = _content_tokens(core_key)
+    if len(core_tokens) < _MIN_ACTION_TOKENS or not window_tokens:
+        return False
+    matched = 0
+    used: set[int] = set()
+    for core_tok in core_tokens:
+        for idx, win_tok in enumerate(window_tokens):
+            if idx in used:
+                continue
+            if _soft_token_match(core_tok, win_tok):
+                used.add(idx)
+                matched += 1
+                break
+    if matched < _MIN_ACTION_TOKENS:
+        return False
+    return (matched / len(core_tokens)) >= _ACTION_TOKEN_COVERAGE
+
+
+def _player_action_cores(player_input: object) -> list[str]:
+    """Non-dialogue voluntary-action fragments of player_input for restage overlap."""
+    raw = str(player_input or "")
+    scrubbed = _QUOTE_RE.sub(" ", raw)
+    scrubbed = _DIALOGUE_LINE_RE.sub(" ", scrubbed)
+    compact = _compact(scrubbed)
+    cores: list[str] = []
+    seen: set[str] = set()
+
+    def add_core(value: object) -> None:
+        text = _compact(value)
+        key = identity_key(text)
+        if not text or not key or len(_content_tokens(key)) < _MIN_ACTION_TOKENS:
+            return
+        if key in seen:
+            return
+        seen.add(key)
+        cores.append(text)
+
+    for match in re.finditer(r"(?i)\bя\s+[^.»!?\n]+", compact):
+        add_core(match.group(0))
+    add_core(compact)
+    return cores
+
+
+def _pc_name_patterns(pc_name: str) -> re.Pattern[str] | None:
+    name = _compact(pc_name)
+    if not name:
+        return None
+    return re.compile(rf"(?<!\w){re.escape(name)}(?!\w)", flags=re.IGNORECASE)
+
+
+def _window_restages_player(
+    window: str,
+    *,
+    action_cores: list[str],
+    speech_cores: list[str],
+    pc_name: str,
+) -> bool:
+    cleaned = _compact(window)
+    if pc_name:
+        cleaned = re.sub(
+            rf"(?i)(?<!\w){re.escape(pc_name)}(?!\w)",
+            " ",
+            cleaned,
+        )
+    window_key = identity_key(cleaned)
+    if not window_key:
+        return False
+    for core in (*action_cores, *speech_cores):
+        core_key = identity_key(core)
+        if core_key and _soft_token_overlap(window_key, core_key):
+            return True
+    return False
+
+
+def protagonist_action_restage_violation_spans(candidate: str, authority) -> list[str]:
+    """Spans that restage player_input voluntary action/speech via 3rd-person PC attribution.
+
+    Invariant (publication gate shared with speech echoes): prose must not attribute
+    voluntary action or speech *performance* to the player character by canonical name
+    (or a clear 3rd-person PC reference after that name) in a way that restages
+    player_input. Second-person house style describing results remains allowed.
+    Overlap reuses player_input action/speech cores — not a large verb lexicon.
+    """
+    text = candidate or ""
+    pc_name = _compact(getattr(authority, "player_character_name", None))
+    if not text.strip() or not pc_name:
+        return []
+    name_re = _pc_name_patterns(pc_name)
+    if name_re is None:
+        return []
+
+    player_input = getattr(authority, "player_input", None)
+    action_cores = _player_action_cores(player_input)
+    speech_cores = _player_speech_cores(player_input)
+    if not action_cores and not speech_cores:
+        return []
+
+    spans: list[str] = []
+    seen: set[str] = set()
+
+    def add(span: str) -> None:
+        value = _compact(span)
+        key = identity_key(value)
+        if not value or not key or key in seen:
+            return
+        seen.add(key)
+        spans.append(value)
+
+    speech_act_re = re.compile(
+        rf"(?i)(?<!\w){re.escape(pc_name)}(?!\w)\s+{_PC_SPEECH_ACT_AFTER_NAME}"
+    )
+    for match in speech_act_re.finditer(text):
+        start = max(0, match.start() - 8)
+        end = min(len(text), match.end() + 80)
+        add(text[start:end] if end - start <= 220 else match.group(0))
+
+    for match in name_re.finditer(text):
+        prefix = text[max(0, match.start() - 24) : match.start()]
+        if _PREPOSITION_BEFORE_RE.search(prefix):
+            continue
+        # Subject-like: name followed by a word (verb/adverb), not punctuation-only.
+        after = text[match.end() : match.end() + 1]
+        if after and after in {'.', ',', ';', ':', '!', '?', '»', '"', "'", ')'}:
+            continue
+        start = match.start()
+        end = min(len(text), match.end() + 100)
+        # Prefer clause boundary when nearby.
+        clause = re.search(r"[.!?…\n]", text[match.end() : end])
+        if clause:
+            end = match.end() + clause.start() + 1
+        window = text[start:end]
+        if not _window_restages_player(
+            window,
+            action_cores=action_cores,
+            speech_cores=speech_cores,
+            pc_name=pc_name,
+        ):
+            continue
+        add(window if len(window) <= 220 else _compact(window[:220]))
+
+    # Clear 3rd-person PC reference: pronoun speech-performance after a PC-name mention
+    # in the same paragraph, when player_input supplied speech.
+    if speech_cores:
+        for name_match in name_re.finditer(text):
+            para_end = text.find("\n\n", name_match.end())
+            if para_end < 0:
+                para_end = len(text)
+            region = text[name_match.start() : para_end]
+            for speech_match in _PC_PRONOUN_SPEECH_RE.finditer(region):
+                abs_start = name_match.start() + speech_match.start()
+                abs_end = name_match.start() + speech_match.end()
+                left = max(name_match.start(), abs_start - 40)
+                right = min(len(text), abs_end + 24)
+                add(text[left:right] if right - left <= 220 else speech_match.group(0))
+
+    return spans
+
+
 def solitude_claim_violation_spans(candidate: str, authority) -> list[str]:
     """When physical cast has player + ≥1 authorized other, solitude claims fail."""
     if authorized_nonplayer_count(authority) < 1:
@@ -276,6 +523,7 @@ __all__ = [
     "identity_display_label",
     "is_usable_short_designation",
     "presence_vs_solitude_constraint",
+    "protagonist_action_restage_violation_spans",
     "protagonist_speech_violation_spans",
     "repair_introduction_identity",
     "repair_persisted_character_identity",

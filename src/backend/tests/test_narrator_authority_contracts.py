@@ -310,3 +310,95 @@ def test_npc_original_answer_without_player_echo_still_ok():
 
     assert result.verdict == "pass"
 
+def test_third_person_pc_name_action_restage_fails_validation():
+    """Live residual: narrator must not re-perform PC voluntary action in 3rd person by name."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я перевожу взгляд на Лиру и жду ответа.",
+        present_character_names=["Эйдан", "Лира"],
+    )
+    candidate = (
+        "Эйдан переводит взгляд на Лиру. Лира кивает и коротко отвечает: "
+        "«Старшая — Марта»."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_third_person_pc_pronoun_speech_restage_after_name_fails():
+    """Live residual: 'когда он задает вопрос' after PC name restages player speech performance."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я перевожу взгляд на Лиру. Кто здесь старшая?",
+        present_character_names=["Эйдан", "Лира"],
+    )
+    candidate = (
+        "Эйдан молчит мгновение, и когда он задает вопрос, Лира поднимает взгляд: "
+        "«Старшая — Марта»."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_second_person_result_narration_still_ok_with_action_overlap():
+    """House style: 2nd-person description of results must not trip the 3p restage gate."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я перевожу взгляд на Лиру и жду ответа.",
+        present_character_names=["Эйдан", "Лира"],
+    )
+    candidate = (
+        "Ты переводишь взгляд на Лиру. Она кивает и спокойно отвечает: "
+        "«Старшая — Марта»."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "pass"
+
+
+def test_pc_name_oblique_mention_without_restage_still_ok():
+    """Oblique/prepositional PC mention is not subject restaging."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Я перевожу взгляд на Лиру.",
+        present_character_names=["Эйдан", "Лира"],
+    )
+    candidate = (
+        "Лира смотрит на Эйдана и коротко кивает: «Я здесь»."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "pass"
+
+
+def test_pc_name_speech_act_tag_restages_player_question():
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Кто здесь старшая?",
+        present_character_names=["Эйдан", "Лира"],
+    )
+    candidate = "Эйдан спрашивает, и Лира отвечает: «Старшая — Марта»."
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
