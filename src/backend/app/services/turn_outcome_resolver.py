@@ -164,10 +164,46 @@ def solo_physical_presence(context_messages: list[ChatMessage]) -> bool:
     return len(present_character_names(context_messages)) <= 1
 
 
+def is_pure_ordinary_travel(contract: PlayerIntentContract) -> bool:
+    """True when frozen intent is ordinary movement only — not contact-seeking.
+
+    Mirrors the ordinary-travel short-circuit purity check: all actions are ordinary
+    movement, no addressed response / pending choice, and the summary does not carry
+    extra contact-seeking substance beyond the movement intents.
+    """
+    if (
+        not contract.actions
+        or contract.addressed_response_requested
+        or contract.pending_player_choice
+        or any(action.action_type != "movement" for action in contract.actions)
+        or any(action.movement_method != "ordinary" for action in contract.actions)
+    ):
+        return False
+    action_focus = " ".join(
+        f"{action.intent or ''} {action.destination_location or ''}"
+        for action in contract.actions
+    ).strip()
+    if not action_focus:
+        return False
+    summary = (contract.summary or "").strip()
+    return (
+        summary == action_focus
+        or summary in action_focus
+        or (action_focus in summary and len(summary) <= len(action_focus) + 24)
+    )
+
+
 def seeks_contact_or_presence(contract: PlayerIntentContract) -> bool:
-    """Contact/presence/exploration intent from frozen IR signals only."""
+    """Contact/presence/exploration intent from frozen IR signals only.
+
+    Pure ordinary travel is not contact-seeking: Soft Keeper must not soft-stall a
+    committed move by forcing introduce_contact / atmosphere-only recovery.
+    Movement that shares a turn with interaction/observation/address still seeks contact.
+    """
     if contract.addressed_response_requested:
         return True
+    if is_pure_ordinary_travel(contract):
+        return False
     return any(
         action.action_type in {"interaction", "service", "observation", "movement"}
         for action in contract.actions
@@ -648,31 +684,18 @@ class TurnOutcomeResolver:
     ) -> TurnOutcomeDecision:
         try:
             solo_cast = solo_physical_presence(context_messages)
-            # Ordinary-travel short-circuit only for pure reach-destination commitments.
+            # Ordinary-travel short-circuit for pure reach-destination commitments (solo or not).
             # If the frozen summary carries more than the movement intents (e.g. seeking people
             # while walking), use the full outcome resolver so contact intros remain possible.
             # Director-forced introduce also skips the travel short-circuit.
+            # Previously `not solo_cast` gated this path, which forced alone-travel through the
+            # full Soft Keeper atmosphere / contact-recovery path and soft-stalled movement.
             if force_introduce_contact:
                 solo_cast = True
-            action_focus = " ".join(
-                f"{action.intent or ''} {action.destination_location or ''}"
-                for action in contract.actions
-            ).strip()
-            summary = (contract.summary or "").strip()
-            pure_travel_summary = bool(action_focus) and (
-                summary == action_focus
-                or summary in action_focus
-                or action_focus in summary and len(summary) <= len(action_focus) + 24
-            )
+            pure_travel = is_pure_ordinary_travel(contract)
             if (
-                not solo_cast
-                and not force_introduce_contact
-                and contract.actions
-                and not contract.addressed_response_requested
-                and not contract.pending_player_choice
-                and pure_travel_summary
-                and all(action.action_type == "movement" and action.movement_method == "ordinary"
-                        for action in contract.actions)
+                not force_introduce_contact
+                and pure_travel
             ):
                 return await self._resolve_ordinary_travel(
                     selection, context_messages, player_input, contract,
@@ -871,6 +894,7 @@ class TurnOutcomeResolver:
 
 __all__ = [
     "solo_physical_presence",
+    "is_pure_ordinary_travel",
     "seeks_contact_or_presence",
     "has_plot_bearing_outcome",
 
