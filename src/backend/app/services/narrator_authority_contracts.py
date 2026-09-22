@@ -160,7 +160,7 @@ def _player_speech_cores(player_input: object) -> list[str]:
 
 
 def _quote_echoes_player_speech(quote: str, cores: list[str], player_key: str) -> bool:
-    """True when a narrated quote is a near-copy of player speech (structural overlap)."""
+    """True when a narrated line near-copies player speech cores (structural overlap; speaker-agnostic)."""
     quote_text = _compact(quote)
     quote_key = identity_key(quote_text)
     if not quote_key or len(quote_key) < _MIN_ECHO_KEY_LEN:
@@ -190,11 +190,16 @@ def _quote_echoes_player_speech(quote: str, cores: list[str], player_key: str) -
 
 
 def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
-    """Spans where narrator attributes new dialogue to the hero/player.
+    """Spans that violate protagonist-speech / player-input content authority.
 
-    Invariant: protagonist dialogue must not survive publication as narrated performance.
-    Second-person speech frames are never on allowed_speakers. Quotes that are a
-    structural near-copy of player_input are unauthorized even without a local frame.
+    Two separate invariants (do not collapse them):
+    1) Attribution frames: second-person speech performance is never on allowed_speakers.
+    2) Player-speech-core echo: a quoted or dialogue-shaped line that near-copies
+       player_input speech cores is invalid regardless of attributed speaker (hero OR
+       NPC). player_input is the only authorized source of the protagonist's voluntary
+       speech content; NPCs may answer, refuse, or deflect — they must not perform the
+       player's line. allowed_speakers still gates who may speak; echo-of-player-input
+       is a separate content invariant over those lines.
     """
     text = candidate or ""
     if not text.strip():
@@ -228,6 +233,15 @@ def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
             right = min(len(text), match.end() + 24)
             neighborhood = text[left:right]
             add(neighborhood if len(neighborhood) <= 220 else _compact(quote))
+        # Dialogue-dash lines use the same content invariant (speaker-agnostic).
+        for match in _DIALOGUE_LINE_RE.finditer(text):
+            line = match.group(1)
+            if not _quote_echoes_player_speech(line, speech_cores, player_key):
+                continue
+            left = max(0, match.start() - 48)
+            right = min(len(text), match.end() + 24)
+            neighborhood = text[left:right]
+            add(neighborhood if len(neighborhood) <= 220 else _compact(line))
 
     return spans
 

@@ -259,3 +259,54 @@ def test_npc_original_dialogue_still_passes_with_player_question_present():
     )
 
     assert result.verdict == "pass"
+
+def test_npc_attributed_quote_echoing_player_input_fails_validation():
+    """Live residual: NPC (Лира) must not perform a near-copy of player_input as her line."""
+    authority = _authority(
+        player_input="Кто здесь старшая и почему Лира молчит?",
+        present_character_names=["Александр", "Лира"],
+    )
+    candidate = (
+        "Лира поднимает взгляд и повторяет: "
+        "«Кто здесь старшая и почему Лира молчит?»"
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_npc_dialogue_dash_echoing_player_input_fails_validation():
+    authority = _authority(
+        player_input="Кто здесь старшая и почему Лира молчит?",
+        present_character_names=["Александр", "Лира"],
+    )
+    candidate = "— Кто здесь старшая и почему Лира молчит? — говорит Лира."
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_npc_original_answer_without_player_echo_still_ok():
+    authority = _authority(
+        player_input="Кто здесь старшая и почему Лира молчит?",
+        present_character_names=["Александр", "Лира"],
+    )
+    candidate = (
+        "Лира молчит мгновение, затем тихо отвечает: "
+        "«Старшая — Марта. Я слушала, потому что ждала вашего вопроса»."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "pass"
+
