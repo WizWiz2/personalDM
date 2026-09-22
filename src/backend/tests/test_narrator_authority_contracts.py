@@ -206,3 +206,56 @@ def test_validator_prompt_mentions_allowed_speakers_and_solitude():
     assert "ALLOWED SPEAKERS" in prompt
     assert "PRESENCE VS SOLITUDE" in prompt
     assert "allowed_speakers" in prompt
+
+
+def test_bare_requote_of_player_line_fails_without_speech_frame():
+    """Live leak: narrator re-quotes player speech in prose with no 'ты' / твой голос."""
+    authority = _authority(player_input="Кто здесь старшая?")
+    candidate = (
+        "В зале слышно: «Кто здесь старшая?» Анна оборачивается и коротко кивает."
+    )
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_dialogue_core_from_staged_player_input_is_echo_detected():
+    authority = _authority(player_input="Я оглядываюсь.\n- Кто здесь старшая?")
+    candidate = "Эхо подхватывает вопрос: «Кто здесь старшая?»"
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_possessive_speech_noun_frame_rejects_your_question():
+    authority = _authority(player_input="Кто здесь старшая?")
+    candidate = "Слышен твой вопрос: «Кто здесь старшая?»"
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "repair_required"
+    assert any(item.violation_type == "player_agency" for item in result.violations)
+
+
+def test_npc_original_dialogue_still_passes_with_player_question_present():
+    authority = _authority(
+        player_input="Кто здесь старшая?",
+        present_character_names=["Александр", "Анна"],
+    )
+    candidate = "Анна наклоняет голову: «Я старшая здесь, господин»."
+
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+
+    assert result.verdict == "pass"
