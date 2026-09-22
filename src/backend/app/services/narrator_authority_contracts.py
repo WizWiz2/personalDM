@@ -883,16 +883,29 @@ def addressed_response_obligation_guidance(addressee: str) -> str:
     )
 
 
+def _parse_obligation_addressee(value: object) -> str | None:
+    """Single addressee extraction: bare name or marker-prefixed constraint text."""
+    text = _compact(value)
+    if not text:
+        return None
+    if text.startswith(_ADDRESSED_OBLIGATION_MARKER):
+        remainder = text[len(_ADDRESSED_OBLIGATION_MARKER):].strip()
+        name = remainder.split(" is directly addressed", 1)[0].strip()
+        return name or None
+    return text
+
+
 def addressed_response_obligation_addressee(authority) -> str | None:
-    value = _compact(getattr(authority, "addressed_response_obligation", None))
-    if value:
-        return value
+    """Bare obligated cast name from field or marker constraint — one parse path."""
+    parsed = _parse_obligation_addressee(
+        getattr(authority, "addressed_response_obligation", None)
+    )
+    if parsed:
+        return parsed
     for item in list(getattr(authority, "canon_constraints", None) or []):
         text = _compact(item)
         if text.startswith(_ADDRESSED_OBLIGATION_MARKER):
-            remainder = text[len(_ADDRESSED_OBLIGATION_MARKER):].strip()
-            name = remainder.split(" is directly addressed", 1)[0].strip()
-            return name or None
+            return _parse_obligation_addressee(text)
     return None
 
 
@@ -920,32 +933,23 @@ def _cast_name_span_iter(text: str, cast_name: str):
         yield match.start(), match.end()
 
 
-def _post_quote_dash_attributed_to(after: str, cast_name: str) -> bool:
+def _dash_attr_to(fragment: str, cast_name: str, *, trailing: bool) -> bool:
+    """True when fragment has a dash attribution to cast_name (post-quote or line-trailing)."""
     pattern = _cast_name_pattern(cast_name)
     if not pattern:
         return False
-    return bool(re.match(rf"[,.]?\s*[—\-–]\s*(?:{pattern.pattern})", after or "", flags=re.IGNORECASE))
-
-
-def _dialogue_line_trailing_attr(line: str, cast_name: str) -> bool:
-    pattern = _cast_name_pattern(cast_name)
-    if not pattern:
-        return False
-    return bool(
-        re.search(
-            rf"[—\-–]\s*(?:{pattern.pattern})\s*$",
-            (line or "").rstrip(),
-            flags=re.IGNORECASE,
+    body = pattern.pattern
+    if trailing:
+        return bool(
+            re.search(
+                rf"[—\-–]\s*(?:{body})\s*$",
+                (fragment or "").rstrip(),
+                flags=re.IGNORECASE,
+            )
         )
+    return bool(
+        re.match(rf"[,.]?\s*[—\-–]\s*(?:{body})", fragment or "", flags=re.IGNORECASE)
     )
-
-
-def _rightmost_cast_span_end(window: str, cast_name: str) -> int:
-    best = -1
-    for _start, end in _cast_name_span_iter(window, cast_name):
-        if end > best:
-            best = end
-    return best
 
 
 def _structural_speaker_for_beat(
@@ -956,35 +960,34 @@ def _structural_speaker_for_beat(
     *,
     dialogue_line: str | None = None,
 ) -> str | None:
-    """Return the unique structural speaker among candidates for one quote/dialogue beat.
+    """Unique structural speaker among candidates for one quote/dialogue beat.
 
-    Attribution family (no speech-verb lexicon):
-    - tight post-quote / trailing-line dash to a cast name
-    - otherwise the rightmost cast span in the pre-window that has ``:`` before the beat
-      or sits in the same short clause (≤48 chars, no sentence break)
-
-    When several cast members appear near a quote, the rightmost structural owner wins —
-    a prior name in atmosphere does not steal another cast member's reply.
+    Attribution (no speech-verb lexicon): tight post-quote / trailing dash, else rightmost
+    cast span in the pre-window with ``:`` before the beat or same short clause (≤48 chars,
+    no sentence/paragraph break). Paragraph break between name and quote → None (reject).
     """
     if not candidates:
         return None
     after = text[beat_end : beat_end + 80]
-    dash_hits = [name for name in candidates if _post_quote_dash_attributed_to(after, name)]
-    if dialogue_line is not None:
-        dash_hits.extend(
-            name for name in candidates if _dialogue_line_trailing_attr(dialogue_line, name)
-        )
-    # Preserve order, unique by identity_key
+    dash_hits: list[str] = []
     seen: set[str] = set()
-    unique_dash: list[str] = []
-    for name in dash_hits:
+
+    def _add(name: str) -> None:
         key = identity_key(name)
         if key and key not in seen:
             seen.add(key)
-            unique_dash.append(name)
-    if len(unique_dash) == 1:
-        return unique_dash[0]
-    if len(unique_dash) > 1:
+            dash_hits.append(name)
+
+    for name in candidates:
+        if _dash_attr_to(after, name, trailing=False):
+            _add(name)
+    if dialogue_line is not None:
+        for name in candidates:
+            if _dash_attr_to(dialogue_line, name, trailing=True):
+                _add(name)
+    if len(dash_hits) == 1:
+        return dash_hits[0]
+    if len(dash_hits) > 1:
         return None
 
     left = max(0, beat_start - 180)
@@ -992,7 +995,10 @@ def _structural_speaker_for_beat(
     best_name: str | None = None
     best_abs_end = -1
     for name in candidates:
-        end = _rightmost_cast_span_end(pre, name)
+        end = -1
+        for _start, span_end in _cast_name_span_iter(pre, name):
+            if span_end > end:
+                end = span_end
         if end < 0:
             continue
         abs_end = left + end
