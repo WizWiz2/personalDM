@@ -19,7 +19,7 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import evidence_supported
 from app.services.entity_identity import identity_key, resolve_character_candidates
-from app.services.narrator_authority_contracts import (
+from app.services.name_identity_contract import (
     description_used_as_identity_name,
     is_usable_short_designation,
 )

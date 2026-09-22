@@ -10,7 +10,7 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.goal_repo import GoalRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Turn
-from app.models.scene_development import SceneDevelopment
+from app.models.scene_development import NpcSceneAction, SceneDevelopment, coerce_disposition_to_actions
 from app.models.truth_engine import CanonicalEventCreate, TruthEventEvidenceCreate
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
@@ -417,6 +417,14 @@ class SceneDevelopmentService:
         return SceneDevelopment(disposition="quiet", reason=reason, actions=[])
 
     @classmethod
+    def normalize_disposition(cls, decision: SceneDevelopment) -> SceneDevelopment:
+        """Re-derive disposition from actions (defense in depth after model_copy / construct)."""
+        disposition, _ = coerce_disposition_to_actions(decision.disposition, decision.actions)
+        if decision.disposition == disposition:
+            return decision
+        return decision.model_copy(update={"disposition": disposition})
+
+    @classmethod
     def sanitize(
         cls, decision: SceneDevelopment, context: dict,
     ) -> tuple[SceneDevelopment, dict]:
@@ -426,7 +434,14 @@ class SceneDevelopmentService:
         cannot authorize an act. Ineligible actors likewise cannot own initiative. Those
         failures degrade to filtered acts or quiet rather than TurnPlanningError, so narration
         can still publish the already-resolved player outcome.
+
+        Disposition↔actions is normalized here as well: after filtering, disposition follows
+        whether any authorized acts remain (same rule as coerce_disposition_to_actions).
         """
+        original_disposition = decision.disposition
+        decision = cls.normalize_disposition(decision)
+        disposition_coerced = decision.disposition != original_disposition
+
         actors = {actor["id"] for actor in context["actors"]}
         agenda = context["agenda"]
         kept = []
@@ -450,23 +465,27 @@ class SceneDevelopmentService:
                 dropped.append({**invalid, "actor_id": str(action.actor_id)})
                 continue
             kept.append(action)
+
+        def _audit(status: str, result: SceneDevelopment) -> dict:
+            payload = {
+                "sanitize_status": status,
+                "dropped_actions": dropped,
+            }
+            if disposition_coerced or result.disposition != original_disposition:
+                payload["original_disposition"] = original_disposition
+                payload["disposition_coerced"] = True
+            return payload
+
         if not dropped:
-            return decision, {"sanitize_status": "unchanged", "dropped_actions": []}
+            status = "disposition_coerced" if disposition_coerced else "unchanged"
+            return decision, _audit(status, decision)
         if not kept:
             quiet = cls.quiet_without_acts(
                 "NPC initiative omitted: scene development could not authorize cited acts."
             )
-            return quiet, {
-                "sanitize_status": "degraded_quiet",
-                "dropped_actions": dropped,
-                "original_disposition": decision.disposition,
-            }
+            return quiet, _audit("degraded_quiet", quiet)
         filtered = decision.model_copy(update={"actions": kept, "disposition": "act"})
-        return filtered, {
-            "sanitize_status": "actions_filtered",
-            "dropped_actions": dropped,
-            "original_disposition": decision.disposition,
-        }
+        return filtered, _audit("actions_filtered", filtered)
 
     @classmethod
     def validate(cls, decision: SceneDevelopment, context: dict) -> SceneDevelopment:

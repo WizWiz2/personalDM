@@ -2,8 +2,7 @@
 
 These helpers encode machine-checkable authority/identity rules. They do not invent story
 semantics from keyword game logic: speaker allowlists come from typed cast/intros, solitude
-rejection compares authorized cast size to empty-of-people claims, and intro naming rejects
-description-as-identity using field equality and short-designation shape.
+rejection compares authorized cast size to empty-of-people claims, and intro naming delegates description-as-identity checks to name_identity_contract.
 """
 
 from __future__ import annotations
@@ -11,6 +10,14 @@ from __future__ import annotations
 import re
 
 from app.services.entity_identity import identity_key
+from app.services.name_identity_contract import (
+    description_used_as_identity_name,
+    extract_leading_short_designation,
+    identity_display_label,
+    is_usable_short_designation,
+    repair_introduction_identity,
+    repair_persisted_character_identity,
+)
 
 # Discourse frames that attribute NEW spoken lines to the second-person protagonist.
 # Structural attribution only — not a plot/emotion lexicon.
@@ -43,8 +50,6 @@ _SOLITUDE_CLAIM_RE = re.compile(
     r")",
     flags=re.IGNORECASE,
 )
-
-_MAX_SHORT_DESIGNATION_LEN = 40
 
 
 def _compact(value: object) -> str:
@@ -113,96 +118,6 @@ def presence_vs_solitude_constraint(authority) -> str | None:
         f"{named}. Claiming the place is empty of people, that nobody is here, or "
         "'only us'/solitude against that cast is forbidden."
     )
-
-
-def is_usable_short_designation(value: object) -> bool:
-    """True for a short personal name or short role title usable as entity identity."""
-    text = _compact(value)
-    if not (2 <= len(text) <= _MAX_SHORT_DESIGNATION_LEN):
-        return False
-    if "," in text or ";" in text or ":" in text:
-        return False
-    # Relative-clause / duty blurb shape — keep role field, do not use as identity label.
-    folded = text.casefold().replace("ё", "е")
-    if " ответственн" in f" {folded}" or folded.startswith("ответственн"):
-        return False
-    return True
-
-
-def description_used_as_identity_name(
-    canonical_name: object,
-    *,
-    role: object = None,
-    description: object = None,
-) -> bool:
-    """True when the proposed identity label is missing or is the description/blurb."""
-    name = _compact(canonical_name)
-    if not name:
-        return True
-    desc = _compact(description)
-    role_text = _compact(role)
-    name_key = identity_key(name)
-    if desc and name_key == identity_key(desc):
-        return True
-    if desc and len(name) >= 24 and name_key and name_key in identity_key(desc):
-        return True
-    if not is_usable_short_designation(name):
-        # Long / multi-clause labels are description-shaped even without a description field.
-        if not role_text or identity_key(name) == identity_key(role_text):
-            return True
-        if desc and identity_key(name) == identity_key(desc):
-            return True
-        return True
-    return False
-
-
-def repair_introduction_identity(introduction):
-    """Prefer a short role designation over description-as-name; fail closed otherwise.
-
-    Returns a repaired copy, or raises ValueError when no usable short identity exists.
-    """
-    canonical = _compact(getattr(introduction, "canonical_name", None))
-    role = _compact(getattr(introduction, "role", None))
-    description = _compact(getattr(introduction, "description", None))
-    evidence = _compact(getattr(introduction, "personal_name_evidence", None))
-
-    if evidence and is_usable_short_designation(canonical) and not description_used_as_identity_name(
-        canonical, role=role, description=description
-    ):
-        return introduction
-
-    if description_used_as_identity_name(canonical, role=role, description=description):
-        if is_usable_short_designation(role) and identity_key(role) != identity_key(description or ""):
-            base = role[0].upper() + role[1:] if role else role
-            return introduction.model_copy(
-                update={
-                    "canonical_name": base,
-                    "temporary_name": True,
-                    "personal_name_evidence": None,
-                }
-            )
-        raise ValueError(
-            "NPC introduction identity must be a short personal name or short role, "
-            "not a description/blurb"
-        )
-
-    if not is_usable_short_designation(canonical):
-        if is_usable_short_designation(role) and identity_key(role) != identity_key(description or ""):
-            base = role[0].upper() + role[1:] if role else role
-            return introduction.model_copy(
-                update={
-                    "canonical_name": base,
-                    "temporary_name": True,
-                    "personal_name_evidence": None,
-                }
-            )
-        raise ValueError(
-            "NPC introduction identity must be a short personal name or short role title"
-        )
-
-    return introduction
-
-
 def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
     """Spans where narrator attributes new dialogue to the hero/player.
 
@@ -281,9 +196,12 @@ __all__ = [
     "authorized_nonplayer_count",
     "authorized_physical_cast_names",
     "description_used_as_identity_name",
+    "extract_leading_short_designation",
+    "identity_display_label",
     "is_usable_short_designation",
     "presence_vs_solitude_constraint",
     "protagonist_speech_violation_spans",
     "repair_introduction_identity",
+    "repair_persisted_character_identity",
     "solitude_claim_violation_spans",
 ]

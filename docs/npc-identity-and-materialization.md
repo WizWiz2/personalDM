@@ -18,6 +18,17 @@ NPC — durable identity, а не имя, случайно появившеес�
 - `dead` и `destroyed` не могут быть физически материализованы обычным упоминанием;
 - Narrator prose само по себе не регистрирует новую identity.
 
+## Контракт имени (identity slot)
+
+`name_identity_contract` — единый источник предикатов для intro sanitize, registrar и
+ремонта уже сохранённых сущностей:
+
+- `canonical_name` — короткое личное имя **или** короткое ролевое обозначение;
+- длинное description/blurb, comma-heavy designation и duty-clause shape не занимают
+  identity slot;
+- при ремонте blurb остаётся в `description`/`role`; short role token допустим;
+- без короткого designation — `needs_name` + fail-soft display, без выдумывания личного имени.
+
 ## Текущая реализация
 
 Planner возвращает structured introductions/arrivals. Identity resolver очищает имена и роли, reconciler ищет уже известную identity/alias и решает create/promote/reuse. `TurnOutcomeMaterializer` создаёт разрешённые Character до Narrator, а `PresenceService` применяет placement. После PREPARED Narrator видит уже материализованный мир.
