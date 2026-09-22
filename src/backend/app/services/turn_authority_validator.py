@@ -13,6 +13,7 @@ from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.narration_validator import NarrationValidationError
 from app.services.narrator_authority_contracts import (
+    protagonist_action_restage_violation_spans,
     protagonist_speech_violation_spans,
     solitude_claim_violation_spans,
 )
@@ -52,6 +53,9 @@ Concrete violations:
   player_input. Physical realization of an action already completed by authority is allowed.
   Second-person performance of the hero's spoken lines (e.g. attributing new quotes to "you"/the
   protagonist, or restating player_input as performed speech) is always player_agency.
+  Third-person restaging of player_input voluntary action/speech via the protagonist's canonical
+  name (or a clear 3rd-person PC reference after that name) is also player_agency; second-person
+  house style describing results of the supplied action remains allowed.
 - ALLOWED SPEAKERS: only names in allowed_speakers may receive new dialogue. The player character is
   never an allowed speaker. Protagonist speech stays limited to player_input.
 - PRESENCE VS SOLITUDE: when allowed_speakers / allowed_new_npcs / non-player present cast is
@@ -352,6 +356,21 @@ Return exactly:
                     ),
                 ),
                 "Нарратор приписал герою новую реплику вне player_input.",
+            )
+        for span in protagonist_action_restage_violation_spans(candidate_text, authority):
+            result = cls._append_error(
+                result,
+                NarrationViolation(
+                    violation_type="player_agency",
+                    severity="error",
+                    evidence=span[:500],
+                    correction=(
+                        "Убрать 3-е лицо героя, повторяющее player_input: не пересказывать "
+                        "добровольное действие/речь протагониста по каноническому имени. Допустим "
+                        "второй лицо для результата; новые реплики — только allowed_speakers."
+                    ),
+                ),
+                "Нарратор в 3-м лице пересказал добровольное действие героя из player_input.",
             )
         for span in solitude_claim_violation_spans(candidate_text, authority):
             result = cls._append_error(
