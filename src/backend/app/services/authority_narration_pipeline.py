@@ -474,14 +474,21 @@ class AuthorityNarrationPipeline:
                 )
             )
             if surgical is not None:
+                # Store exactly the publication-guard surface (same as validator-pass path).
+                # Do not finalize a pre-publication alternate that could retain uncleared prior EN.
+                published, publication = NarrationPublicationGuard.publish(
+                    authority,
+                    surgical,
+                    surgical_result,
+                )
                 gate = await audit.finalize(
                     run,
                     status="repaired",
-                    final_text=surgical,
+                    final_text=published,
                     repair_attempts=1,
                 )
                 return AuthorityNarrationResult(
-                    text=surgical,
+                    text=published,
                     telemetry={
                         **narrator_telemetry,
                         "narration_validation": {
@@ -490,6 +497,7 @@ class AuthorityNarrationPipeline:
                             "authority_version": authority.version,
                             "repair_strategy": "deterministic_span_removal",
                             "surgical_repair": surgery,
+                            "publication_guard": publication,
                             "validator_telemetry": validator.telemetry,
                         },
                     },

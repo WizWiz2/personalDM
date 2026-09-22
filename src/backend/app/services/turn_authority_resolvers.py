@@ -19,6 +19,7 @@ from app.services.narrator_authority_contracts import (
 from app.services.name_identity_contract import (
     accept_short_canonical,
     allocate_needs_name_canonical,
+    designation_locale_mismatch,
 )
 from app.services.player_intent_contract import contains_cjk
 
@@ -88,6 +89,7 @@ class NpcIntroductionResolver:
         introductions: list,
         *,
         occupied_canonical_keys: set[str] | frozenset[str] | None = None,
+        locale_text: str | None = None,
     ) -> list:
         """Keep planner identities readable without canonizing unsupported personal names.
 
@@ -96,10 +98,16 @@ class NpcIntroductionResolver:
         grounded role identity and keep it temporary. If no usable role exists, fail closed rather
         than persisting an invented stable name. Short designations that collide with occupied
         campaign/batch keys fail soft to needs_name status + human failsoft via the shared contract.
+
+        ``locale_text`` (typically the player input) feeds the existing
+        ``designation_locale_mismatch`` contract so a Russian turn cannot materialize a
+        Latin-script-only twin like ``Housekeeper`` beside ``Управляющая домом`` — not a
+        job-title word list, the same orthographic invent-people gate.
         """
         used: set[str] = set(occupied_canonical_keys or ())
         result = []
         placeholder_keys = {identity_key(value) for value in cls.SYNTHETIC_PLACEHOLDERS}
+        locale_hint = " ".join(str(locale_text or "").split())
 
         for introduction in introductions:
             # Reject description-as-name / long role-blurb identities before other repairs.
@@ -107,6 +115,7 @@ class NpcIntroductionResolver:
                 introduction = repair_introduction_identity(
                     introduction,
                     occupied_canonical_keys=used,
+                    locale_text=locale_hint or None,
                 )
             except ValueError as exc:
                 raise AuthorityResolutionError(str(exc)) from exc
@@ -129,6 +138,20 @@ class NpcIntroductionResolver:
                 role=role,
                 description=getattr(introduction, "description", None),
             )
+            locale_for_check = " ".join(
+                part
+                for part in (
+                    locale_hint,
+                    getattr(introduction, "description", None) or "",
+                    role,
+                    canonical,
+                )
+                if part
+            )
+            latin_only_against_russian = bool(
+                locale_hint
+                and designation_locale_mismatch(canonical, locale_text=locale_hint)
+            )
             needs_repair = (
                 contains_cjk(canonical)
                 or canonical_key in placeholder_keys
@@ -136,25 +159,27 @@ class NpcIntroductionResolver:
                 or unproven_personal_label
                 or description_as_name
                 or not is_usable_short_designation(canonical)
+                or latin_only_against_russian
             )
 
             if needs_repair:
-                if not usable_role:
+                if not usable_role or (
+                    latin_only_against_russian
+                    and designation_locale_mismatch(role, locale_text=locale_hint)
+                ):
+                    # Latin-only role under a Russian player turn has no grounded local role.
+                    if latin_only_against_russian:
+                        raise AuthorityResolutionError(
+                            "Planner returned a Latin-script-only NPC identity on a Russian turn "
+                            "without a usable grounded role"
+                        )
                     raise AuthorityResolutionError(
                         "Planner returned an unsupported NPC identity without a usable grounded role"
                     )
                 accepted = accept_short_canonical(
                     role,
                     occupied_canonical_keys=used,
-                    locale_text=" ".join(
-                        part
-                        for part in (
-                            getattr(introduction, "description", None) or "",
-                            role,
-                            canonical,
-                        )
-                        if part
-                    ),
+                    locale_text=locale_for_check,
                     allow_locale_mismatch=False,
                 )
                 candidate = accepted or allocate_needs_name_canonical(

@@ -51,13 +51,17 @@ def _address_repair_colocated(
 ) -> bool:
     """True when the named campaign entity shares the active scene's physical place.
 
-    Live residual after #187: kitchen scenes may lack ``scene_location_links`` (null
-    ``location_id``). Requiring both ids then never promotes a co-located addressee, so
-    obligation never stamps and rival prose can publish. Anchor order:
+    Live residual after #188: kitchen scenes may lack ``scene_location_links`` (null
+    ``location_id``) while the PC already has ``current_location_id`` and the named
+    addressee row is still unplaced. Requiring *all three* nulls then never promotes
+    Лира, so obligation never stamps and sticky Housekeeper / Управляющая prose can
+    publish. Anchor order:
     1. scene location when set;
     2. else PC location when set (unstructured scene, placed cast);
-    3. else both character and PC unplaced on an unstructured scene — same null-location
-       bag as the live kitchen (not a cross-map teleport of a placed character).
+    3. unstructured scene (null scene location) + unplaced named campaign entity —
+       same bag as live kitchen even when PC location is already set (not a cross-map
+       teleport of a placed character; unplaced NPC is not invented into a *placed*
+       scene).
     """
     scene = _location_id_key(scene_location_id)
     character = _location_id_key(character_location_id)
@@ -65,7 +69,8 @@ def _address_repair_colocated(
     anchor = scene or player
     if anchor is not None and character is not None:
         return anchor == character
-    if scene is None and character is None and player is None:
+    # Unstructured scene: unplaced named campaign entity shares the active bag.
+    if scene is None and character is None:
         return True
     return False
 
@@ -404,6 +409,27 @@ class TurnAuthorityService:
                         if planned_disposition == "stay":
                             update["transition_type"] = "none"
                     authority = authority.model_copy(update=update)
+
+            # Defense in depth after #188: THIS turn uniquely names a different campaign
+            # entity than the sticky /talk listener (e.g. Лира vs Housekeeper). Never leave
+            # the prior EN twin / steward as acting character for that address — even when
+            # promotion/obligation failed and addressed_response_requested would otherwise
+            # retain sticky ownership.
+            if (
+                named
+                and authority.acting_character_id is not None
+                and identity_key(named)
+                != identity_key(authority.acting_character_name or "")
+            ):
+                update = {
+                    "acting_character_id": None,
+                    "acting_character_name": None,
+                }
+                if authority.scene_disposition == "actor_turn":
+                    update["scene_disposition"] = planned_disposition
+                    if planned_disposition == "stay":
+                        update["transition_type"] = "none"
+                authority = authority.model_copy(update=update)
 
         lines = await established_state_lines(
             self._session,

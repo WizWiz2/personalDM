@@ -497,7 +497,7 @@ async def test_named_npc_elsewhere_is_not_teleported_into_present(monkeypatch):
     assert authority.addressed_response_obligation is None
 
 def test_address_repair_colocated_null_scene_uses_player_or_unstructured_bag():
-    """#187 bypass: kitchen scene_location_links null must not block co-locate."""
+    """#187/#188 bypass: kitchen scene_location_links null must not block co-locate."""
     kitchen = uuid4()
     hall = uuid4()
     # Unstructured scene: fall back to PC location.
@@ -516,6 +516,13 @@ def test_address_repair_colocated_null_scene_uses_player_or_unstructured_bag():
         scene_location_id=None,
         character_location_id=None,
         player_location_id=None,
+    )
+    # Live residual after #188: PC already placed, named addressee row still unplaced,
+    # scene links null — must still share the unstructured bag.
+    assert _address_repair_colocated(
+        scene_location_id=None,
+        character_location_id=None,
+        player_location_id=kitchen,
     )
     # Do not invent an unplaced NPC into a placed scene.
     assert not _address_repair_colocated(
@@ -661,4 +668,170 @@ async def test_unstructured_null_location_kitchen_bag_stamps_obligation(monkeypa
     )
     assert "Лира" in authority.present_character_names
     assert authority.addressed_response_obligation == "Лира"
+
+@pytest.mark.asyncio
+async def test_null_scene_pc_placed_unplaced_lira_stamps_obligation(monkeypatch):
+    """Live bypass after #188: scene null, PC has location, Лира row unplaced.
+
+    Obligation must stamp and sticky EN Housekeeper must not keep acting ownership.
+    """
+    async def _no_lines(*_args, **_kwargs):
+        return []
+
+    async def _no_subjects(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.turn_authority_service.established_state_lines",
+        _no_lines,
+    )
+    monkeypatch.setattr(
+        "app.services.turn_authority_service.established_subjects",
+        _no_subjects,
+    )
+    campaign_id = uuid4()
+    hero_id = uuid4()
+    lira_id = uuid4()
+    housekeeper_id = uuid4()
+    scene_id = uuid4()
+    location_id = uuid4()
+
+    user_row = SimpleNamespace(
+        context_snapshot=json.dumps(
+            {
+                "input_routing": {
+                    "addressed_character_id": str(housekeeper_id),
+                    "planner_bypass": False,
+                    "user_actor": "player_character",
+                }
+            }
+        )
+    )
+    session = SimpleNamespace(get=AsyncMock(return_value=user_row))
+    service = TurnAuthorityService.__new__(TurnAuthorityService)
+    service._session = session
+    service._campaigns = SimpleNamespace(
+        get_by_id=AsyncMock(return_value=SimpleNamespace(player_character_id=hero_id))
+    )
+    hero = SimpleNamespace(id=hero_id, canonical_name="Эйдан", current_location_id=location_id)
+    lira = SimpleNamespace(id=lira_id, canonical_name="Лира", current_location_id=None)
+    housekeeper = SimpleNamespace(
+        id=housekeeper_id, canonical_name="Housekeeper", current_location_id=location_id
+    )
+    by_id = {hero_id: hero, lira_id: lira, housekeeper_id: housekeeper}
+    service._entities = SimpleNamespace(
+        get_character=AsyncMock(side_effect=lambda value: by_id.get(value)),
+        list_by_campaign=AsyncMock(
+            return_value=[
+                _entity(hero_id, "Эйдан"),
+                _entity(lira_id, "Лира"),
+                _entity(housekeeper_id, "Housekeeper"),
+            ]
+        ),
+    )
+    # Stale participants include invented EN twin; Лира missing.
+    state = _scene(scene_id, None, ["Эйдан", "Housekeeper", "Управляющая домом"])
+    service._scene_state = SimpleNamespace(get=AsyncMock(return_value=state))
+
+    plan = CoordinatedTurnPlan(
+        player_intent="Спросить Лиру",
+        resolution="conversation",
+        addressed_response_requested=True,
+    )
+    authority = await service.build(
+        campaign_id=campaign_id,
+        trigger_turn_id=uuid4(),
+        player_input="Лира, где здесь хлеб? Ответь коротко именно ты, Лира.",
+        source_scene_id=scene_id,
+        target_scene_id=scene_id,
+        plan=plan,
+        acting_character_id=None,
+    )
+    assert "Лира" in authority.present_character_names
+    assert authority.addressed_response_obligation == "Лира"
+    assert authority.acting_character_id == lira_id
+    assert authority.acting_character_name == "Лира"
+
+
+@pytest.mark.asyncio
+async def test_named_campaign_addressee_clears_sticky_housekeeper_when_unpromotable(
+    monkeypatch,
+):
+    """If Лира cannot be promoted (other location), sticky Housekeeper still must clear."""
+    async def _no_lines(*_args, **_kwargs):
+        return []
+
+    async def _no_subjects(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "app.services.turn_authority_service.established_state_lines",
+        _no_lines,
+    )
+    monkeypatch.setattr(
+        "app.services.turn_authority_service.established_subjects",
+        _no_subjects,
+    )
+    campaign_id = uuid4()
+    hero_id = uuid4()
+    lira_id = uuid4()
+    housekeeper_id = uuid4()
+    scene_id = uuid4()
+    kitchen_id = uuid4()
+    hall_id = uuid4()
+
+    user_row = SimpleNamespace(
+        context_snapshot=json.dumps(
+            {
+                "input_routing": {
+                    "addressed_character_id": str(housekeeper_id),
+                    "planner_bypass": False,
+                    "user_actor": "player_character",
+                }
+            }
+        )
+    )
+    session = SimpleNamespace(get=AsyncMock(return_value=user_row))
+    service = TurnAuthorityService.__new__(TurnAuthorityService)
+    service._session = session
+    service._campaigns = SimpleNamespace(
+        get_by_id=AsyncMock(return_value=SimpleNamespace(player_character_id=hero_id))
+    )
+    hero = SimpleNamespace(id=hero_id, canonical_name="Эйдан", current_location_id=kitchen_id)
+    lira = SimpleNamespace(id=lira_id, canonical_name="Лира", current_location_id=hall_id)
+    housekeeper = SimpleNamespace(
+        id=housekeeper_id, canonical_name="Housekeeper", current_location_id=kitchen_id
+    )
+    by_id = {hero_id: hero, lira_id: lira, housekeeper_id: housekeeper}
+    service._entities = SimpleNamespace(
+        get_character=AsyncMock(side_effect=lambda value: by_id.get(value)),
+        list_by_campaign=AsyncMock(
+            return_value=[
+                _entity(hero_id, "Эйдан"),
+                _entity(lira_id, "Лира"),
+                _entity(housekeeper_id, "Housekeeper"),
+            ]
+        ),
+    )
+    state = _scene(scene_id, kitchen_id, ["Эйдан", "Housekeeper"])
+    service._scene_state = SimpleNamespace(get=AsyncMock(return_value=state))
+
+    plan = CoordinatedTurnPlan(
+        player_intent="Спросить Лиру",
+        resolution="conversation",
+        addressed_response_requested=True,
+    )
+    authority = await service.build(
+        campaign_id=campaign_id,
+        trigger_turn_id=uuid4(),
+        player_input="Лира, где здесь хлеб?",
+        source_scene_id=scene_id,
+        target_scene_id=scene_id,
+        plan=plan,
+        acting_character_id=None,
+    )
+    assert "Лира" not in authority.present_character_names
+    assert authority.addressed_response_obligation is None
+    assert authority.acting_character_id is None
+    assert authority.acting_character_name is None
 
