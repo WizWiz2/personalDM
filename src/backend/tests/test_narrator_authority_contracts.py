@@ -125,7 +125,8 @@ def test_npc_dialogue_is_not_rejected_by_speaker_authority():
     assert result.verdict == "pass"
 
 
-def test_nonempty_intros_inject_solitude_constraint_and_reject_solitude_claims():
+def test_nonempty_intros_inject_presence_canon_constraint():
+    """Typed non-empty cast injects PRESENCE CANON guidance; prose solitude is not sniffed."""
     authority = _authority(
         present_character_names=["Александр", "Анна"],
         allowed_new_npcs=[
@@ -143,19 +144,18 @@ def test_nonempty_intros_inject_solitude_constraint_and_reject_solitude_claims()
     assert "PRESENCE CANON" in constraint
     assert "Анна" in constraint
 
+    # No typed solitude flag → prose empty-room phrasing is not a deterministic violation.
     candidate = "Здесь никого нет, только мы двое в огромном зале — и вдруг появляется служанка."
-    # Build authority sheet the narrator would see after intros are authorized.
     authority = authority.model_copy(
         update={"canon_constraints": [constraint]},
     )
     result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
         _pass(), authority, candidate
     )
-    assert result.verdict == "repair_required"
-    assert any(item.violation_type == "canon_conflict" for item in result.violations)
+    assert result.verdict == "pass"
 
 
-def test_empty_companion_cast_allows_solitude_phrasing():
+def test_empty_companion_cast_has_no_presence_constraint():
     authority = _authority(present_character_names=["Александр"], allowed_new_npcs=[])
     assert presence_vs_solitude_constraint(authority) is None
     candidate = "Здесь никого нет — только эхо шагов."
@@ -486,14 +486,15 @@ def test_invented_third_person_pc_act_second_person_only_still_ok():
     assert result.verdict == "pass"
 
 
-def test_pc_name_state_copula_without_finite_agency_still_ok():
-    """Nominative PC name + copula/state is not voluntary performance agency."""
+def test_pc_name_state_without_finite_agency_still_ok():
+    """Nominative PC name in a state/location clause without finite-verb morphology is allowed."""
     authority = _authority(
         player_character_name="Эйдан",
         player_input="Я перевожу взгляд на Лиру.",
         present_character_names=["Эйдан", "Лира"],
     )
-    candidate = "Эйдан был у стены, когда Лира кивает: «Я здесь»."
+    # No 3p finite-verb suffix after the PC name (morphology gate, not a copula lemma list).
+    candidate = "Эйдан у стены, когда Лира кивает: «Я здесь»."
 
     result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
         _pass(), authority, candidate
@@ -547,7 +548,7 @@ def test_authorized_cast_names_and_role_titles_still_ok():
     )
     candidate = (
         "Ты смотришь на Лиру. Управляющая домом кивает, Служанка 2 поправляет фартук. "
-        "В Большом Зале тихо. Эйдан был у колонны, когда Лира отвечает: «Я здесь»."
+        "В Большом Зале тихо. Эйдан у колонны, когда Лира отвечает: «Я здесь»."
     )
 
     result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
@@ -590,7 +591,7 @@ def test_non_address_quiet_turn_does_not_force_obligation():
 
 
 def test_addressed_soft_silence_erasure_fails_validation():
-    """Live residual: present obligated addressee erased into out-of-view / no-answer atmosphere."""
+    """Present obligated addressee named in atmosphere without a quote/dialogue response beat fails."""
     authority = _authority(
         player_character_name="Эйдан",
         player_input="Управляющая домом, есть ли работа по найму?",
@@ -737,4 +738,57 @@ def test_addressed_quoted_refusal_near_addressee_counts_as_beat():
     )
     assert addressed_response_beat_present(candidate, "Управляющая домом") is True
     assert addressed_response_erasure_spans(candidate, authority) == []
+
+def test_obligation_binds_to_named_addressee_not_sticky_prior_listener():
+    """Prior sticky acting listener must not steal obligation when this turn names another NPC."""
+    cast = ["Эйдан", "Лира", "Управляющая домом", "Служанка"]
+    player_input = "Лира, кто здесь старшая?"
+
+    # Hint from prior /talk with Управляющая must not win over an explicit Лира mention.
+    assert resolve_addressed_present_npc(
+        player_input,
+        cast,
+        player_name="Эйдан",
+        hinted_name="Управляющая домом",
+    ) == "Лира"
+    assert should_assign_addressed_response_obligation(
+        player_input,
+        cast,
+        player_name="Эйдан",
+        hinted_name="Управляющая домом",
+        addressed_response_requested=False,
+    ) == "Лира"
+
+    # Sticky hint alone (no mention this turn) does not mint an obligation.
+    assert (
+        resolve_addressed_present_npc(
+            "Я слушаю тишину зала.",
+            cast,
+            player_name="Эйдан",
+            hinted_name="Управляющая домом",
+        )
+        is None
+    )
+
+
+def test_response_beat_must_attribute_to_obligated_addressee_not_other_cast():
+    """Wrong-speaker reply does not satisfy an obligation stamped for a different addressee."""
+    authority = _authority(
+        player_character_name="Эйдан",
+        player_input="Лира, кто здесь старшая?",
+        present_character_names=["Эйдан", "Лира", "Управляющая домом"],
+        addressed_response_obligation="Лира",
+    )
+    # Hiring-flavored reply attributed to Управляющая — not the obligated addressee.
+    candidate = (
+        "Управляющая домом складывает руки и спокойно отвечает: "
+        "«Наймом распоряжаюсь я.»"
+    )
+    assert addressed_response_beat_present(candidate, "Лира") is False
+    spans = addressed_response_erasure_spans(candidate, authority)
+    assert any("omitted" in span or "no_response_beat" in span for span in spans)
+    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
+        _pass(), authority, candidate
+    )
+    assert result.verdict == "repair_required"
 

@@ -2,7 +2,7 @@
 
 These helpers encode machine-checkable authority/identity rules. They do not invent story
 semantics from keyword game logic: speaker allowlists come from typed cast/intros, solitude
-rejection compares authorized cast size to empty-of-people claims, intro naming delegates
+guidance is cast-size presence canon (no prose phrase list), intro naming delegates
 description-as-identity checks to name_identity_contract, and proper-name spans in published
 prose must resolve to the typed presence/intro identity set (no invented off-cast people).
 """
@@ -38,57 +38,9 @@ _MIN_ECHO_TOKENS = 3
 _ECHO_TOKEN_COVERAGE = 0.8
 _MIN_ACTION_TOKENS = 2
 _ACTION_TOKEN_COVERAGE = 0.5
-# Pronouns / function words dropped from action-overlap (structural, not a verb lexicon).
-_ACTION_STOPWORDS = frozenset(
-    {
-        "ya",
-        "ty",
-        "on",
-        "ona",
-        "oni",
-        "my",
-        "vy",
-        "i",
-        "a",
-        "no",
-        "da",
-        "ne",
-        "ni",
-        "zhe",
-        "by",
-        "li",
-        "v",
-        "vo",
-        "na",
-        "s",
-        "so",
-        "k",
-        "ko",
-        "u",
-        "o",
-        "ob",
-        "po",
-        "ot",
-        "do",
-        "za",
-        "iz",
-        "dlya",
-        "pro",
-        "pri",
-        "bez",
-        "nad",
-        "pod",
-        "eto",
-        "kak",
-        "chto",
-        "togda",
-        "kogda",
-        "uzhe",
-        "eshche",
-        "tolko",
-        "eshchyo",
-    }
-)
+# Action-overlap content tokens: length gate only (no handmade stopword lexicon).
+# Tokens shorter than this are treated as function/noise after identity_key transliteration.
+_MIN_ACTION_TOKEN_LEN = 4
 _PREPOSITION_BEFORE_RE = re.compile(
     r"(?i)(?:^|[\s,;:—\-–])(?:на|к|ко|с|со|у|от|для|о|об|про|перед|за|под|над|при|"
     r"без|до|из|по|во?|обо|через|между|среди)\s+$"
@@ -100,26 +52,6 @@ _PREPOSITION_BEFORE_RE = re.compile(
 _PC_FINITE_VERB_TOKEN_RE = re.compile(
     r"(?i)^(?:[а-яё-]*[а-яё]л(?:а|о|и)?(?:сь|ся)?|[а-яё-]*[а-яё](?:ет|ёт|ит|ут|ют|ат|ят)(?:ся)?)$"
 )
-# Tiny closed copula set — existence/state, not voluntary performance.
-_PC_COPULA = frozenset({"был", "была", "было", "были"})
-
-# Empty-of-people / solitude claims (cast contradiction), not furniture emptiness.
-_SOLITUDE_CLAIM_RE = re.compile(
-    r"(?:"
-    r"никого\s+нет|"
-    r"никого\s+кроме\s+(?:нас|тебя|меня)|"
-    r"кроме\s+нас\s+никого|"
-    r"здесь\s+(?:никого|пусто\s+от\s+людей)|"
-    r"только\s+мы(?:\s|\.|,|!|\?|$)|"
-    r"только\s+ты\s+и\s+я|"
-    r"совсем\s+один[ао]?|"
-    r"в\s+одиночестве|"
-    r"пустынн\w*\s+(?:комнат|зал|коридор|дворец|дом)|"
-    r"безлюдн"
-    r")",
-    flags=re.IGNORECASE,
-)
-
 # Cyrillic proper-name shape (same family as session_zero_interview explicit-name recovery).
 # Require ≥2 capitalized tokens so sentence-initial common words are not treated as people.
 _PROPER_NAME_SPAN_RE = re.compile(
@@ -445,7 +377,8 @@ def protagonist_speech_violation_spans(candidate: str, authority) -> list[str]:
 
 
 def _content_tokens(key: str) -> list[str]:
-    return [tok for tok in key.split() if tok and tok not in _ACTION_STOPWORDS and len(tok) >= 3]
+    """Content tokens for action-overlap: length gate only (no stopword lexicon)."""
+    return [tok for tok in key.split() if tok and len(tok) >= _MIN_ACTION_TOKEN_LEN]
 
 
 def _soft_token_match(left: str, right: str) -> bool:
@@ -538,7 +471,7 @@ def _window_restages_player(
 
 
 def _window_has_pc_finite_agency(window: str, pc_name: str) -> bool:
-    """PC-name subject + nearby 3p finite-verb morphology (no verb lexicon)."""
+    """PC-name subject + nearby 3p finite-verb morphology (suffix shape only)."""
     cleaned = _compact(window)
     match = re.search(
         rf"(?i)(?<!\w){re.escape(pc_name)}(?!\w)\s+(.+)",
@@ -548,9 +481,6 @@ def _window_has_pc_finite_agency(window: str, pc_name: str) -> bool:
         return False
     tokens = re.findall(r"[А-Яа-яЁё]+", match.group(1))
     for tok in tokens[:4]:
-        folded = tok.lower().replace("ё", "е")
-        if folded in _PC_COPULA:
-            continue
         if _PC_FINITE_VERB_TOKEN_RE.match(tok):
             return True
     return False
@@ -621,24 +551,31 @@ def protagonist_action_restage_violation_spans(candidate: str, authority) -> lis
 
 
 def solitude_claim_violation_spans(candidate: str, authority) -> list[str]:
-    """When physical cast has player + ≥1 authorized other, solitude claims fail."""
+    """Reject typed solitude/empty-room claims that contradict authorized cast.
+
+    Prose phrase sniffing was removed (no solitude lemma list). Validation fires only when a
+    *typed* solitude/empty claim exists on structured turn fields. Today TurnAuthority has no
+    such flag (scene_development / director / canon do not mint one), so this returns [] and
+    presence is enforced via presence_vs_solitude_constraint prompt canon + cast size alone.
+    """
+    del candidate  # prose is not inspected
     if authorized_nonplayer_count(authority) < 1:
         return []
-    cast = authorized_physical_cast_names(authority)
-    if len(cast) < 2 and authorized_nonplayer_count(authority) < 1:
+    # Typed channels (extend when a real flag exists):
+    typed_solitude = False
+    scene_dev = getattr(authority, "scene_development", None)
+    if scene_dev is not None:
+        for attr in ("solitude_claimed", "empty_room", "claims_solitude", "empty_of_people"):
+            if bool(getattr(scene_dev, attr, False)):
+                typed_solitude = True
+                break
+    for attr in ("solitude_claimed", "empty_room_claimed", "claims_solitude"):
+        if bool(getattr(authority, attr, False)):
+            typed_solitude = True
+            break
+    if not typed_solitude:
         return []
-    # Cast size: player (optional) + non-player speakers. Non-empty intros alone forbid solitude.
-    text = candidate or ""
-    spans: list[str] = []
-    seen: set[str] = set()
-    for match in _SOLITUDE_CLAIM_RE.finditer(text):
-        value = _compact(match.group(0))
-        key = identity_key(value)
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        spans.append(value)
-    return spans
+    return ["typed_solitude_contradicts_authorized_cast"]
 
 
 def _authorized_identity_keys(authority) -> set[str]:
@@ -760,22 +697,6 @@ def unauthorized_named_person_spans(candidate: str, authority) -> list[str]:
 
 _ADDRESSED_OBLIGATION_MARKER = "[ADDRESSED RESPONSE OBLIGATION]"
 
-# Soft-silence / unreachability claims that erase a present obligated addressee.
-# Closed structural surface (view/answerability), not a speech-verb lexicon.
-_ADDRESSEE_UNREACHABLE_RE = re.compile(
-    r"(?:"
-    r"не\s+в\s+(?:прямой\s+)?(?:видимости|поле\s+зрения)|"
-    r"вне\s+(?:поля\s+зрения|досягаемости|видимости)|"
-    r"не\s+слыш\w*|"
-    r"не\s+отвеча\w*|"
-    r"нет\s+ответа|"
-    r"без\s+ответа|"
-    r"оста[её]тся\s+без\s+ответа|"
-    r"недоступн\w*"
-    r")",
-    flags=re.IGNORECASE,
-)
-
 _QUESTION_OR_DIALOGUE_SHAPE_RE = re.compile(
     r"(?:\?|^\s*[-—–]|[\n\r]\s*[-—–])",
 )
@@ -862,10 +783,8 @@ def resolve_addressed_present_npc(
         hinted_matches = [name for name in mentioned if identity_key(name) == hint_key]
         if len(hinted_matches) == 1:
             return hinted_matches[0]
-        # Sticky listener name may not be repeated; keep as candidate only when uniquely in cast.
-        sticky = [name for name in cast if identity_key(name) == hint_key]
-        if len(sticky) == 1 and not mentioned:
-            return sticky[0]
+        # Do NOT bind obligation to a sticky prior-turn listener when this turn's input
+        # names nobody: stamp must resolve from THIS turn's mention / unique role only.
 
     if len(mentioned) == 1:
         return mentioned[0]
@@ -1005,9 +924,10 @@ def addressed_response_beat_present(candidate: str, addressee: str) -> bool:
 def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
     """Reject soft-erasure of an obligated present addressee's required response beat.
 
-    Structural: addressee must appear; unreachability / no-answer claims are banned; and a
-    quote/dialogue attribution beat near the addressee must be present. Atmosphere may
-    season the voice — atmosphere alone (name in sensory filler without a response beat) fails.
+    Structural only (no unreachability phrase list):
+    - addressee omitted from prose, OR
+    - addressee present but no quote/dialogue attribution beat (`addressed_response_beat_present`).
+    Atmosphere alone (name in sensory filler without a response beat) fails.
     """
     addressee = addressed_response_obligation_addressee(authority)
     if not addressee:
@@ -1015,15 +935,7 @@ def addressed_response_erasure_spans(candidate: str, authority) -> list[str]:
     text = candidate or ""
     spans: list[str] = []
     if not _cast_name_mentioned_in_input(text, addressee):
-        # Entire omission of the obligated addressee is soft silence.
         spans.append(f"addressed:{addressee}:omitted")
-        return spans
-    for match in _ADDRESSEE_UNREACHABLE_RE.finditer(text):
-        # Present-cast obligation: unreachability / no-answer claims are soft-silence erasure.
-        value = _compact(match.group(0))
-        if value and value not in spans:
-            spans.append(value)
-    if spans:
         return spans
     if not addressed_response_beat_present(text, addressee):
         spans.append(f"addressed:{addressee}:no_response_beat")
