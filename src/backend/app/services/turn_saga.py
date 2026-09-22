@@ -528,6 +528,10 @@ class TurnSaga:
                             ),
                         )
                     )
+            # Direct address to a present cast member outranks Soft Keeper quiet bias:
+            # atmosphere-only quiet must not erase an obligated addressee.
+            if getattr(authority, "addressed_response_obligation", None) and disposition_bias == "quiet":
+                disposition_bias = None
             development, development_metadata = await development_service.plan(
                 authority,
                 role_router,

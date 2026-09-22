@@ -8,7 +8,12 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
-from app.services.narrator_authority_contracts import presence_vs_solitude_constraint
+from app.services.narrator_authority_contracts import (
+    addressed_response_obligation_constraint,
+    addressed_response_obligation_guidance,
+    presence_vs_solitude_constraint,
+    should_assign_addressed_response_obligation,
+)
 from app.services.scene_state_service import SceneStateService
 from app.services.outcome_fact_authority import established_state_lines, established_subjects
 from app.services.turn_authority_planner import CoordinatedTurnPlan
@@ -205,6 +210,40 @@ class TurnAuthorityService:
                 "его личность."
             )
 
+        addressee = should_assign_addressed_response_obligation(
+            player_input,
+            authority.present_character_names,
+            player_name=authority.player_character_name,
+            hinted_name=authority.acting_character_name,
+            addressed_response_requested=bool(
+                plan and getattr(plan, "addressed_response_requested", False)
+            ),
+        )
+        if addressee:
+            guidance = list(authority.narration_guidance)
+            tip = addressed_response_obligation_guidance(addressee)
+            if tip not in guidance:
+                guidance.append(tip)
+            constraints = list(authority.canon_constraints)
+            constraint = addressed_response_obligation_constraint(addressee)
+            if constraint not in constraints:
+                constraints.append(constraint)
+            beats = list(authority.character_beats)
+            beat = (
+                f"{addressee} получает прямое обращение и даёт ответ, отказывает, "
+                f"уклоняется или жестом сообщает ответ."
+            )
+            if beat not in beats:
+                beats.append(beat)
+            authority = authority.model_copy(
+                update={
+                    "addressed_response_obligation": addressee,
+                    "narration_guidance": guidance,
+                    "canon_constraints": constraints,
+                    "character_beats": beats,
+                }
+            )
+
         presence_constraint = presence_vs_solitude_constraint(authority)
         if presence_constraint:
             constraints = list(authority.canon_constraints)
@@ -218,7 +257,13 @@ class TurnAuthorityService:
         if acting_character_id is None and authority.acting_character_id is not None:
             from app.services.systemless_authority_guard import addressed_response_requested
 
-            if not addressed_response_requested(player_input, plan):
+            obligated = authority.addressed_response_obligation
+            keep_for_obligation = bool(
+                obligated
+                and authority.acting_character_name
+                and obligated == authority.acting_character_name
+            )
+            if not addressed_response_requested(player_input, plan) and not keep_for_obligation:
                 update = {
                     "acting_character_id": None,
                     "acting_character_name": None,
