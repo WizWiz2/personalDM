@@ -53,9 +53,10 @@ Concrete violations:
   player_input. Physical realization of an action already completed by authority is allowed.
   Second-person performance of the hero's spoken lines (e.g. attributing new quotes to "you"/the
   protagonist, or restating player_input as performed speech) is always player_agency.
-  Third-person restaging of player_input voluntary action/speech via the protagonist's canonical
-  name (or a clear 3rd-person PC reference after that name) is also player_agency; second-person
-  house style describing results of the supplied action remains allowed.
+  Third-person attribution of voluntary action/speech to the protagonist via canonical name
+  (or a clear 3rd-person PC reference after that name) is also player_agency — both restaging
+  player_input and inventing ungrounded PC moves; second-person house style describing results
+  of the supplied action remains allowed. Oblique PC-name mentions without agency are fine.
 - ALLOWED SPEAKERS: only names in allowed_speakers may receive new dialogue. The player character is
   never an allowed speaker. Protagonist speech stays limited to player_input.
 - PRESENCE VS SOLITUDE: when allowed_speakers / allowed_new_npcs / non-player present cast is
@@ -365,12 +366,13 @@ Return exactly:
                     severity="error",
                     evidence=span[:500],
                     correction=(
-                        "Убрать 3-е лицо героя, повторяющее player_input: не пересказывать "
-                        "добровольное действие/речь протагониста по каноническому имени. Допустим "
-                        "второй лицо для результата; новые реплики — только allowed_speakers."
+                        "Убрать 3-е лицо героя с добровольным действием/речью по каноническому "
+                        "имени: не пересказывать player_input и не изобретать новые движения. "
+                        "Допустимо второе лицо для результата; новые реплики — только "
+                        "allowed_speakers."
                     ),
                 ),
-                "Нарратор в 3-м лице пересказал добровольное действие героя из player_input.",
+                "Нарратор в 3-м лице приписал герою добровольное действие вне player_input.",
             )
         for span in solitude_claim_violation_spans(candidate_text, authority):
             result = cls._append_error(
