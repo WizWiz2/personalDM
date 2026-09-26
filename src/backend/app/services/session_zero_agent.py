@@ -105,7 +105,12 @@ class SessionZeroAgent:
 СТАРТОВОЕ ПРИСУТСТВИЕ NPC
 - Когда стартовая ситуация становится понятной, ОБЯЗАТЕЛЬНО запиши в
   world.starter_npcs полный список NPC, которые физически присутствуют в первой сцене,
+  name_kind=personal только для установленного личного имени; для неизвестного посетителя,
+  условного обозначения или роли — name_kind=provisional и name=null. Не заполняй имя заглушкой.
   и одновременно поставь world.starter_presence_confirmed=true.
+- world.starting_exit_allowed=true только если согласованная стартовая ситуация допускает
+  обычный доступный путь наружу. Для запертого, изолированного или неизвестного пространства
+  ставь false. Это решение о топологии, не о названии места.
 - Это не список всех персонажей завязки. Не включай пропавших, тех, кого ещё надо найти,
   далёких владельцев, будущих собеседников, фоновые имена или людей, которые только
   упомянуты в истории.
@@ -130,8 +135,14 @@ class SessionZeroAgent:
   "tool_calls": [
     {"name": "update_session_zero", "patch": {"world": {}, "character": {}}}
   ],
-  "question_topics": []
+  "question_topics": [],
+  "player_delegates": false,
+  "explicit_correction": false
 }
+
+player_delegates — игрок в этом ходе отдал решение мастеру, а не ответил по существу.
+explicit_correction — игрок явно поправляет уже записанное, а не добавляет новое.
+Оба поля — решение модели. Не выводи их в реплику.
 
 question_topics — необязательная диагностическая метка. Код не выбирает по ней вопрос и
 не заменяет твою реплику. Не показывай названия инструментов или JSON игроку.
@@ -241,16 +252,6 @@ class SessionZeroInterviewService:
         "Во что тебе хочется сыграть именно сейчас? Можно начать с мира, жанра, "
         "героя или просто с ощущения, которое хочется получить от кампании."
     )
-    CORRECTION_MARKERS = (
-        "исправ",
-        "не так",
-        "замени",
-        "передумал",
-        "на самом деле",
-        "точнее",
-        "поправка",
-        "пусть будет",
-    )
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -309,12 +310,11 @@ class SessionZeroInterviewService:
         if selection is None:
             raise LLMProviderError("No LLM provider is configured for this campaign")
 
-        latest_user_message = state.pending_user_message or ""
         model_decision = await self._agent.respond(selection, state)
         merged, finalize_requested = self._execute_tool_calls(
             state.draft,
             model_decision.tool_calls,
-            explicit_correction=self._is_explicit_correction(latest_user_message),
+            explicit_correction=model_decision.explicit_correction,
         )
 
         feedback = self._quality_feedback(model_decision, state, merged)
@@ -342,7 +342,7 @@ class SessionZeroInterviewService:
             merged, repaired_finalize = self._execute_tool_calls(
                 merged,
                 repaired.tool_calls,
-                explicit_correction=self._is_explicit_correction(latest_user_message),
+                explicit_correction=model_decision.explicit_correction,
             )
             finalize_requested = finalize_requested or repaired_finalize
             model_decision = repaired
@@ -468,17 +468,6 @@ class SessionZeroInterviewService:
             return {
                 "quality": "wrong_language",
                 "instruction": "Переформулируй живую реплику полностью по-русски.",
-            }
-        if (
-            normalized in {"prodolzhim nulevuyu sessiyu", "продолжим нулевую сессию"}
-            and self.missing_fields(draft)
-        ):
-            return {
-                "quality": "empty_progress",
-                "instruction": (
-                    "Реплика ничего не добавляет. Отреагируй на последний ответ и "
-                    "сделай содержательный следующий шаг."
-                ),
             }
         if self._assistant_message_incomplete(message):
             return {
@@ -757,11 +746,6 @@ class SessionZeroInterviewService:
         normalized = value.casefold().replace("ё", "е")
         normalized = re.sub(r"[^a-zа-я0-9]+", " ", normalized)
         return " ".join(normalized.split())
-
-    @classmethod
-    def _is_explicit_correction(cls, value: str) -> bool:
-        folded = cls._normalize_text(value)
-        return any(marker in folded for marker in cls.CORRECTION_MARKERS)
 
     @classmethod
     def _is_russian_text(cls, value: str) -> bool:

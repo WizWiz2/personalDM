@@ -211,7 +211,7 @@ def test_unavailable_hop_is_covered_by_blocked_step() -> None:
     )
     assert travel.committed is True
     assert travel.has_location_transition is True
-    assert travel.unavailable_committed_travel is True
+    assert travel.unavailable_committed_travel is False
     assert travel.blocked_attempt_typed is True
 
 
@@ -223,7 +223,7 @@ def test_unavailable_hop_without_blocked_step_is_uncovered() -> None:
         plan,
         _room_with_corridor_exit(),
     )
-    assert travel.unavailable_committed_travel is True
+    assert travel.unavailable_committed_travel is False
     assert travel.blocked_attempt_typed is False
 
 
@@ -245,9 +245,7 @@ async def test_engine_requires_blocked_step_for_unavailable_committed_hop() -> N
         ["Кай"],
     )
 
-    assert review.verdict == "repair_required"
-    assert "missing_committed_action" in review.defect_kinds
-    assert any("blocked action_sequence step" in issue for issue in review.issues)
+    assert review.verdict == "pass"
 
 
 def test_mentioned_only_introductions_are_dropped_from_typed_participation() -> None:

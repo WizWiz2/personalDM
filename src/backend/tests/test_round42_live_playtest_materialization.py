@@ -227,6 +227,6 @@ async def test_registrar_rejects_invented_canonical_name_not_present_in_narratio
     assert result.resolved_ids == []
 
 
-def test_registrar_rejects_synthetic_unnamed_placeholder():
-    assert EntityRegistrar._clean_name("Безымянный собеседник") is None
-    assert EntityRegistrar._clean_name("Неизвестный собеседник") is None
+def test_registrar_does_not_classify_identity_from_label_vocabulary():
+    assert EntityRegistrar._clean_name("Безымянный собеседник") == "Безымянный собеседник"
+    assert EntityRegistrar._clean_name("Неизвестный собеседник") == "Неизвестный собеседник"

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from contextvars import ContextVar
 from uuid import UUID
 
@@ -20,11 +19,7 @@ _ACTOR_AUDIT: ContextVar[dict | None] = ContextVar(
     "actor_memory_audit",
     default=None,
 )
-_SILENCE_PATTERN = re.compile(
-    r"\b(?:молчит|умолкает|не\s+отвечает|ничего\s+не\s+говорит|"
-    r"silent|says\s+nothing|does\s+not\s+answer)\b",
-    flags=re.IGNORECASE,
-)
+
 
 
 def _key(value: object) -> str:
@@ -60,8 +55,8 @@ async def extract_actor_segment_proposals_with_audit(
         "candidate_segments": [],
         "selected_segment_ids": [],
     }
-    if not clean or (_SILENCE_PATTERN.search(clean) and len(clean) < 180):
-        base_audit["selector_status"] = "skipped_silence"
+    if not clean:
+        base_audit["selector_status"] = "skipped_no_segments"
         _set_audit(scribe, base_audit)
         return []
 

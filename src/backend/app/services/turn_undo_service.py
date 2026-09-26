@@ -246,6 +246,12 @@ class TurnUndoService:
             )
         ).scalars().all()
         turn_key = str(assistant_turn_id)
+        assistant = await self._session.get(Turn, turn_key)
+        snapshot = json.loads(assistant.context_snapshot or "{}") if assistant else {}
+        identity_updates = {
+            change["entity_id"]: change
+            for change in snapshot.get("turn_materialization", {}).get("identity_updates", [])
+        }
         for entity in rows:
             try:
                 fields = json.loads(entity.custom_fields or "{}")
@@ -253,12 +259,22 @@ class TurnUndoService:
                 fields = {}
             if not isinstance(fields, dict):
                 continue
+            previous = identity_updates.get(entity.id)
+            if previous and fields.get("identity_promoted_turn_id") == turn_key:
+                entity.canonical_name = previous["previous_name"]
+                entity.aliases = previous["previous_aliases"]
+                entity.custom_fields = previous["previous_custom_fields"]
             planned = fields.get("introduction_turn_id") == turn_key
             extracted = (
                 entity.provenance == "narrator_extracted"
                 and fields.get("source_turn_id") == turn_key
             )
             if planned or extracted:
+                from app.db.tables import SceneParticipant
+
+                await self._session.execute(
+                    delete(SceneParticipant).where(SceneParticipant.entity_id == entity.id)
+                )
                 await self._session.delete(entity)
         await self._session.flush()
 

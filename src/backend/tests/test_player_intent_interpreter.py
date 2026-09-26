@@ -18,6 +18,56 @@ from app.services.player_intent_interpreter import (
 from app.services.turn_planner import TurnPlanningError
 
 
+@pytest.mark.asyncio
+async def test_locking_workshop_is_local_even_when_extraction_calls_it_movement():
+    router = _Router({
+        "summary": "Запираю мастерскую и оставляю свет.",
+        "actions": [{
+            "action_type": "movement", "intent": "Запереть мастерскую.",
+            "destination_location": "Мастерская",
+        }],
+    }, review={
+        "action_ownership": [{
+            "action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action",
+            "spatial_effect": "local", "destination_location": None,
+        }],
+        "information_request_only": False, "information_recipient": "none",
+    })
+    result = await _interpreter(router).interpret(SimpleNamespace(), [], "Запираю мастерскую.")
+    assert result.actions[0].action_type == "interaction"
+    assert result.actions[0].destination_location is None
+    assert "DestinationIdentityBindings" not in router.calls
+
+
+@pytest.mark.asyncio
+async def test_relative_return_can_resolve_without_shared_words():
+    room_id = str(uuid4())
+    router = _Router({
+        "summary": "Возвращаюсь к себе.",
+        "actions": [{
+            "action_type": "movement", "intent": "Вернуться к себе.",
+            "destination_location": "к себе",
+        }],
+    }, bindings={"action_0": room_id})
+    result = await _interpreter(router).interpret(
+        SimpleNamespace(), [], "Возвращаюсь к себе.",
+        location_references={room_id: "Мастерская Ильи"},
+    )
+    assert result.actions[0].destination_location == "Мастерская Ильи"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_direction_cannot_create_a_pronoun_location():
+    router = _Router({
+        "summary": "Иду наружу.",
+        "actions": [{
+            "action_type": "movement", "intent": "Иду наружу.", "destination_location": "наружу",
+        }],
+    }, bindings={"action_0": "unresolved"})
+    with pytest.raises(TurnPlanningError, match="needs clarification"):
+        await _interpreter(router).interpret(SimpleNamespace(), [], "Иду наружу.")
+
+
 class _Router:
     def __init__(
         self,
@@ -44,9 +94,11 @@ class _Router:
         if response_model.__name__ == "DestinationIdentityBindings":
             return self.bindings
         if response_model.__name__ == "IntentSemanticOwnershipReview":
-            human_input = messages[-1].content.split("[LATEST HUMAN INPUT]\n", 1)[1].split(
-                "\n\n[EXTRACTED ACTIONS", 1
-            )[0]
+            human_input = (
+                messages[-1]
+                .content.split("[LATEST HUMAN INPUT]\n", 1)[1]
+                .split("\n\n[EXTRACTED ACTIONS", 1)[0]
+            )
             default_review = {
                 "action_ownership": [
                     {
@@ -56,9 +108,7 @@ class _Router:
                     }
                     for index, action in enumerate(self.payload.get("actions", []))
                 ],
-                "information_request_only": self.payload.get(
-                    "information_request_only", False
-                ),
+                "information_request_only": self.payload.get("information_request_only", False),
                 "information_recipient": (
                     "narrator"
                     if self.payload.get("world_state_question", False)
@@ -97,21 +147,37 @@ def _interpreter(
 @pytest.mark.asyncio
 async def test_imperative_information_request_is_speech_despite_addressee_syntax():
     player_input = "Назови себя и объясни, откуда знаешь моё имя."
-    router = _Router({
-        "summary": "Прошу объяснений.",
-        "actions": [{"action_type": "service", "intent": player_input, "actor_role": "addressee"}],
-        "addressed_response_requested": True,
-        "addressed_character_name": "Контактное лицо",
-    }, review={
-        "action_ownership": [{"action_index": 0, "actor_role": "addressee",
-                              "contribution_kind": "speech", "evidence_quote": player_input}],
-        "information_request_only": True, "information_recipient": "character",
-        "addressed_character_name": "Контактное лицо",
-    })
-    result = await _interpreter(router, LinguisticIntentAnalysis(
-        uniform_action_role="addressee", action_roles=("addressee",),
-        imperative_clauses=(player_input,),
-    )).interpret(SimpleNamespace(), [], player_input)
+    router = _Router(
+        {
+            "summary": "Прошу объяснений.",
+            "actions": [
+                {"action_type": "service", "intent": player_input, "actor_role": "addressee"}
+            ],
+            "addressed_response_requested": True,
+            "addressed_character_name": "Контактное лицо",
+        },
+        review={
+            "action_ownership": [
+                {
+                    "action_index": 0,
+                    "actor_role": "addressee",
+                    "contribution_kind": "speech",
+                    "evidence_quote": player_input,
+                }
+            ],
+            "information_request_only": True,
+            "information_recipient": "character",
+            "addressed_character_name": "Контактное лицо",
+        },
+    )
+    result = await _interpreter(
+        router,
+        LinguisticIntentAnalysis(
+            uniform_action_role="addressee",
+            action_roles=("addressee",),
+            imperative_clauses=(player_input,),
+        ),
+    ).interpret(SimpleNamespace(), [], player_input)
     assert result.actions == []
     assert result.addressed_response_requested is True
     assert result.addressed_character_name == "Контактное лицо"
@@ -120,22 +186,29 @@ async def test_imperative_information_request_is_speech_despite_addressee_syntax
 
 @pytest.mark.asyncio
 async def test_mixed_turn_removes_only_speech_candidate_and_preserves_physical_act():
-    router = _Router({
-        "summary": "Осматриваю раму и спрашиваю дежурного.",
-        "actions": [
-            {"action_type": "observation", "intent": "Осматриваю раму."},
-            {"action_type": "service", "intent": "Объясни, кто закрыл дверь."},
-        ],
-        "addressed_response_requested": True, "addressed_character_name": "Дежурный",
-    }, review={
-        "action_ownership": [
-            {"action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action"},
-            {"action_index": 1, "actor_role": "addressee", "contribution_kind": "speech"},
-        ],
-        "information_request_only": False, "information_recipient": "none",
-    })
+    router = _Router(
+        {
+            "summary": "Осматриваю раму и спрашиваю дежурного.",
+            "actions": [
+                {"action_type": "observation", "intent": "Осматриваю раму."},
+                {"action_type": "service", "intent": "Объясни, кто закрыл дверь."},
+            ],
+            "addressed_response_requested": True,
+            "addressed_character_name": "Дежурный",
+        },
+        review={
+            "action_ownership": [
+                {"action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action"},
+                {"action_index": 1, "actor_role": "addressee", "contribution_kind": "speech"},
+            ],
+            "information_request_only": False,
+            "information_recipient": "none",
+        },
+    )
     result = await _interpreter(router).interpret(
-        SimpleNamespace(), [], "Осматриваю раму. Дежурный, объясни, кто закрыл дверь.",
+        SimpleNamespace(),
+        [],
+        "Осматриваю раму. Дежурный, объясни, кто закрыл дверь.",
     )
     assert [(act.action_type, act.intent) for act in result.actions] == [
         ("observation", "Осматриваю раму."),
@@ -145,10 +218,14 @@ async def test_mixed_turn_removes_only_speech_candidate_and_preserves_physical_a
 
 def test_long_dialogue_preserves_contract_without_overflowing_summary():
     input_text = "Объясни, откуда знаешь моё имя. " * 30
-    draft = PlayerIntentContractDraft.model_validate({
-        "summary": "Прошу рассказать, откуда собеседник знает моё имя.",
-        "actions": [], "information_request_only": True, "addressed_response_requested": True,
-    })
+    draft = PlayerIntentContractDraft.model_validate(
+        {
+            "summary": "Прошу рассказать, откуда собеседник знает моё имя.",
+            "actions": [],
+            "information_request_only": True,
+            "addressed_response_requested": True,
+        }
+    )
     contract = normalize_intent_draft(draft, input_text)
     assert contract.actions == []
     assert contract.addressed_response_requested is True
@@ -156,13 +233,16 @@ def test_long_dialogue_preserves_contract_without_overflowing_summary():
 
 
 def test_information_summary_cannot_erase_typed_physical_action_in_mixed_turn():
-    review = _intent_semantic_review_wire(2, "Осматриваю дверь и прошу объяснений.").model_validate({
-        "action_ownership": [
-            {"action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action"},
-            {"action_index": 1, "actor_role": "addressee", "contribution_kind": "speech"},
-        ],
-        "information_request_only": True, "information_recipient": "character",
-    })
+    review = _intent_semantic_review_wire(2, "Осматриваю дверь и прошу объяснений.").model_validate(
+        {
+            "action_ownership": [
+                {"action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action"},
+                {"action_index": 1, "actor_role": "addressee", "contribution_kind": "speech"},
+            ],
+            "information_request_only": True,
+            "information_recipient": "character",
+        }
+    )
     assert review.information_request_only is False
 
 
@@ -200,18 +280,24 @@ async def test_known_destination_identity_overrides_inflected_model_label():
 async def test_possessed_room_uses_unique_grammatical_head_not_surrounding_area():
     room_id = str(uuid4())
     surroundings_id = str(uuid4())
-    router = _Router({
-        "summary": "Возвращаюсь в свою комнату.",
-        "actions": [{
-            "action_type": "movement",
-            "intent": "Вернуться в свою комнату.",
-            "destination_location": "свою комнату",
-        }],
-    })
+    router = _Router(
+        {
+            "summary": "Возвращаюсь в свою комнату.",
+            "actions": [
+                {
+                    "action_type": "movement",
+                    "intent": "Вернуться в свою комнату.",
+                    "destination_location": "свою комнату",
+                }
+            ],
+        }, bindings={"action_0": room_id},
+    )
     interpreter = PlayerIntentInterpreter(router)
 
     result = await interpreter.interpret(
-        SimpleNamespace(), [], "Я возвращаюсь из коридора в свою комнату.",
+        SimpleNamespace(),
+        [],
+        "Я возвращаюсь из коридора в свою комнату.",
         location_references={
             room_id: "Комната Кая",
             surroundings_id: "Окрестности — Комната Кая",
@@ -219,7 +305,33 @@ async def test_possessed_room_uses_unique_grammatical_head_not_surrounding_area(
     )
 
     assert result.actions[0].destination_location == "Комната Кая"
-    assert "DestinationIdentityBindings" not in router.calls
+    assert "DestinationIdentityBindings" in router.calls
+
+
+@pytest.mark.asyncio
+async def test_inflected_destination_reaches_semantic_identity_binding():
+    location_id = str(uuid4())
+    router = _Router(
+        {
+            "summary": "Возвращаюсь к стеллажам.",
+            "actions": [
+                {
+                    "action_type": "movement",
+                    "intent": "Вернуться к стеллажам.",
+                    "destination_location": "стеллажи",
+                }
+            ],
+        },
+        bindings={"action_0": location_id},
+    )
+    result = await PlayerIntentInterpreter(router).interpret(
+        SimpleNamespace(),
+        [],
+        "Возвращаюсь к стеллажам тем же проходом.",
+        location_references={location_id: "стеллажам"},
+    )
+    assert result.actions[0].destination_location == "стеллажам"
+    assert "DestinationIdentityBindings" in router.calls
 
 
 @pytest.mark.asyncio
@@ -270,7 +382,9 @@ async def test_new_destination_binding_preserves_selected_endpoint_and_action():
     assert len(result.actions) == 1
     assert result.actions[0].destination_location == "Прачечная соседнего дома"
     assert result.actions[0].intent == "Иду в прачечную."
-    assert router.calls == ["PlayerIntentContractDraft", "IntentSemanticOwnershipReview"]
+    assert router.calls == [
+        "PlayerIntentContractDraft", "IntentSemanticOwnershipReview", "DestinationIdentityBindings",
+    ]
 
 
 @pytest.mark.asyncio
@@ -549,10 +663,7 @@ def test_addressee_act_is_service_and_keeps_the_speaker() -> None:
 
 def test_actor_role_is_required_on_the_model_schema() -> None:
     schema = _IntentWire.model_json_schema()
-    action_refs = [
-        item["$ref"]
-        for item in schema["properties"]["actions"]["items"]["anyOf"]
-    ]
+    action_refs = [item["$ref"] for item in schema["properties"]["actions"]["items"]["anyOf"]]
     for ref in action_refs:
         name = ref.rsplit("/", 1)[-1]
         definition = schema["$defs"][name]
@@ -596,24 +707,25 @@ async def test_empty_action_turn_skips_ownership_model_and_empty_literal() -> No
 @pytest.mark.asyncio
 async def test_inconsistent_recipient_and_paraphrased_quote_do_not_abort_turn() -> None:
     router = _Router(
-        {"summary": "Я открываю дверь.", "actions": [
-            {"action_type": "interaction", "intent": "Открыть дверь."}
-        ]},
+        {
+            "summary": "Я открываю дверь.",
+            "actions": [{"action_type": "interaction", "intent": "Открыть дверь."}],
+        },
         review={
-            "action_ownership": [{
-                "action_index": 0,
-                "actor_role": "speaker",
-                "evidence_quote": "Открываю дверь",
-            }],
+            "action_ownership": [
+                {
+                    "action_index": 0,
+                    "actor_role": "speaker",
+                    "evidence_quote": "Открываю дверь",
+                }
+            ],
             "information_request_only": False,
             "information_recipient": "character",
             "addressed_character_name": None,
         },
     )
 
-    result = await _interpreter(router).interpret(
-        SimpleNamespace(), [], "Я открываю дверь."
-    )
+    result = await _interpreter(router).interpret(SimpleNamespace(), [], "Я открываю дверь.")
 
     assert result.actions[0].action_type == "interaction"
     assert result.addressed_response_requested is False
@@ -707,3 +819,24 @@ async def test_world_state_question_cannot_become_a_new_action() -> None:
     assert result.world_state_question is True
     assert result.addressed_response_requested is False
     assert result.summary == "В чем сейчас Мария? Она разделась до гола?"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("number", [7, 21, 137])
+async def test_numbered_destination_is_bound_by_semantic_id(number):
+    location_id = str(uuid4())
+    selected = f"причал номер {number}"
+    persisted = f"Причал №{number}"
+    router = _Router(
+        {"summary": "Вернуться на известный причал.", "actions": [{
+            "action_type": "movement", "intent": "Вернуться на причал.",
+            "destination_location": selected,
+        }]},
+        bindings={"action_0": location_id},
+    )
+    result = await PlayerIntentInterpreter(router).interpret(
+        SimpleNamespace(), [], f"Возвращаюсь на {selected}.",
+        location_references={location_id: persisted},
+    )
+    assert result.actions[0].destination_location == persisted
+    assert "DestinationIdentityBindings" in router.calls

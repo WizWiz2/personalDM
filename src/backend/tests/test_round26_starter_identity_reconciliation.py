@@ -6,7 +6,7 @@ from app.services.entity_identity import resolve_character_candidates
 from app.services.playable_bootstrap import PlayableBootstrapService
 
 
-def test_round26_explicit_irina_is_recovered_from_structured_description():
+def test_description_cannot_authorize_a_personal_name():
     npc = SessionZeroStarterNPC(
         role="Судебный фотограф",
         name=None,
@@ -14,13 +14,15 @@ def test_round26_explicit_irina_is_recovered_from_structured_description():
         present_at_start=True,
     )
 
-    assert npc.name == "Ирина"
-    assert PlayableBootstrapService._starter_name(npc) == "Ирина"
+    assert npc.name is None
+    assert PlayableBootstrapService._starter_name(npc) == "Судебный фотограф"
 
 
 def test_role_followed_by_explicit_name_is_preserved():
     npc = SessionZeroStarterNPC(
         role="судебный фотограф",
+        name="Ирина",
+        name_kind="personal",
         description="Судебный фотограф Ирина пришла с материалами дела.",
     )
 
@@ -46,7 +48,8 @@ def test_nested_session_zero_state_applies_starter_identity_normalization():
                     "starter_npcs": [
                         {
                             "role": "Судебный фотограф",
-                            "name": None,
+                            "name": "Ирина",
+                            "name_kind": "personal",
                             "description": "Ирина: судебный фотограф и свидетельница по делу.",
                         }
                     ],

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SessionZeroStarterNPC(BaseModel):
@@ -13,61 +12,21 @@ class SessionZeroStarterNPC(BaseModel):
     premise, must be found later, or are only mentioned as background must not be included.
     """
 
+    model_config = ConfigDict(json_schema_extra={"required": ["role", "name", "name_kind"]})
     role: str = Field(min_length=1, max_length=160)
     name: str | None = Field(default=None, max_length=160)
+    name_kind: Literal["personal", "provisional"] | None = Field(
+        default=None, description="personal for a supplied personal name; provisional for unknown/role labels."
+    )
     description: str | None = Field(default=None, max_length=600)
     reason: str | None = Field(default=None, max_length=400)
     present_at_start: bool = True
 
-    @staticmethod
-    def _explicit_name_from_text(role: str, *values: str | None) -> str | None:
-        """Recover only an explicitly written proper name from structured starter text.
-
-        Local models sometimes preserve `Ирина` in description/reason but omit the dedicated name
-        field. Bootstrap previously promoted the role (`Судебный фотограф`) to canonical identity,
-        which later let TurnAuthority create a second `Ирина`. This parser is intentionally narrow:
-        it accepts explicit name cues, `role + Name`, or a proper name before a dash/colon. It never
-        invents a name from a profession or free-form semantic similarity.
-        """
-        role_pattern = re.escape(" ".join(role.split())).replace(r"\ ", r"\s+")
-        patterns = [
-            re.compile(
-                r"(?:по\s+имени|е[её]\s+зовут|его\s+зовут|зовут|имя\s*[:—-]?)\s+"
-                r"([А-ЯЁ][а-яё-]{2,}(?:\s+[А-ЯЁ][а-яё-]{2,}){0,2})\b"
-            ),
-            re.compile(
-                rf"\b(?i:{role_pattern})\s+"
-                r"([А-ЯЁ][а-яё-]{2,}(?:\s+[А-ЯЁ][а-яё-]{2,}){0,2})\b"
-            ),
-            re.compile(
-                r"^\s*([А-ЯЁ][а-яё-]{2,}(?:\s+[А-ЯЁ][а-яё-]{2,}){0,1})\s*(?:—|-|:)"
-            ),
-        ]
-        role_folded = " ".join(role.casefold().split())
-        for value in values:
-            text = " ".join(str(value or "").split()).strip()
-            if not text:
-                continue
-            for pattern in patterns:
-                match = pattern.search(text)
-                if not match:
-                    continue
-                candidate = " ".join(match.group(1).split()).strip(" ,.;:—-")
-                if candidate and candidate.casefold() != role_folded:
-                    return candidate
-        return None
-
     @model_validator(mode="after")
-    def preserve_explicit_name_from_structured_text(self) -> SessionZeroStarterNPC:
-        if self.name or not self.present_at_start:
-            return self
-        explicit = self._explicit_name_from_text(
-            self.role,
-            self.description,
-            self.reason,
-        )
-        if explicit:
-            self.name = explicit
+    def preserve_typed_name(self) -> SessionZeroStarterNPC:
+        # Name binding belongs to the semantic control model, never prose patterns.
+        if self.name_kind == "provisional":
+            self.name = None
         return self
 
 
@@ -96,6 +55,10 @@ class SessionZeroWorldDraft(BaseModel):
         ),
     )
     starter_presence_confirmed: bool = False
+    starting_exit_allowed: bool = Field(
+        default=False,
+        description="The agreed opening establishes an ordinary accessible route outside. False for sealed, trapped or unknown starts.",
+    )
 
 
 class SessionZeroCharacterDraft(BaseModel):
@@ -139,6 +102,7 @@ class SessionZeroWorldPatch(BaseModel):
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] | None = None
     starter_presence_confirmed: bool | None = None
+    starting_exit_allowed: bool | None = None
 
 
 class SessionZeroCharacterPatch(BaseModel):
@@ -212,6 +176,8 @@ class SessionZeroInterviewModelDecision(BaseModel):
     )
     tool_calls: list[SessionZeroAgentToolCall] = Field(default_factory=list)
     question_topics: list[str] = Field(default_factory=list)
+    player_delegates: bool = False
+    explicit_correction: bool = False
     summary: str | None = None
 
     @model_validator(mode="before")
@@ -315,4 +281,5 @@ class SessionZeroInterviewState(BaseModel):
     pending_user_message: str | None = None
     last_summary: str | None = None
     last_question_topics: list[str] = Field(default_factory=list)
+    narrow_question_streak: int = 0
     delegated_fields: list[str] = Field(default_factory=list)

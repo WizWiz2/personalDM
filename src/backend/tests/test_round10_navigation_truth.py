@@ -268,6 +268,7 @@ def test_blocked_execution_removes_planned_success_from_authority():
                     "intent": "Доехать до Департамента",
                     "status": "blocked",
                     "blocking_reason": "Destination route is currently inactive",
+                    "public_blocking_reason": "Путь туда сейчас недоступен.",
                 },
                 {
                     "step_index": 1,

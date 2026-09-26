@@ -306,12 +306,12 @@ async def test_exit_travel_authorizes_unique_available_exit(db_session: AsyncSes
 
     authorization = await PlayerDestinationAuthorizer(db_session).authorize(
         user.id,
-        tavern.canonical_name,
+        street.canonical_name,
     )
 
     assert authorization.authorized is True
     assert authorization.destination == street.canonical_name
-    assert "unique available exit" in authorization.reason
+    assert "exit from the current location" in authorization.reason
 
 
 @pytest.mark.asyncio
@@ -429,12 +429,12 @@ async def test_return_phrase_takes_unique_reverse_exit(
 
     authorization = await PlayerDestinationAuthorizer(db_session).authorize(
         user.id,
-        invented.canonical_name,
+        tavern.canonical_name,
     )
 
     assert authorization.authorized is True
     assert authorization.destination == tavern.canonical_name
-    assert "unique available exit from return clause" in authorization.reason
+    assert "exit from the current location" in authorization.reason
 
 
 async def _nested_outside_topology(db_session: AsyncSession, campaign_name: str):
@@ -539,7 +539,7 @@ def _live_return_plan() -> SceneTransitionPlan:
     return SceneTransitionPlan(
         required=True,
         transition_type="location_transition",
-        destination_location="Окрестности — Трактир «Якорь»",
+        destination_location="Трактир «Якорь»",
         scene_title="Трактир «Якорь»",
         carry_participants=["Вера"],
         reason="Исходное место",

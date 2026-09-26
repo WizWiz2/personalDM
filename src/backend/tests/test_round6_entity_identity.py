@@ -189,11 +189,12 @@ def test_turn_read_keeps_internal_authority_snapshot_without_serializing_it():
 
 
 @pytest.mark.asyncio
-async def test_round6_temporary_innkeeper_reuses_owner_without_alias(
+async def test_typed_identity_reference_reuses_owner_without_role_alias(
     db_session: AsyncSession,
 ):
     campaign_id, _tavern, _player, owner, scene = await _identity_campaign(db_session)
     plan = _temporary_contact("Трактирщик", "трактирщик")
+    plan.npc_introductions[0].identity_reference = owner.canonical_name
 
     authority = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,
@@ -237,6 +238,12 @@ async def test_generic_role_match_fails_closed_when_same_location_is_ambiguous(
         two_owners=True,
     )
 
+    repo = EntityRepository(db_session)
+    for entity in await repo.list_by_campaign(campaign_id, entity_type="character"):
+        if entity.id != _player.id:
+            await repo.update_character(entity.id, CharacterUpdate(custom_fields={
+                "temporary_name": True, "role": "трактирщик",
+            }))
     with pytest.raises(TurnAuthorityError, match="ambiguous"):
         await TurnAuthorityService(db_session).build(
             campaign_id=campaign_id,

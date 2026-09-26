@@ -87,7 +87,6 @@ class SceneBridgeService:
                     [source_state.active_conflict]
                     if source_state
                     and source_state.active_conflict
-                    and source_state.active_conflict.casefold() not in {"none", "нет"}
                     else []
                 ),
             ]

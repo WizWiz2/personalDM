@@ -83,14 +83,25 @@ Concrete violations:
   present_characters, allowed_new_npcs and allowed_existing_npc_arrivals are authorized physically.
 - ADDRESSED RESPONSE: when addressed_response_obligation names a present cast member, prose must land their response beat (quote/dialogue attributed to THAT addressee). Naming them only inside sensory/atmosphere filler without that beat — or omitting them — is canon_conflict. Atmosphere may season the voice after the beat. Refusal may omit unauthorized people rather than invent them.
 - UNPLANNED NPC: a genuinely new physical person appears without typed NPC authority. A new proper-named person (title+name or multi-token capitalized identity) outside present_characters / allowed_new_npcs / allowed_existing_npc_arrivals is canon_conflict.
+  This applies equally to unnamed people and role designations: doing something in the scene
+  makes a person a physical participant regardless of whether prose gives them a name.
 - SCENE TEXTURE: neutral local sensory/furnishing detail is allowed when it does not create a new
   character, route, threat, clue, mechanically/causally significant object or action outcome.
 - MOVEMENT/TIME: prose moves someone to another place, or completes a time or scene-boundary change,
   without a typed trip. A step inside the current room is not a trip and is not a violation.
   Distinguish that from a true scene transition by meaning, not vocabulary.
 - OUTCOME: prose contradicts observable_consequences or completed structured execution.
+- QUESTION COVERAGE: addressed_response preserves indexed questions and approved answers. Render
+  every answer's meaning with its actual speaker and disposition, before any hook. A gesture,
+  atmosphere, promise to answer later, or response to a different question is not coverage.
+  These words are character claims, not objective canon. Do not demand secret knowledge or replace
+  explicit ignorance/refusal with invented answers. Respect explicit negative player boundaries:
+  tactile perception never authorizes an unrequested voluntary touch.
+  For EVERY addressed_response question, include response_coverage with question_index and the
+  shortest exact candidate quote conveying the approved answer/ignorance/refusal/deflection.
+  Do not cite atmosphere as an answer. Missing coverage requires repair even if other prose is legal.
 - WORLD STATE ANSWER: when canon_constraints contains [WORLD STATE ANSWER], prose must directly
-  answer the latest state question from observable_consequences. Replaying the queried event,
+  answer the latest state question from addressed_response or observable_consequences. Replaying the queried event,
   evading a concrete/yes-no answer with atmosphere, or silently omitting the answer is incomplete
   and must be repair_required.
 - ESTABLISHED STATE: established_state entries are already true. They outrank the opening
@@ -124,14 +135,15 @@ Return exactly:
 {
   "verdict": "pass|repair_required",
   "summary": "short reason in Russian",
-  "violations": [
+    "violations": [
     {
       "violation_type": "absent_character|absent_object|invalid_movement|invalid_time_advance|player_agency|ungrounded_complication|sequence_violation|canon_conflict|speaker_consistency|meta_language|other",
       "severity": "warning|error",
       "evidence": "shortest exact candidate fragment",
       "correction": "specific prose-only correction in Russian"
     }
-  ]
+  ],
+  "response_coverage": [{"question_index": 0, "evidence": "exact answer fragment"}]
 }
 """
 
@@ -209,10 +221,9 @@ Return exactly:
                 response_model=NarrationValidationResult,
             )
             result = NarrationValidationResult.model_validate(data)
+            result = self.apply_question_coverage(result, authority, candidate_text)
             result = self.apply_deterministic_authority(result, authority)
-            result = self.apply_deterministic_speaker_authority(
-                result, authority, candidate_text
-            )
+            result = self.apply_deterministic_speaker_authority(result, authority, candidate_text)
             result = self.apply_deterministic_language(result, authority, candidate_text)
             return self.apply_deterministic_surface_quality(result, candidate_text)
         except (LLMProviderError, ValueError, TypeError) as exc:
@@ -235,6 +246,7 @@ Return exactly:
             verdict="repair_required",
             summary=summary,
             violations=[*result.violations, violation],
+            response_coverage=result.response_coverage,
         )
 
     @staticmethod
@@ -279,6 +291,25 @@ Return exactly:
                 else "Типизированный TurnAuthority подтверждает присутствие этого персонажа."
             ),
             violations=filtered,
+            response_coverage=result.response_coverage,
+        )
+
+    @classmethod
+    def apply_question_coverage(cls, result, authority, candidate_text):
+        response = authority.addressed_response
+        if response is None or not response.questions:
+            return result
+        if result.covers_questions(len(response.questions), candidate_text):
+            return result
+        return cls._append_error(
+            result,
+            NarrationViolation(
+                violation_type="canon_conflict",
+                severity="error",
+                evidence="addressed: question coverage lacks exact published evidence",
+                correction="Передать каждый утверждённый ответ адресата и подтвердить его точной цитатой.",
+            ),
+            "Не подтверждено, что наррация ответила на все вопросы текущего хода.",
         )
 
     @classmethod

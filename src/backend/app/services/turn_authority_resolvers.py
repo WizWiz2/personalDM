@@ -66,19 +66,6 @@ class NpcIntroductionResolution:
 class NpcIntroductionResolver:
     """Classify planned NPC introductions against structured identity and presence state."""
 
-    SYNTHETIC_PLACEHOLDERS = frozenset(
-        {
-            "безымянный собеседник",
-            "неизвестный собеседник",
-            "безымянный npc",
-            "неизвестный npc",
-            "unnamed interlocutor",
-            "unknown interlocutor",
-            "unnamed npc",
-            "unknown npc",
-        }
-    )
-
     def __init__(self, session: AsyncSession):
         self._session = session
         self._entities = EntityRepository(session)
@@ -106,7 +93,6 @@ class NpcIntroductionResolver:
         """
         used: set[str] = set(occupied_canonical_keys or ())
         result = []
-        placeholder_keys = {identity_key(value) for value in cls.SYNTHETIC_PLACEHOLDERS}
         locale_hint = " ".join(str(locale_text or "").split())
 
         for introduction in introductions:
@@ -127,7 +113,6 @@ class NpcIntroductionResolver:
             usable_role = bool(
                 is_usable_short_designation(role)
                 and not contains_cjk(role)
-                and identity_key(role) not in placeholder_keys
             )
             unsupported_stable_name = not introduction.temporary_name and not evidence
             # A temporary flag is not evidence. An invented personal label must still collapse
@@ -154,7 +139,6 @@ class NpcIntroductionResolver:
             )
             needs_repair = (
                 contains_cjk(canonical)
-                or canonical_key in placeholder_keys
                 or unsupported_stable_name
                 or unproven_personal_label
                 or description_as_name

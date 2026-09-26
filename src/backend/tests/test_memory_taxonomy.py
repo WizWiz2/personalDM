@@ -47,6 +47,9 @@ def fact_proposal(
     *,
     scope: str = "campaign",
     evidence: str | None = None,
+    memory_kind: str | None = None,
+    durable: bool = True,
+    detail_type: str = "other",
 ) -> ProposedChangeCreate:
     return ProposedChangeCreate(
         change_type=ChangeType.FACT,
@@ -56,6 +59,8 @@ def fact_proposal(
             "object_value": object_value,
             "scope": scope,
             "visibility": "public",
+            "memory_kind": memory_kind,
+            "detail_type": detail_type,
             "_canon": {
                 "outcome_id": "o1",
                 "kind": "world_state",
@@ -64,6 +69,7 @@ def fact_proposal(
                 "authority": "public_observation",
                 "operation": "assert",
                 "cardinality": "single",
+                "durable": durable,
             },
         },
     )
@@ -83,6 +89,8 @@ async def test_gaze_is_demoted_from_fact_to_narrative_detail(
                 "отвела взгляд",
                 "к закрытому окну",
                 evidence="София отвела взгляд к закрытому окну.",
+                durable=False,
+                detail_type="gaze",
             )
         ],
     )
@@ -111,12 +119,8 @@ async def test_transient_texture_is_extracted_without_scribe_fact(
         ),
     )
 
-    assert len(details) == 2
-    assert {item.payload["detail_type"] for item in details} == {"gaze", "ambient"}
-    gaze = next(item for item in details if item.payload["detail_type"] == "gaze")
-    assert gaze.payload["subject_entity_id"] == str(character.id)
-    assert gaze.payload["_canon"]["durable"] is False
-    assert all(item.change_type == ChangeType.NARRATIVE_DETAIL for item in details)
+    # Prose alone must never mint classified memory; semantic Scribe proposals own this.
+    assert details == []
 
 
 @pytest.mark.asyncio
@@ -133,6 +137,7 @@ async def test_persistent_wound_becomes_entity_state(
                 "ранена",
                 "в левое плечо",
                 scope="scene",
+                memory_kind="entity_state",
             )
         ],
     )
@@ -186,6 +191,24 @@ async def test_world_lore_remains_world_canon(db_session: AsyncSession):
     proposal = proposals[0]
     assert proposal.payload["memory_kind"] == "world_canon"
     assert proposal.payload["scope"] == "campaign"
+
+
+@pytest.mark.asyncio
+async def test_semantic_type_outranks_words_and_non_durable_outranks_type(db_session):
+    campaign_id, scene, _ = await campaign_scene_character(db_session)
+    proposals = [
+        fact_proposal("Орден", "основан", "Улыбкой ветра", memory_kind="world_canon"),
+        fact_proposal("София", "уязвима", "для серебра", memory_kind="entity_state"),
+        fact_proposal(
+            "София", "является", "сияющей в этот миг", memory_kind="world_canon", durable=False
+        ),
+    ]
+    result = await MemoryTaxonomyService(db_session).classify_batch(
+        campaign_id, scene.id, proposals
+    )
+    assert result[0].payload["memory_kind"] == "world_canon"
+    assert result[1].payload["memory_kind"] == "entity_state"
+    assert result[2].change_type == ChangeType.NARRATIVE_DETAIL
 
 
 def test_non_durable_outcome_can_only_create_narrative_detail():

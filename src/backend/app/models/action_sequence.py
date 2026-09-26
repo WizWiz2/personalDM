@@ -19,6 +19,7 @@ class ExecutedActionStep(BaseModel):
     status: str
     observable_outcome: str | None = None
     blocking_reason: str | None = None
+    public_blocking_reason: str | None = None
     transition_id: UUID | None = None
     source_scene_id: UUID | None = None
     target_scene_id: UUID | None = None

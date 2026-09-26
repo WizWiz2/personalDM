@@ -15,22 +15,6 @@ from app.services.context_compiler import count_tokens
 from app.services.debugger_service import DebuggerService
 
 
-_ACTION_RE = re.compile(
-    r"\b(?:иду|идем|идём|пойду|выхожу|выходим|направляюсь|отправляюсь|"
-    r"возвращаюсь|перехожу|подхожу|отхожу|ухожу|покидаю|захожу|вхожу|"
-    r"осматриваю|беру|кладу|открываю|закрываю|ищу|проверяю|делаю|пытаюсь)\b",
-    flags=re.IGNORECASE,
-)
-_MOVEMENT_RE = re.compile(
-    r"\b(?:выхо(?:жу|дит)|ухо(?:жу|дит)|покида(?:ю|ет)|направля(?:юсь|ется)|"
-    r"отправля(?:юсь|ется)|перехо(?:жу|дит)|возвраща(?:юсь|ется)|вхо(?:жу|дит)|"
-    r"прихо(?:жу|дит)|иду|идет|идёт|пойду)\b",
-    flags=re.IGNORECASE,
-)
-_SILENCE_RE = re.compile(
-    r"\b(?:молчит|умолкает|не\s+отвечает|ничего\s+не\s+говорит)\b",
-    flags=re.IGNORECASE,
-)
 _TECHNICAL_RE = re.compile(
     r"(?:\[Generation failed|Traceback|Pydantic|validation error|UUID\(|"
     r"finish_reason|LLMProvider|JSONDecodeError)",
@@ -322,7 +306,9 @@ class PlaytestTraceService:
         diagnostics: list[dict] = []
         user_text = str((user or {}).get("content") or "")
         assistant_text = str(assistant.get("content") or "")
-        if actor_id and not planner_called and _ACTION_RE.search(user_text):
+        intent = planner.get("intent_contract") or context.get("intent_contract") or {}
+        actions = intent.get("actions", []) if isinstance(intent, dict) else []
+        if actor_id and not planner_called and actions:
             diagnostics.append(
                 {
                     "code": "PLANNER_BYPASSED_WITH_ACTION_LANGUAGE",
@@ -339,7 +325,7 @@ class PlaytestTraceService:
             and memory_job.get("status") == "completed"
             and not knowledge_proposals
             and not beliefs
-            and not _SILENCE_RE.search(assistant_text)
+            and (context.get("actor_memory_debug") or {}).get("selected_segment_ids")
         ):
             diagnostics.append(
                 {
@@ -370,8 +356,8 @@ class PlaytestTraceService:
         )
         if (
             not has_structured_transition
-            and _MOVEMENT_RE.search(user_text)
-            and _MOVEMENT_RE.search(assistant_text)
+            and any(action.get("action_type") == "movement" for action in actions if isinstance(action, dict))
+            and authority.get("scene_disposition") == "location_transition"
         ):
             diagnostics.append(
                 {

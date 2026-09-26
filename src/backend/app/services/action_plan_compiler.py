@@ -128,6 +128,7 @@ class ActionPlanCompiler:
             or contract.pending_player_choice
             or any(action.action_type != "movement" for action in contract.actions)
             or any(action.movement_method != "ordinary" for action in contract.actions)
+            or any(action.requested_companions for action in contract.actions)
         ):
             return None
         _, state, locations = await self._world(campaign_id)
@@ -226,6 +227,7 @@ class ActionPlanCompiler:
                     safe_mundane=False,
                     observable_outcome=outcome.observable_outcome,
                     blocking_reason=outcome.blocking_reason,
+                    public_blocking_reason=outcome.blocking_reason,
                 ),
                 current_location_id,
                 False,
@@ -238,6 +240,7 @@ class ActionPlanCompiler:
                     resolution="blocked",
                     safe_mundane=False,
                     blocking_reason="Current physical location is unavailable for route compilation.",
+                    public_blocking_reason="Не удалось определить исходное место; нужно уточнить, откуда идти.",
                 ),
                 current_location_id,
                 False,
@@ -247,11 +250,11 @@ class ActionPlanCompiler:
         if current is not None and self._location_matches(destination, current):
             return (
                 ActionStepPlan(
-                    action_type="movement",
+                    action_type="interaction",
                     intent=action.intent,
-                    resolution="blocked",
-                    safe_mundane=False,
-                    blocking_reason="Destination resolves to the current physical location.",
+                    resolution="auto_success",
+                    safe_mundane=True,
+                    observable_outcome=f"Ты уже находишься здесь: {current.canonical_name}.",
                 ),
                 current_location_id,
                 False,
@@ -271,6 +274,7 @@ class ActionPlanCompiler:
                     resolution="blocked",
                     safe_mundane=False,
                     blocking_reason="Destination matches multiple existing routes from the current location.",
+                    public_blocking_reason="Туда ведёт несколько путей; нужно выбрать направление.",
                 ),
                 current_location_id,
                 False,
@@ -288,6 +292,7 @@ class ActionPlanCompiler:
                         resolution="blocked",
                         safe_mundane=False,
                         blocking_reason="Destination route is currently inactive" + detail,
+                        public_blocking_reason=exit_row.access_rule or "Путь туда сейчас недоступен.",
                     ),
                     current_location_id,
                     False,
@@ -300,6 +305,7 @@ class ActionPlanCompiler:
                         resolution="blocked",
                         safe_mundane=False,
                         blocking_reason="Destination exit has not been discovered.",
+                        public_blocking_reason="Путь туда пока не обнаружен.",
                     ),
                     current_location_id,
                     False,
@@ -342,6 +348,7 @@ class ActionPlanCompiler:
                     resolution="blocked",
                     safe_mundane=False,
                     blocking_reason="Destination matches multiple known campaign locations.",
+                    public_blocking_reason="Этому описанию соответствуют несколько мест; нужно уточнить цель.",
                 ),
                 current_location_id,
                 False,
@@ -356,6 +363,7 @@ class ActionPlanCompiler:
                     resolution="blocked",
                     safe_mundane=False,
                     blocking_reason="Destination is not an available exit from the current location.",
+                    public_blocking_reason="Из текущего места туда нет доступного прохода.",
                 ),
                 current_location_id,
                 False,
@@ -429,6 +437,7 @@ class ActionPlanCompiler:
             resolution=outcome.resolution,
             safe_mundane=outcome.safe_mundane,
             observable_outcome=outcome.observable_outcome,
+            public_blocking_reason=outcome.blocking_reason,
             blocking_reason=outcome.blocking_reason,
             item_id=action.item_id,
             inventory_operation=action.inventory_operation,
@@ -465,6 +474,7 @@ class ActionPlanCompiler:
                 # cursor at its prior place, so the frozen tail stays structurally valid even though
                 # the executor will later record it as skipped.
                 if step.resolution == "auto_success":
+                    step.transition.carry_participants = list(outcome.carry_participants)
                     current_location_id = next_location_id
                 if discovery and step.resolution == "auto_success":
                     discovery_steps.append(index)
@@ -483,6 +493,7 @@ class ActionPlanCompiler:
                 temporary_name=item.temporary_name,
                 personal_name_evidence=item.personal_name_evidence,
                 reason=item.reason,
+                after_action_index=item.after_action_index,
             )
             for item in decision.npc_introductions
         ]
@@ -510,6 +521,7 @@ class ActionPlanCompiler:
             ),
             observable_consequences=decision.observable_consequences,
             character_beats=decision.character_beats,
+            addressed_response=decision.addressed_response,
             canon_constraints=decision.canon_constraints,
             new_fact_candidates=[],
             narration_guidance=decision.narration_guidance,

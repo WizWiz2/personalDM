@@ -80,6 +80,7 @@ class ActionStepPlan(BaseModel):
     safe_mundane: bool = False
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
+    public_blocking_reason: str | None = Field(default=None, max_length=1000)
     # Inventory mutations are resolved by entity id, never by a runtime word/substring match.
     # The planner receives ids for objects physically present in the scene.
     item_id: UUID | None = None

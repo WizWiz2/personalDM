@@ -95,6 +95,7 @@ class ActionSequenceExecutor:
                 status="planned",
                 observable_outcome=step.observable_outcome,
                 blocking_reason=step.blocking_reason,
+                public_blocking_reason=step.public_blocking_reason,
                 source_scene_id=(
                     str(current_scene_id) if current_scene_id else None
                 ),
@@ -110,6 +111,10 @@ class ActionSequenceExecutor:
 
             if step.resolution != "auto_success":
                 db_step.status = "blocked"
+                db_step.observable_outcome = None
+                db_step.public_blocking_reason = (
+                    step.public_blocking_reason or "Нужно уточнить следующий шаг, прежде чем продолжить."
+                )
                 db_step.blocking_reason = (
                     step.blocking_reason
                     or "The step requires a check, a choice, or new player input."
@@ -136,6 +141,8 @@ class ActionSequenceExecutor:
                             "Player destination is not authorized: "
                             f"{authorization.reason}"
                         )
+                        db_step.observable_outcome = None
+                        db_step.public_blocking_reason = "Нужно уточнить, куда именно ты направляешься."
                         db_step.target_scene_id = (
                             str(current_scene_id) if current_scene_id else None
                         )
@@ -169,6 +176,8 @@ class ActionSequenceExecutor:
                 except ValueError as exc:
                     db_step.status = "blocked"
                     db_step.blocking_reason = str(exc)
+                    db_step.observable_outcome = None
+                    db_step.public_blocking_reason = "Переход не состоялся; ты остаёшься на прежнем месте."
                     db_step.target_scene_id = (
                         str(current_scene_id) if current_scene_id else None
                     )
@@ -207,6 +216,8 @@ class ActionSequenceExecutor:
                     # result. Never turn a safe no-op into a failed turn or partial mutation.
                     db_step.status = "blocked"
                     db_step.blocking_reason = str(exc)
+                    db_step.observable_outcome = None
+                    db_step.public_blocking_reason = "Этот предмет сейчас недоступен для выбранного действия."
                     db_step.target_scene_id = (
                         str(current_scene_id) if current_scene_id else None
                     )
@@ -517,6 +528,7 @@ class ActionSequenceExecutor:
             status=step.status,
             observable_outcome=step.observable_outcome,
             blocking_reason=step.blocking_reason,
+            public_blocking_reason=step.public_blocking_reason,
             transition_id=(UUID(step.transition_id) if step.transition_id else None),
             source_scene_id=(
                 UUID(step.source_scene_id) if step.source_scene_id else None

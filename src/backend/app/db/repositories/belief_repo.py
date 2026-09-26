@@ -103,6 +103,7 @@ class BeliefRepository(BaseRepository):
             for belief in current
             if self.normalize(belief.proposition) == proposition_key
             and belief.fact_id == data.fact_id
+            and belief.source_character_id == data.source_character_id
         ]
         previous_key = self.normalize(previous_proposition)
 

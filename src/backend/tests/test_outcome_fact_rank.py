@@ -78,7 +78,7 @@ async def test_observation_cannot_supersede_a_completed_outcome_fact(db_session:
     )
     db_session.add(sequence)
     await db_session.flush()
-    db_session.add(_step(sequence.id, "service", "Ставни открыты."))
+    db_session.add(_step(sequence.id, "service", "Ставни открыты. Кофе пока в руке."))
     await db_session.flush()
 
     applier = CanonApplier(db_session)
@@ -221,7 +221,9 @@ async def test_established_state_comes_only_from_completed_world_steps(db_sessio
     )
     db_session.add(sequence)
     await db_session.flush()
-    db_session.add(_step(sequence.id, "service", "Ставни открыты."))
+    # A whole receipt may include state which is no longer current; only the active slot below
+    # is authoritative. Do not resurrect coffee ownership by replaying the receipt's prose.
+    db_session.add(_step(sequence.id, "service", "Ставни открыты. Кофе пока в руке."))
     look_user, look_assistant = await _pair(db_session, campaign_id, scene.id, "Опиши.", "Закрыты.")
     look_sequence = ActionSequence(
         campaign_id=str(campaign_id),
@@ -237,6 +239,7 @@ async def test_established_state_comes_only_from_completed_world_steps(db_sessio
     await db_session.flush()
     facts = FactRepository(db_session)
     from uuid import UUID
+
     await facts.create(
         campaign_id,
         FactCreate(
@@ -264,7 +267,7 @@ async def test_established_state_comes_only_from_completed_world_steps(db_sessio
         ),
     )
     lines = await established_state_lines(db_session, campaign_id, scene.id)
-    assert lines == ["Ставни открыты."]
+    assert lines == ["ставни — открыты: да."]
 
 
 def test_publication_fallback_keeps_established_state():

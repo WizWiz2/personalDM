@@ -96,6 +96,7 @@ class ActionStep(Base):
     )
     observable_outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
     blocking_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_blocking_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     transition_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("scene_transitions.id", ondelete="SET NULL"),

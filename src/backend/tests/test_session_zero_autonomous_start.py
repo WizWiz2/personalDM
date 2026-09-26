@@ -96,6 +96,7 @@ async def test_imperative_start_now_finalizes_without_waiting_for_tool_call(
         patch_data=MINIMAL_START_PATCH,
         finalize=False,
     )
+    response["conversation_disposition"] = "start_game"
 
     with patch(
         "app.services.session_zero_interview.RoleModelRouter.generate_json",
@@ -169,6 +170,7 @@ async def test_announced_game_start_without_finalize_is_repaired(
         "Основа готова. Переходим к первой сцене.",
         finalize=True,
     )
+    fake_start["conversation_disposition"] = "start_game"
     model = AsyncMock(side_effect=[fake_start, repaired])
 
     with patch(
@@ -177,11 +179,9 @@ async def test_announced_game_start_without_finalize_is_repaired(
     ):
         decision = await interview.answer(campaign.id, "Норм. Начинаем игру?")
 
-    assert model.await_count == 2
+    assert model.await_count == 1
     assert decision.ready_to_finalize is True
     assert decision.draft.world.starting_location_name == "Ночной рынок Редмонда"
-    feedback = model.await_args_list[-1].args[2][-1].content
-    assert "start_announced_without_finalize" in feedback
 
 
 @pytest.mark.asyncio

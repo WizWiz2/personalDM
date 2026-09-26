@@ -67,6 +67,24 @@ class _MockConfig:
     context_window = 8192
 
 
+@pytest.mark.asyncio
+async def test_structured_contract_is_not_silently_evicted_from_small_context(monkeypatch):
+    class SmallContext(_MockConfig):
+        context_window = 1024
+
+    _FakeAsyncClient.requests = []
+    monkeypatch.setattr(llm_provider_module.httpx, "AsyncClient", _FakeAsyncClient)
+    provider = LLMProvider()
+    await provider.generate_json(
+        [ChatMessage(role="system", content="Authoritative scene evidence. " * 500)],
+        SmallContext(), max_tokens=400,
+    )
+    for request in _FakeAsyncClient.requests:
+        assert request["json"]["options"]["num_ctx"] > 1024
+        assert request["json"]["messages"][0]["content"].startswith("Authoritative scene evidence.")
+    assert provider.last_telemetry["requested_num_ctx"] > 1024
+
+
 def test_ollama_endpoint_detection():
     assert LLMProvider._is_ollama("http://127.0.0.1:11434/v1") is True
     assert LLMProvider._is_ollama("http://localhost:11434/v1") is True

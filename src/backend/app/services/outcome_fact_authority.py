@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from uuid import UUID
 
@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.repositories.fact_repo import FactRepository
-from app.db.tables import Turn
+from app.db.tables import Entity, Turn
+from app.services.play_surface_contract import snap_near_names
 
 
 async def completed_world_outcomes(
@@ -62,21 +63,42 @@ async def established_state_lines(
     campaign_id: UUID,
     scene_id: UUID | None,
 ) -> list[str]:
-    """Outcomes of the completed world steps that still own current facts."""
+    """Project active slots, not whole historical receipts that also contain retired slots."""
     if scene_id is None:
         return []
-    facts = await FactRepository(session).list_active(campaign_id, scene_id=scene_id)
+    facts = await FactRepository(session).list_active(
+        campaign_id, scene_id=scene_id, visibility="public"
+    )
+    facts = sorted(facts, key=lambda item: item.updated_at)[-12:]
+    name_rows = await session.execute(
+        select(Entity.canonical_name).where(
+            Entity.campaign_id == str(campaign_id),
+            Entity.entity_type == "character",
+        )
+    )
+    known_names = [row[0] for row in name_rows if row[0]]
     lines: list[str] = []
-    seen: set[str] = set()
+    qualifying: dict[str, bool] = {}
     for fact in facts:
         key = str(fact.source_turn_id or "")
-        if not key or key in seen:
+        if not key:
             continue
-        seen.add(key)
-        for outcome in await completed_world_outcomes(session, campaign_id, fact.source_turn_id):
-            if outcome not in lines:
-                lines.append(outcome)
+        if key not in qualifying:
+            qualifying[key] = await turn_has_completed_world_outcome(
+                session,
+                campaign_id,
+                fact.source_turn_id,
+            )
+        if qualifying[key] and fact.truth_status == "true":
+            # A receipt can own several facts. Replaying its entire prose when just one fact
+            # remains active resurrects superseded positions/ownership of unrelated subjects.
+            subject = snap_near_names(str(fact.subject or ""), known_names)
+            value = f": {fact.object_value}" if fact.object_value is not None else ""
+            line = f"{subject} — {fact.predicate}{value}."
+            if line not in lines:
+                lines.append(line)
     return lines
+
 
 async def established_subjects(
     session: AsyncSession,
@@ -86,7 +108,9 @@ async def established_subjects(
     """Fact subjects owned by a completed world step. The key is the fact's subject, not a lexicon."""
     if scene_id is None:
         return []
-    facts = await FactRepository(session).list_active(campaign_id, scene_id=scene_id)
+    facts = await FactRepository(session).list_active(
+        campaign_id, scene_id=scene_id, visibility="public"
+    )
     subjects: list[str] = []
     qualifying: set[str] = set()
     checked: set[str] = set()

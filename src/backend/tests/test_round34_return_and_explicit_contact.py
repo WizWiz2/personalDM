@@ -108,7 +108,7 @@ async def test_live_return_ignores_trailing_punctuation_in_visited_location_iden
     assert authorization.authorized is True
     assert authorization.destination_exists is True
     assert authorization.destination == "Небольшой частный детективный офис в центре города"
-    assert "previously visited physical location" in authorization.reason
+    assert "campaign location" in authorization.reason
 
 
 def test_affirmative_unknown_contact_requires_typed_temporary_identity():

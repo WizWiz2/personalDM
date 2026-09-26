@@ -75,11 +75,7 @@ class PostTurnProcessor:
         """
         try:
             raw_snapshot = getattr(assistant, "context_snapshot", "") or "{}"
-            snapshot = (
-                raw_snapshot
-                if isinstance(raw_snapshot, dict)
-                else json.loads(raw_snapshot)
-            )
+            snapshot = raw_snapshot if isinstance(raw_snapshot, dict) else json.loads(raw_snapshot)
         except (TypeError, ValueError):
             return proposals
         authority = snapshot.get("turn_authority")
@@ -101,11 +97,7 @@ class PostTurnProcessor:
         )
         if has_structured_world_action:
             return proposals
-        return [
-            proposal
-            for proposal in proposals
-            if proposal.change_type != ChangeType.FACT
-        ]
+        return [proposal for proposal in proposals if proposal.change_type != ChangeType.FACT]
 
     async def enqueue(self, campaign_id: UUID, assistant_turn_id: UUID) -> None:
         job_types = list(self._jobs.JOB_TYPES)
@@ -175,17 +167,13 @@ class PostTurnProcessor:
         """Read turn status from a fresh transaction boundary before durable writes."""
         row = (
             await self._session.execute(
-                select(Turn.status, Turn.parent_turn_id).where(
-                    Turn.id == str(assistant_turn_id)
-                )
+                select(Turn.status, Turn.parent_turn_id).where(Turn.id == str(assistant_turn_id))
             )
         ).one_or_none()
         if not row or row.status != "active" or not row.parent_turn_id:
             return False
         parent_status = (
-            await self._session.execute(
-                select(Turn.status).where(Turn.id == row.parent_turn_id)
-            )
+            await self._session.execute(select(Turn.status).where(Turn.id == row.parent_turn_id))
         ).scalar_one_or_none()
         return parent_status == "active"
 
@@ -314,9 +302,7 @@ class PostTurnProcessor:
             campaign_id = UUID(row.campaign_id)
             if row.job_type == "thesis_curator":
                 if assistant.scene_id:
-                    scene_turn = await self._turns.assistant_turn_number_in_scene(
-                        assistant.id
-                    )
+                    scene_turn = await self._turns.assistant_turn_number_in_scene(assistant.id)
                     if should_run_periodic_job(
                         scene_turn,
                         settings.CURATOR_INTERVAL_TURNS,
@@ -331,6 +317,12 @@ class PostTurnProcessor:
             elif row.job_type == "memory_scribe":
                 proposal_repo = ProposedChangeRepository(self._session)
                 existing = await proposal_repo.get_for_turn(assistant.id)
+                # Publication already persisted exact response claims. They do not mean that
+                # background extraction of other scene evidence has completed.
+                existing = [
+                    p for p in existing
+                    if p.payload.get("_canon", {}).get("owner") != "turn_response"
+                ]
                 campaign = await self._campaigns.get_by_id(campaign_id)
                 if assistant.parent_turn_id:
                     from app.services.location_profile_guard import (
@@ -353,18 +345,18 @@ class PostTurnProcessor:
                     # pass is safe on every authority-managed turn and keeps the boundary
                     # between planning and durable identity state robust.
                     if self._authority_managed(assistant):
-                        authority_snapshot = self._snapshot_dict(assistant).get(
-                            "turn_authority"
-                        ) or {}
+                        authority_snapshot = (
+                            self._snapshot_dict(assistant).get("turn_authority") or {}
+                        )
                         should_verify_identity = bool(
                             authority_snapshot.get("identity_reveal_requested")
                         )
                         if not should_verify_identity and assistant.scene_id:
                             scene = await self._scenes.get_by_id(assistant.scene_id)
                             if scene:
-                                entities = await EntityRepository(
-                                    self._session
-                                ).list_by_campaign(campaign_id)
+                                entities = await EntityRepository(self._session).list_by_campaign(
+                                    campaign_id
+                                )
                                 participant_ids = {
                                     str(entity_id) for entity_id in scene.participants
                                 }
@@ -389,9 +381,7 @@ class PostTurnProcessor:
                             )
                             await self._session.commit()
                     else:
-                        registration = await EntityRegistrar(
-                            self._session
-                        ).register_from_turn(
+                        registration = await EntityRegistrar(self._session).register_from_turn(
                             campaign_id=campaign_id,
                             scene_id=assistant.scene_id,
                             source_turn_id=assistant.id,
@@ -479,9 +469,7 @@ class PostTurnProcessor:
                         not in existing_detail_texts
                     )
                     proposals.extend(registration.gap_proposals(assistant.scene_id))
-                    proposals = await ProposalPresenceResolver(
-                        self._session
-                    ).enrich(
+                    proposals = await ProposalPresenceResolver(self._session).enrich(
                         campaign_id,
                         assistant.scene_id,
                         proposals,
@@ -563,6 +551,17 @@ class PostTurnProcessor:
             row.error = None
             row.locked_at = None
             await self._session.commit()
+        except asyncio.CancelledError:
+            # An interrupted CLI/server must leave work immediately retryable, not locked
+            # for the stale-worker timeout. The job and its input are already durable.
+            await self._session.rollback()
+            row = await self._session.get(PostTurnJob, str(job_id))
+            if row:
+                row.status = "pending"
+                row.error = "Deferred after worker cancellation"
+                row.locked_at = None
+                await self._session.commit()
+            raise
         except Exception as exc:
             await self._session.rollback()
             row = await self._session.get(PostTurnJob, str(job_id))

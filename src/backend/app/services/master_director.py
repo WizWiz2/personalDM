@@ -137,9 +137,7 @@ def pick_moves(
         chosen.append("introduce_contact")
 
     remaining = {
-        move: weight
-        for move, weight in weights.items()
-        if weight > 0 and move not in chosen
+        move: weight for move, weight in weights.items() if weight > 0 and move not in chosen
     }
     if seed is None:
         ranked = sorted(
@@ -260,9 +258,8 @@ def subordinate_quiet_guidance_to_substance(
     replaced = False
     for item in items:
         text = str(item or "")
-        quietish = (
-            text.startswith("[DIRECTOR MOVE: quiet")
-            or text.startswith("[DIRECTOR STRUCTURAL: quiet]")
+        quietish = text.startswith("[DIRECTOR MOVE: quiet") or text.startswith(
+            "[DIRECTOR STRUCTURAL: quiet]"
         )
         if quietish:
             if not replaced:
@@ -292,15 +289,11 @@ def apply_moves_to_narration_guidance(
 
 
 def _raise_dramatic(current: str, floor: str) -> str:
-    return _RANK_TO_DRAMATIC[
-        max(_DRAMATIC_RANK.get(current, 0), _DRAMATIC_RANK.get(floor, 0))
-    ]
+    return _RANK_TO_DRAMATIC[max(_DRAMATIC_RANK.get(current, 0), _DRAMATIC_RANK.get(floor, 0))]
 
 
 def _cap_dramatic(current: str, ceiling: str) -> str:
-    return _RANK_TO_DRAMATIC[
-        min(_DRAMATIC_RANK.get(current, 0), _DRAMATIC_RANK.get(ceiling, 3))
-    ]
+    return _RANK_TO_DRAMATIC[min(_DRAMATIC_RANK.get(current, 0), _DRAMATIC_RANK.get(ceiling, 3))]
 
 
 def _append_constraint(constraints: list[str], text: str, *, limit: int = 8) -> list[str]:
@@ -359,10 +352,6 @@ def apply_moves_to_outcome_decision(
             "[DIRECTOR STRUCTURAL: advance_conflict] Advance an existing tension; do not "
             "dissolve established stakes into atmosphere-only filler.",
         )
-        if not " ".join(str(ending_hook or "").split()):
-            ending_hook = (
-                "Existing tension remains unresolved and presses for a player-facing response."
-            )
     if "intrigue_reveal" in moves:
         dramatic = _raise_dramatic(dramatic, "tense")
         constraints = _append_constraint(
@@ -370,10 +359,6 @@ def apply_moves_to_outcome_decision(
             "[DIRECTOR STRUCTURAL: intrigue_reveal] Surface a secret, faction pressure, or "
             "offscreen agenda already implied by established state — no exposition dump.",
         )
-        if not " ".join(str(ending_hook or "").split()):
-            ending_hook = (
-                "A hinted agenda or secret now touches the observable scene and awaits response."
-            )
 
     if "introduce_contact" in moves or selected.forced_introduce_contact:
         constraints = _append_constraint(
@@ -421,9 +406,7 @@ def apply_moves_to_outcome_decision(
             "[DIRECTOR STRUCTURAL: soften_blow] Prefer cushioned consequence landing.",
         )
 
-    if committed_travel and not any(
-        "honor_travel" in item for item in constraints
-    ):
+    if committed_travel and not any("honor_travel" in item for item in constraints):
         constraints = _append_constraint(
             constraints,
             "[DIRECTOR STRUCTURAL: honor_travel] Committed player travel must complete as "
@@ -459,7 +442,9 @@ def scene_development_disposition_bias(
         return "act"
     if committed_travel:
         return None
-    if moves & QUIET_MOVES and not (moves & {"npc_initiative", "advance_conflict", "escalate_chaos"}):
+    if moves & QUIET_MOVES and not (
+        moves & {"npc_initiative", "advance_conflict", "escalate_chaos"}
+    ):
         return "quiet"
     return None
 

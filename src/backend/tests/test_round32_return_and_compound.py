@@ -112,7 +112,7 @@ async def test_return_can_resolve_unique_previously_visited_location(
     assert authorization.applicable is True
     assert authorization.authorized is True
     assert authorization.destination_exists is True
-    assert "previously visited physical location" in authorization.reason
+    assert "campaign location" in authorization.reason or "exit from the current location" in authorization.reason
 
 
 def test_object_mentions_must_not_be_reinterpreted_as_people_by_semantic_reviewer():

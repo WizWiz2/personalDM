@@ -200,7 +200,8 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
     assert hardened.dramatic_mode in {"tense", "dangerous"}
     assert any("harden_consequence" in item for item in hardened.canon_constraints)
     assert any("advance_conflict" in item for item in hardened.canon_constraints)
-    assert hardened.ending_hook  # structural hook filled when empty
+    # Pressure adjusts direction, not a fictional event: no ungrounded generic cliffhanger.
+    assert hardened.ending_hook == ""
     assert hardened.narration_guidance == ["prose only"]  # guidance applied separately
 
     quiet = DirectorMoveSelection(
@@ -210,8 +211,13 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
         master_display_name="Мягкий хранитель",
     )
     calmed = apply_moves_to_outcome_decision(
-        base.model_copy(update={"dramatic_mode": "dangerous", "allow_new_complication": True,
-                                "complication_source": "old threat"}),
+        base.model_copy(
+            update={
+                "dramatic_mode": "dangerous",
+                "allow_new_complication": True,
+                "complication_source": "old threat",
+            }
+        ),
         quiet,
     )
     assert calmed.dramatic_mode == "calm"
@@ -305,9 +311,7 @@ def test_requires_contact_introduction_honors_director_force() -> None:
             "resolution": "observation",
         }
     )
-    assert not TurnOutcomeResolver._requires_contact_introduction(
-        contract, context, empty
-    )
+    assert not TurnOutcomeResolver._requires_contact_introduction(contract, context, empty)
     assert TurnOutcomeResolver._requires_contact_introduction(
         contract, context, empty, force_introduce_contact=True
     )
@@ -600,6 +604,7 @@ def test_honor_travel_also_stamps_without_quiet_moves() -> None:
     assert any("honor_travel" in item for item in decided.canon_constraints)
     assert decided.action_outcomes[0].resolution == "blocked"
 
+
 def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
     """Soft Keeper quiet stays voice seasoning; substance stamp rewrites atmospheric quiet tip."""
     quiet = DirectorMoveSelection(
@@ -618,12 +623,18 @@ def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
     assert any("subordinated" in item for item in stamped)
     assert not any("Atmospheric beat with low plot push" in item for item in stamped)
     assert has_substance_stamp(committed_travel=True) is True
-    assert has_substance_stamp(
-        addressed_response_obligation="Управляющая домом",
-    ) is True
-    assert has_substance_stamp(
-        canon_constraints=["[DIRECTOR STRUCTURAL: honor_travel] Arrive or hard-block."],
-    ) is True
+    assert (
+        has_substance_stamp(
+            addressed_response_obligation="Управляющая домом",
+        )
+        is True
+    )
+    assert (
+        has_substance_stamp(
+            canon_constraints=["[DIRECTOR STRUCTURAL: honor_travel] Arrive or hard-block."],
+        )
+        is True
+    )
     assert has_substance_stamp() is False
 
     rewritten = subordinate_quiet_guidance_to_substance(
@@ -635,4 +646,3 @@ def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
     )
     assert rewritten[0].startswith("[DIRECTOR MOVE: quiet / subordinated]")
     assert "other tip" in rewritten
-

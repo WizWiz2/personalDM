@@ -19,16 +19,16 @@ def setup_entities():
     return actor, player, aria, location, known, known_ids
 
 
-def test_placeholder_references_are_resolved_by_backend():
+def test_placeholders_do_not_authorize_actor_identity():
     actor, player, _, _, known, known_ids = setup_entities()
     scribe = MemoryScribe(None)
 
     assert scribe._resolve_reference(
         "SELF", known, known_ids, actor, player
-    ) == str(actor)
+    ) is None
     assert scribe._resolve_reference(
         "USER_CHARACTER_ID", known, known_ids, actor, player
-    ) == str(player)
+    ) is None
     assert scribe._resolve_reference(
         "Garrick", known, known_ids, actor, player
     ) == str(actor)
@@ -67,7 +67,7 @@ def test_knowledge_with_speaker_as_recipient_is_rejected():
     assert payload is None
 
 
-def test_public_event_expands_witnesses_and_discards_unknown_names():
+def test_public_event_does_not_expand_unknown_group_labels():
     actor, player, aria, location, known, known_ids = setup_entities()
     scribe = MemoryScribe(None)
     payload = scribe._normalize_payload(
@@ -87,7 +87,7 @@ def test_public_event_expands_witnesses_and_discards_unknown_names():
 
     assert payload is not None
     assert payload["location_id"] == str(location)
-    assert payload["participant_ids"] == [str(actor), str(player), str(aria)]
+    assert payload["participant_ids"] == []
 
 
 def test_cjk_or_missing_knowledge_is_not_persisted():

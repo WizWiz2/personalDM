@@ -98,7 +98,7 @@ async def test_unique_direct_exit_beats_campaign_global_generic_ambiguity(
     assert authorization.applicable is True
     assert authorization.authorized is True
     assert authorization.destination_exists is True
-    assert "direct structural route" in authorization.reason
+    assert "exit from the current location" in authorization.reason
 
 
 @pytest.mark.asyncio
@@ -139,7 +139,7 @@ async def test_published_address_reference_authorizes_and_normalizes_new_destina
     assert authorization.authorized is True
     assert authorization.destination_exists is False
     assert authorization.destination == "улице Лиговского, около старого здания банка"
-    assert "recently published destination" in authorization.reason
+    assert "quoted in recent narration" in authorization.reason
 
 
 @pytest.mark.asyncio
@@ -254,6 +254,7 @@ def test_blocked_sequence_projection_never_resurrects_planner_ending_hook():
                 "status": "blocked",
                 "intent": "вернуться в офис",
                 "observable_outcome": "Роман возвращается в офис.",
+                "public_blocking_reason": "Неясно, куда именно ведёт этот шаг; путь остаётся прежним.",
                 "blocking_reason": (
                     "Player destination is not authorized: "
                     "player destination reference is ambiguous"

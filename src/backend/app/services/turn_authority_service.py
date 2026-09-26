@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
-from app.services.entity_identity import identity_key
+from app.services.entity_identity import exact_identity_matches, identity_key
 from app.services.narrator_authority_contracts import (
     addressed_response_obligation_constraint,
     addressed_response_obligation_guidance,
@@ -143,15 +143,11 @@ class TurnAuthorityService:
             acting_character_id,
         )
         selected_actor = (
-            await self._entities.get_character(selected_actor_id)
-            if selected_actor_id
-            else None
+            await self._entities.get_character(selected_actor_id) if selected_actor_id else None
         )
 
         source_state = (
-            await self._scene_state.get(campaign_id, source_scene_id)
-            if source_scene_id
-            else None
+            await self._scene_state.get(campaign_id, source_scene_id) if source_scene_id else None
         )
         effective_scene_id = target_scene_id or source_scene_id
         target_state = (
@@ -169,7 +165,25 @@ class TurnAuthorityService:
             actor = None
             effective_actor_id = None
 
-        introductions = list(plan.npc_introductions) if plan else []
+        executed_steps = (
+            (plan.scene_transition.execution_report or {}).get("steps", []) if plan else []
+        )
+        completed_indices = {
+            step.get("step_index", index)
+            for index, step in enumerate(executed_steps)
+            if step.get("status") == "completed"
+        }
+
+        def prerequisite_completed(effect) -> bool:
+            return effect.after_action_index is None or effect.after_action_index in completed_indices
+
+        introductions = [
+            npc for npc in (plan.npc_introductions if plan else [])
+            if prerequisite_completed(npc)
+        ]
+        planned_response = plan.addressed_response if plan else None
+        if planned_response and not prerequisite_completed(planned_response):
+            planned_response = None
         if introductions:
             npc_resolver = getattr(self, "_npc_introductions", None) or NpcIntroductionResolver(
                 self._session
@@ -221,12 +235,8 @@ class TurnAuthorityService:
             if match is not None:
                 character = await self._entities.get_character(match.id)
                 target_loc = target_state.location_id if target_state else None
-                char_loc = (
-                    getattr(character, "current_location_id", None) if character else None
-                )
-                player_loc = (
-                    getattr(player, "current_location_id", None) if player else None
-                )
+                char_loc = getattr(character, "current_location_id", None) if character else None
+                player_loc = getattr(player, "current_location_id", None) if player else None
                 same_scene_unplaced = _first_seen_scene_matches(
                     character if character is not None else match,
                     effective_scene_id,
@@ -300,41 +310,36 @@ class TurnAuthorityService:
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
             identity_reveal_requested=(
-                bool(
-                    plan
-                    and (
-                        plan.personal_name_revealed
-                        or plan.identity_reveal_requested
-                    )
-                )
+                bool(plan and (plan.personal_name_revealed or plan.identity_reveal_requested))
             ),
             dramatic_mode=(plan.narration_policy.dramatic_mode if plan else "calm"),
             observable_consequences=(list(plan.observable_consequences) if plan else []),
             character_beats=(list(plan.character_beats) if plan else []),
+            addressed_response=(
+                planned_response.model_copy(deep=True)
+                if planned_response
+                else None
+            ),
             canon_constraints=(list(plan.canon_constraints) if plan else []),
             narration_guidance=(list(plan.narration_guidance) if plan else []),
             ending_hook=(plan.ending_hook if plan else ""),
             protected_player_decisions=(
                 list(plan.narration_policy.protected_player_decisions) if plan else []
             ),
-            pending_player_choice=(
-                plan.narration_policy.pending_player_choice if plan else None
-            ),
+            pending_player_choice=(plan.narration_policy.pending_player_choice if plan else None),
             allow_new_complication=(
                 plan.narration_policy.allow_new_complication if plan else False
             ),
-            complication_source=(
-                plan.narration_policy.complication_source if plan else None
-            ),
+            complication_source=(plan.narration_policy.complication_source if plan else None),
             action_sequence=executed_sequence,
         )
 
         if authority.identity_reveal_requested:
             authority.narration_guidance.append(
-                "Игрок прямо спросил имя присутствующего персонажа: дай ему ясный ответ с конкретным "
-                "именем. В этой сцене не вводи отказ или уклонение вместо ответа: имя должно быть "
-                "явно произнесено самим персонажем и только такое самоназывание может стабилизировать "
-                "его личность."
+                "Игрок спросил имя присутствующего персонажа: явно передай разрешённый ответ, "
+                "незнание или мотивированный отказ. Не придумывай новое имя ради заполнения ответа. "
+                "Только проверенное самоназывание может стабилизировать личность персонажа; "
+                "сам вопрос не разрешает переименование или создание дубля."
             )
 
         addressee = should_assign_addressed_response_obligation(
@@ -344,6 +349,7 @@ class TurnAuthorityService:
             hinted_name=authority.acting_character_name,
             addressed_response_requested=bool(
                 plan and getattr(plan, "addressed_response_requested", False)
+                and (plan.addressed_response is None or planned_response is not None)
             ),
         )
         if addressee:
@@ -448,8 +454,7 @@ class TurnAuthorityService:
             if (
                 named
                 and authority.acting_character_id is not None
-                and identity_key(named)
-                != identity_key(authority.acting_character_name or "")
+                and identity_key(named) != identity_key(authority.acting_character_name or "")
             ):
                 update = {
                     "acting_character_id": None,
@@ -460,6 +465,90 @@ class TurnAuthorityService:
                     if planned_disposition == "stay":
                         update["transition_type"] = "none"
                 authority = authority.model_copy(update=update)
+
+        if plan and plan.addressed_response and planned_response is None:
+            authority.acting_character_id = None
+            authority.acting_character_name = None
+            authority.addressed_response_obligation = None
+
+        if authority.addressed_response:
+            response = authority.addressed_response
+            # A typed introduction is part of the post-turn cast even before it has a database ID.
+            # Bind aliases to an existing ID; a response must not invent or rename its owner.
+            response_cast = list(dict.fromkeys([
+                *authority.present_character_names, *authority.allowed_new_npc_names,
+                *authority.allowed_existing_npc_arrival_names,
+            ]))
+            present_entities = [
+                entity for entity in all_characters
+                if identity_key(entity.canonical_name) in {identity_key(n) for n in response_cast}
+                and entity.id != authority.player_character_id
+            ]
+            designation = (
+                response.speaker_name or authority.addressed_response_obligation
+                or authority.acting_character_name or ""
+            )
+            matches = exact_identity_matches(present_entities, designation)
+            if response.speaker_id is not None:
+                id_matches = [e for e in present_entities if e.id == response.speaker_id]
+                if len(id_matches) != 1 or (matches and matches[0].id != response.speaker_id):
+                    raise TurnAuthorityError("Planned response speaker ID is absent or inconsistent")
+                matches = id_matches
+            if len(matches) > 1:
+                raise TurnAuthorityError("Planned response speaker identity is ambiguous")
+            speaker = resolve_addressed_present_npc(
+                matches[0].canonical_name if matches else designation,
+                response_cast,
+                player_name=authority.player_character_name,
+            )
+            speaker_entity = next(
+                (
+                    entity
+                    for entity in all_characters
+                    if speaker and identity_key(entity.canonical_name) == identity_key(speaker)
+                ),
+                None,
+            )
+            if response.speaker_name and not speaker:
+                # The planner named someone who is not in this scene. Drop the reply
+                # instead of inventing them or aborting the turn.
+                speaker = None
+                unbound = True
+            else:
+                unbound = False
+            if not speaker and not unbound and plan and plan.addressed_response_requested:
+                non_player = [
+                    name for name in response_cast
+                    if identity_key(name) != identity_key(authority.player_character_name or "")
+                ]
+                if len(non_player) == 1:
+                    speaker = non_player[0]
+                    speaker_entity = next(
+                        (entity for entity in present_entities
+                         if identity_key(entity.canonical_name) == identity_key(speaker)), None,
+                    )
+                else:
+                    # Nobody present, or more than one: the line is not a bound reply.
+                    unbound = True
+            if unbound:
+                authority.addressed_response = None
+                authority.addressed_response_obligation = None
+                authority.acting_character_id = None
+                authority.acting_character_name = None
+            else:
+                authority.addressed_response = response.model_copy(
+                    update={
+                        "speaker_name": speaker,
+                        "speaker_id": speaker_entity.id if speaker_entity else None,
+                    }
+                )
+                if speaker_entity:
+                    # The frozen semantic addressee outranks a stale /talk selection. Persist
+                    # ownership by ID so a later public name reveal does not change the actor.
+                    authority.acting_character_id = speaker_entity.id
+                    authority.acting_character_name = speaker_entity.canonical_name
+                if speaker:
+                    authority.addressed_response_obligation = speaker
 
         lines = await established_state_lines(
             self._session,

@@ -48,6 +48,7 @@ def test_blocked_sequence_does_not_put_engine_status_into_observable_consequence
                 {
                     "status": "blocked",
                     "intent": "Иду в закрытый подвал",
+                    "public_blocking_reason": "Неясно, куда именно ведёт этот шаг; путь остаётся прежним.",
                     "blocking_reason": (
                         "Player destination is not authorized: ambiguous destination"
                     ),

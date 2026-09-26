@@ -148,7 +148,7 @@ def test_engine_exception_is_not_a_player_facing_reply():
                         "action_type": "movement",
                         "status": "blocked",
                         "blocking_reason": leaked,
-                        "observable_outcome": "",
+                        "public_blocking_reason": "Ты остаёшься там, где уже стоишь.",
                     }
                 ]
             },
@@ -159,8 +159,6 @@ def test_engine_exception_is_not_a_player_facing_reply():
 
     assert "location_transition" not in published
     assert "focus_transition" not in published
-    assert TurnAuthority._player_facing_blocking_reason(leaked) == (
-        "Ты остаёшься там, где уже стоишь."
-    )
+    assert leaked not in str(authority.narrator_payload())
     assert audit["mode"] == "authority_projection"
     assert "остаёшься" in published

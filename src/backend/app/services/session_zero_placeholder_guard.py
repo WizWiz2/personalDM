@@ -5,18 +5,8 @@ from app.services.session_zero_agent import SessionZeroInterviewIncompleteError
 
 _INSTALLED = False
 
-_PLACEHOLDER_LOCATIONS = frozenset(
-    {
-        "стартовая локация",
-        "начальная локация",
-        "место старта",
-        "неизвестная локация",
-        "неуточненная локация",
-        "starting location",
-        "start location",
-        "unknown location",
-    }
-)
+# Exact output of the removed engine fallback; migration compatibility only.
+_LEGACY_ENGINE_LOCATION = "Стартовая локация"
 
 
 def _key(value: object) -> str:
@@ -24,7 +14,7 @@ def _key(value: object) -> str:
 
 
 def is_placeholder_location(value: object) -> bool:
-    return _key(value) in _PLACEHOLDER_LOCATIONS
+    return not _key(value) or _key(value) == _key(_LEGACY_ENGINE_LOCATION)
 
 
 def _latest_user_message(state) -> str:

@@ -13,7 +13,8 @@ from app.services.session_zero_placeholder_guard import is_placeholder_location
 
 def test_placeholder_location_classifier_is_narrow():
     assert is_placeholder_location("Стартовая локация") is True
-    assert is_placeholder_location("Неизвестная локация") is True
+    assert is_placeholder_location("Неизвестная локация") is False
+    assert is_placeholder_location(None) is True
     assert is_placeholder_location("Ночной рынок Редмонда") is False
     assert is_placeholder_location("Таверна «Старый мост»") is False
 

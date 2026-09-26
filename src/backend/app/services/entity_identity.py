@@ -47,26 +47,6 @@ _CYRILLIC_TO_LATIN = {
 }
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 
-_ROLE_FAMILIES: dict[str, tuple[str, ...]] = {
-    "innkeeper": (
-        "traktirshchik",
-        "khozyain",
-        "khozyain taverny",
-        "khozyain traktira",
-        "khozyain postoyalogo dvora",
-        "innkeeper",
-        "tavernkeeper",
-    ),
-    "bartender": ("barmen", "bartender", "barkeep"),
-    "guard": ("okhrannik", "strazh", "dezhurnyy", "guard", "watchman", "sentry"),
-    "clerk": ("klerk", "sluzhashchiy", "clerk"),
-    "seller": ("prodavets", "torgovets", "seller", "merchant"),
-    "resident": ("zhilets", "resident"),
-    "informant": ("informator", "informant"),
-    "witness": ("svidetel", "witness"),
-}
-
-
 def identity_key(value: object) -> str:
     """Return a script-stable comparison key for model-authored entity names."""
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
@@ -98,29 +78,6 @@ def exact_identity_matches(entities: Iterable, value: object) -> list:
     return matches
 
 
-def role_families(*values: object) -> set[str]:
-    result: set[str] = set()
-    normalized = [identity_key(value) for value in values if value]
-    for family, patterns in _ROLE_FAMILIES.items():
-        for text in normalized:
-            padded = f" {text} "
-            if any(f" {pattern} " in padded for pattern in patterns):
-                result.add(family)
-                break
-    return result
-
-
-def entity_role_families(entity) -> set[str]:
-    custom_fields = getattr(entity, "custom_fields", None) or {}
-    role = custom_fields.get("role") if isinstance(custom_fields, dict) else None
-    return role_families(
-        getattr(entity, "canonical_name", None),
-        *getattr(entity, "aliases", []),
-        getattr(entity, "description", None),
-        role,
-    )
-
-
 def _temporary_role_key(entity) -> str:
     """Return the stored role key for any explicitly temporary character identity."""
     custom_fields = getattr(entity, "custom_fields", None) or {}
@@ -146,7 +103,7 @@ def resolve_character_candidates(
     2. A named proposal may reconcile with a *unique same-location temporary identity* whose
        stored role exactly equals the proposed role. This covers both structured Session Zero
        placeholders and temporary identities extracted during normal play. Ambiguity fails closed.
-    3. Only a temporary generic role name may fall back to the older coarse role-family matching.
+    Role synonyms are resolved upstream by the semantic identity owner, never by a role lexicon.
     """
 
     entities = list(entities)
@@ -191,27 +148,11 @@ def resolve_character_candidates(
         if len(temporary_matches) == 1:
             return temporary_matches
 
-    if not temporary_name or target_location_id is None:
-        return []
-
-    requested_roles = role_families(proposed_name, proposed_role)
-    if not requested_roles:
-        return []
-
-    matches = []
-    for entity in entities:
-        entity_id = UUID(str(entity.id))
-        if character_locations.get(entity_id) != target_location_id:
-            continue
-        if requested_roles & entity_role_families(entity):
-            matches.append(entity)
-    return matches
+    return []
 
 
 __all__ = [
-    "entity_role_families",
     "exact_identity_matches",
     "identity_key",
     "resolve_character_candidates",
-    "role_families",
 ]

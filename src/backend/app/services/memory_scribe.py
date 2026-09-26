@@ -16,16 +16,6 @@ from app.services.canon_semantics import CanonAudit, CanonEnvelope, proposals_fr
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.semantic_receipt_context import memory_evidence
 
-PLACEHOLDER_SELF = {"self", "speaker", "acting_character", "acting_character_id"}
-PLACEHOLDER_PLAYER = {
-    "player",
-    "user",
-    "hero",
-    "head_character_uuid",
-    "user_character_id",
-    "player_character_id",
-}
-PLACEHOLDER_ALL = {"all", "everyone", "witnesses", "party", "group"}
 UUID_PATTERN = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-"
     r"[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}"
@@ -91,7 +81,9 @@ class MemoryScribe:
         player_name = display_by_id.get(str(player_character_id), "player")
         entity_lines = [
             f"- {display_by_id[entity_id]} [{type_by_id[entity_id]}]"
-            for entity_id in sorted(display_by_id, key=lambda value: display_by_id[value].casefold())
+            for entity_id in sorted(
+                display_by_id, key=lambda value: display_by_id[value].casefold()
+            )
         ]
         participant_names = [
             display_by_id.get(entity_id, entity_id) for entity_id in scene_participant_ids
@@ -99,9 +91,7 @@ class MemoryScribe:
         current_facts = await self._fact_repo.list_active(
             campaign_id,
         )
-        current_relationships = await RelationshipRepository(self._session).list_active(
-            campaign_id
-        )
+        current_relationships = await RelationshipRepository(self._session).list_active(campaign_id)
         fact_lines = [
             f"- {fact.subject} | {fact.predicate} | {fact.object_value or 'null'} "
             f"[{fact.truth_status}] scope={fact.scope}"
@@ -120,16 +110,16 @@ class MemoryScribe:
 
 КТО ГОВОРИЛ В ОТВЕТЕ: {actor_name}
 ПЕРСОНАЖ ИГРОКА: {player_name}
-ПРИСУТСТВУЮТ В СЦЕНЕ: {', '.join(participant_names) or 'неизвестно'}
+ПРИСУТСТВУЮТ В СЦЕНЕ: {", ".join(participant_names) or "неизвестно"}
 
 ИЗВЕСТНЫЕ СУЩНОСТИ:
-{chr(10).join(entity_lines) or '- нет'}
+{chr(10).join(entity_lines) or "- нет"}
 
 ТЕКУЩИЕ ОБЪЕКТИВНЫЕ FACTS:
-{chr(10).join(fact_lines) or '- нет'}
+{chr(10).join(fact_lines) or "- нет"}
 
 ТЕКУЩИЕ ОБЪЕКТИВНЫЕ RELATIONSHIPS:
-{chr(10).join(relationship_lines) or '- нет'}
+{chr(10).join(relationship_lines) or "- нет"}
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
 - EXECUTED WORLD RESULTS — подтверждённые исполнителем результаты, а не намерения игрока.
@@ -188,7 +178,7 @@ class MemoryScribe:
   "outcomes": [
     {{
       "id": "o1",
-      "kind": "world_state|event|knowledge_transfer|relationship_change|movement|item_transfer",
+      "kind": "world_state|event|knowledge_transfer|relationship_change|movement|item_transfer|narrative_detail",
       "description": "что устойчиво изменилось",
       "evidence": "точная цитата из ответа ДМа",
       "authority": "dm_confirmed|public_observation|character_claim|player_intent",
@@ -198,7 +188,7 @@ class MemoryScribe:
   "proposals": [
     {{
       "outcome_id": "o1",
-      "change_type": "fact|event|relationship|movement|knowledge|item_transfer",
+      "change_type": "fact|event|relationship|movement|knowledge|item_transfer|narrative_detail",
       "operation": "assert|revise|retract|contradict",
       "cardinality": "single|multi",
       "payload": {{}}
@@ -207,6 +197,7 @@ class MemoryScribe:
 }}
 
 PAYLOAD:
+Все ссылки на сущности — точное имя/alias из каталога или его UUID. Не возвращай SELF, player, all или другие местоименные заглушки; перечисли конкретные id участников.
 - fact: {{"subject":"устойчивый субъект","predicate":"стабильная связь","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public","scope":"scene|campaign"}}
 - scope=scene для следов, положения, состояния двери, локальной находки и любых наблюдений, истинных только здесь.
 - scope=campaign только для личности, происхождения, владения, глобального лора или устойчивого состояния, которое должно пережить смену сцены.
@@ -217,13 +208,21 @@ PAYLOAD:
 - item_transfer: {{"item_id":"точное имя предмета","owner_id":"имя владельца или null","location_id":"имя локации или null","description":"передача"}}
 
 FACT SEMANTICS:
+- Classify fact payloads semantically with memory_kind=world_canon|entity_state|scene_state.
+  Stable identity/lore is world_canon; persistent mutable state of a known entity is entity_state;
+  local scene state is scene_state. Do not classify by individual words or linguistic patterns.
+- Useful fleeting gestures, posture and atmosphere are optional narrative_detail proposals, not
+  facts: outcome kind=narrative_detail, durable=false; payload text is a short exact evidence quote,
+  detail_type=gaze|pose|expression|gesture|ambient|sensory|spatial|other and scope belongs to this scene.
+  Select only useful recent texture, not every sentence; never mix a speaker's claim with body language.
 - assert: нового текущего значения ещё нет;
 - revise: прежнее текущее значение уточнено или заменено;
 - contradict: ДМ прямо опроверг прежнее текущее значение;
 - retract: прежнее значение больше не считается текущим;
 - cardinality=single, если одновременно допустимо только одно значение; multi, если значений может быть несколько.
 
-Каждый durable outcome должен иметь хотя бы один proposal. Если устойчивых изменений нет, верни пустые outcomes и proposals.
+Каждый durable outcome должен иметь хотя бы один proposal. Если нет ни устойчивых изменений,
+ни полезной временной детали, верни пустые outcomes и proposals.
 """
 
         try:
@@ -365,6 +364,7 @@ FACT SEMANTICS:
         rejected_actor_knowledge: set[str] = set()
         existing_gaps = set(audit.gap_outcome_ids)
 
+        self._known_display_names = list(known_entities.keys())
         for proposal in extracted:
             canon_meta = (
                 proposal.payload.get("_canon")
@@ -413,9 +413,7 @@ FACT SEMANTICS:
             elif outcome_id:
                 failed_normalization[outcome_id] = canon_meta
 
-        new_gaps = sorted(
-            set(failed_normalization) - surviving_outcomes - existing_gaps
-        )
+        new_gaps = sorted(set(failed_normalization) - surviving_outcomes - existing_gaps)
         for outcome_id in new_gaps:
             results.append(
                 ProposedChangeCreate(
@@ -448,9 +446,7 @@ FACT SEMANTICS:
             )
 
         denominator = audit.covered_outcome_count + audit.gap_count
-        audit.coverage_ratio = (
-            audit.covered_outcome_count / denominator if denominator else 1.0
-        )
+        audit.coverage_ratio = audit.covered_outcome_count / denominator if denominator else 1.0
         audit.proposal_count = len(results)
         self.last_audit = audit.model_dump()
         return results
@@ -460,7 +456,7 @@ FACT SEMANTICS:
         if not isinstance(value, str):
             return value
         value = HTML_PATTERN.sub("", value).strip()
-        if value.casefold() in {"", "null", "none", "n/a", "unknown"}:
+        if value.casefold() in {"", "null", "none", "n/a"}:
             return None
         return value
 
@@ -481,21 +477,12 @@ FACT SEMANTICS:
         if not isinstance(value, str):
             return None
         folded = value.casefold().strip()
-        if folded in PLACEHOLDER_SELF:
-            return str(acting_character_id) if acting_character_id else None
-        if folded in PLACEHOLDER_PLAYER:
-            return str(player_character_id) if player_character_id else None
         direct = known_entities.get(folded)
         if direct:
             return direct
         match = UUID_PATTERN.search(value)
         if match and match.group(0) in known_ids:
             return match.group(0)
-        for alias, entity_id in sorted(
-            known_entities.items(), key=lambda item: len(item[0]), reverse=True
-        ):
-            if alias and alias in folded:
-                return entity_id
         return None
 
     @staticmethod
@@ -521,9 +508,6 @@ FACT SEMANTICS:
             return []
         resolved: list[str] = []
         for value in values:
-            if isinstance(value, str) and value.casefold().strip() in PLACEHOLDER_ALL:
-                resolved.extend(scene_participant_ids)
-                continue
             entity_id = self._resolve_reference(
                 value,
                 known_entities,
@@ -633,7 +617,9 @@ FACT SEMANTICS:
             if not resolved.get("subject") or not resolved.get("predicate"):
                 return None
             operation = str(resolved.get("operation") or canon_meta.get("operation") or "assert")
-            cardinality = str(resolved.get("cardinality") or canon_meta.get("cardinality") or "single")
+            cardinality = str(
+                resolved.get("cardinality") or canon_meta.get("cardinality") or "single"
+            )
             if operation not in {"assert", "revise", "retract", "contradict"}:
                 operation = "assert"
             if cardinality not in {"single", "multi"}:
@@ -642,6 +628,17 @@ FACT SEMANTICS:
             resolved["cardinality"] = cardinality
             if operation != "retract" and not resolved.get("object_value"):
                 return None
+            known_names = list(getattr(self, "_known_display_names", []) or [])
+            if known_names:
+                from app.services.play_surface_contract import snap_near_names
+
+                if resolved.get("subject"):
+                    resolved["subject"] = snap_near_names(str(resolved["subject"]), known_names)
+                if resolved.get("object_value"):
+                    resolved["object_value"] = snap_near_names(
+                        str(resolved["object_value"]),
+                        known_names,
+                    )
             scope = str(resolved.get("scope") or "scene").casefold()
             if scope not in {"campaign", "scene"}:
                 scope = "scene"
@@ -652,7 +649,6 @@ FACT SEMANTICS:
             else:
                 resolved["scope"] = "campaign"
                 resolved.pop("scene_id", None)
-
 
         if canon_meta:
             resolved["_canon"] = canon_meta

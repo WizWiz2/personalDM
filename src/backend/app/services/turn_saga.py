@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from time import perf_counter
 from collections.abc import AsyncIterator
 from uuid import UUID
 
@@ -34,6 +35,8 @@ from app.services.turn_outcome_materializer import (
 )
 from app.services.turn_planner import TurnPlanningError
 from app.services.scene_development import SceneDevelopmentService
+from app.services.turn_world_frame import TurnWorldFrame
+from app.services.response_memory import ResponseMemoryService
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -82,10 +85,7 @@ class TurnSaga:
         content: str,
     ) -> tuple[list[ChatMessage], dict]:
         """Keep the addressed player's current message even when history fills the budget."""
-        if any(
-            message.role == "user" and message.content == content
-            for message in messages
-        ):
+        if any(message.role == "user" and message.content == content for message in messages):
             snapshot = dict(metadata)
             snapshot["current_user_reserved"] = True
             return messages, snapshot
@@ -142,7 +142,14 @@ class TurnSaga:
             "- known_absent_characters may not appear physically.\n"
             "- Never complete a scene boundary absent from scene_disposition/transition_type.\n"
             "- Preserve observable_consequences, canon_constraints and completed action steps.\n"
+            "- addressed_response contains the approved speech act: answer every indexed question "
+            "with its assigned speaker, meaning and disposition before any hook. Atmosphere is not "
+            "an answer. These words remain character claims, not omniscient world facts.\n"
+            "- Explicit negative player boundaries remain binding even for sensory actions.\n"
             "- narration_guidance and ending_hook affect prose only; they never override state.\n"
+            "- Complete the current exchange before any hook. A closing opportunity must refer "
+            "to an actual approved outcome, open choice or NPC offer; do not replace it with "
+            "abstract suspense or a rhetorical challenge. A complete quiet answer may simply end.\n"
             "- scene_development actions are approved NPC-owned acts AFTER the executed outcome. "
             "Render them concretely, preserving the actor and leaving player_opportunity open. "
             "They do not authorize accepting an offer for the hero or changing physical state. "
@@ -184,9 +191,7 @@ class TurnSaga:
 
         max_budget_override = None
         if turn_create.acting_character_id is None:
-            safety_margin = int(
-                primary_config.context_window * settings.SAFETY_MARGIN_PERCENT
-            )
+            safety_margin = int(primary_config.context_window * settings.SAFETY_MARGIN_PERCENT)
             max_budget_override = max(
                 512,
                 primary_config.context_window
@@ -326,6 +331,9 @@ class TurnSaga:
         turn_create: TurnCreate,
         existing_user_turn_id: UUID | None = None,
     ) -> AsyncIterator[str]:
+        started = perf_counter()
+        phase_started = started
+        stage_timings: dict[str, float] = {}
         owns_user_turn = existing_user_turn_id is None
         if existing_user_turn_id:
             user_turn = await self._turn_repo.get_by_id(existing_user_turn_id)
@@ -375,6 +383,8 @@ class TurnSaga:
                 primary_config,
             )
             messages, context_metadata = compiled
+            stage_timings["context_ms"] = round((perf_counter() - phase_started) * 1000, 2)
+            phase_started = perf_counter()
             plan: CoordinatedTurnPlan | None = None
             planner_metadata: dict = {
                 "status": "skipped",
@@ -385,19 +395,22 @@ class TurnSaga:
                 "source_scene_id": str(source_scene_id) if source_scene_id else None,
             }
 
-            if turn_create.acting_character_id is None:
-                plan, planner_metadata = await self._plan(
-                    campaign_id=campaign_id,
-                    user_input=turn_create.content,
-                    messages=messages,
-                    role_router=role_router,
-                    primary_config=primary_config,
-                )
+            # Selecting /talk chooses response ownership, not a separate unplanned engine.
+            # Both world turns and actor-addressed turns use the same frozen-intent compiler.
+            plan, planner_metadata = await self._plan(
+                campaign_id=campaign_id,
+                user_input=turn_create.content,
+                messages=messages,
+                role_router=role_router,
+                primary_config=primary_config,
+            )
+            stage_timings["planning_ms"] = round((perf_counter() - phase_started) * 1000, 2)
+            phase_started = perf_counter()
 
             # Planner output is durable before any structured world mutation begins.
             await self._set_phase(generation_run.id, GenerationPhase.PLANNED)
 
-            if turn_create.acting_character_id is None:
+            if plan:
                 # Capture the pre-turn projection before scene transitions or action steps mutate
                 # character locations. Canon replay uses this checkpoint for a correct undo.
                 if plan and (
@@ -437,9 +450,7 @@ class TurnSaga:
                     effective_scene_id = applied_transition.target_scene_id
                     transition_metadata = {
                         "status": (
-                            "prepared"
-                            if applied_transition.status == "prepared"
-                            else "reused"
+                            "prepared" if applied_transition.status == "prepared" else "reused"
                         ),
                         "transition_id": str(applied_transition.transition_id),
                         "source_scene_id": (
@@ -472,14 +483,16 @@ class TurnSaga:
                     acting_character_id=turn_create.acting_character_id,
                 )
             except TurnAuthorityError as exc:
-                raise TurnPlanningError(
-                    f"Turn authority rejected before narration: {exc}"
-                ) from exc
+                raise TurnPlanningError(f"Turn authority rejected before narration: {exc}") from exc
 
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(
                 authority,
                 source_turn_id=user_turn.id,
+            )
+            world_frame = (
+                await TurnWorldFrame.capture(self._session, campaign_id, effective_scene_id)
+                if effective_scene_id else None
             )
 
             # The PREPARED checkpoint is committed in the same transaction as every structured
@@ -491,6 +504,8 @@ class TurnSaga:
             )
             await self._session.commit()
             prepared = True
+            stage_timings["preparation_ms"] = round((perf_counter() - phase_started) * 1000, 2)
+            phase_started = perf_counter()
 
             # Narrator always gets a fresh snapshot from the now-durable prepared world. This also
             # removes the old split where transition and NPC materialization could recompile at
@@ -520,25 +535,22 @@ class TurnSaga:
                         DirectorMoveSelection(
                             moves=moves[:2],
                             obligations=[],
-                            forced_introduce_contact=bool(
-                                gm_meta.get("forced_introduce_contact")
-                            ),
+                            forced_introduce_contact=bool(gm_meta.get("forced_introduce_contact")),
                             master_id=str(gm_meta.get("id") or "unknown"),
-                            master_display_name=str(
-                                gm_meta.get("display_name") or "unknown"
-                            ),
+                            master_display_name=str(gm_meta.get("display_name") or "unknown"),
                         ),
                         committed_travel=bool(gm_meta.get("committed_travel")),
                     )
             # Direct address to a present cast member outranks Soft Keeper quiet bias:
             # atmosphere-only quiet must not erase an obligated addressee.
-            if getattr(authority, "addressed_response_obligation", None) and disposition_bias == "quiet":
+            if (
+                getattr(authority, "addressed_response_obligation", None)
+                and disposition_bias == "quiet"
+            ):
                 disposition_bias = None
             # Committed travel outranks Soft Keeper quiet bias: do not soft-stall arrival.
             if disposition_bias == "quiet":
-                travel_flag = (
-                    isinstance(gm_meta, dict) and bool(gm_meta.get("committed_travel"))
-                )
+                travel_flag = isinstance(gm_meta, dict) and bool(gm_meta.get("committed_travel"))
                 source_path = list(getattr(authority, "source_location_path", None) or [])
                 target_path = list(getattr(authority, "target_location_path", None) or [])
                 if travel_flag or (target_path and target_path != source_path):
@@ -554,25 +566,26 @@ class TurnSaga:
             lifecycle = await self._generation_lifecycle.get(generation_run.id)
             context_metadata.update(
                 {
-                    "planner_context_scene_id": (
-                        str(source_scene_id) if source_scene_id else None
-                    ),
+                    "planner_context_scene_id": (str(source_scene_id) if source_scene_id else None),
                     "narrator_context_scene_id": (
                         str(effective_scene_id) if effective_scene_id else None
                     ),
                     "turn_planner": planner_metadata,
                     "scene_transition": transition_metadata,
                     "turn_authority": authority.model_dump(mode="json"),
+                    "world_frame": world_frame.model_dump(mode="json") if world_frame else None,
                     "scene_development": development_metadata,
                     "turn_materialization": {
+                        "identity_updates": [
+                            update.snapshot() for update in materialized_outcome.identity_updates
+                        ],
                         "status": (
                             "prepared_before_narration"
                             if materialized_outcome.has_changes
                             else "not_required"
                         ),
                         "introduced_character_ids": [
-                            str(value)
-                            for value in materialized_outcome.introduced_character_ids
+                            str(value) for value in materialized_outcome.introduced_character_ids
                         ],
                         "arrived_existing_character_ids": [
                             str(value)
@@ -620,6 +633,11 @@ class TurnSaga:
             await self._set_phase(generation_run.id, GenerationPhase.NARRATED)
 
             context_metadata["provider_telemetry"] = narration.telemetry
+            stage_timings["presentation_ms"] = round((perf_counter() - phase_started) * 1000, 2)
+            stage_timings["total_before_publication_ms"] = round(
+                (perf_counter() - started) * 1000, 2
+            )
+            context_metadata["stage_timings"] = stage_timings
             context_metadata["interagent_protocol"] = {
                 "version": 2,
                 "planner_status": planner_metadata.get("status"),
@@ -628,13 +646,15 @@ class TurnSaga:
                 "structured_outcome_before_prose": True,
             }
             token_count = (narration.telemetry.get("usage") or {}).get("completion_tokens")
+            if world_frame:
+                await world_frame.assert_unchanged(self._session, campaign_id)
             saved_assistant = await self._turn_repo.create(
                 campaign_id,
                 TurnCreate(
                     role="assistant",
                     content=narration.text,
                     scene_id=effective_scene_id,
-                    acting_character_id=turn_create.acting_character_id,
+                    acting_character_id=authority.acting_character_id,
                     parent_turn_id=user_turn.id,
                     model_name=narrator_selection.config.model_name,
                     context_snapshot=context_metadata,
@@ -645,6 +665,7 @@ class TurnSaga:
             # The action becomes durable only together with the validated published answer.
             # It records behavior, never promotes the content of an NPC claim into objective canon.
             await development_service.publish(authority, saved_assistant.id)
+            await ResponseMemoryService(self._session).publish(authority, saved_assistant.id)
 
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(
@@ -652,16 +673,14 @@ class TurnSaga:
                 ):
                     raise RuntimeError("Prepared scene transition could not be finalized")
 
-            if materializer and materialized_outcome.introduced_character_ids:
+            if materializer and materialized_outcome.has_changes:
                 await materializer.bind_to_assistant(
                     materialized_outcome,
                     saved_assistant.id,
                 )
             if materializer and materialized_outcome.has_changes:
                 context_metadata["turn_materialization"]["status"] = "applied"
-                context_metadata["turn_materialization"]["source_turn_id"] = str(
-                    saved_assistant.id
-                )
+                context_metadata["turn_materialization"]["source_turn_id"] = str(saved_assistant.id)
 
             assistant_row = await self._session.get(Turn, str(saved_assistant.id))
             if assistant_row:
@@ -730,19 +749,21 @@ class TurnSaga:
                 error=str(exc)[:4000],
             )
             telemetry = getattr(exc, "telemetry", None)
-            if telemetry:
-                failed_user = await self._session.get(Turn, str(user_turn.id))
-                if failed_user is not None:
-                    snapshot = json.loads(failed_user.context_snapshot or "{}")
+            failed_user = await self._session.get(Turn, str(user_turn.id))
+            if failed_user is not None:
+                snapshot = json.loads(failed_user.context_snapshot or "{}")
+                if telemetry:
                     snapshot["control_failure"] = telemetry
-                    failed_user.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
+                snapshot["stage_timings"] = {
+                    **stage_timings,
+                    "failed_stage_ms": round((perf_counter() - phase_started) * 1000, 2),
+                    "total_ms": round((perf_counter() - started) * 1000, 2),
+                }
+                failed_user.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
-            if (
-                campaign_key in active_tasks
-                and active_tasks[campaign_key] == current_task
-            ):
+            if campaign_key in active_tasks and active_tasks[campaign_key] == current_task:
                 del active_tasks[campaign_key]
 
 

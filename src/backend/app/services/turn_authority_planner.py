@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, 
 
 from app.config import settings
 from app.models.turn import ChatMessage
+from app.models.addressed_response import AddressedResponse
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.entity_identity import identity_key
@@ -121,6 +122,7 @@ class CoordinatedTurnPlan(TurnPlan):
         max_length=4,
     )
     addressed_response_requested: bool = False
+    addressed_response: AddressedResponse | None = None
     personal_name_revealed: bool = False
     identity_reveal_requested: bool = False
     response_ownership_reason: str | None = Field(default=None, max_length=500)
@@ -518,99 +520,35 @@ short sentence. Return exactly the NpcContactDecision schema.
                     return assessments
         return []
 
-    _DESTINATION_PREPS = frozenset({"в", "во", "на", "к", "до", "to", "into", "toward", "towards"})
-    _ORIGIN_PREPS = frozenset({"из", "с", "от", "from"})
-
-    @classmethod
-    def _location_named_as_destination(cls, text: str, location: str) -> bool:
-        """True when a travel clause names this location as destination, not merely origin."""
-        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
-
-        specific, _generic = PlayerDestinationAuthorizer._destination_reference(text, location)
-        if not specific:
-            return False
-        tokens = PlayerDestinationAuthorizer.TOKEN_RE.findall(text.casefold())
-        location_tokens = [
-            token
-            for token in PlayerDestinationAuthorizer.TOKEN_RE.findall(location.casefold())
-            if len(token) >= 3
-        ]
-        after_destination = False
-        after_origin = False
-        for index, token in enumerate(tokens):
-            if index == 0:
-                continue
-            if not any(
-                PlayerDestinationAuthorizer._tokens_match(token, location_token)
-                for location_token in location_tokens
-            ):
-                continue
-            prep = tokens[index - 1]
-            if prep in cls._DESTINATION_PREPS:
-                after_destination = True
-            if prep in cls._ORIGIN_PREPS:
-                after_origin = True
-        return after_destination or not after_origin
-
     @staticmethod
     def _canonical_travel_authority(
         player_input: str,
         plan: CoordinatedTurnPlan,
         context_messages: list[ChatMessage],
     ) -> _TravelAuthority:
-        """Machine travel coverage: committed hops vs typed transition or blocked attempt.
-
-        Available exits come from machine-authored scene lines. A hop to a place that is not an
-        available exit cannot be a location_transition; it is covered only by a blocked movement
-        step. Reviewer prose is not inspected.
-        """
+        """Committed travel is a typed transition, not a reread of the player's verbs."""
+        from app.services.location_identity import same_location_reference
         from app.services.planner_structural_repair_guard import _scene_location_references
-        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
 
-        clauses = PlayerDestinationAuthorizer._clauses(player_input)
-        committed = any(clause.travel for clause in clauses)
-        current_location_ref, available_location_refs = _scene_location_references(
-            context_messages
-        )
-        current_location_key = " ".join(str(current_location_ref or "").split()).casefold()
-        input_tokens = re.findall(r"[a-zа-яё0-9]+", player_input.casefold())
-        locative_tokens = {
-            token
-            for index, token in enumerate(input_tokens)
-            if index > 0 and input_tokens[index - 1] in {"в", "во", "на", "к", "до"}
-        }
-        current_tokens = {
-            token for token in re.findall(r"[a-zа-яё0-9]+", current_location_key) if len(token) >= 4
-        }
-        locative_refers_to_current = any(
-            token.startswith(current_token[:4]) or current_token.startswith(token[:4])
-            for token in locative_tokens
-            if len(token) >= 4
-            for current_token in current_tokens
-        )
-        allowlisted = bool(current_location_key) and not locative_refers_to_current and any(
-            " ".join(str(destination).split()).casefold() != current_location_key
-            and any(
-                token.startswith(destination_token[:4])
-                or destination_token.startswith(token[:4])
-                for token in locative_tokens
-                if len(token) >= 4
-                for destination_token in re.findall(
-                    r"[a-zа-яё0-9]+", str(destination).casefold()
-                )
-                if len(destination_token) >= 4
+        del player_input
+        _current_ref, available_location_refs = _scene_location_references(context_messages)
+        typed_destinations = [
+            " ".join(str(transition.destination_location or "").split())
+            for transition in (
+                [plan.scene_transition] if plan.scene_transition.required else []
             )
-            for destination in available_location_refs
+            + [
+                step.transition
+                for step in plan.action_sequence.steps
+                if step.transition.required
+            ]
+            if transition.transition_type == "location_transition"
+            and str(transition.destination_location or "").strip()
+        ]
+        committed = bool(typed_destinations) or any(
+            step.action_type == "movement" for step in plan.action_sequence.steps
         )
-        committed = committed or allowlisted
-        has_transition = (
-            plan.scene_transition.required
-            and plan.scene_transition.transition_type == "location_transition"
-        ) or any(
-            step.transition.required
-            and step.transition.transition_type == "location_transition"
-            for step in plan.action_sequence.steps
-        )
+        has_transition = bool(typed_destinations)
         current_location = next(
             (
                 line.split(":", 1)[1].split(">")[-1].strip()
@@ -625,9 +563,7 @@ short sentence. Return exactly the NpcContactDecision schema.
             " ".join(str(transition.destination_location or "").split()).casefold()
             == str(current_location or "").casefold()
             for transition in (
-                [plan.scene_transition]
-                if plan.scene_transition.required
-                else []
+                [plan.scene_transition] if plan.scene_transition.required else []
             )
             + [
                 step.transition
@@ -637,12 +573,11 @@ short sentence. Return exactly the NpcContactDecision schema.
             if transition.transition_type == "location_transition"
         )
         unavailable_committed_travel = any(
-            clause.travel
-            and not any(
-                TurnAuthorityPlanner._location_named_as_destination(clause.text, destination)
-                for destination in available_location_refs
+            not any(
+                same_location_reference(destination, available)
+                for available in available_location_refs
             )
-            for clause in clauses
+            for destination in typed_destinations
         )
         blocked_attempt_typed = any(
             step.action_type == "movement"
@@ -657,46 +592,6 @@ short sentence. Return exactly the NpcContactDecision schema.
             unavailable_committed_travel=unavailable_committed_travel,
             blocked_attempt_typed=blocked_attempt_typed,
         )
-
-    @staticmethod
-    def _mark_identity_request(
-        plan: CoordinatedTurnPlan,
-        player_input: str,
-        present_names: list[str],
-    ) -> None:
-        """Make the typed contract retain an explicit request for a present NPC's name.
-
-        Small local models occasionally label a direct name question as an ordinary blocked
-        interaction.  The question itself is a stable speech-act signal, independent of the
-        eventual answer: it authorizes the narrator to establish a name, while promotion still
-        requires explicit self-identification in the published text.
-        """
-        if not present_names:
-            return
-        normalized = " ".join(str(player_input or "").casefold().split())
-        if not normalized:
-            return
-        name_request_markers = (
-            "как тебя зовут",
-            "как вас зовут",
-            "как его зовут",
-            "как ее зовут",
-            "как её зовут",
-            "твое имя",
-            "твоё имя",
-            "ваше имя",
-            "его имя",
-            "ее имя",
-            "её имя",
-            "как зовут",
-            "what is your name",
-            "what's your name",
-            "what is his name",
-            "what is her name",
-            "your name",
-        )
-        if any(marker in normalized for marker in name_request_markers):
-            plan.identity_reveal_requested = True
 
     @staticmethod
     def _sanitize_character_destinations(
@@ -778,7 +673,8 @@ short sentence. Return exactly the NpcContactDecision schema.
         player_input: str,
     ) -> None:
         """Keep local approach/body motion out of the physical location graph."""
-        from app.services.player_destination_authorization import PlayerDestinationAuthorizer
+        del context_messages, player_input
+        return
 
         if any(
             clause.travel for clause in PlayerDestinationAuthorizer._clauses(player_input)
@@ -1667,7 +1563,6 @@ short sentence. Return exactly the NpcContactDecision schema.
             plan = await self._generate_plan(selection, base_messages)
             sanitize_existing_present_npc_introductions(plan, present_names)
             self._sanitize_npc_names(plan, player_input)
-            self._mark_identity_request(plan, player_input, present_names)
             self._sanitize_character_destinations(plan, present_names)
             self._sanitize_uncommitted_npc_introductions(plan)
             self._normalize_nontravel_location_moves(plan, context_messages, player_input)
@@ -1726,7 +1621,6 @@ short sentence. Return exactly the NpcContactDecision schema.
                 )
                 sanitize_existing_present_npc_introductions(repaired, present_names)
                 self._sanitize_npc_names(repaired, player_input)
-                self._mark_identity_request(repaired, player_input, present_names)
                 self._sanitize_character_destinations(repaired, present_names)
                 self._sanitize_uncommitted_npc_introductions(repaired)
                 self._normalize_nontravel_location_moves(repaired, context_messages, player_input)
@@ -1772,7 +1666,6 @@ short sentence. Return exactly the NpcContactDecision schema.
                     if patched is not repaired:
                         sanitize_existing_present_npc_introductions(patched, present_names)
                         self._sanitize_npc_names(patched, player_input)
-                        self._mark_identity_request(patched, player_input, present_names)
                         self._sanitize_character_destinations(patched, present_names)
                         self._sanitize_uncommitted_npc_introductions(patched)
                         self._normalize_nontravel_location_moves(patched, context_messages, player_input)
@@ -1807,7 +1700,6 @@ short sentence. Return exactly the NpcContactDecision schema.
                     )
                     if profile_patched is not repaired:
                         self._sanitize_npc_names(profile_patched, player_input)
-                        self._mark_identity_request(profile_patched, player_input, present_names)
                         self._sanitize_character_destinations(profile_patched, present_names)
                         self._sanitize_uncommitted_npc_introductions(profile_patched)
                         self._normalize_nontravel_location_moves(
@@ -1851,7 +1743,6 @@ short sentence. Return exactly the NpcContactDecision schema.
                 if patched is not repaired:
                     sanitize_existing_present_npc_introductions(patched, present_names)
                     self._sanitize_npc_names(patched, player_input)
-                    self._mark_identity_request(patched, player_input, present_names)
                     self._sanitize_character_destinations(patched, present_names)
                     self._sanitize_uncommitted_npc_introductions(patched)
                     self._normalize_nontravel_location_moves(patched, context_messages, player_input)

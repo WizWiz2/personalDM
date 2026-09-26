@@ -97,6 +97,11 @@ World authority rules:
   mention or quotation of past speech is not physical presence.
 
 Turn-completeness rules:
+- Preserve every indexed addressed_response answer, its speaker, meaning and disposition.
+  Supply response_coverage for each question_index with the shortest exact answer quote from
+  candidate prose. A pass without complete extractive coverage is invalid.
+  Ignorance/refusal are complete when explicit; atmosphere or a postponed answer is not.
+  An explicit player prohibition also constrains voluntary sensory actions such as touching.
 - scene_development contains separately approved NPC actions after the resolved player action.
   Require their concrete rendering with the correct actor and an open player opportunity. Never
   repair away this initiative merely because it is absent from the player's action_sequence.
@@ -180,6 +185,7 @@ async def _semantic_review_failed_narration(
         response_model=NarrationValidationResult,
     )
     reviewed = NarrationValidationResult.model_validate(data)
+    reviewed = validator.apply_question_coverage(reviewed, authority, candidate_text)
 
     # Only formal, machine-provable post-checks remain deterministic.
     reviewed = validator.apply_deterministic_authority(reviewed, authority)

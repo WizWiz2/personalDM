@@ -267,6 +267,18 @@ class GameApplication:
         assistants = [item for item in history if item.role == "assistant"]
         return assistants[-1].id if assistants else None
 
+    async def latest_narrative_text(self, campaign_id: UUID) -> str | None:
+        """Last published scene prose, skipping a failed generation marker."""
+        history = await self._turns.get_history(campaign_id, limit=30, channel="narrative")
+        for item in reversed(history):
+            if item.role != "assistant":
+                continue
+            text = " ".join(str(item.content or "").split())
+            if not text or text.startswith("[Generation failed"):
+                continue
+            return text
+        return None
+
     async def current_scene_view(self, campaign_id: UUID) -> GameSceneView | None:
         campaign = await self._campaigns.get_by_id(campaign_id)
         if not campaign:

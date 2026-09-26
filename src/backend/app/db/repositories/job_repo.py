@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import literal_column, select, update
 
 from app.db.repositories.base import BaseRepository
 from app.db.tables import GenerationRun, PostTurnJob
@@ -37,9 +37,7 @@ class GenerationRunRepository(BaseRepository):
         row = result.scalar_one_or_none()
         return await self._read(row)
 
-    async def start_or_resume(
-        self, campaign_id: UUID, user_turn_id: UUID
-    ) -> GenerationRunRead:
+    async def start_or_resume(self, campaign_id: UUID, user_turn_id: UUID) -> GenerationRunRead:
         result = await self._session.execute(
             select(GenerationRun).where(GenerationRun.user_turn_id == str(user_turn_id))
         )
@@ -96,11 +94,15 @@ class GenerationRunRepository(BaseRepository):
         await self._session.flush()
         return True
 
-    async def list_for_campaign(self, campaign_id: UUID, limit: int = 50) -> list[GenerationRunRead]:
+    async def list_for_campaign(
+        self, campaign_id: UUID, limit: int = 50
+    ) -> list[GenerationRunRead]:
         result = await self._session.execute(
             select(GenerationRun)
             .where(GenerationRun.campaign_id == str(campaign_id))
-            .order_by(GenerationRun.created_at.desc())
+            .order_by(
+                GenerationRun.created_at.desc(), literal_column("generation_runs.rowid").desc()
+            )
             .limit(limit)
         )
         return [item for row in result.scalars().all() if (item := await self._read(row))]

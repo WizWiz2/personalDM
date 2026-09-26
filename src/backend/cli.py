@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application import GameApplication
 from app.application.post_turn_runtime import (
     recover_stale_post_turn_jobs,
-    wait_for_post_turn_idle,
 )
 from app.config import settings
 from app.db.engine import AsyncSessionLocal, Base, engine
@@ -73,10 +72,7 @@ async def _finalize_session_zero_if_ready(
     print("   ИТОГОВЫЕ ДОГОВОРЁННОСТИ")
     print("=" * 80)
     print(state.last_summary or interview.summary(state.draft))
-    print(
-        f"\n[Система] Нулевая сессия завершена. Первая сцена: "
-        f"{completed.scene.title}."
-    )
+    print(f"\n[Система] Нулевая сессия завершена. Первая сцена: {completed.scene.title}.")
     return True
 
 
@@ -110,9 +106,7 @@ async def run_session_zero_interview(
     )
 
     if state.pending_user_message:
-        print(
-            "[Система] Последний ответ уже сохранён. Пробую получить ответ мастера..."
-        )
+        print("[Система] Последний ответ уже сохранён. Пробую получить ответ мастера...")
         try:
             decision = await interview.retry_pending(campaign_id)
         except LLMProviderError as exc:
@@ -224,11 +218,7 @@ async def select_campaign_menu(
             setup_service = SessionZeroService(session)
             for index, campaign in enumerate(campaigns, start=1):
                 setup = await setup_service.get(campaign.id)
-                status = (
-                    "готова к игре"
-                    if setup.status == "completed"
-                    else "нужна нулевая сессия"
-                )
+                status = "готова к игре" if setup.status == "completed" else "нужна нулевая сессия"
                 print(f"[{index}] {campaign.name} — {status}")
         print("\n[N] Создать новую кампанию")
         print("[Q] Назад")
@@ -279,9 +269,7 @@ async def configure_llm_menu(
     base_url = input(f"Адрес API [{settings.LLM_BASE_URL}]: ").strip()
     model_name = input(f"Модель [{settings.LLM_MODEL}]: ").strip()
     api_key = input("Ключ API [Enter — оставить значение по умолчанию]: ").strip()
-    context_raw = input(
-        f"Размер контекста [{settings.LLM_CONTEXT_WINDOW}]: "
-    ).strip()
+    context_raw = input(f"Размер контекста [{settings.LLM_CONTEXT_WINDOW}]: ").strip()
     await campaign_service.configure_provider(
         campaign_id,
         ProviderConfigCreate(
@@ -289,9 +277,7 @@ async def configure_llm_menu(
             model_name=model_name or settings.LLM_MODEL,
             api_key=api_key or settings.LLM_API_KEY,
             context_window=(
-                int(context_raw)
-                if context_raw.isdigit()
-                else settings.LLM_CONTEXT_WINDOW
+                int(context_raw) if context_raw.isdigit() else settings.LLM_CONTEXT_WINDOW
             ),
         ),
     )
@@ -416,19 +402,15 @@ async def _retry_failed_memory(
     if result.succeeded == 0 and result.remaining == 0:
         print("[Система] Неудачных задач памяти нет.")
         return
-    print(
-        f"[Система] Повторено успешно: {result.succeeded}; "
-        f"всё ещё ожидают: {result.remaining}."
-    )
+    print(f"[Система] Повторено успешно: {result.succeeded}; всё ещё ожидают: {result.remaining}.")
 
 
 async def play_game_loop(
     campaign_id: UUID,
     session: AsyncSession,
 ) -> None:
-    # CLI owns its event loop. Recover jobs left by an interrupted play.bat and let
-    # the dispatcher finish the current turn before returning control to the player;
-    # otherwise the loop closes and durable memory remains permanently pending.
+    # World state is committed synchronously. Memory runs on the same event loop in background;
+    # waiting for input must therefore yield, not block the loop or drain all model jobs.
     await recover_stale_post_turn_jobs(session)
     setup = await SessionZeroService(session).get(campaign_id)
     if setup.status != "completed":
@@ -456,6 +438,9 @@ async def play_game_loop(
     print("  /undo             — отменить последний игровой ход")
     print("  /exit             — вернуться в меню")
     print("=" * 80)
+    opening = await application.latest_narrative_text(campaign_id)
+    if opening:
+        print(f"\nМастер: {opening}\n")
 
     while True:
         view = await application.current_scene_view(campaign_id)
@@ -467,17 +452,11 @@ async def play_game_loop(
             active_listener_id = None
             active_listener_name = "Рассказчик / Мастер"
 
-        print(
-            f"\n[Сцена: {view.scene.title}] | "
-            f"[Настроение: {view.scene.mood or '—'}]"
-        )
+        print(f"\n[Сцена: {view.scene.title}] | [Настроение: {view.scene.mood or '—'}]")
         names = ", ".join(item.name for item in npcs) or "нет"
-        print(
-            f"[Присутствуют NPC: {names}] | "
-            f"[Разговор с: {active_listener_name}]"
-        )
+        print(f"[Присутствуют NPC: {names}] | [Разговор с: {active_listener_name}]")
         print("-" * 80)
-        user_input = input("\nТы: ").strip()
+        user_input = (await asyncio.to_thread(input, "\nТы: ")).strip()
         if not user_input:
             continue
         command = user_input.casefold()
@@ -541,7 +520,6 @@ async def play_game_loop(
         if route.channel == "narrative":
             assistant_turn_id = await application.latest_assistant_turn_id(campaign_id)
             if assistant_turn_id:
-                await wait_for_post_turn_idle()
                 await _show_post_turn_status(application, assistant_turn_id)
 
 
@@ -576,9 +554,7 @@ async def main() -> None:
                 clear_screen()
                 print(f"=== КАМПАНИЯ: {campaign.name} ===")
                 if setup.status == "completed":
-                    print(
-                        f" Нулевая сессия: завершена — {setup.player_character_name}"
-                    )
+                    print(f" Нулевая сессия: завершена — {setup.player_character_name}")
                     print(" [1] Начать / продолжить игру")
                 else:
                     print(" Нулевая сессия: не завершена")

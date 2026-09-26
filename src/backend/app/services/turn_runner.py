@@ -184,13 +184,7 @@ class TurnRunner(TurnSaga):
             routed_turn,
             existing_user_turn_id,
         ):
-            if item.startswith("\n[Generation failed:"):
-                item = item.replace(
-                    "\n[Generation failed:",
-                    "\n[Generation failed after retry budget exhausted (1 attempt):",
-                    1,
-                )
-            yield item
+            yield player_facing_stream_item(item)
         if (
             PostTurnDispatcher.wait_inline_for_tests
             or self._requires_fresh_post_turn_memory(routed_turn)
@@ -212,4 +206,14 @@ class TurnRunner(TurnSaga):
         return bool(requested or task)
 
 
-__all__ = ["TurnRunner", "active_tasks"]
+def player_facing_stream_item(item: str) -> str:
+    """Hide planner and validator diagnostics. The generation run keeps the cause."""
+    if item.startswith("\n[Generation failed:"):
+        return (
+            "\n[Generation failed after retry budget exhausted (1 attempt): "
+            "ход не опубликован, мир остался как был.]"
+        )
+    return item
+
+
+__all__ = ["TurnRunner", "active_tasks", "player_facing_stream_item"]

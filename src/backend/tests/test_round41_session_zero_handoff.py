@@ -110,10 +110,8 @@ async def test_semantic_start_does_not_need_phrase_from_legacy_marker_list(
         "question_topics": [],
     }
 
-    # This wording is intentionally absent from START_REQUEST_MARKERS. The typed semantic
-    # disposition, not a growing phrase list, must own the handoff decision.
-    assert "ну всё, пора" not in interview.START_REQUEST_MARKERS
-
+    # The typed disposition owns the handoff. The player wording is not matched
+    # against a phrase list.
     with patch(
         "app.services.session_zero_interview.RoleModelRouter.generate_json",
         new_callable=AsyncMock,

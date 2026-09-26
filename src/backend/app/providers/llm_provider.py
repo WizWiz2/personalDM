@@ -499,9 +499,19 @@ class LLMProvider:
 
                 prompt_estimate = sum(count_tokens(item["content"]) + 4
                                       for item in request_messages)
+                # Native decoding still uses a finite prompt+completion window. Letting Ollama
+                # silently truncate the start can remove system rules and the physical cast.
+                # The configured window is the baseline; grow only this structured request to
+                # fit its measured contract, evidence and output reserve, in 1K allocation units.
+                required_context = prompt_estimate + budget + 64
+                request_context = max(
+                    config.context_window, ((required_context + 1023) // 1024) * 1024,
+                ) if is_ollama else config.context_window
                 attempt_metrics = {
                     "prompt_tokens_estimate": prompt_estimate,
                     "context_pressure": prompt_estimate + budget > config.context_window,
+                    "configured_num_ctx": config.context_window if is_ollama else None,
+                    "requested_num_ctx": request_context if is_ollama else None,
                 }
                 attempt_started = time.monotonic()
 
@@ -516,7 +526,7 @@ class LLMProvider:
                             config,
                             budget,
                             temperature if attempt == 1 else 0.0,
-                        ),
+                        ) | {"num_ctx": request_context},
                     }
                 else:
                     payload = self._openai_no_reasoning_payload(
@@ -538,7 +548,7 @@ class LLMProvider:
                     "attempt": attempt,
                     "attempts": list(attempt_telemetry),
                     "requested_max_tokens": budget,
-                    "requested_num_ctx": config.context_window if is_ollama else None,
+                    "requested_num_ctx": request_context if is_ollama else None,
                     "response_model": response_model.__name__ if response_model else None,
                     **attempt_metrics,
                 }
@@ -623,7 +633,7 @@ class LLMProvider:
                         **attempt_metrics,
                         "attempt": attempt,
                         "requested_max_tokens": budget,
-                        "requested_num_ctx": config.context_window if is_ollama else None,
+                    "requested_num_ctx": request_context if is_ollama else None,
                         "finish_reason": finish_reason,
                         "usage": usage,
                         "reasoning_characters": reasoning_chars,
@@ -669,7 +679,7 @@ class LLMProvider:
                             **attempt_metrics,
                             "attempt": attempt,
                             "requested_max_tokens": budget,
-                            "requested_num_ctx": config.context_window if is_ollama else None,
+                    "requested_num_ctx": request_context if is_ollama else None,
                             "status": "error",
                             "error": str(exc),
                             "duration_ms": round((time.monotonic() - attempt_started) * 1000),
@@ -687,7 +697,7 @@ class LLMProvider:
             "status": "structured_error",
             "error": str(last_error or "unknown structured response error"),
             "attempts": attempt_telemetry,
-            "requested_num_ctx": config.context_window if is_ollama else None,
+                    "requested_num_ctx": request_context if is_ollama else None,
             "duration_ms": round((time.monotonic() - started) * 1000),
         }
         raise LLMProviderError(f"Failed to obtain valid JSON: {last_error}")

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import re
 from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.scene_development import SceneDevelopment
+from app.models.addressed_response import AddressedResponse
 
 
 class PlannedNpcIntroduction(BaseModel):
@@ -24,6 +24,7 @@ class PlannedNpcIntroduction(BaseModel):
     temporary_name: bool = False
     personal_name_evidence: str | None = Field(default=None, max_length=500)
     reason: str = Field(min_length=2, max_length=500)
+    after_action_index: int | None = Field(default=None, ge=0, le=7)
 
 
 class ExistingNpcArrival(BaseModel):
@@ -74,6 +75,7 @@ class TurnAuthority(BaseModel):
     identity_reveal_requested: bool = False
     # Present-cast NPC that must receive a speak/refuse/deflect/gesture opportunity.
     addressed_response_obligation: str | None = None
+    addressed_response: AddressedResponse | None = None
     dramatic_mode: str = "calm"
     observable_consequences: list[str] = Field(default_factory=list)
     character_beats: list[str] = Field(default_factory=list)
@@ -90,84 +92,11 @@ class TurnAuthority(BaseModel):
     scene_development: SceneDevelopment | None = None
 
     @staticmethod
-    def _player_facing_blocking_reason(value: object) -> str | None:
-        """Translate known control-plane blockers without publishing engine vocabulary."""
-        reason = " ".join(str(value or "").split()).strip()
-        if not reason:
-            return None
-        folded = reason.casefold()
-
-        mappings = (
-            (
-                ("player destination is unresolved", "existing route is required"),
-                "Из текущего места пока не виден подтверждённый путь туда.",
-            ),
-            (
-                ("player destination is not authorized",),
-                "Неясно, куда именно ведёт этот шаг; путь остаётся прежним.",
-            ),
-            (
-                ("not an available exit", "destination is not an available exit"),
-                "Из текущего места туда нет доступного прохода.",
-            ),
-            (
-                ("destination route is currently inactive", "route is currently inactive"),
-                "Путь туда сейчас недоступен.",
-            ),
-            (
-                ("destination exit has not been discovered", "exit has not been discovered"),
-                "Путь туда пока не обнаружен.",
-            ),
-            (
-                (
-                    "resolved to the current physical location",
-                    "use stay/focus_transition",
-                    "claiming physical travel",
-                ),
-                "Ты остаёшься там, где уже стоишь.",
-            ),
-            (
-                ("matches multiple existing routes",),
-                "Из текущего места туда ведёт больше одного пути; нужно уточнить направление.",
-            ),
-            (
-                ("destination location is empty",),
-                "Неясно, куда именно ведёт этот шаг; путь остаётся прежним.",
-            ),
-            (
-                ("requires player input",),
-                "Нужно уточнить, что именно ты пытаешься сделать.",
-            ),
+    def _public_blocked_outcome(step: dict) -> str:
+        """Only the public result is prose evidence; raw execution diagnostics stay in audit."""
+        return str(step.get("public_blocking_reason") or "").strip() or (
+            "Действие не удалось завершить; нужно уточнить следующий шаг."
         )
-        for tokens, text in mappings:
-            if any(token in folded for token in tokens):
-                return text
-
-        technical = (
-            "requires a check",
-            "route discovery",
-            "source_scene",
-            "target_scene",
-            "source_location_id",
-            "target_location_id",
-            "location_transition",
-            "focus_transition",
-            "scene_disposition",
-            "action_sequence",
-            "planner",
-            "validator",
-            "control-plane",
-        )
-        if any(token in folded for token in technical):
-            return None
-        if re.search(
-            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
-            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
-            reason,
-            flags=re.IGNORECASE,
-        ):
-            return None
-        return reason
 
     @model_validator(mode="after")
     def executed_sequence_owns_outcomes(self):
@@ -189,8 +118,7 @@ class TurnAuthority(BaseModel):
                     executed.append(outcome)
             elif status == "blocked":
                 blocked = True
-                reason = self._player_facing_blocking_reason(step.get("blocking_reason"))
-                message = reason or "Путь вперёд остаётся закрыт."
+                message = self._public_blocked_outcome(step)
                 if message not in executed:
                     executed.append(message)
                 break
@@ -255,6 +183,9 @@ class TurnAuthority(BaseModel):
             "target_location": self.target_location_path,
             "present_characters": self.present_character_names,
             "addressed_response_obligation": self.addressed_response_obligation,
+            "addressed_response": (
+                self.addressed_response.model_dump(mode="json") if self.addressed_response else None
+            ),
             "known_absent_characters": self.known_absent_character_names,
             "allowed_speakers": self.allowed_speakers,
             "allowed_new_npcs": [
@@ -284,10 +215,9 @@ class TurnAuthority(BaseModel):
             "pending_player_choice": self.pending_player_choice,
             "allow_new_complication": self.allow_new_complication,
             "complication_source": self.complication_source,
-            "action_sequence": self.action_sequence,
+            "action_sequence": self._public_action_sequence(),
             "scene_development": (
-                self.scene_development.model_dump(mode="json")
-                if self.scene_development else None
+                self.scene_development.model_dump(mode="json") if self.scene_development else None
             ),
         }
         if self.acting_character_id and self.acting_character_name:
@@ -306,8 +236,11 @@ class TurnAuthority(BaseModel):
             payload["scene_development"] = {
                 "disposition": self.scene_development.disposition,
                 "actions": [
-                    {"actor_id": str(action.actor_id), "action": action.action,
-                     "player_opportunity": action.player_opportunity}
+                    {
+                        "actor_id": str(action.actor_id),
+                        "action": action.action,
+                        "player_opportunity": action.player_opportunity,
+                    }
                     for action in self.scene_development.actions
                 ],
             }
@@ -334,6 +267,26 @@ class TurnAuthority(BaseModel):
             }
         )
         return payload
+
+    def _public_action_sequence(self) -> dict | None:
+        if not self.action_sequence:
+            return None
+        # Explicit projection prevents an exception string or an unexecuted plan from becoming
+        # narrator evidence. The complete receipt remains in the durable authority snapshot.
+        return {
+            "status": self.action_sequence.get("status"),
+            "steps": [
+                {key: (
+                    self._public_blocked_outcome(step)
+                    if key == "observable_outcome" and step.get("status") == "blocked"
+                    else step.get(key)
+                ) for key in (
+                    "step_index", "action_type", "status", "source_scene_id", "target_scene_id",
+                    "observable_outcome", "item_id", "item_operation",
+                )}
+                for step in self.action_sequence.get("steps", []) if isinstance(step, dict)
+            ],
+        }
 
 
 __all__ = ["ExistingNpcArrival", "PlannedNpcIntroduction", "TurnAuthority"]

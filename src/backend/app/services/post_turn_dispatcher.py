@@ -26,6 +26,10 @@ class PostTurnDispatcher:
     def schedule(cls, bind, assistant_turn_id: UUID) -> asyncio.Task | None:
         if bind is None:
             return None
+        task_name = f"post-turn-{assistant_turn_id}"
+        for pending in cls._tasks:
+            if not pending.done() and pending.get_name() == task_name:
+                return pending
 
         async def run() -> None:
             factory = async_sessionmaker(
@@ -72,7 +76,7 @@ class PostTurnDispatcher:
 
         task = asyncio.create_task(
             run(),
-            name=f"post-turn-{assistant_turn_id}",
+            name=task_name,
         )
         cls._tasks.add(task)
         task.add_done_callback(cls._tasks.discard)

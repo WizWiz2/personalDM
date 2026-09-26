@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 
 from app.services.entity_identity import identity_key
+from app.services.linguistic_intent_analyzer import LinguisticIntentAnalyzer
 from app.services.name_identity_contract import (
     description_used_as_identity_name,
     extract_leading_short_designation,
@@ -21,18 +22,8 @@ from app.services.name_identity_contract import (
     repair_persisted_character_identity,
 )
 
-# 2nd-person deixis for quote/dialogue attribution windows.
-# Person morphology only — not a speech-verb or plot lexicon.
-_SECOND_PERSON_ATTR_RE = re.compile(
-    r"(?i)(?<![А-Яа-яЁёA-Za-z])(?:ты|тебе|тебя|тобой|тво(?:й|я|ё|е|и))(?![А-Яа-яЁёA-Za-z])"
-)
-
 _QUOTE_RE = re.compile(r"«([^»]{1,1600})»|“([^”]{1,1600})”|\"([^\"]{1,1600})\"")
 _DIALOGUE_LINE_RE = re.compile(r"(?m)^[ \t]*[—\-–]\s*(\S.+)$")
-_LEADING_FIRST_PERSON_STAGE_RE = re.compile(
-    r"^(?:я\s+[^.»!?]+[.»!?]+(?:\s+|$))+",
-    flags=re.IGNORECASE,
-)
 _MIN_ECHO_KEY_LEN = 8
 _MIN_ECHO_TOKENS = 3
 _ECHO_TOKEN_COVERAGE = 0.8
@@ -41,28 +32,6 @@ _ACTION_TOKEN_COVERAGE = 0.5
 # Action-overlap content tokens: length gate only (no handmade stopword lexicon).
 # Tokens shorter than this are treated as function/noise after identity_key transliteration.
 _MIN_ACTION_TOKEN_LEN = 4
-_PREPOSITION_BEFORE_RE = re.compile(
-    r"(?i)(?:^|[\s,;:—\-–])(?:на|к|ко|с|со|у|от|для|о|об|про|перед|за|под|над|при|"
-    r"без|до|из|по|во?|обо|через|между|среди)\s+$"
-)
-# Morphological 3p finite-verb token by suffix shape only (past -л/-ла/-ло/-ли,
-# present/future -ет/-ёт/-ит/-ут/-ют/-ат/-ят, optional -ся/-сь). Not a verb
-# lemma lexicon: any token matching the ending shape counts, so this stays as a
-# morphology helper for voluntary-agency restage — never enumerate speech verbs here.
-_PC_FINITE_VERB_TOKEN_RE = re.compile(
-    r"(?i)^(?:[а-яё-]*[а-яё]л(?:а|о|и)?(?:сь|ся)?|[а-яё-]*[а-яё](?:ет|ёт|ит|ут|ют|ат|ят)(?:ся)?)$"
-)
-# Cyrillic proper-name shape (same family as session_zero_interview explicit-name recovery).
-# Require ≥2 capitalized tokens so sentence-initial common words are not treated as people.
-_PROPER_NAME_SPAN_RE = re.compile(
-    r"(?<![А-Яа-яЁё])([А-ЯЁ][а-яё-]{2,}(?:\s+[А-ЯЁ][а-яё-]{2,}){1,2})(?![А-Яа-яЁё-])"
-)
-# Mid-clause single capitalized token (after lowercase/close-quote): personal names in running prose.
-_MIDCLAUSE_PROPER_NAME_RE = re.compile(
-    r'(?<=[а-яё»"\)])\s+([А-ЯЁ][а-яё-]{2,})(?![А-Яа-яЁё-])'
-)
-
-
 def _compact(value: object) -> str:
     return " ".join(str(value or "").split())
 
@@ -154,8 +123,11 @@ def _player_speech_cores(player_input: object) -> list[str]:
     compact = _compact(raw)
     add_core(compact)
     if compact:
-        stripped = _LEADING_FIRST_PERSON_STAGE_RE.sub("", compact).strip(" -—–")
-        add_core(stripped)
+        sentences = list(LinguisticIntentAnalyzer().pipeline(compact).sents)
+        first = 0
+        while first < len(sentences) and LinguisticIntentAnalyzer._predicate_roles(sentences[first]) == {"speaker"}:
+            first += 1
+        add_core(" ".join(sentence.text for sentence in sentences[first:]))
     return cores
 
 
@@ -199,77 +171,43 @@ def _span_add(spans: list[str], seen: set[str], span: str) -> None:
     spans.append(value)
 
 
-def _structural_second_person_speech_spans(text: str) -> list[str]:
-    """Quotes/dialogue structurally attributed to the 2nd-person PC.
-
-    Same punctuation/structure family as addressed_response_beat_present — no speech verbs.
-    Windows stay tight so ordinary 2nd-person result narration near a later NPC quote
-    does not false-positive:
-
-    - quote whose short pre-quote window (≤48 chars, same clause) contains 2nd-person deixis
-    - quote with tight post-quote dash attribution to ``ты`` / ``тебе`` / ``тобой``
-    - dialogue line with 2nd-person deixis in the short pre-line window, or trailing ``— ты``
-    - ``ты`` followed by ``:`` then a quote/dialogue nearby
-    """
-    spans: list[str] = []
-    seen: set[str] = set()
-    if not (text or "").strip():
-        return spans
-
-    post_quote_ty_re = re.compile(
-        r"(?i)^[,.]?\s*[—\-–]\s*(?:ты|тебе|тобой)(?![А-Яа-яЁёA-Za-z])"
+def _is_second_person(token) -> bool:
+    return token.pos_ in {"PRON", "DET", "VERB", "AUX"} and bool(
+        set(token.morph.get("Person")) & {"2", "Second"}
     )
 
-    def _clause_tail(prefix: str, limit: int = 48) -> str:
-        chunk = prefix[-limit:] if len(prefix) > limit else prefix
-        parts = re.split(r"[.\n]", chunk)
-        return parts[-1] if parts else chunk
 
-    for match in _QUOTE_RE.finditer(text):
-        pre = _clause_tail(text[: match.start()])
-        hit = bool(_SECOND_PERSON_ATTR_RE.search(pre))
-        if not hit:
-            after = text[match.end() : match.end() + 40]
-            hit = bool(post_quote_ty_re.match(after))
-        if not hit:
-            continue
-        left = max(0, match.start() - 48)
-        right = min(len(text), match.end() + 40)
-        window = text[left:right]
-        _span_add(spans, seen, window if len(window) <= 220 else match.group(0))
-
-    for match in _DIALOGUE_LINE_RE.finditer(text):
-        pre = _clause_tail(text[: match.start()])
-        line = match.group(0)
-        hit = bool(_SECOND_PERSON_ATTR_RE.search(pre))
-        if not hit and re.search(
-            r"(?i)[—\-–]\s*(?:ты|тебе|тобой)\s*$",
-            line.rstrip(),
-        ):
-            hit = True
-        if not hit:
-            continue
-        left = max(0, match.start() - 48)
-        right = min(len(text), match.end() + 24)
-        window = text[left:right]
-        _span_add(spans, seen, window if len(window) <= 220 else line)
-
-    for match in re.finditer(
-        r"(?i)(?<![А-Яа-яЁёA-Za-z])ты(?![А-Яа-яЁёA-Za-z])",
-        text,
-    ):
-        after = text[match.end() : match.end() + 120]
-        if not re.match(r"\s*:", after):
-            continue
-        nearby = text[match.end() : match.end() + 220]
-        if not (_QUOTE_RE.search(nearby) or _DIALOGUE_LINE_RE.search(nearby)):
-            continue
-        start = match.start()
-        end = min(len(text), match.end() + 220)
-        window = text[start:end]
-        _span_add(spans, seen, window if len(window) <= 220 else match.group(0))
+def _structural_second_person_speech_spans(text: str) -> list[str]:
+    """Combine dialogue punctuation with grammatical second-person attribution."""
+    if not (text or "").strip():
+        return []
+    doc = LinguisticIntentAnalyzer().pipeline(text)
+    spans: list[str] = []
+    seen: set[str] = set()
+    def attributed(start: int, end: int) -> bool:
+        prefix = text[max(0, start - 48):start]
+        clause_start = max(prefix.rfind("."), prefix.rfind("\n")) + 1
+        left = max(0, start - 48) + clause_start
+        before = [token for token in doc if left <= token.idx < start]
+        if any(_is_second_person(token) for token in before):
+            return True
+        after = text[end:end + 40].lstrip(" ,.")
+        if not after.startswith(("—", "–", "-")):
+            return False
+        tail_start = end + text[end:end + 40].find(after) + 1
+        token = next((token for token in doc if token.idx >= tail_start and not token.is_punct and not token.is_space), None)
+        return token is not None and token.idx < end + 40 and _is_second_person(token)
+    for pattern in (_QUOTE_RE, _DIALOGUE_LINE_RE):
+        for match in pattern.finditer(text):
+            if attributed(match.start(), match.end()):
+                _span_add(spans, seen, text[max(0, match.start()-48):min(len(text), match.end()+40)])
+    for token in doc:
+        end = token.idx + len(token.text)
+        if _is_second_person(token) and text[end:].lstrip().startswith(":"):
+            nearby = text[end:end+220]
+            if _QUOTE_RE.search(nearby) or _DIALOGUE_LINE_RE.search(nearby):
+                _span_add(spans, seen, text[token.idx:token.idx+220])
     return spans
-
 
 
 def _structural_pc_name_speech_spans(text: str, pc_name: str) -> list[str]:
@@ -433,8 +371,9 @@ def _player_action_cores(player_input: object) -> list[str]:
         seen.add(key)
         cores.append(text)
 
-    for match in re.finditer(r"(?i)\bя\s+[^.»!?\n]+", compact):
-        add_core(match.group(0))
+    for sentence in LinguisticIntentAnalyzer().pipeline(compact).sents:
+        if "speaker" in LinguisticIntentAnalyzer._predicate_roles(sentence):
+            add_core(sentence.text)
     add_core(compact)
     return cores
 
@@ -470,20 +409,20 @@ def _window_restages_player(
     return False
 
 
+def _pc_subject_predicates(text: str, pc_name: str):
+    """Resolve subject ownership through dependency edges, never word endings."""
+    doc = LinguisticIntentAnalyzer().pipeline(text)
+    for match in _pc_name_patterns(pc_name).finditer(text):
+        span = doc.char_span(match.start(), match.end(), alignment_mode="expand")
+        if span is None or span.root.dep_ not in {"nsubj", "nsubj:pass"}:
+            continue
+        predicate = span.root.head
+        if predicate.pos_ in {"VERB", "AUX"} and "Fin" in predicate.morph.get("VerbForm"):
+            yield match
+
+
 def _window_has_pc_finite_agency(window: str, pc_name: str) -> bool:
-    """PC-name subject + nearby 3p finite-verb morphology (suffix shape only)."""
-    cleaned = _compact(window)
-    match = re.search(
-        rf"(?i)(?<!\w){re.escape(pc_name)}(?!\w)\s+(.+)",
-        cleaned,
-    )
-    if not match:
-        return False
-    tokens = re.findall(r"[А-Яа-яЁё]+", match.group(1))
-    for tok in tokens[:4]:
-        if _PC_FINITE_VERB_TOKEN_RE.match(tok):
-            return True
-    return False
+    return any(_pc_subject_predicates(window, pc_name))
 
 
 def protagonist_action_restage_violation_spans(candidate: str, authority) -> list[str]:
@@ -498,7 +437,7 @@ def protagonist_action_restage_violation_spans(candidate: str, authority) -> lis
     - invented moves (PC name + nearby 3p finite-verb morphology with no overlap)
 
     Second-person house style and oblique PC-name mentions without agency remain allowed.
-    ``_PC_FINITE_VERB_TOKEN_RE`` is suffix-shape morphology only, not a verb lemma list.
+    Subject ownership and finite predicates come from the dependency parser.
     """
     text = candidate or ""
     pc_name = _compact(getattr(authority, "player_character_name", None))
@@ -521,10 +460,7 @@ def protagonist_action_restage_violation_spans(candidate: str, authority) -> lis
     for span in _structural_pc_name_speech_spans(text, pc_name):
         add(span)
 
-    for match in name_re.finditer(text):
-        prefix = text[max(0, match.start() - 24) : match.start()]
-        if _PREPOSITION_BEFORE_RE.search(prefix):
-            continue
+    for match in _pc_subject_predicates(text, pc_name):
         # Subject-like: name followed by a word (verb/adverb), not punctuation-only.
         # Colon is handled by structural speech attribution above; skip here so we do not
         # double-count name + ':' as finite-agency.
@@ -657,14 +593,10 @@ def _span_matches_authorized_identity(span: str, authorized: set[str]) -> bool:
 
 
 def unauthorized_named_person_spans(candidate: str, authority) -> list[str]:
-    """Proper-name-like spans in prose that are outside the typed identity set.
+    """Validate parser-recognized people against the typed identity set.
 
-    Extends the existing invent-person ban with a deterministic publication gate: a
-    Capitalized multi-token (or mid-clause single) mention must resolve to
-    present_character_names / allowed_new_npcs / allowed_existing_npc_arrivals
-    (plus PC name, intro role/identity_reference, and location/object labels so
-    places and on-cast role titles do not false-positive). Reuses identity_key —
-    not a parallel NER subsystem.
+    Named entities come from the shared language pipeline, not capitalization
+    rules or an enumerated list of personal names.
     """
     text = candidate or ""
     if not text.strip():
@@ -688,10 +620,9 @@ def unauthorized_named_person_spans(candidate: str, authority) -> list[str]:
         covered.append((start, end))
         spans.append(value)
 
-    for match in _PROPER_NAME_SPAN_RE.finditer(text):
-        add(match.group(1), match.start(1), match.end(1))
-    for match in _MIDCLAUSE_PROPER_NAME_RE.finditer(text):
-        add(match.group(1), match.start(1), match.end(1))
+    for entity in LinguisticIntentAnalyzer().pipeline(text).ents:
+        if entity.label_ == "PER":
+            add(entity.text, entity.start_char, entity.end_char)
     return spans
 
 
@@ -898,47 +829,32 @@ def addressed_response_obligation_addressee(authority) -> str | None:
     return None
 
 
-def _cast_name_pattern(cast_name: str) -> re.Pattern[str] | None:
-    """Stem + Cyrillic/Latin ending pattern for a cast designation."""
-    tokens = [token for token in _compact(cast_name).split() if token]
-    if not tokens:
-        return None
-    parts: list[str] = []
-    for token in tokens:
-        stem = token[: max(4, len(token) - 2)] if len(token) >= 4 else token
-        parts.append(re.escape(stem) + r"[А-Яа-яЁёA-Za-z]*")
-    return re.compile(
-        r"(?<![А-Яа-яЁёA-Za-z])" + r"\s+".join(parts) + r"(?![А-Яа-яЁёA-Za-z])",
-        flags=re.IGNORECASE,
-    )
-
-
 def _cast_name_span_iter(text: str, cast_name: str):
-    """Yield (start, end) spans that soft-match a cast name (stem + endings)."""
-    pattern = _cast_name_pattern(cast_name)
-    if not pattern:
+    """Match persisted identity tokens by grammatical lemmas, never prefix stems."""
+    pipeline = LinguisticIntentAnalyzer().pipeline
+    name_tokens = [token for token in pipeline(_compact(cast_name)) if not token.is_space]
+    if not name_tokens:
         return
-    for match in pattern.finditer(text or ""):
-        yield match.start(), match.end()
+    expected = tuple(token.lemma_.casefold() for token in name_tokens)
+    tokens = [token for token in pipeline(text or "") if not token.is_space]
+    for index in range(len(tokens) - len(expected) + 1):
+        window = tokens[index:index + len(expected)]
+        actual = tuple(token.lemma_.casefold() for token in window)
+        surface = tuple(token.text.casefold() for token in window)
+        if actual == expected or surface == tuple(token.text.casefold() for token in name_tokens):
+            yield window[0].idx, window[-1].idx + len(window[-1].text)
 
 
 def _dash_attr_to(fragment: str, cast_name: str, *, trailing: bool) -> bool:
-    """True when fragment has a dash attribution to cast_name (post-quote or line-trailing)."""
-    pattern = _cast_name_pattern(cast_name)
-    if not pattern:
-        return False
-    body = pattern.pattern
-    if trailing:
-        return bool(
-            re.search(
-                rf"[—\-–]\s*(?:{body})\s*$",
-                (fragment or "").rstrip(),
-                flags=re.IGNORECASE,
-            )
-        )
-    return bool(
-        re.match(rf"[,.]?\s*[—\-–]\s*(?:{body})", fragment or "", flags=re.IGNORECASE)
-    )
+    """Recognize punctuation attribution around a morphologically resolved identity."""
+    for start, end in _cast_name_span_iter(fragment, cast_name):
+        before, after = fragment[:start], fragment[end:]
+        if trailing:
+            if before.rstrip().endswith(("—", "–", "-")) and not after.strip():
+                return True
+        elif before.lstrip(" ,.").strip() in {"—", "–", "-"}:
+            return True
+    return False
 
 
 def _structural_speaker_for_beat(

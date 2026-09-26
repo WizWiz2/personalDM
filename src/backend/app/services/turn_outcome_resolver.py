@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import json
+from functools import reduce
+from operator import or_
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    create_model,
+    field_validator,
+    model_validator,
+)
 
 from app.models.player_intent import (
     ActionOutcomeDecision,
@@ -13,6 +23,7 @@ from app.models.player_intent import (
     TurnOutcomeDecision,
 )
 from app.models.turn import ChatMessage
+from app.models.addressed_response import AddressedResponse, QuestionResponse
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
 from app.services.planning_context import outcome_reference_context
@@ -47,6 +58,9 @@ The compiler owns topology. Unregistered destinations/outside the scene are not 
 Evaluate ordered moves in sequence: a later obstacle cannot block an earlier move. reaction is optional
 manner of the same result, not a contradictory outcome; leave character_beats empty for action turns.
 Independent NPC initiative belongs to the later scene-development phase, after execution.
+For a movement outcome, carry_participants names only current companions whose joint movement
+is established by the input/context or whose participation you resolve now. Never infer that all
+present NPCs follow. A guide leading the protagonist must be included in that movement's roster.
 
 Only physically present people may respond. Existing identities must never be reintroduced, duplicated
 or moved from another scene. A question about a present person's name creates no NPC. A genuinely new
@@ -61,6 +75,20 @@ available knowledge; express ignorance or a grounded refusal when appropriate. D
 When response_requested=true, direct_response must contain the addressee's actual words answering the
 questions now, not a nod, anticipation, atmospheric description or promise to answer later. If the
 information is unknown, say so directly. Never fill this field with the protagonist's reaction.
+response_speaker_name identifies the existing contextual designation or a typed introduction that
+owns those words. It is not the personal name mentioned inside an answer. Narrator observations
+have a null speaker. Every newly encountered responder must also be in npc_introductions.
+response_after_action_index is the prerequisite action index if an answer requires completing a
+move/inspection first, otherwise null. Introductions likewise carry after_action_index for the
+hop that reaches them. A failed prerequisite must not produce destination answers or people.
+If the temporary responder explicitly introduces themself, response_revealed_name carries their
+personal name and response_name_evidence is the exact self-identification from their approved
+words. Keep response_speaker_name as the CURRENT designation so identity binds to the same entity.
+Do not reveal or change an already established personal name. Otherwise both revelation fields null.
+When the frozen contract contains questions, return question_responses with exactly one entry for
+each question_index. Choose answer/unknown/refuse/deflect and actual spoken words. Ignorance and
+refusal must be explicit; a deflection must be a deliberate in-world response, not postponed prose.
+These are attributed character claims, never objective facts merely because somebody said them.
 For world_state_question answer existing state in observable_consequences without performing it again.
 No complication without a grounded complication_source. destination_profile only enriches an explicitly
 new destination with stable public physical traits; it cannot change the route or introduce people.
@@ -102,18 +130,24 @@ def _travel_wire_model(action_count: int, *, evidence: str = ""):
 
     class OrdinaryTravelObstacles(BaseModel):
         model_config = ConfigDict(extra="forbid")
-        obstacles: list[IndexedTravelObstacle] = Field(min_length=action_count, max_length=action_count)
+        obstacles: list[IndexedTravelObstacle] = Field(
+            min_length=action_count, max_length=action_count
+        )
 
         @model_validator(mode="after")
         def validate_grounding(self):
             indices = [item.action_index for item in self.obstacles]
             if sorted(indices) != list(range(action_count)):
-                raise ValueError(f"travel obstacles must cover exactly indices {list(range(action_count))}")
+                raise ValueError(
+                    f"travel obstacles must cover exactly indices {list(range(action_count))}"
+                )
             for item in self.obstacles:
                 if (item.blocking_reason or "").strip():
                     quote = (item.evidence_quote or "").strip()
                     if not quote or quote not in evidence:
-                        raise ValueError("travel blocker lacks a verbatim world/input evidence quote")
+                        raise ValueError(
+                            "travel blocker lacks a verbatim world/input evidence quote"
+                        )
             return self
 
     return OrdinaryTravelObstacles
@@ -140,11 +174,11 @@ def is_pure_ordinary_travel(contract: PlayerIntentContract) -> bool:
         or contract.pending_player_choice
         or any(action.action_type != "movement" for action in contract.actions)
         or any(action.movement_method != "ordinary" for action in contract.actions)
+        or any(action.requested_companions for action in contract.actions)
     ):
         return False
     action_focus = " ".join(
-        f"{action.intent or ''} {action.destination_location or ''}"
-        for action in contract.actions
+        f"{action.intent or ''} {action.destination_location or ''}" for action in contract.actions
     ).strip()
     if not action_focus:
         return False
@@ -196,7 +230,9 @@ def has_plot_bearing_outcome(decision: TurnOutcomeDecision) -> bool:
         return True
     if any(" ".join(str(beat or "").split()) for beat in decision.character_beats):
         return True
-    if decision.allow_new_complication and " ".join(str(decision.complication_source or "").split()):
+    if decision.allow_new_complication and " ".join(
+        str(decision.complication_source or "").split()
+    ):
         return True
     for text in decision.observable_consequences:
         if not _is_dead_or_blank(text):
@@ -238,6 +274,7 @@ class ActionOutcomeDraft(BaseModel):
     blocking_evidence_quote: str | None = None
     blocking_evidence_ref: str | None = None
     destination_profile: str | None = None
+    carry_participants: list[str] = Field(default_factory=list, max_length=8)
 
 
 class OutcomeNpcIntroductionDraft(BaseModel):
@@ -251,13 +288,12 @@ class OutcomeNpcIntroductionDraft(BaseModel):
     temporary_name: bool = True
     personal_name_evidence: str | None = None
     reason: str = Field(min_length=2, max_length=500)
+    after_action_index: int | None = Field(default=None, ge=0, le=7)
 
     @model_validator(mode="after")
     def validate_identity(self):
         # Run this inside the provider's bounded schema-repair loop, before compilation.
-        if contains_cjk(self.role) or identity_key(self.role) in {
-            identity_key(value) for value in NpcIntroductionResolver.SYNTHETIC_PLACEHOLDERS
-        }:
+        if contains_cjk(self.role):
             raise ValueError("NPC identity needs a short readable grounded role")
         if not is_usable_short_designation(self.role):
             raise ValueError("NPC role must be a short designation, not a description blurb")
@@ -293,6 +329,11 @@ class TurnOutcomeDecisionDraft(BaseModel):
     resolution: str = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     direct_response: str | None = Field(default=None, max_length=1000)
+    response_speaker_name: str | None = Field(default=None, max_length=120)
+    response_after_action_index: int | None = Field(default=None, ge=0, le=7)
+    response_revealed_name: str | None = Field(default=None, max_length=120)
+    response_name_evidence: str | None = Field(default=None, max_length=500)
+    question_responses: list[QuestionResponse] = Field(default_factory=list, max_length=8)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
@@ -328,6 +369,10 @@ def _outcome_wire_model(
     observation_indices: set[int] | None = None,
     allow_introductions: bool = True,
     requires_response: bool = False,
+    question_count: int = 0,
+    present_names: list[str] | None = None,
+    movement_indices: set[int] | None = None,
+    questions: list[str] | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -338,11 +383,13 @@ def _outcome_wire_model(
 
     sources = _evidence_sources(evidence or "")
     reference_type = Literal[tuple(sources)] | None if sources else str | None
+    participant_type = Literal[tuple(present_names)] if present_names else str
 
     class IndexedActionOutcomeDraft(ActionOutcomeDraft):
         # Coverage is structural, so enforce the known indices in native decoding too.
         action_index: Literal[tuple(range(action_count)) or tuple(range(8))]
         blocking_evidence_ref: reference_type = None
+        carry_participants: list[participant_type] = Field(default_factory=list, max_length=8)
 
     class SuccessfulActionOutcomeDraft(IndexedActionOutcomeDraft):
         resolution: Literal["auto_success"]
@@ -360,12 +407,47 @@ def _outcome_wire_model(
         else SuccessfulActionOutcomeDraft | BlockedActionOutcomeDraft
     )
 
+    if movement_indices is not None and action_count:
+        # Frozen domain x resolution: at most four variants regardless of action count.
+        # A stationary action never exposes permission to carry people across locations.
+        bases = (
+            [IndexedActionOutcomeDraft]
+            if allow_choice
+            else [SuccessfulActionOutcomeDraft, BlockedActionOutcomeDraft]
+        )
+        variants = []
+        domains = [
+            ("Moving", movement_indices, 8),
+            ("Stationary", set(range(action_count)) - movement_indices, 0),
+        ]
+        for domain, indices, limit in domains:
+            if not indices:
+                continue
+            for base in bases:
+                variants.append(
+                    create_model(
+                        f"{domain}{base.__name__}",
+                        __base__=base,
+                        action_index=(Literal[tuple(sorted(indices))], ...),
+                        carry_participants=(
+                            list[participant_type],
+                            Field(default_factory=list, max_length=limit),
+                        ),
+                    )
+                )
+        action_model = reduce(or_, variants)
+
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
+        question_responses: list[QuestionResponse] = Field(
+            default_factory=list, max_length=question_count
+        )
         action_outcomes: list[action_model if action_count else dict[str, Any]] = Field(
             min_length=action_count,
             max_length=action_count,
         )
-        npc_introductions: list[OutcomeNpcIntroductionDraft if allow_introductions else dict[str, Any]] = Field(
+        npc_introductions: list[
+            OutcomeNpcIntroductionDraft if allow_introductions else dict[str, Any]
+        ] = Field(
             max_length=4 if allow_introductions else 0,
         )
 
@@ -392,16 +474,18 @@ def _outcome_wire_model(
             outcome = f"Переход в место «{destination}» завершён."
             return {
                 **value,
-                "action_outcomes": [{
-                    **item,
-                    "resolution": "auto_success",
-                    "safe_mundane": True,
-                    "observable_outcome": outcome,
-                    "reaction": None,
-                    "blocking_reason": None,
-                    "blocking_evidence_quote": None,
-                    "blocking_evidence_ref": None,
-                }],
+                "action_outcomes": [
+                    {
+                        **item,
+                        "resolution": "auto_success",
+                        "safe_mundane": True,
+                        "observable_outcome": outcome,
+                        "reaction": None,
+                        "blocking_reason": None,
+                        "blocking_evidence_quote": None,
+                        "blocking_evidence_ref": None,
+                    }
+                ],
                 "npc_introductions": [],
                 "resolution": "success",
                 "observable_consequences": [outcome],
@@ -415,8 +499,38 @@ def _outcome_wire_model(
 
         @model_validator(mode="after")
         def validate_action_indices(self):
-            if sorted(item.action_index for item in self.action_outcomes) != list(range(action_count)):
-                raise ValueError(f"action_outcomes must cover exactly indices {list(range(action_count))}")
+            if self.response_revealed_name:
+                AddressedResponse(
+                    direct_response=self.direct_response,
+                    questions=questions or [""] * question_count,
+                    answers=self.question_responses,
+                    revealed_name=self.response_revealed_name,
+                    name_evidence=self.response_name_evidence,
+                )
+            dependencies = [
+                self.response_after_action_index,
+                *(npc.after_action_index for npc in self.npc_introductions),
+            ]
+            if any(index is not None and index >= action_count for index in dependencies):
+                raise ValueError("outcome prerequisite refers to a nonexistent frozen action")
+            repaired_answers = []
+            for answer in self.question_responses:
+                if questions and answer.question_index < len(questions) and (
+                    _compact(answer.words).casefold()
+                    == _compact(questions[answer.question_index]).casefold()
+                ):
+                    # Echoing the question is ignorance, not a reason to discard the turn.
+                    answer = answer.model_copy(
+                        update={"disposition": "unknown", "words": "Этого я не знаю."}
+                    )
+                repaired_answers.append(answer)
+            self.question_responses = repaired_answers
+            if sorted(item.action_index for item in self.action_outcomes) != list(
+                range(action_count)
+            ):
+                raise ValueError(
+                    f"action_outcomes must cover exactly indices {list(range(action_count))}"
+                )
             if evidence is not None:
                 for item in self.action_outcomes:
                     if _compact(item.resolution).casefold() != "blocked":
@@ -438,8 +552,18 @@ def _outcome_wire_model(
 
     result_model = ExactTurnOutcomeDecisionDraft
     if requires_response:
+
         class RespondingTurnOutcomeDecisionDraft(ExactTurnOutcomeDecisionDraft):
+            model_config = ConfigDict(json_schema_extra={"required": [
+                "action_outcomes", "npc_introductions", "direct_response", "response_speaker_name",
+                "response_after_action_index",
+                "response_revealed_name", "response_name_evidence",
+            ]})
             direct_response: str = Field(min_length=2, max_length=1000)
+            response_speaker_name: str | None = Field(
+                default=None,
+                description="Existing cast designation or typed new NPC owning this response."
+            )
 
         result_model = RespondingTurnOutcomeDecisionDraft
     if action_count == 0 and not requires_response:
@@ -449,16 +573,31 @@ def _outcome_wire_model(
             observable_consequences: list[str] = Field(min_length=1, max_length=4)
 
         ResponsiveTurnOutcomeDecisionDraft.__name__ = "TurnOutcomeDecisionDraft"
-        return ResponsiveTurnOutcomeDecisionDraft
+        result_model = ResponsiveTurnOutcomeDecisionDraft
 
     result_model.__name__ = "TurnOutcomeDecisionDraft"
+    if question_count:
+
+        class IndexedQuestionResponse(QuestionResponse):
+            question_index: Literal[tuple(range(question_count))]
+
+        class QuestionCoveredTurnOutcomeDecisionDraft(result_model):
+            question_responses: list[IndexedQuestionResponse] = Field(
+                min_length=question_count,
+                max_length=question_count,
+            )
+
+        return QuestionCoveredTurnOutcomeDecisionDraft
     return result_model
 
 
 def _profile_wire_model(
-    patch_count: int, *, action_indices: list[int] | None = None,
+    patch_count: int,
+    *,
+    action_indices: list[int] | None = None,
 ) -> type[DestinationProfilePatchSet]:
     expected = sorted(action_indices if action_indices is not None else range(patch_count))
+
     class IndexedDestinationProfilePatch(DestinationProfilePatch):
         action_index: Literal[tuple(expected)]
 
@@ -489,7 +628,9 @@ def _evidence_sources(context: str) -> dict[str, str]:
 
 
 def _indexed_evidence(context: str) -> str:
-    return "\n".join(f"[{reference}] {text}" for reference, text in _evidence_sources(context).items())
+    return "\n".join(
+        f"[{reference}] {text}" for reference, text in _evidence_sources(context).items()
+    )
 
 
 def _bounded_strings(values: list[str], limit: int) -> list[str]:
@@ -508,6 +649,12 @@ def normalize_outcome_draft(
     """Turn permissive model output into strict world-facing semantics deterministically."""
 
     expected = set(range(len(contract.actions)))
+    question_indices = [item.question_index for item in draft.question_responses]
+    if contract.questions and (
+        len(question_indices) != len(set(question_indices))
+        or set(question_indices) != set(range(len(contract.questions)))
+    ):
+        raise TurnPlanningError("outcome resolver did not preserve frozen question coverage")
     got = [item.action_index for item in draft.action_outcomes]
     if len(got) != len(set(got)) or set(got) != expected:
         raise TurnPlanningError(
@@ -517,6 +664,11 @@ def normalize_outcome_draft(
 
     action_outcomes: list[dict[str, Any]] = []
     for item in draft.action_outcomes:
+        if (
+            item.carry_participants
+            and contract.actions[item.action_index].action_type != "movement"
+        ):
+            raise TurnPlanningError("only movement outcomes may carry participants")
         resolution = _compact(item.resolution).casefold()
         if resolution not in _ACTION_RESOLUTIONS:
             raise TurnPlanningError(
@@ -536,6 +688,7 @@ def normalize_outcome_draft(
                 "reaction": _compact(item.reaction) or None,
                 "blocking_reason": blocking_reason if resolution == "blocked" else None,
                 "destination_profile": _compact(item.destination_profile) or None,
+                "carry_participants": list(dict.fromkeys(item.carry_participants)),
             }
         )
 
@@ -571,6 +724,7 @@ def normalize_outcome_draft(
         introductions.append(
             {
                 "canonical_name": canonical_name,
+                "identity_reference": npc.canonical_name,
                 "role": role,
                 "description": description,
                 "appearance": appearance,
@@ -578,6 +732,7 @@ def normalize_outcome_draft(
                 "temporary_name": temporary_name,
                 "personal_name_evidence": evidence if not temporary_name else None,
                 "reason": reason,
+                "after_action_index": npc.after_action_index,
             }
         )
 
@@ -591,19 +746,40 @@ def normalize_outcome_draft(
     allow_complication = bool(draft.allow_new_complication and complication_source)
 
     public_outcomes = [
-        {key: value for key, value in item.items() if key != "reaction"}
-        for item in action_outcomes
+        {key: value for key, value in item.items() if key != "reaction"} for item in action_outcomes
     ]
+    response_speaker = _compact(draft.response_speaker_name) or contract.addressed_character_name
+    speaker_intros = [
+        item for item in introductions
+        if identity_key(item["identity_reference"]) == identity_key(response_speaker)
+    ]
+    if len(speaker_intros) == 1:
+        response_speaker = speaker_intros[0]["canonical_name"]
     return TurnOutcomeDecision.model_validate(
         {
             "action_outcomes": public_outcomes,
             "npc_introductions": introductions,
             "resolution": resolution,
+            "addressed_response": AddressedResponse(
+                speaker_name=response_speaker,
+                direct_response=_compact(draft.direct_response) or None,
+                after_action_index=draft.response_after_action_index,
+                revealed_name=draft.response_revealed_name,
+                name_evidence=draft.response_name_evidence,
+                questions=contract.questions,
+                answers=sorted(draft.question_responses, key=lambda item: item.question_index),
+            ).model_dump()
+            if draft.direct_response or draft.question_responses
+            else None,
             "observable_consequences": _bounded_strings(
                 list(
                     dict.fromkeys(
                         [
-                            *([draft.direct_response] if draft.direct_response else []),
+                            *(
+                                [draft.direct_response]
+                                if draft.direct_response and not draft.question_responses
+                                else []
+                            ),
                             *draft.observable_consequences,
                             *[
                                 item["observable_outcome"]
@@ -616,11 +792,7 @@ def normalize_outcome_draft(
                 4,
             ),
             "character_beats": _bounded_strings(
-                [
-                    item["reaction"]
-                    for item in action_outcomes
-                    if item.get("reaction")
-                ]
+                [item["reaction"] for item in action_outcomes if item.get("reaction")]
                 if any(item.get("observable_outcome") for item in action_outcomes)
                 else draft.character_beats,
                 6,
@@ -647,7 +819,7 @@ def stamp_world_state_answer(
     guidance = list(decision.narration_guidance)
     constraint = (
         "[WORLD STATE ANSWER] Answer the latest state question directly and factually from the "
-        "observable consequences; do not perform or advance the queried event."
+        "addressed_response answers or observable consequences; do not perform or advance the queried event."
     )
     instruction = (
         "Begin with the direct answer (including yes/no when applicable), then add at most brief "
@@ -684,14 +856,27 @@ class TurnOutcomeResolver:
         context = self._context(context_messages)
         wire = _travel_wire_model(len(contract.actions), evidence=context + "\n" + player_input)
         data = await self._router.generate_json(
-            self._provider, selection,
+            self._provider,
+            selection,
             [
-                ChatMessage(role="system", content=_TRAVEL_PROMPT + "\n[OUTPUT JSON SCHEMA]\n"
-                            + json.dumps(wire.model_json_schema(), ensure_ascii=False)),
-                ChatMessage(role="user", content=context + "\n[ВВОД ИГРОКА]\n" + player_input
-                            + "\n[ВЫБРАННЫЕ ДЕЙСТВИЯ]\n" + contract.model_dump_json()),
+                ChatMessage(
+                    role="system",
+                    content=_TRAVEL_PROMPT
+                    + "\n[OUTPUT JSON SCHEMA]\n"
+                    + json.dumps(wire.model_json_schema(), ensure_ascii=False),
+                ),
+                ChatMessage(
+                    role="user",
+                    content=context
+                    + "\n[ВВОД ИГРОКА]\n"
+                    + player_input
+                    + "\n[ВЫБРАННЫЕ ДЕЙСТВИЯ]\n"
+                    + contract.model_dump_json(),
+                ),
             ],
-            max_tokens=700, temperature=0, response_model=wire,
+            max_tokens=700,
+            temperature=0,
+            response_model=wire,
         )
         draft = wire.model_validate(data)
         outcomes = []
@@ -700,21 +885,32 @@ class TurnOutcomeResolver:
             reason = (obstacle.blocking_reason or "").strip()
             quote = (obstacle.evidence_quote or "").strip()
             if reason and (not quote or quote not in evidence):
-                raise TurnPlanningError("travel blocker lacks a verbatim world/input evidence quote")
+                raise TurnPlanningError(
+                    "travel blocker lacks a verbatim world/input evidence quote"
+                )
             if obstacle.action_index >= len(contract.actions):
                 raise TurnPlanningError("travel obstacle refers to an unknown action")
             action = contract.actions[obstacle.action_index]
-            outcomes.append(ActionOutcomeDecision(
-                action_index=obstacle.action_index,
-                resolution="blocked" if reason else "auto_success",
-                safe_mundane=not bool(reason),
-                blocking_reason=reason or None,
-                observable_outcome=None if reason else f"Переход в место «{action.destination_location}» завершён.",
-            ))
+            outcomes.append(
+                ActionOutcomeDecision(
+                    action_index=obstacle.action_index,
+                    resolution="blocked" if reason else "auto_success",
+                    safe_mundane=not bool(reason),
+                    blocking_reason=reason or None,
+                    observable_outcome=None
+                    if reason
+                    else f"Переход в место «{action.destination_location}» завершён.",
+                )
+            )
         decision = TurnOutcomeDecision(action_outcomes=outcomes, resolution="sequence")
         self._validate_coverage(contract, decision)
-        self.audit.append({"phase": "ordinary_travel", "draft": draft.model_dump(mode="json"),
-                           "decision": decision.model_dump(mode="json")})
+        self.audit.append(
+            {
+                "phase": "ordinary_travel",
+                "draft": draft.model_dump(mode="json"),
+                "decision": decision.model_dump(mode="json"),
+            }
+        )
         return decision
 
     @staticmethod
@@ -743,7 +939,6 @@ class TurnOutcomeResolver:
         )
         return normalized
 
-
     @staticmethod
     def _requires_contact_introduction(
         contract: PlayerIntentContract,
@@ -759,10 +954,7 @@ class TurnOutcomeResolver:
         """
         if decision.npc_introductions:
             return False
-        if not (
-            force_introduce_contact
-            or contract.addressed_response_requested
-        ):
+        if not (force_introduce_contact or contract.addressed_response_requested):
             return False
         return len(present_character_names(context_messages)) <= 1
 
@@ -786,12 +978,12 @@ class TurnOutcomeResolver:
             if force_introduce_contact:
                 solo_cast = True
             pure_travel = is_pure_ordinary_travel(contract)
-            if (
-                not force_introduce_contact
-                and pure_travel
-            ):
+            if not force_introduce_contact and pure_travel:
                 return await self._resolve_ordinary_travel(
-                    selection, context_messages, player_input, contract,
+                    selection,
+                    context_messages,
+                    player_input,
+                    contract,
                 )
             authoritative_context = self._context(context_messages)
             existing_addressee = bool(contract.addressed_character_name) and any(
@@ -810,11 +1002,20 @@ class TurnOutcomeResolver:
                     and action.destination_location
                 },
                 observation_indices={
-                    index for index, action in enumerate(contract.actions)
+                    index
+                    for index, action in enumerate(contract.actions)
                     if action.action_type == "observation"
                 },
                 allow_introductions=not existing_addressee,
                 requires_response=contract.addressed_response_requested,
+                question_count=len(contract.questions),
+                questions=contract.questions,
+                present_names=present_character_names(context_messages),
+                movement_indices={
+                    index
+                    for index, action in enumerate(contract.actions)
+                    if action.action_type == "movement"
+                },
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,
@@ -872,7 +1073,9 @@ class TurnOutcomeResolver:
             self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
             if self._requires_contact_introduction(
-                contract, context_messages, decision,
+                contract,
+                context_messages,
+                decision,
                 force_introduce_contact=force_introduce_contact,
             ):
                 # One forced re-resolve: models often choose empty-room for seeking turns.
@@ -918,9 +1121,11 @@ class TurnOutcomeResolver:
                 self._validate_coverage(contract, decision)
                 decision = self._normalize_temporary_identities(decision)
                 if self._requires_contact_introduction(
-                contract, context_messages, decision,
-                force_introduce_contact=force_introduce_contact,
-            ):
+                    contract,
+                    context_messages,
+                    decision,
+                    force_introduce_contact=force_introduce_contact,
+                ):
                     raise TurnPlanningError(
                         "contact-seeking with player-only presence requires npc_introductions"
                     )
@@ -939,8 +1144,11 @@ class TurnOutcomeResolver:
             raise
         except (LLMProviderError, ValueError, TypeError) as exc:
             error = TurnPlanningError(f"turn outcome resolution failed: {exc}")
-            error.telemetry = {"phase": "turn_outcome", "provider": dict(self._provider.last_telemetry),
-                               "audit": list(self.audit)}
+            error.telemetry = {
+                "phase": "turn_outcome",
+                "provider": dict(self._provider.last_telemetry),
+                "audit": list(self.audit),
+            }
             raise error from exc
 
     async def enrich_destination_profiles(
@@ -958,7 +1166,8 @@ class TurnOutcomeResolver:
         ]
         try:
             response_model = _profile_wire_model(
-                len(missing), action_indices=[item.action_index for item in missing],
+                len(missing),
+                action_indices=[item.action_index for item in missing],
             )
             data = await self._router.generate_json(
                 self._provider,
@@ -1009,7 +1218,6 @@ __all__ = [
     "is_pure_ordinary_travel",
     "seeks_contact_or_presence",
     "has_plot_bearing_outcome",
-
     "ActionOutcomeDraft",
     "OutcomeNpcIntroductionDraft",
     "TurnOutcomeDecisionDraft",

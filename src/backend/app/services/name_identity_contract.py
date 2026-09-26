@@ -68,10 +68,6 @@ def is_usable_short_designation(value: object) -> bool:
         return False
     if len(text.split()) > _MAX_SHORT_DESIGNATION_WORDS:
         return False
-    # Relative-clause / duty blurb shape — keep role field, do not use as identity label.
-    folded = text.casefold().replace("ё", "е")
-    if " ответственн" in f" {folded}" or folded.startswith("ответственн"):
-        return False
     return True
 
 
@@ -115,12 +111,6 @@ def extract_leading_short_designation(value: object) -> str | None:
         if sep in text:
             head = _compact(text.split(sep, 1)[0])
             return head if is_usable_short_designation(head) else None
-    words = text.split()
-    for count in (2, 1):
-        if len(words) > count:
-            head = " ".join(words[:count])
-            if is_usable_short_designation(head):
-                return head
     return None
 
 

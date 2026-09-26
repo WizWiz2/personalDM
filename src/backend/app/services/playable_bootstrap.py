@@ -28,101 +28,16 @@ class PlayableBootstrapResult:
 
 
 class PlayableBootstrapService:
-    """Guarantee that a freshly completed Session Zero opens on something playable.
+    """Materialize typed opening presence and routes; never infer them from prose.
 
-    Conversational Session Zero owns semantic presence: once it confirms a structured starter-NPC
-    contract, only those explicitly present NPCs may be materialized. The older keyword inference
-    remains solely as a compatibility fallback for manual/legacy setup records that have no
-    structured presence contract at all.
-
-    The service also supplies one inspectable object and, for an ordinary enclosed start, one
-    mundane route out. Existing structured affordances always win. Re-running is idempotent.
+    Manual and legacy records retain their existing cast and graph. Unknown presence
+    or topology cannot authorize a new person or exit. A neutral inspectable detail
+    supplies an affordance when the scene has no objects.
     """
 
     SOURCE = "session_zero_playable_bootstrap"
     STRUCTURED_SOURCE = "session_zero_structured_presence"
     INTERVIEW_STATE_KEY = "session_zero_interview"
-    SOLITARY_MARKERS = (
-        "в одиночестве",
-        "совсем один",
-        "совсем одна",
-        "никого нет",
-        "безлюд",
-        "пустой кораб",
-        "пустая станц",
-        "пустом здан",
-        "заброш",
-        "изолирован",
-    )
-    SEALED_MARKERS = (
-        "заперт",
-        "заперта",
-        "запертом",
-        "запертой",
-        "выход закрыт",
-        "выход заблокирован",
-        "не может выйти",
-        "не может выбраться",
-        "герметич",
-        "в ловушке",
-        "плен",
-    )
-    ENCLOSED_LOCATION_MARKERS = (
-        "трактир",
-        "таверн",
-        "постоял",
-        "гостиниц",
-        "бар",
-        "кафе",
-        "комнат",
-        "дом",
-        "здани",
-        "офис",
-        "склад",
-        "лавк",
-        "магазин",
-        "подвал",
-        "башн",
-        "кают",
-        "кабинет",
-        "мастерск",
-    )
-    CONTACT_MARKERS = (
-        "хозяин",
-        "бармен",
-        "трактирщик",
-        "трактирщиц",
-        "заказчик",
-        "работодатель",
-        "грузчик",
-        "охранник",
-        "страж",
-        "дежурн",
-        "продавец",
-        "торговец",
-        "официант",
-        "официантк",
-        "проводник",
-        "собеседник",
-        "свидетел",
-    )
-    JOB_MARKERS = (
-        "заказ",
-        "работ",
-        "наним",
-        "контракт",
-        "поручен",
-        "задание",
-    )
-    HOSPITALITY_MARKERS = (
-        "трактир",
-        "таверн",
-        "постоял",
-        "гостиниц",
-        "бар ",
-        "кафе",
-    )
-
     def __init__(self, session: AsyncSession):
         self._session = session
         self._setups = CampaignSetupRepository(session)
@@ -171,10 +86,6 @@ class PlayableBootstrapService:
 
         contract_confirmed, starter_npcs = await self._structured_starter_presence(campaign_id)
         if contract_confirmed:
-            if starter_npcs and self._explicitly_solitary(situation):
-                raise ValueError(
-                    "Structured starter NPC presence conflicts with explicitly solitary start"
-                )
             claimed_starter_ids: set[UUID] = set()
             for spec in starter_npcs:
                 character, created = await self._ensure_structured_contact(
@@ -189,26 +100,6 @@ class PlayableBootstrapService:
                 claimed_starter_ids.add(character.id)
                 if created and created_npc_id is None:
                     created_npc_id = character.id
-        else:
-            # Legacy/manual compatibility only. New conversational Session Zero must confirm
-            # structured presence and therefore never depends on profession keywords.
-            non_player_participants = [
-                value for value in state.participant_ids if value != player_character_id
-            ]
-            if (
-                not non_player_participants
-                and not self._explicitly_solitary(situation)
-                and self._mentions_contact(situation)
-            ):
-                starter = await self._create_local_contact(
-                    campaign_id,
-                    scene_id,
-                    starting_location_id,
-                    situation,
-                    tone,
-                )
-                created_npc_id = starter.id
-
         state = await self._state.require_valid(campaign_id, scene_id)
         if not state.object_ids:
             created_object_id = await self._create_starter_object(
@@ -220,8 +111,7 @@ class PlayableBootstrapService:
         state = await self._state.require_valid(campaign_id, scene_id)
         should_create_exit = (
             not state.available_exits
-            and not self._explicitly_sealed(situation)
-            and self._looks_enclosed(starting_location.canonical_name, situation)
+            and await self._structured_exit_allowed(campaign_id)
         )
         if should_create_exit:
             destination = await self._create_fallback_destination(
@@ -388,62 +278,17 @@ class PlayableBootstrapService:
         value = cls._clean(spec.name) or cls._clean(spec.role) or "Местный собеседник"
         return value[:1].upper() + value[1:] if value else "Местный собеседник"
 
-    async def _create_local_contact(
-        self,
-        campaign_id: UUID,
-        scene_id: UUID,
-        location_id: UUID,
-        situation: str,
-        tone: str | None,
-    ):
-        name, role = self._contact_identity(situation)
-        name = await self._unique_name(campaign_id, EntityType.CHARACTER.value, name)
-        character = await self._entities.create_character(
-            campaign_id,
-            CharacterCreate(
-                canonical_name=name,
-                description=(
-                    f"Временный местный персонаж, напрямую связанный с начальной ситуацией: "
-                    f"{situation}"
-                ),
-                appearance="Обычная для этого места одежда; заметных необычных черт пока не установлено.",
-                personality="Практичный и занятый текущими делами; не знает больше, чем позволяет его роль.",
-                voice="Говорит просто и по делу.",
-                speech_patterns="Отвечает конкретно; отделяет собственное знание от слухов.",
-                biography=f"На старте кампании выступает как {role}.",
-                backstory_public=f"Местный {role}, доступный для обычного разговора.",
-                current_location_id=location_id,
-                current_intentions=["реагировать только на происходящее в стартовой сцене"],
-                custom_fields={
-                    "source": self.SOURCE,
-                    "temporary_name": True,
-                    "bootstrap_role": role,
-                    "role": role,
-                    "tone": tone,
-                },
-            ),
-        )
-        await self._scenes.add_participant(scene_id, character.id, allow_movement=False)
-        return character
-
     async def _create_starter_object(
         self,
         campaign_id: UUID,
         location_id: UUID,
         situation: str,
     ) -> UUID:
-        if self._contains_any(situation, self.JOB_MARKERS):
-            preferred_name = "Объявление о работе"
-            description = (
-                "Наблюдаемый носитель стартовой зацепки. Его содержание связано только с уже "
-                f"согласованной ситуацией: {situation}"
-            )
-        else:
-            preferred_name = "Заметная деталь"
-            description = (
-                "Обычная наблюдаемая деталь стартовой сцены, которую можно осмотреть без "
-                f"додумывания результата: {situation}"
-            )
+        preferred_name = "Заметная деталь"
+        description = (
+            "Обычная наблюдаемая деталь стартовой сцены, которую можно осмотреть без "
+            f"додумывания результата: {situation}"
+        )
         name = await self._unique_name(campaign_id, EntityType.ITEM.value, preferred_name)
         entity = await self._entities.create(
             campaign_id,
@@ -510,48 +355,15 @@ class PlayableBootstrapService:
             index += 1
         return f"{preferred} {index}"
 
-    @classmethod
-    def _contact_identity(cls, situation: str) -> tuple[str, str]:
-        folded = situation.casefold().replace("ё", "е")
-        if any(token in folded for token in ("бармен", "трактирщик", "трактирщиц", "хозяин")):
-            return "Хозяин заведения", "трактирщик или хозяин заведения"
-        if "грузчик" in folded:
-            return "Грузчик", "местный грузчик"
-        if any(token in folded for token in ("охранник", "страж", "дежурн")):
-            return "Дежурный", "местный дежурный или страж"
-        if any(token in folded for token in ("продавец", "торговец")):
-            return "Торговец", "местный торговец"
-        if cls._contains_any(situation, cls.JOB_MARKERS):
-            return "Заказчик", "заказчик"
-        return "Местный", "местный собеседник"
-
-    @classmethod
-    def _explicitly_solitary(cls, situation: str) -> bool:
-        return cls._contains_any(situation, cls.SOLITARY_MARKERS)
-
-    @classmethod
-    def _explicitly_sealed(cls, situation: str) -> bool:
-        return cls._contains_any(situation, cls.SEALED_MARKERS)
-
-    @classmethod
-    def _mentions_contact(cls, situation: str) -> bool:
-        # Legacy/manual compatibility only. Conversational Session Zero uses the structured
-        # starter-presence contract above and never calls this path.
-        return cls._contains_any(situation, cls.CONTACT_MARKERS) or cls._contains_any(
-            situation, cls.JOB_MARKERS
-        )
-
-    @classmethod
-    def _looks_enclosed(cls, location_name: str, situation: str) -> bool:
-        return cls._contains_any(
-            f"{location_name} {situation}",
-            cls.ENCLOSED_LOCATION_MARKERS,
-        )
-
-    @staticmethod
-    def _contains_any(value: str, markers: tuple[str, ...]) -> bool:
-        folded = value.casefold().replace("ё", "е")
-        return any(marker.casefold().replace("ё", "е") in folded for marker in markers)
+    async def _structured_exit_allowed(self, campaign_id: UUID) -> bool:
+        row = await self._setups.get(campaign_id)
+        if row is None:
+            return False
+        custom = self._setups.decode_dict(row.custom_fields)
+        state = custom.get(self.INTERVIEW_STATE_KEY)
+        draft = state.get("draft") if isinstance(state, dict) else None
+        world = draft.get("world") if isinstance(draft, dict) else None
+        return isinstance(world, dict) and world.get("starting_exit_allowed") is True
 
     @staticmethod
     def _clean(value: object) -> str:

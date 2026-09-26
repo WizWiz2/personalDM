@@ -17,6 +17,7 @@ from app.models.narration_validation import (
     NarrationViolation,
 )
 from app.models.turn_authority import PlannedNpcIntroduction
+from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.services.memory_scribe import MemoryScribe
 from app.services.thesis_curator import ThesisCurator
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
@@ -43,8 +44,7 @@ META_TEXT = (
     "Мета-команда ничего не меняет в сцене."
 )
 INVALID_SEQUENCE_DRAFT = (
-    "В комнате Бармен Роэн уже ждёт у кровати. "
-    "Эйдан решает довериться ему и обещает идти следом."
+    "В комнате Бармен Роэн уже ждёт у кровати. Эйдан решает довериться ему и обещает идти следом."
 )
 REPAIRED_SEQUENCE_TEXT = (
     "Оплата принята, ключ получен. Дальнейшие шаги проходят без происшествий: "
@@ -103,9 +103,7 @@ def _conversation_plan() -> CoordinatedTurnPlan:
             pending_player_choice="Решить, снимать ли предложенную комнату.",
             protected_player_decisions=["решение снять комнату"],
         ),
-        observable_consequences=[
-            "Бармен Роэн отвечает на вопрос и показывает доступный ключ."
-        ],
+        observable_consequences=["Бармен Роэн отвечает на вопрос и показывает доступный ключ."],
         character_beats=["Роэн даёт практичный ответ без скрытого конфликта."],
         canon_constraints=["Роэн находится в общем зале и никуда не следует за героем."],
         narration_guidance=["Короткая спокойная сцена без обязательной угрозы."],
@@ -241,8 +239,31 @@ async def _meta_stream(*args, **kwargs):
 
 
 async def _no_scribe_memory(*args, **kwargs):
-    # Narrative texture is extracted deterministically from accepted prose below.
     return []
+
+
+async def _intro_scribe_memory(*args, **kwargs):
+    # Fixture for the existing semantic Scribe boundary, not lexical prose extraction.
+    return [
+        ProposedChangeCreate(
+            change_type=ChangeType.NARRATIVE_DETAIL,
+            payload={
+                "text": "Бармен Роэн на миг отводит взгляд к окну.",
+                "detail_type": "gaze",
+                "visibility": "public",
+                "_canon": {
+                    "outcome_id": "gaze",
+                    "kind": "narrative_detail",
+                    "durable": False,
+                    "description": "Бармен Роэн на миг отводит взгляд к окну.",
+                    "evidence": "Бармен Роэн на миг отводит взгляд к окну.",
+                    "authority": "public_observation",
+                    "operation": "assert",
+                    "cardinality": "multi",
+                },
+            },
+        )
+    ]
 
 
 async def _setup_campaign(client: TestClient) -> dict:
@@ -390,28 +411,34 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     world = await _setup_campaign(client)
     campaign_id = world["campaign_id"]
 
-    with patch.object(
-        TurnAuthorityPlanner,
-        "plan",
-        new_callable=AsyncMock,
-        return_value=_conversation_plan(),
-    ), patch(
-        "app.providers.llm_provider.LLMProvider.generate_stream",
-        side_effect=_intro_narrator,
-    ), patch.object(
-        TurnAuthorityValidator,
-        "validate",
-        new_callable=AsyncMock,
-        return_value=_passed(),
-    ), patch.object(
-        MemoryScribe,
-        "extract_proposals",
-        side_effect=_no_scribe_memory,
-    ), patch.object(
-        ThesisCurator,
-        "curate_after_turn",
-        new_callable=AsyncMock,
-        return_value=None,
+    with (
+        patch.object(
+            TurnAuthorityPlanner,
+            "plan",
+            new_callable=AsyncMock,
+            return_value=_conversation_plan(),
+        ),
+        patch(
+            "app.providers.llm_provider.LLMProvider.generate_stream",
+            side_effect=_intro_narrator,
+        ),
+        patch.object(
+            TurnAuthorityValidator,
+            "validate",
+            new_callable=AsyncMock,
+            return_value=_passed(),
+        ),
+        patch.object(
+            MemoryScribe,
+            "extract_proposals",
+            side_effect=_intro_scribe_memory,
+        ),
+        patch.object(
+            ThesisCurator,
+            "curate_after_turn",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         intro = client.post(
             f"/api/campaigns/{campaign_id}/turns",
@@ -439,13 +466,9 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     fields = json.loads(bartender_entity.custom_fields or "{}")
     assert fields["introduced_by"] == "turn_authority"
 
-    narrative_history = client.get(
-        f"/api/campaigns/{campaign_id}/turns?channel=narrative"
-    ).json()
+    narrative_history = client.get(f"/api/campaigns/{campaign_id}/turns?channel=narrative").json()
     intro_assistant_id = narrative_history[-1]["id"]
-    proposals = client.get(
-        f"/api/turns/{intro_assistant_id}/proposals"
-    ).json()
+    proposals = client.get(f"/api/turns/{intro_assistant_id}/proposals").json()
     gaze = next(
         proposal
         for proposal in proposals
@@ -459,25 +482,25 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
         for proposal in proposals
     )
 
-    memory_before = client.get(
-        f"/api/campaigns/{campaign_id}/memory-ops"
-    ).json()
+    memory_before = client.get(f"/api/campaigns/{campaign_id}/memory-ops").json()
     assert any(
-        "взгляд" in detail["text"].casefold()
-        for detail in memory_before["narrative_details"]
+        "взгляд" in detail["text"].casefold() for detail in memory_before["narrative_details"]
     )
     facts = client.get(f"/api/campaigns/{campaign_id}/facts").json()
     assert not any("взгляд" in fact["predicate"].casefold() for fact in facts)
 
     before_meta = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
-    with patch(
-        "app.services.meta_command_router.LLMProvider.generate_stream",
-        side_effect=_meta_stream,
-    ), patch.object(
-        TurnAuthorityPlanner,
-        "plan",
-        new_callable=AsyncMock,
-    ) as meta_planner:
+    with (
+        patch(
+            "app.services.meta_command_router.LLMProvider.generate_stream",
+            side_effect=_meta_stream,
+        ),
+        patch.object(
+            TurnAuthorityPlanner,
+            "plan",
+            new_callable=AsyncMock,
+        ) as meta_planner,
+    ):
         meta = client.post(
             f"/api/campaigns/{campaign_id}/turns",
             json={"role": "user", "content": "/DM Где сейчас находится Роэн?"},
@@ -489,32 +512,41 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
 
     after_meta = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert after_meta["campaign"]["current_scene_id"] == before_meta["campaign"]["current_scene_id"]
-    assert after_meta["campaign"]["player_location_id"] == before_meta["campaign"]["player_location_id"]
+    assert (
+        after_meta["campaign"]["player_location_id"]
+        == before_meta["campaign"]["player_location_id"]
+    )
     assert len(after_meta["scene_transitions"]) == len(before_meta["scene_transitions"])
     assert len(after_meta["proposals"]) == len(before_meta["proposals"])
 
-    with patch.object(
-        TurnAuthorityPlanner,
-        "plan",
-        new_callable=AsyncMock,
-        return_value=_compound_plan(),
-    ), patch(
-        "app.providers.llm_provider.LLMProvider.generate_stream",
-        side_effect=_sequence_narrator,
-    ), patch.object(
-        TurnAuthorityValidator,
-        "validate",
-        new_callable=AsyncMock,
-        side_effect=[_repair_required(), _passed()],
-    ), patch.object(
-        MemoryScribe,
-        "extract_proposals",
-        side_effect=_no_scribe_memory,
-    ), patch.object(
-        ThesisCurator,
-        "curate_after_turn",
-        new_callable=AsyncMock,
-        return_value=None,
+    with (
+        patch.object(
+            TurnAuthorityPlanner,
+            "plan",
+            new_callable=AsyncMock,
+            return_value=_compound_plan(),
+        ),
+        patch(
+            "app.providers.llm_provider.LLMProvider.generate_stream",
+            side_effect=_sequence_narrator,
+        ),
+        patch.object(
+            TurnAuthorityValidator,
+            "validate",
+            new_callable=AsyncMock,
+            side_effect=[_repair_required(), _passed()],
+        ),
+        patch.object(
+            MemoryScribe,
+            "extract_proposals",
+            side_effect=_no_scribe_memory,
+        ),
+        patch.object(
+            ThesisCurator,
+            "curate_after_turn",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
     ):
         sequence_response = client.post(
             f"/api/campaigns/{campaign_id}/turns",
@@ -555,49 +587,62 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     assert final_state["participant_names"] == ["Эйдан"]
 
     sequence = (
-        await db_session.execute(
-            select(ActionSequence)
-            .where(ActionSequence.campaign_id == campaign_id)
-            .order_by(ActionSequence.created_at.desc())
+        (
+            await db_session.execute(
+                select(ActionSequence)
+                .where(ActionSequence.campaign_id == campaign_id)
+                .order_by(ActionSequence.created_at.desc())
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert sequence is not None
     assert sequence.status == "applied"
     assert sequence.planned_steps == 4
     assert sequence.completed_steps == 4
     assert sequence.blocked_step_index is None
     steps = (
-        await db_session.execute(
-            select(ActionStep)
-            .where(ActionStep.sequence_id == sequence.id)
-            .order_by(ActionStep.step_index)
+        (
+            await db_session.execute(
+                select(ActionStep)
+                .where(ActionStep.sequence_id == sequence.id)
+                .order_by(ActionStep.step_index)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert [step.status for step in steps] == ["completed"] * 4
     assert all(step.safe_mundane for step in steps)
 
     bridges = (
-        await db_session.execute(
-            select(SceneBridge)
-            .where(SceneBridge.campaign_id == campaign_id)
-            .order_by(SceneBridge.created_at)
+        (
+            await db_session.execute(
+                select(SceneBridge)
+                .where(SceneBridge.campaign_id == campaign_id)
+                .order_by(SceneBridge.created_at)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert bridges
     assert all(bridge.status == "applied" for bridge in bridges)
     negative_facts = [
-        fact
-        for bridge in bridges
-        for fact in json.loads(bridge.negative_placement_facts or "[]")
+        fact for bridge in bridges for fact in json.loads(bridge.negative_placement_facts or "[]")
     ]
     assert any(f"{BARTENDER_IDENTITY} remained" in fact for fact in negative_facts)
 
     validation = (
-        await db_session.execute(
-            select(NarrationValidationRun)
-            .order_by(NarrationValidationRun.created_at.desc())
+        (
+            await db_session.execute(
+                select(NarrationValidationRun).order_by(NarrationValidationRun.created_at.desc())
+            )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert validation is not None
     assert validation.status == "repaired"
     assert validation.draft_text == INVALID_SEQUENCE_DRAFT
@@ -605,9 +650,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     assert validation.repair_attempts == 1
     assert validation.violation_count == 2
 
-    all_history = client.get(
-        f"/api/campaigns/{campaign_id}/turns?channel=all"
-    ).json()
+    all_history = client.get(f"/api/campaigns/{campaign_id}/turns?channel=all").json()
     assert [turn["role"] for turn in all_history] == [
         "user",
         "assistant",
@@ -616,18 +659,14 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
         "user",
         "assistant",
     ]
-    narrative_history = client.get(
-        f"/api/campaigns/{campaign_id}/turns?channel=narrative"
-    ).json()
+    narrative_history = client.get(f"/api/campaigns/{campaign_id}/turns?channel=narrative").json()
     assert all(turn["channel"] == "narrative" for turn in narrative_history)
     assert all("/DM" not in turn["content"] for turn in narrative_history)
     assert all(META_TEXT not in turn["content"] for turn in narrative_history)
 
     expired = client.get(f"/api/campaigns/{campaign_id}/memory-ops").json()
     old_gaze = next(
-        detail
-        for detail in expired["narrative_details"]
-        if "взгляд" in detail["text"].casefold()
+        detail for detail in expired["narrative_details"] if "взгляд" in detail["text"].casefold()
     )
     assert old_gaze["expired_candidate"] is True
     assert old_gaze["expiry_reason"] == "scene_closed"

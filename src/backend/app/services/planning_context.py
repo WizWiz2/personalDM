@@ -17,6 +17,10 @@ SCENE_RENDERER_RULES = (
     "the scene. Do not move anyone, advance time, or use an unlisted exit unless "
     "the approved structured transition already did so. Do not invent doors, "
     "routes, objects, or off-screen arrivals as accomplished facts.\n"
+    "Текущее место героя — только Location path. Не возвращай тело на более "
+    "раннюю точку и не объявляй новое место, если structured transition этого "
+    "не сделал. Если игрок спрашивает одно значение, назови ровно одно или "
+    "скажи, что разобрать нельзя. Не перечисляй варианты.\n"
 )
 
 

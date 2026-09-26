@@ -16,6 +16,8 @@ ROUND19_START = {
         "tone": "приземлённый",
         "starting_location_name": "Приёмная частного детектива",
         "starting_situation": "Получить простой оплачиваемый заказ для своей приёмной.",
+        "starter_presence_confirmed": True,
+        "starter_npcs": [{"role": "заказчик", "name": "Заказчик", "name_kind": "personal"}],
     },
     "character": {
         "name": "Мария Ивановна",
@@ -25,14 +27,11 @@ ROUND19_START = {
 }
 
 
-def test_job_shaped_start_requires_one_mundane_contact():
-    situation = ROUND19_START["world"]["starting_situation"]
-
-    assert PlayableBootstrapService._mentions_contact(situation)
-    assert PlayableBootstrapService._contact_identity(situation) == (
-        "Заказчик",
-        "заказчик",
-    )
+def test_job_start_uses_explicit_presence_contract():
+    from app.models.session_zero_interview import SessionZeroWorldDraft
+    world = SessionZeroWorldDraft.model_validate(ROUND19_START["world"])
+    assert world.starter_presence_confirmed
+    assert [npc.name for npc in world.starter_npcs] == ["Заказчик"]
 
 
 @pytest.mark.asyncio

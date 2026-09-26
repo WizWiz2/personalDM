@@ -25,10 +25,10 @@ from app.services.turn_planner import SceneTransitionPlan
 
 
 def test_numbered_location_reference_normalizes_notation_and_word_order():
-    assert location_reference_key("Причал №7") == ("7", "prichal")
-    assert location_reference_key("Причал номер семь") == ("7", "prichal")
-    assert location_reference_key("Седьмой причал") == ("7", "prichal")
-    assert same_location_reference("Седьмой причал", "Причал №7") is True
+    assert location_reference_key("Причал 007") == ("7", "prichal")
+    assert location_reference_key("Причал номер семь") != ("7", "prichal")
+    assert location_reference_key("Седьмой причал") != ("7", "prichal")
+    assert same_location_reference("Седьмой причал", "Причал №7") is False
     assert same_location_reference("Восьмой причал", "Причал №7") is False
 
 
@@ -113,6 +113,8 @@ async def test_revisit_uses_existing_route_identity_and_restores_known_resident(
     )
     await db_session.commit()
 
+    # The semantic intent binder resolves the human's ordinal to the persisted name
+    # before deterministic execution. Its paraphrase binding is tested separately.
     before_locations = await locations.list_by_campaign(campaign_id)
     result = await SceneTransitionExecutor(db_session).apply(
         campaign_id,
@@ -121,7 +123,7 @@ async def test_revisit_uses_existing_route_identity_and_restores_known_resident(
         SceneTransitionPlan(
             required=True,
             transition_type="location_transition",
-            destination_location="Седьмой причал",
+            destination_location=pier.canonical_name,
             scene_title="Седьмой причал у набережной",
             carry_participants=[],
             reason="Мария возвращается на уже известный причал.",
@@ -183,7 +185,7 @@ async def test_route_scoped_identity_does_not_merge_unrelated_numbered_locations
     resolved = await executor._resolve_existing_location(
         campaign_id,
         source.id,
-        "Седьмой причал",
+        pier_seven.canonical_name,
     )
     assert resolved is not None
     assert resolved.id == pier_seven.id

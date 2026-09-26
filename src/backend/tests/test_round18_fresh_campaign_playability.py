@@ -29,6 +29,9 @@ MINIMAL_PLAYABLE_START = {
             "оставили объявление о работе для человека без лишних вопросов."
         ),
         "starting_scene_title": "Утро в Якоре",
+        "starter_presence_confirmed": True,
+        "starter_npcs": [{"role": "хозяин трактира", "name": "Хозяин", "name_kind": "personal"}],
+        "starting_exit_allowed": True,
     },
     "character": {
         "name": "Вера",
@@ -74,7 +77,7 @@ async def test_session_zero_completion_materializes_a_playable_start(db_session)
     assert state.world_time_order == 0
     assert "Вера" in state.participant_names
     assert len([name for name in state.participant_names if name != "Вера"]) >= 1
-    assert "Объявление о работе" in state.object_names
+    assert "Заметная деталь" in state.object_names
     assert state.available_exits
     assert any(exit_.label == "наружу" for exit_ in state.available_exits)
 
@@ -114,13 +117,10 @@ async def test_playable_bootstrap_is_idempotent_after_completion(db_session):
     ]
 
 
-def test_bootstrap_does_not_open_an_explicitly_sealed_start():
-    assert PlayableBootstrapService._explicitly_sealed(
-        "Вера заперта в комнате, выход закрыт снаружи."
-    )
-    assert not PlayableBootstrapService._explicitly_sealed(
-        "Вера завтракает в трактире и может выйти наружу."
-    )
+def test_unknown_topology_does_not_authorize_an_exit():
+    from app.models.session_zero_interview import SessionZeroWorldDraft
+    for situation in ("Герой заперт.", "Герой в трактире.", "The pilot enters the habitat."):
+        assert not SessionZeroWorldDraft(starting_situation=situation).starting_exit_allowed
 
 
 @pytest.mark.asyncio
@@ -163,6 +163,7 @@ def test_unresolved_destination_blocker_becomes_in_world_text():
                     "step_index": 0,
                     "action_type": "movement",
                     "intent": "Иду туда",
+                    "public_blocking_reason": "Из текущего места пока не виден подтверждённый путь туда.",
                     "resolution": "blocked",
                     "safe_mundane": False,
                     "status": "blocked",

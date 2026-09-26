@@ -158,83 +158,6 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
             "character.first_goal",
         }
     )
-    DELEGATION_MARKERS = (
-        "не знаю",
-        "не могу сказать",
-        "без разницы",
-        "реши сам",
-        "выбери сам",
-        "на твой выбор",
-        "как хочешь",
-        "на усмотрение мастера",
-        "нет таких",
-    )
-    START_REQUEST_MARKERS = (
-        "начинаем игру",
-        "начать игру",
-        "начинай игру",
-        "начинай прямо",
-        "начинай сейчас",
-        "начинай как можно скорее",
-        "давай начинай",
-        "давай играть",
-        "можно начинать",
-        "хочу начать",
-        "погнали",
-        "стартуем",
-        "запускай",
-        "без новых вопросов",
-        "и что происходит",
-    )
-    START_CLAIM_MARKERS = (
-        "давай начнем",
-        "давай начнём",
-        "начнем ",
-        "начнём ",
-        "начинаем игру",
-        "игра начинается",
-        "приключение начинается",
-        "начинаем с первой сцены",
-        "первая сцена начинается",
-        "переходим к первой сцене",
-        "переходим к игре",
-        "приступим к игре",
-        "мы находимся",
-    )
-    TOPIC_PATTERNS = (
-        (
-            "world.boundaries_confirmed",
-            ("точно не должно", "дополнительных границ", "темы которых", "стоп темы"),
-        ),
-        (
-            "world.starting_location_name",
-            ("где нач", "место начала", "стартовая локац", "в какой локац"),
-        ),
-        (
-            "world.starting_situation",
-            ("с какой ситуац", "что происходит в начале", "начальная ситуац"),
-        ),
-        (
-            "character.first_goal",
-            ("первая цель", "в самом начале кампании", "добиться в начале", "первым делом"),
-        ),
-        ("character.capabilities", ("умеет делать", "сильные стороны", "что умеет")),
-        ("character.limitations", ("слабости", "ограничения", "что ему мешает")),
-        ("character.biography", ("прошл", "биограф", "что с ним произошло", "как вырос")),
-        ("character.personality", ("характер", "личность", "какой он по натуре")),
-        ("character.values", ("ценност", "важнее всего", "принцип")),
-        ("character.fears", ("боится", "страх", "опасается больше всего")),
-        ("character.desires", ("желани", "мечта", "чего хочет от жизни")),
-        (
-            "character.speech_patterns",
-            ("как говорит", "как общается", "манера речи", "немногослов"),
-        ),
-        ("character.appearance", ("как выглядит", "внешност", "одет")),
-        ("character.description", ("кто такой", "чем занимается", "концепт героя")),
-        ("world.tone", ("тон игры", "настроение кампании", "насколько мрач")),
-        ("world.play_style", ("стиль игры", "что будет в центре игры", "как будем играть")),
-        ("world.premise", ("о чем кампания", "основа кампании", "главный конфликт")),
-    )
 
     def __init__(self, session) -> None:
         super().__init__(session)
@@ -368,9 +291,6 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                 or "Разобраться с первой зацепкой и определить следующий шаг."
             )
 
-        if not cls._text(world.starting_location_name):
-            world.starting_location_name = "Стартовая локация"
-
         if not cls._text(world.starting_situation):
             world.starting_situation = (
                 f"{character.name} сталкивается с первой зацепкой, связанной с целью: "
@@ -389,12 +309,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
             raise LLMProviderError("No LLM provider is configured for this campaign")
 
         latest_user_message = state.pending_user_message or ""
-        if self._is_delegation(latest_user_message):
-            for topic in state.last_question_topics:
-                if topic not in state.delegated_fields:
-                    state.delegated_fields.append(topic)
-
-        explicit_correction = self._is_explicit_correction(latest_user_message)
+        previous_topics = list(state.last_question_topics)
         merged = state.draft
         finalize_requested = False
         persona_suffix = ""
@@ -412,6 +327,11 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
             state,
             persona_suffix=persona_suffix,
         )
+        if model_decision.player_delegates:
+            for topic in previous_topics:
+                if topic not in state.delegated_fields:
+                    state.delegated_fields.append(topic)
+        explicit_correction = model_decision.explicit_correction
         unresolved_feedback: dict | None = None
 
         for attempt in range(self.MAX_QUALITY_REPAIRS + 1):
@@ -464,8 +384,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
 
         start_signal = (
             finalize_requested
-            or self._start_requested(latest_user_message)
-            or self._assistant_claims_start(model_decision.assistant_message)
+            or model_decision.conversation_disposition == "start_game"
         )
         if start_signal:
             if self.missing_fields(merged):
@@ -505,7 +424,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
             {"role": "assistant", "content": decision.assistant_message}
         )
         state.pending_user_message = None
-        state.last_question_topics = decision.question_topics
+        self._note_question_topics(state, decision.question_topics)
         state.last_summary = decision.summary
         await self._save_state(campaign_id, state, commit=True)
         return decision
@@ -533,9 +452,9 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         if base_feedback is not None:
             return base_feedback
 
-        if not decision.ready_to_finalize and (
-            self._start_requested(latest_user_message)
-            or self._assistant_claims_start(message)
+        if (
+            not decision.ready_to_finalize
+            and decision.conversation_disposition == "start_game"
         ):
             return {
                 "quality": "start_announced_without_finalize",
@@ -556,7 +475,11 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
             if topic not in state.delegated_fields
             and not self._topic_has_value(draft, topic)
         ]
-        if unrecorded and self._is_substantive_answer(latest_user_message):
+        if (
+            unrecorded
+            and len(self._text(latest_user_message)) >= 3
+            and not decision.player_delegates
+        ):
             return {
                 "quality": "unrecorded_player_answer",
                 "topics": unrecorded,
@@ -614,7 +537,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         if (
             len(current_topics) == 1
             and current_topics[0] in self.NARROW_CHARACTER_TOPICS
-            and self._recent_narrow_question_count(state) >= 2
+            and state.narrow_question_streak >= 2
         ):
             return {
                 "quality": "questionnaire_pattern",
@@ -633,40 +556,21 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         cls,
         decision: SessionZeroInterviewModelDecision,
     ) -> list[str]:
-        topics = [
+        return [
             topic for topic in decision.question_topics if cls._valid_topic(topic)
         ]
-        for topic in cls._infer_question_topics(decision.assistant_message):
-            if topic not in topics:
-                topics.append(topic)
-        return topics
 
     @classmethod
-    def _infer_question_topics(cls, message: str) -> list[str]:
-        folded = cls._normalize_text(message)
-        if not folded:
-            return []
-        topics: list[str] = []
-        for topic, patterns in cls.TOPIC_PATTERNS:
-            if any(pattern in folded for pattern in patterns):
-                topics.append(topic)
-        return topics
-
-    @classmethod
-    def _recent_narrow_question_count(
+    def _note_question_topics(
         cls,
         state: SessionZeroInterviewState,
-    ) -> int:
-        count = 0
-        for item in reversed(state.messages):
-            if item.get("role") != "assistant":
-                continue
-            topics = cls._infer_question_topics(item.get("content", ""))
-            if len(topics) == 1 and topics[0] in cls.NARROW_CHARACTER_TOPICS:
-                count += 1
-                continue
-            break
-        return count
+        topics: list[str],
+    ) -> None:
+        state.last_question_topics = topics
+        if len(topics) == 1 and topics[0] in cls.NARROW_CHARACTER_TOPICS:
+            state.narrow_question_streak += 1
+        else:
+            state.narrow_question_streak = 0
 
     @classmethod
     def _topic_has_value(
@@ -728,35 +632,10 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         return field in allowed.get(section, set())
 
     @classmethod
-    def _is_delegation(cls, value: str) -> bool:
-        folded = cls._normalize_text(value)
-        return any(marker in folded for marker in cls.DELEGATION_MARKERS)
-
-    @classmethod
-    def _start_requested(cls, value: str) -> bool:
-        folded = cls._normalize_text(value)
-        return any(marker in folded for marker in cls.START_REQUEST_MARKERS)
-
-    @classmethod
-    def _assistant_claims_start(cls, value: str) -> bool:
-        folded = cls._normalize_text(value)
-        return any(marker in folded for marker in cls.START_CLAIM_MARKERS)
-
-    @classmethod
-    def _is_substantive_answer(cls, value: str) -> bool:
-        clean = cls._text(value)
-        return len(clean) >= 3 and not cls._is_delegation(clean)
-
-    @classmethod
     def _terminal_start_message(cls, value: str) -> str:
         """Ready Session Zero must not play the opening or ask another question."""
         clean = cls._text(value)
-        if (
-            clean
-            and "?" not in clean
-            and not cls._assistant_claims_start(clean)
-            and len(clean) <= 280
-        ):
+        if clean and "?" not in clean and len(clean) <= 280:
             return clean
         return "Основа готова. Начинаем с первой сцены."
 

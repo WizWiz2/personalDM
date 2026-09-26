@@ -21,6 +21,8 @@ class PlayerMemoryView:
     predicate: str
     object_value: str | None
     confidence: float = 1.0
+    source_character_id: UUID | None = None
+    source_turn_id: UUID | None = None
 
 
 class PlayerMemoryQuery:
@@ -39,10 +41,17 @@ class PlayerMemoryQuery:
         self._beliefs = BeliefRepository(session)
 
     async def list_active(self, campaign_id: UUID) -> list[FactRead | PlayerMemoryView]:
-        facts = await self._facts.list_active(campaign_id)
-        result: list[FactRead | PlayerMemoryView] = list(facts)
-
         campaign = await self._campaigns.get_by_id(campaign_id)
+        # Scene-local state belongs only to its current scene; historical scene facts remain
+        # stored but must not look like concurrent current positions in the player read model.
+        facts = await self._facts.list_active(
+            campaign_id,
+            visibility="public",
+            scene_id=campaign.current_scene_id if campaign else None,
+        )
+        if not campaign or not campaign.current_scene_id:
+            facts = [fact for fact in facts if fact.scope == "campaign"]
+        result: list[FactRead | PlayerMemoryView] = list(facts)
         if not campaign or not campaign.player_character_id:
             return result
 
@@ -62,13 +71,20 @@ class PlayerMemoryQuery:
             proposition = " ".join(belief.proposition.split())
             if not proposition or proposition.casefold() in known:
                 continue
+            source = (
+                await self._entities.get_by_id(belief.source_character_id)
+                if belief.source_character_id
+                else None
+            )
             result.append(
                 PlayerMemoryView(
                     memory_kind="belief",
                     subject=player_name,
-                    predicate="знает:",
+                    predicate=(f"источник — {source.canonical_name}:" if source else "считает:"),
                     object_value=proposition,
                     confidence=belief.confidence,
+                    source_character_id=belief.source_character_id,
+                    source_turn_id=belief.source_turn_id,
                 )
             )
         return result

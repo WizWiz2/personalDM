@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.models.addressed_response import AddressedResponse
+
 
 IntentActionType = Literal[
     "service",
@@ -33,6 +35,7 @@ class PlayerActionIntent(BaseModel):
     # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
     movement_method: Literal["ordinary", "special"] = "ordinary"
+    requested_companions: list[str] = Field(default_factory=list, max_length=8)
 
     # Inventory authority is identity based. IDs must come from authoritative context.
     item_id: UUID | None = None
@@ -51,6 +54,8 @@ class PlayerActionIntent(BaseModel):
                 raise ValueError("movement intent requires destination_location")
         elif self.destination_location is not None:
             raise ValueError("only movement intent may carry destination authority")
+        if self.requested_companions and self.action_type != "movement":
+            raise ValueError("only movement intent may request companions")
 
         inventory_values = (
             self.item_id,
@@ -85,6 +90,7 @@ class PlayerIntentContract(BaseModel):
     addressed_character_name: str | None = Field(default=None, max_length=120)
     identity_reveal_requested: bool = False
     world_state_question: bool = False
+    questions: list[str] = Field(default_factory=list, max_length=8)
 
     # Player-agency boundaries that remain unresolved after this input.
     pending_player_choice: str | None = Field(default=None, max_length=1000)
@@ -122,6 +128,7 @@ class ActionOutcomeDecision(BaseModel):
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
     destination_profile: str | None = Field(default=None, max_length=1200)
+    carry_participants: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def validate_result(self):
@@ -150,6 +157,7 @@ class OutcomeNpcIntroduction(BaseModel):
     temporary_name: bool = True
     personal_name_evidence: str | None = Field(default=None, max_length=500)
     reason: str = Field(min_length=2, max_length=500)
+    after_action_index: int | None = Field(default=None, ge=0, le=7)
 
     @model_validator(mode="after")
     def stable_name_requires_evidence(self):
@@ -179,6 +187,7 @@ class TurnOutcomeDecision(BaseModel):
     ] = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
+    addressed_response: AddressedResponse | None = None
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
     ending_hook: str = Field(default="", max_length=500)

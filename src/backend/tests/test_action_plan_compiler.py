@@ -100,6 +100,39 @@ def _success(index: int) -> ActionOutcomeDecision:
 
 
 @pytest.mark.asyncio
+async def test_same_location_request_does_not_block_following_actions():
+    compiler = _Compiler([_location(ROOM, "Мастерская")], {})
+    contract = PlayerIntentContract(summary="Вхожу в мастерскую и смотрю стол.", actions=[
+        _move("Мастерская"), PlayerActionIntent(action_type="observation", intent="Осмотреть стол."),
+    ])
+    plan = await compiler.compile(CAMPAIGN, contract, TurnOutcomeDecision(action_outcomes=[
+        _success(0), ActionOutcomeDecision(
+            action_index=1, resolution="auto_success", observable_outcome="На столе пустая катушка.",
+        ),
+    ]))
+    assert all(step.resolution == "auto_success" for step in plan.action_sequence.steps)
+    assert not plan.action_sequence.steps[0].transition.required
+    assert "уже находишься" in plan.action_sequence.steps[0].observable_outcome
+
+
+@pytest.mark.asyncio
+async def test_approved_companion_survives_movement_compilation():
+    compiler = _Compiler(
+        [_location(ROOM, "Комната"), _location(CORRIDOR, "Коридор")],
+        {ROOM: [_exit(ROOM, CORRIDOR, "Коридор")]},
+    )
+    action = _move("Коридор")
+    action.requested_companions = ["Валерьян"]
+    contract = PlayerIntentContract(summary="Следую за Валерьяном.", actions=[action])
+    assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
+    outcome = _success(0).model_copy(update={"carry_participants": ["Валерьян"]})
+    plan = await compiler.compile(
+        CAMPAIGN, contract, TurnOutcomeDecision(action_outcomes=[outcome])
+    )
+    assert plan.action_sequence.steps[0].transition.carry_participants == ["Валерьян"]
+
+
+@pytest.mark.asyncio
 async def test_compound_route_is_compiled_from_each_virtual_intermediate_location() -> None:
     compiler = _Compiler(
         [

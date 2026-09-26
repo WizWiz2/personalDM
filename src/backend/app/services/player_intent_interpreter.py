@@ -18,6 +18,7 @@ from app.services.location_identity import location_reference_key, same_location
 from app.services.planning_context import intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
+
 _INTENT_PROMPT = """[PLAYER INTENT INTERPRETER]
 Freeze only the human's voluntary contribution, in Russian. Return PlayerIntentContractDraft.
 Never decide feasibility, outcomes, NPC reactions, routes, emotions or next player choices.
@@ -27,6 +28,8 @@ Speech is NOT an executable action, even in imperative form: "назовись",
 меня", "ответь на вопрос" request information. For dialogue-only input use actions=[],
 information_request_only=true, addressed_response_requested=true and the current addressee's
 designation (or null for unspecified people). A name question also sets identity_reveal_requested.
+questions contains each distinct information request in order, including implicit imperatives;
+preserve its meaning without adding questions. Extract these semantically, not by punctuation.
 Do not invent service/interaction/observation actions for asking, speaking or listening to a reply.
 Questions to the narrator about existing state use actions=[], information_request_only=true,
 world_state_question=true, addressed_response_requested=false; they do not execute the queried event.
@@ -34,6 +37,8 @@ world_state_question=true, addressed_response_requested=false; they do not execu
 Extract actual affirmative world acts only. Negative boundaries and staying put are not acts.
 An explicit physical inspection IS observation. Mixed action + dialogue keeps both the real actions
 and response flags. Preserve alternatives/conditions in pending_player_choice/protected_player_decisions.
+Also preserve every explicit negative action boundary there (e.g. inspect without touching): a
+sensory description is not permission to perform a prohibited voluntary action.
 actor_role=speaker for the human's act, addressee for a requested physical act by another person.
 An addressee's physical act is service, not the speaker's inventory; mark the expected response.
 
@@ -41,6 +46,8 @@ movement is the intention to reach another location, even when blocked. Keep the
 never substitute a known place or classify a failed move as interaction. Two committed endpoints
 mean two moves; stairs/corridors describing the path to one endpoint are not extra moves.
 The compiler resolves routes and discovery. movement_method=ordinary for walking/trying to walk;
+requested_companions lists exactly those people the input says move together on this hop, including
+a guide the protagonist follows. This is a request, not NPC consent. Do not include bystanders.
 teleportation/force/stealth/ability only for explicitly chosen means, never inferred from an obstacle.
 An unsuccessful attempted move is still a committed act. Example: "Иду в A, затем пытаюсь пройти
 в B; прямого прохода в B нет" => two movement actions, destination_location=A then B, both ordinary.
@@ -82,6 +89,7 @@ class PlayerActionIntentDraft(BaseModel):
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     destination_reference: str | None = None
+    requested_companions: list[str] = Field(default_factory=list, max_length=8)
     movement_method: Literal[
         "ordinary", "special", "teleportation", "force", "stealth", "ability"
     ] = "ordinary"
@@ -109,6 +117,7 @@ class PlayerIntentContractDraft(BaseModel):
     identity_reveal_requested: bool = False
     information_request_only: bool = False
     world_state_question: bool = False
+    questions: list[str] = Field(default_factory=list, max_length=8)
     pending_player_choice: str | None = None
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
 
@@ -131,6 +140,7 @@ class _MovementWire(_ActionWire):
     )
     destination_location: str = Field(min_length=1, max_length=255)
     movement_method: Literal["ordinary", "teleportation", "force", "stealth", "ability"]
+    requested_companions: list[str] = Field(default_factory=list, max_length=8)
 
 
 class _InventoryWire(_ActionWire):
@@ -157,7 +167,17 @@ class _LocalActionWire(_ActionWire):
 
 
 class _IntentWire(PlayerIntentContractDraft):
-    model_config = ConfigDict(extra="ignore", json_schema_extra={"additionalProperties": False})
+    model_config = ConfigDict(
+        extra="ignore",
+        json_schema_extra={
+            "additionalProperties": False,
+            "required": [
+                "summary", "actions", "questions", "protected_player_decisions",
+                "addressed_response_requested", "addressed_character_name",
+                "identity_reveal_requested", "information_request_only", "world_state_question",
+            ],
+        },
+    )
     # Conditional requirements belong in the model-facing schema: a movement needs a destination,
     # and a transfer needs an item and recipient. Keep the permissive draft for legacy normalization.
     actions: list[_MovementWire | _InventoryWire | _GiveWire | _TimeWire | _LocalActionWire] = (
@@ -174,6 +194,8 @@ class ActionOwnershipDecision(BaseModel):
     action_index: int = Field(ge=0, le=7)
     actor_role: Literal["speaker", "addressee"]
     contribution_kind: Literal["world_action", "speech"] = "world_action"
+    spatial_effect: Literal["local", "travel", "none"] | None = None
+    destination_location: str | None = Field(default=None, max_length=255)
     # The model's quote is a hint for aligning syntax with one action. A paraphrase cannot be
     # trusted as evidence, but it must not abort an otherwise valid turn.
     evidence_quote: str = Field(default="", max_length=500)
@@ -192,9 +214,15 @@ class IntentSemanticOwnershipReview(BaseModel):
 
 def _intent_semantic_review_wire(action_count: int, player_input: str):
     class IndexedActionOwnershipDecision(ActionOwnershipDecision):
-        model_config = ConfigDict(extra="forbid", json_schema_extra={
-            "required": ["action_index", "actor_role", "contribution_kind"],
-        })
+        model_config = ConfigDict(
+            extra="forbid",
+            json_schema_extra={
+                "required": [
+                    "action_index", "actor_role", "contribution_kind",
+                    "spatial_effect", "destination_location",
+                ],
+            },
+        )
         action_index: Literal[tuple(range(action_count))]
 
     class ExactIntentSemanticOwnershipReview(IntentSemanticOwnershipReview):
@@ -216,7 +244,9 @@ def _intent_semantic_review_wire(action_count: int, player_input: str):
                 self.information_request_only = all(
                     item.contribution_kind == "speech" for item in self.action_ownership
                 )
-            if not self.information_request_only and self.information_recipient != "none":
+            if not self.information_request_only and not any(
+                item.contribution_kind == "speech" for item in self.action_ownership
+            ) and self.information_recipient != "none":
                 self.information_recipient = "none"
             if self.information_recipient != "character":
                 self.addressed_character_name = None
@@ -240,6 +270,13 @@ For every extracted index first classify contribution_kind by meaning:
 Then decide from the complete utterance who performs the contribution:
 - speaker: the human-controlled player character commits to performing it;
 - addressee: the human asks another character to perform it.
+
+Also adjudicate spatial_effect for each contribution: travel reaches a different physical place,
+local manipulates or inspects something without changing place, none is speech or non-spatial acts.
+Locking a workshop, inspecting its doorway, turning toward a sound, or putting an object down is
+local, even if extraction mislabeled it movement. Entering or returning to a workshop is travel.
+For travel supply the endpoint in destination_location from the human's intended reference;
+otherwise return null. This corrects classification only: preserve order, actor and action text.
 
 For each decision, evidence_quote must be the shortest exact verbatim span from LATEST HUMAN INPUT
 that supports the ownership decision. Judge meaning in context; do not use keyword, verb, suffix,
@@ -272,10 +309,11 @@ def _destination_binding_wire(
         **{
             f"action_{index}": (
                 Literal[
-                    tuple(candidates[index] if candidates is not None else references) + ("new",)
+                    tuple(candidates[index] if candidates is not None else references)
+                    + ("new", "unresolved")
                 ],
                 Field(
-                    description="ID of the same existing place, or new if no candidate is identical."
+                    description="Same-place ID, new for a concrete new place, unresolved for ambiguity."
                 ),
             )
             for index in indices
@@ -332,6 +370,7 @@ def _normalized_action(
         if not destination:
             raise TurnPlanningError("movement intent is missing the player-selected destination")
         payload["destination_location"] = destination
+        payload["requested_companions"] = list(dict.fromkeys(action.requested_companions))
         payload["movement_method"] = (
             "ordinary" if action.movement_method == "ordinary" else "special"
         )
@@ -399,6 +438,7 @@ def normalize_intent_draft(
             "addressed_character_name": _compact(draft.addressed_character_name) or None,
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
             "world_state_question": bool(draft.world_state_question),
+            "questions": [value for raw in draft.questions if (value := _compact(raw))],
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
             "protected_player_decisions": [
                 value for raw in draft.protected_player_decisions if (value := _compact(raw))
@@ -447,8 +487,9 @@ class PlayerIntentInterpreter:
                 draft.world_state_question = True
                 draft.addressed_response_requested = False
                 draft.addressed_character_name = None
-            self.audit.append({"phase": "semantic_ownership", "review": None,
-                               "syntax": syntax.__dict__})
+            self.audit.append(
+                {"phase": "semantic_ownership", "review": None, "syntax": syntax.__dict__}
+            )
             return None
 
         wire = _intent_semantic_review_wire(len(draft.actions), player_input)
@@ -493,18 +534,34 @@ class PlayerIntentInterpreter:
         )
         review = wire.model_validate(data)
         for ownership in review.action_ownership:
-            draft.actions[ownership.action_index].actor_role = ownership.actor_role
+            action = draft.actions[ownership.action_index]
+            action.actor_role = ownership.actor_role
+            if ownership.spatial_effect == "travel":
+                # A step without a catalogued place is movement inside the current
+                # location, not a failed turn. Prose must not invent the destination.
+                if not str(ownership.destination_location or "").strip():
+                    action.action_type = "interaction"
+                    action.destination_location = None
+                    action.destination_reference = None
+                    action.requested_companions = []
+                else:
+                    action.action_type = "movement"
+                    action.destination_location = ownership.destination_location
+            elif ownership.spatial_effect in {"local", "none"} and action.action_type == "movement":
+                action.action_type = "interaction"
+                action.destination_location = None
+                action.destination_reference = None
+                action.requested_companions = []
         draft.information_request_only = review.information_request_only
         draft.world_state_question = bool(
-            review.information_request_only
-            and review.information_recipient == "narrator"
+            review.information_request_only and review.information_recipient == "narrator"
         )
         has_addressee_action = any(
             item.actor_role == "addressee" for item in review.action_ownership
         )
         draft.addressed_response_requested = bool(
             draft.addressed_response_requested
-            or (review.information_request_only and review.information_recipient == "character")
+            or review.information_recipient == "character"
             or has_addressee_action
         )
         draft.addressed_character_name = (
@@ -559,12 +616,13 @@ class PlayerIntentInterpreter:
         # person/mood, never whether an imperative's meaning is speech or a physical act.
         kinds = {item.action_index: item.contribution_kind for item in review.action_ownership}
         draft.actions = [
-            action for index, action in enumerate(draft.actions)
-            if kinds[index] == "world_action"
+            action for index, action in enumerate(draft.actions) if kinds[index] == "world_action"
         ]
         return review
 
-    async def _bind_destinations(self, selection, draft, player_input, references):
+    async def _bind_destinations(
+        self, selection, draft, player_input, references, context_messages=None,
+    ):
         """Resolve only place identity; this pass cannot change the extracted action sequence.
 
         Keeping the catalogue out of action extraction avoids substituting a familiar location for
@@ -573,31 +631,20 @@ class PlayerIntentInterpreter:
         unresolved = {}
         candidates = {}
 
-        def determiner_head_match(destination: str) -> str | None:
-            """Bind a possessed/deictic place by its grammatical head, not word endings.
+        pipeline = getattr(self._linguistic_analyzer, "pipeline", None)
+        lemma_cache: dict[str, set[str]] = {}
 
-            This distinguishes «свою комнату» from «Окрестности — Комната Кая»:
-            both contain the room noun, but only the actual room has it as its
-            leading place head. Ambiguous multiple rooms remain for semantic review.
-            """
-            pipeline = getattr(self._linguistic_analyzer, "pipeline", None)
+        def lexical_lemmas(text: str) -> set[str]:
             if pipeline is None:
-                return None
-            doc = pipeline(destination.casefold())
-            if not any(token.pos_ == "DET" for token in doc):
-                return None
-            head = next((token.lemma_ for token in doc if token.pos_ == "NOUN"), None)
-            if not head:
-                return None
-            matching = []
-            for key, name in references.items():
-                reference_doc = pipeline(name.casefold())
-                first_noun = next(
-                    (token.lemma_ for token in reference_doc if token.pos_ == "NOUN"), None
-                )
-                if first_noun == head:
-                    matching.append(key)
-            return matching[0] if len(matching) == 1 else None
+                return set()
+            key = text.casefold()
+            if key not in lemma_cache:
+                lemma_cache[key] = {
+                    token.lemma_.casefold()
+                    for token in pipeline(key)
+                    if token.pos_ in {"NOUN", "PROPN", "ADJ", "NUM"}
+                }
+            return lemma_cache[key]
 
         for index, action in enumerate(draft.actions):
             if action.action_type != "movement":
@@ -610,25 +657,23 @@ class PlayerIntentInterpreter:
             if len(matches) == 1:
                 action.destination_reference = matches[0]
             else:
-                grammatical_match = determiner_head_match(action.destination_location or "")
-                if grammatical_match is not None:
-                    action.destination_reference = grammatical_match
-                    continue
                 # Identity lookup is conservative candidate matching, not a campaign-wide nearest
                 # neighbour search. A shared lexical anchor permits resolving inflection/possession;
                 # an unrelated named place must never replace the selected new destination.
                 tokens = set(location_reference_key(action.destination_location or ""))
+                lemmas = lexical_lemmas(action.destination_location or "")
                 plausible = {
                     key: name
                     for key, name in references.items()
                     if tokens.intersection(location_reference_key(name))
+                    or lemmas.intersection(lexical_lemmas(name))
                 }
-                if plausible:
-                    unresolved[index] = action.destination_location
-                    candidates[index] = plausible
-                else:
-                    action.destination_reference = "new"
-        if unresolved and references:
+                # Absence of lexical overlap is not evidence of a new place: deictic references
+                # such as "home"/"outside" need the scene and catalogue too. Candidate retrieval
+                # narrows named references; contextual binding owns identity and ambiguity.
+                unresolved[index] = action.destination_location
+                candidates[index] = plausible or dict(references)
+        if unresolved:
             wire = _destination_binding_wire(list(unresolved), references, candidates)
             data = await self._router.generate_json(
                 self._provider,
@@ -640,7 +685,11 @@ class PlayerIntentInterpreter:
                             "Resolve location identity only. For each extracted destination, select an ID "
                             "ONLY if it names the SAME place in LOCATION REFERENCES. Inflection and a "
                             "possessive reference (my room) may refer to the same place. Otherwise select "
-                            "new. A new public destination is valid; never substitute a similar place, "
+                            "new only for a concrete, independently named new physical place. "
+                            "Relative references (home/outside/back/aside/inside) must resolve against "
+                            "the scene and human input; choose unresolved if their endpoint is unclear, "
+                            "never create a location named after a direction or a pronoun. "
+                            "A new public destination is valid; never substitute a similar place, "
                             "a parent area, an intermediate route or a nearby candidate. Do not judge "
                             "accessibility, feasibility or actions. Compare meanings, not exact spelling. "
                             "Return DestinationIdentityBindings.\n\n[OUTPUT JSON SCHEMA]\n"
@@ -652,6 +701,9 @@ class PlayerIntentInterpreter:
                         content=json.dumps(
                             {
                                 "human_input": player_input,
+                                "scene_reference_context": self._authoritative_context(
+                                    context_messages or []
+                                ),
                                 "selected_destinations": unresolved,
                                 "LOCATION REFERENCES by action index": candidates,
                             },
@@ -669,6 +721,8 @@ class PlayerIntentInterpreter:
                 draft.actions[index].destination_reference = bindings[f"action_{index}"]
         for action in draft.actions:
             reference = action.destination_reference
+            if reference == "unresolved":
+                raise TurnPlanningError("movement endpoint needs clarification before creating topology")
             if action.action_type == "movement" and reference and reference != "new":
                 if reference not in references:
                     raise TurnPlanningError("movement refers to an unknown location identity")
@@ -706,10 +760,14 @@ class PlayerIntentInterpreter:
                 temperature=settings.PLANNER_TEMPERATURE,
                 response_model=_IntentWire,
             )
-            self.audit.append({"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)})
+            self.audit.append(
+                {"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)}
+            )
             draft = PlayerIntentContractDraft.model_validate(data)
             await self._review_semantic_ownership(selection, player_input, draft, context_messages)
-            await self._bind_destinations(selection, draft, player_input, references)
+            await self._bind_destinations(
+                selection, draft, player_input, references, context_messages,
+            )
             contract = normalize_intent_draft(draft, player_input)
             self.audit.append(
                 {
@@ -724,8 +782,11 @@ class PlayerIntentInterpreter:
             raise
         except (LLMProviderError, LinguisticParserUnavailable, ValueError, TypeError) as exc:
             error = TurnPlanningError(f"player intent interpretation failed: {exc}")
-            error.telemetry = {"phase": "player_intent", "provider": dict(self._provider.last_telemetry),
-                               "audit": list(self.audit)}
+            error.telemetry = {
+                "phase": "player_intent",
+                "provider": dict(self._provider.last_telemetry),
+                "audit": list(self.audit),
+            }
             raise error from exc
 
 

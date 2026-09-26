@@ -815,20 +815,6 @@ class EntityRegistrar:
         value = " ".join(value.split()).strip(" .,:;!?—–-")
         if len(value) < 2 or len(value) > 120:
             return None
-        if value.casefold() in {
-            "кто-то",
-            "некто",
-            "человек",
-            "толпа",
-            "они",
-            "он",
-            "она",
-            "безымянный собеседник",
-            "неизвестный собеседник",
-            "неизвестный npc",
-            "безымянный npc",
-        }:
-            return None
         return value
 
     @staticmethod

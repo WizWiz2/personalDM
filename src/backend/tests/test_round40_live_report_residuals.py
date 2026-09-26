@@ -120,7 +120,8 @@ def test_semantic_plan_reviewer_rejects_empty_success_instead_of_demanding_drama
 
 
 def test_requires_check_never_becomes_player_facing_engine_stub_again():
-    assert TurnAuthority._player_facing_blocking_reason("requires a check") is None
+    step = {"status": "blocked", "blocking_reason": "requires a check"}
+    assert "requires a check" not in TurnAuthority._public_blocked_outcome(step)
 
 
 def test_location_projection_does_not_try_to_inflect_canonical_name():

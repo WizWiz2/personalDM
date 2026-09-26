@@ -48,6 +48,11 @@ class NarrationPublicationGuard:
         r"продвинуться\s+дальше\s+пока\s+не\s+уда[её]тся)",
         flags=re.IGNORECASE,
     )
+    LEDGER_PATTERN = re.compile(r"\s—\s[^—\n]{1,80}:")
+    OBLIGATION_PATTERN = re.compile(
+        r"получает прямое обращение и даёт ответ",
+        flags=re.IGNORECASE,
+    )
     DEAD_TURN_PATTERN = re.compile(
         r"^(?:пока\s+)?ничего(?:\s+заметно)?\s+не\s+(?:меняется|происходит)[.!?…]*$",
         flags=re.IGNORECASE,
@@ -97,8 +102,17 @@ class NarrationPublicationGuard:
             for item in (validation.violations if validation else [])
             if item.severity == "error"
         ]
-        if validation is None or errors:
-            fallback = cls._safe_authority_projection(authority)
+        response = authority.addressed_response
+        unproven_response = bool(
+            response
+            and response.questions
+            and (
+                validation is None
+                or not validation.covers_questions(len(response.questions), candidate)
+            )
+        )
+        if validation is None or errors or unproven_response:
+            fallback = cls._emit(authority, cls._safe_authority_projection(authority))
             return fallback, {
                 "mode": "authority_projection",
                 "candidate_characters": len(candidate),
@@ -106,18 +120,21 @@ class NarrationPublicationGuard:
                 "error_count": len(errors),
                 "candidate_discarded": True,
                 "validated_surface": False,
+                "unproven_question_coverage": unproven_response,
             }
 
         # An observation does not restate a slot a completed world step already owns.
         # That slot's text is the step outcome. Sentences about any other subject stay.
         if cls._observation_yields_to_established_state(authority):
             locked = " ".join(
-                line.strip() for line in authority.established_state if line and str(line).strip()
+                safe
+                for line in authority.established_state
+                if (safe := cls._player_facing_fragment(line))
             )
             if not locked:
                 locked = cls._safe_authority_projection(authority)
             remainder = cls._observation_remainder(candidate, authority.established_subjects)
-            fallback = locked if not remainder else f"{locked} {remainder}"
+            fallback = cls._emit(authority, locked if not remainder else f"{locked} {remainder}")
             return fallback, {
                 "mode": "authority_projection",
                 "candidate_characters": len(candidate),
@@ -137,7 +154,7 @@ class NarrationPublicationGuard:
         if inspected and cls._player_facing_fragment(inspected) is None:
             inspected = ""
         if inspected:
-            return candidate_surface, {
+            return cls._emit(authority, candidate_surface), {
                 "mode": "validated_candidate",
                 "candidate_characters": len(candidate),
                 "published_characters": len(candidate_surface),
@@ -146,7 +163,7 @@ class NarrationPublicationGuard:
                 "validated_surface": True,
             }
 
-        fallback = cls._safe_authority_projection(authority)
+        fallback = cls._emit(authority, cls._safe_authority_projection(authority))
         return fallback, {
             "mode": "authority_projection",
             "candidate_characters": len(candidate),
@@ -155,7 +172,6 @@ class NarrationPublicationGuard:
             "candidate_discarded": True,
             "validated_surface": False,
         }
-
 
     @staticmethod
     def _sentences(text: str) -> list[str]:
@@ -198,12 +214,14 @@ class NarrationPublicationGuard:
         steps = sequence.get("steps")
         if not isinstance(steps, list):
             return False
-        typed = [
-            step
-            for step in steps
-            if isinstance(step, dict) and step.get("action_type")
-        ]
+        typed = [step for step in steps if isinstance(step, dict) and step.get("action_type")]
         return bool(typed) and all(step.get("action_type") == "observation" for step in typed)
+
+    @staticmethod
+    def _emit(authority: TurnAuthority, text: str) -> str:
+        from app.services.play_surface_contract import apply_play_surface
+
+        return apply_play_surface(authority, text)
 
     @classmethod
     def _safe_authority_projection(cls, authority: TurnAuthority) -> str:
@@ -341,9 +359,11 @@ class NarrationPublicationGuard:
                         break
             if not parts:
                 cls._append_unique(parts, blocked)
+            for fragment in cls._response_fragments(authority):
+                cls._append_unique(parts, fragment)
             return " ".join(cls._as_sentence(value) for value in parts if value.strip()).strip()
 
-        parts: list[str] = []
+        parts = cls._response_fragments(authority)
         # Observation describes. It does not replace a state a completed world step already set.
         observation_outcomes: set[str] = set()
         sequence = authority.action_sequence if isinstance(authority.action_sequence, dict) else {}
@@ -401,6 +421,20 @@ class NarrationPublicationGuard:
         return " ".join(cls._as_sentence(value) for value in parts if value.strip()).strip()
 
     @classmethod
+    def _response_fragments(cls, authority: TurnAuthority) -> list[str]:
+        response = authority.addressed_response
+        parts: list[str] = []
+        if response:
+            for words in response.speech_fragments():
+                safe = cls._player_facing_fragment(words)
+                if safe:
+                    cls._append_unique(
+                        parts,
+                        f"{response.speaker_name}: «{safe}»" if response.speaker_name else safe,
+                    )
+        return parts
+
+    @classmethod
     def _blocked_in_world_fallback(cls, authority: TurnAuthority) -> str | None:
         sequence = authority.action_sequence or {}
         steps = sequence.get("steps")
@@ -409,8 +443,7 @@ class NarrationPublicationGuard:
         for step in steps:
             if not isinstance(step, dict) or step.get("status") != "blocked":
                 continue
-            reason = TurnAuthority._player_facing_blocking_reason(step.get("blocking_reason"))
-            return reason or "Путь вперёд остаётся закрыт"
+            return TurnAuthority._public_blocked_outcome(step)
         return None
 
     @classmethod
@@ -426,6 +459,8 @@ class NarrationPublicationGuard:
             return None
         if cls.META_PATTERN.search(clean):
             return None
+        if cls.LEDGER_PATTERN.search(clean) or cls.OBLIGATION_PATTERN.search(clean):
+            return None
         return clean
 
     @classmethod
@@ -438,9 +473,7 @@ class NarrationPublicationGuard:
             return candidate, 0
         segments = cls._segments(candidate)
         error_evidence = [
-            cls._key(item.evidence)
-            for item in validation.violations
-            if item.severity == "error"
+            cls._key(item.evidence) for item in validation.violations if item.severity == "error"
         ]
         if not error_evidence:
             return candidate, 0
