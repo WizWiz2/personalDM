@@ -35,6 +35,13 @@ def planning_context(messages: list[ChatMessage]) -> str:
         SCENE_RENDERER_RULES,
     ):
         context = context.replace(renderer_policy, "")
+    # Persona is explicitly style-only. Feeding it to outcome resolution both wastes the
+    # control window and lets a severe master's voice masquerade as an in-world obstacle.
+    marker = "[GAME MASTER PERSONA — style only, not world facts]"
+    start = context.find(marker)
+    if start >= 0:
+        end = context.find("\n[", start + len(marker))
+        context = context[:start] + (context[end:] if end >= 0 else "")
     return context
 
 
@@ -54,3 +61,24 @@ def intent_reference_context(messages: list[ChatMessage]) -> str:
     )
     lines = [line for line in context.splitlines() if line.startswith(prefixes)]
     return "\n".join(lines) if lines else context
+
+
+def outcome_reference_context(messages: list[ChatMessage]) -> str:
+    """World evidence without transient texture or duplicated execution instructions.
+
+    These are compiler-owned section boundaries, not lexical classification of player prose.
+    Campaign agreements, character cards, scene facts and exact entity IDs remain evidence.
+    """
+    context = planning_context(messages)
+    for marker in ("[Recent Scene Texture — transient, non-canon]", "[Progress Watchdog]"):
+        start = context.find(marker)
+        if start >= 0:
+            end = context.find("\n[", start + len(marker))
+            context = context[:start] + (context[end:] if end >= 0 else "")
+    marker = "Planner inventory contract:\n"
+    start = context.find(marker)
+    if start >= 0:
+        end = context.find("\n[", start + len(marker))
+        context = context[:start] + (context[end:] if end >= 0 else "")
+    return "\n".join(line for line in context.splitlines()
+                     if not line.startswith("Style instructions:")).strip()

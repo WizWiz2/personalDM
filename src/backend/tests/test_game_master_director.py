@@ -433,6 +433,61 @@ async def test_set_master_resets_rhythm() -> None:
     assert result.state.preset_id == "chaos_dice"
 
 
+@pytest.mark.asyncio
+async def test_restore_rhythm_snapshot_rejects_a_different_active_master() -> None:
+    from app.models.game_master import CampaignMasterState
+    from app.services import master_service as ms
+
+    stored = {
+        "custom": {
+            ms.GAME_MASTER_FIELD: CampaignMasterState(
+                kind="preset",
+                preset_id="soft_keeper",
+                rhythm=MasterRhythmState(),
+            ).model_dump(mode="json")
+        }
+    }
+
+    class FakeSetups:
+        def decode_dict(self, raw):
+            return dict(stored["custom"])
+
+        async def update(self, row, payload):
+            stored["custom"] = dict(payload["custom_fields"])
+
+    class Sess:
+        async def flush(self):
+            return None
+
+    class FakeService(ms.MasterService):
+        def __init__(self):
+            self._session = Sess()
+            self._setups = FakeSetups()
+            self._campaigns = SimpleNamespace()
+
+        async def _ensure_setup(self, campaign_id):
+            return SimpleNamespace(custom_fields=stored["custom"])
+
+    service = FakeService()
+    snapshot = MasterRhythmState(turn_index=7, turns_since_pressure=3).model_dump()
+
+    restored = await service.restore_rhythm_snapshot(
+        uuid4(),
+        snapshot,
+        expected_master_id="iron_chronicler",
+    )
+    assert restored is False
+    assert stored["custom"][ms.GAME_MASTER_FIELD]["rhythm"]["turn_index"] == 0
+
+    restored = await service.restore_rhythm_snapshot(
+        uuid4(),
+        snapshot,
+        expected_master_id="soft_keeper",
+    )
+    assert restored is True
+    assert stored["custom"][ms.GAME_MASTER_FIELD]["rhythm"]["turn_index"] == 7
+
+
 def test_pure_ordinary_travel_is_not_contact_seeking() -> None:
     """Movement-only ordinary intent must not force Soft Keeper introduce_contact."""
     contract = PlayerIntentContract(

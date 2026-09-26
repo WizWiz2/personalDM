@@ -1,81 +1,56 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from app.config import settings
 from app.models.player_intent import IntentActionType, PlayerIntentContract
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.linguistic_intent_analyzer import (
+    LinguisticIntentAnalyzer,
+    LinguisticParserUnavailable,
+)
 from app.services.location_identity import location_reference_key, same_location_reference
 from app.services.planning_context import intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
-from app.services.addressee_guard import retain_addressed_actions
-
 _INTENT_PROMPT = """[PLAYER INTENT INTERPRETER]
-You convert exactly one human RPG turn into immutable player-authority IR. You do NOT resolve the
-world, decide success/failure, invent NPC reactions, choose routes, write prose, or repair campaign
-state. Return exactly PlayerIntentContractDraft.
+Freeze only the human's voluntary contribution, in Russian. Return PlayerIntentContractDraft.
+Never decide feasibility, outcomes, NPC reactions, routes, emotions or next player choices.
+summary is a short paraphrase (at most 500 characters); actions is required, ordered, maximum 8.
 
-The contract contains only what the HUMAN actually committed to now:
-- summary and actions are REQUIRED JSON fields. Never omit them. actions may be [] only when the
-  human truly committed to no affirmative world action in this turn.
-- Each action object MUST contain action_type and intent. Do not emit an empty action object.
-- actions is an ordered list of affirmative atomic world actions. Preserve their stated order.
-- Ordinary speech, a greeting, a question, a claim, or telling someone information is NOT an action
-  step. Represent expected dialogue with addressed_response_requested/addressed_character_name.
-- A plural imperative to other people (раздевайтесь, снимайте) is NOT the player's own action.
-  Leave actions empty and set addressed_response_requested unless the human also acts.
-- Every action object MUST set actor_role to speaker or addressee. speaker means the human
-  character performs the act. addressee means the human asked someone else to perform it.
-  An addressee act is action_type=service for that person, never the speaker's inventory,
-  and the speaker's own refusal to act stays outside that action's intent. Set
-  addressed_response_requested and addressed_character_name to that person's current name.
-  The summary keeps the human as the one who asked. Do not recast the request as the other
-  person's own attempt.
-- A negative/stationary boundary ("не иду", "остаюсь здесь", "не проверяю") is not an action.
-- An unresolved alternative/condition is not executed. Preserve it in pending_player_choice and/or
-  protected_player_decisions instead of choosing a branch.
-- movement means an INTENTION TO REACH another physical location, including a failed attempt.
-  Classify by the intended endpoint, NEVER by whether the actor actually reaches it. Only a
-  voluntary act whose intended endpoint stays inside the same room/scene is interaction.
-- Preserve the destination selected by the human. Never replace it with a nearby or familiar place.
-- For movement, destination_location is only the human-selected endpoint for that atomic move, never
-  a route policy or prose route path. Preserve two movement actions only when the human actually
-  commits to reaching two distinct location boundaries in order. Route media such as stairs,
-  corridor or courtyard are not promoted to actions when they merely describe the path to one final
-  destination.
-- Do not decide whether a destination already exists, whether a route may be discovered, or whether
-  the move is possible. The deterministic world compiler owns all of that after this contract freezes.
-- An attempted move is still movement with the selected destination, even if the human says the
-  passage is absent or blocked. Obstacles never turn movement into interaction or remove a preceding
-  move. Extract the intention before its outcome: "go to A, then try to go to B; no passage to B"
-  contains two movement actions, to A then B. Do not invent a locked room, door or alternative route.
-- movement_method describes the means explicitly chosen by the human, NEVER difficulty or success.
-  ordinary = walking/travelling/trying to walk, even with no passage. teleportation = explicitly
-  teleporting; force = explicitly breaking/pushing through an obstacle; stealth = explicitly sneaking;
-  ability = another explicitly named extraordinary means. An obstacle alone supplies no such means.
-- Inventory actions MUST set inventory_operation to exactly take, drop, give, or place. Use IDs from
-  AUTHORITATIVE CONTEXT when available. give also requires inventory_target_id. drop means release
-  into the current place; place means deliberately position on/in a named surface/container/position.
-- Do not put item/inventory fields on movement, interaction, observation, rest, wait, or other actions.
-- rest/wait may carry elapsed_time/time_after only when the human establishes it.
-- identity_reveal_requested=true when the human explicitly asks a present person for their name.
-- addressed_character_name must use the current known designation, never a future/invented answer.
-- If the human seeks contact with unspecified local people (searching the place for someone,
-  looking for company/service/attendants, trying to find people while walking), set
-  addressed_response_requested=true even when no specific name is known. Keep any real movement
-  actions, but never freeze such a turn as movement-only with addressed_response_requested=false:
-  seeking people is a contact commitment, not calm travel.
-- When seeking unspecified people, addressed_character_name may be null; do not invent a name.
+Speech is NOT an executable action, even in imperative form: "назовись", "объясни, откуда знаешь
+меня", "ответь на вопрос" request information. For dialogue-only input use actions=[],
+information_request_only=true, addressed_response_requested=true and the current addressee's
+designation (or null for unspecified people). A name question also sets identity_reveal_requested.
+Do not invent service/interaction/observation actions for asking, speaking or listening to a reply.
+Questions to the narrator about existing state use actions=[], information_request_only=true,
+world_state_question=true, addressed_response_requested=false; they do not execute the queried event.
 
-Do not encode consequences in the intent. No action here means the world is unchanged yet; a later
-outcome resolver owns external consequences.
+Extract actual affirmative world acts only. Negative boundaries and staying put are not acts.
+An explicit physical inspection IS observation. Mixed action + dialogue keeps both the real actions
+and response flags. Preserve alternatives/conditions in pending_player_choice/protected_player_decisions.
+actor_role=speaker for the human's act, addressee for a requested physical act by another person.
+An addressee's physical act is service, not the speaker's inventory; mark the expected response.
+
+movement is the intention to reach another location, even when blocked. Keep the selected endpoint,
+never substitute a known place or classify a failed move as interaction. Two committed endpoints
+mean two moves; stairs/corridors describing the path to one endpoint are not extra moves.
+The compiler resolves routes and discovery. movement_method=ordinary for walking/trying to walk;
+teleportation/force/stealth/ability only for explicitly chosen means, never inferred from an obstacle.
+An unsuccessful attempted move is still a committed act. Example: "Иду в A, затем пытаюсь пройти
+в B; прямого прохода в B нет" => two movement actions, destination_location=A then B, both ordinary.
+Keep the second attempt; do not encode the missing passage by deleting its action or changing its type.
+Success and blockers are resolved only AFTER this extraction, including for known impossible attempts.
+Inventory: take/drop/place/give with exact contextual IDs; give also needs inventory_target_id.
+drop releases the item into the place; place deliberately positions it on/in a named surface/container.
+Other actions carry no inventory fields. rest/wait carry time only when supplied by the human.
+Seeking local people sets addressed_response_requested=true, retaining any real movement;
+use null when their designation is unknown. Never invent the addressee's future personal name.
 """
 
 _ACTION_TYPES = {
@@ -132,6 +107,8 @@ class PlayerIntentContractDraft(BaseModel):
     addressed_response_requested: bool = False
     addressed_character_name: str | None = None
     identity_reveal_requested: bool = False
+    information_request_only: bool = False
+    world_state_question: bool = False
     pending_player_choice: str | None = None
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
 
@@ -180,6 +157,7 @@ class _LocalActionWire(_ActionWire):
 
 
 class _IntentWire(PlayerIntentContractDraft):
+    model_config = ConfigDict(extra="ignore", json_schema_extra={"additionalProperties": False})
     # Conditional requirements belong in the model-facing schema: a movement needs a destination,
     # and a transfer needs an item and recipient. Keep the permissive draft for legacy normalization.
     actions: list[_MovementWire | _InventoryWire | _GiveWire | _TimeWire | _LocalActionWire] = (
@@ -188,6 +166,99 @@ class _IntentWire(PlayerIntentContractDraft):
 
 
 _IntentWire.__name__ = "PlayerIntentContractDraft"
+
+
+class ActionOwnershipDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_index: int = Field(ge=0, le=7)
+    actor_role: Literal["speaker", "addressee"]
+    contribution_kind: Literal["world_action", "speech"] = "world_action"
+    # The model's quote is a hint for aligning syntax with one action. A paraphrase cannot be
+    # trusted as evidence, but it must not abort an otherwise valid turn.
+    evidence_quote: str = Field(default="", max_length=500)
+
+
+class IntentSemanticOwnershipReview(BaseModel):
+    """Narrow semantic adjudication that may label ownership but never rewrite actions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_ownership: list[ActionOwnershipDecision] = Field(max_length=8)
+    information_request_only: bool
+    information_recipient: Literal["narrator", "character", "none"]
+    addressed_character_name: str | None = Field(default=None, max_length=120)
+
+
+def _intent_semantic_review_wire(action_count: int, player_input: str):
+    class IndexedActionOwnershipDecision(ActionOwnershipDecision):
+        model_config = ConfigDict(extra="forbid", json_schema_extra={
+            "required": ["action_index", "actor_role", "contribution_kind"],
+        })
+        action_index: Literal[tuple(range(action_count))]
+
+    class ExactIntentSemanticOwnershipReview(IntentSemanticOwnershipReview):
+        action_ownership: list[IndexedActionOwnershipDecision] = Field(
+            min_length=action_count,
+            max_length=action_count,
+        )
+
+        @model_validator(mode="after")
+        def validate_grounding(self):
+            indices = [item.action_index for item in self.action_ownership]
+            if sorted(indices) != list(range(action_count)):
+                raise ValueError(
+                    f"action ownership must cover exactly indices {list(range(action_count))}"
+                )
+            if any("contribution_kind" in item.model_fields_set for item in self.action_ownership):
+                # Native requests label every candidate. A contradictory summary flag must
+                # never erase physical acts from a mixed action + information turn.
+                self.information_request_only = all(
+                    item.contribution_kind == "speech" for item in self.action_ownership
+                )
+            if not self.information_request_only and self.information_recipient != "none":
+                self.information_recipient = "none"
+            if self.information_recipient != "character":
+                self.addressed_character_name = None
+            return self
+
+    ExactIntentSemanticOwnershipReview.__name__ = "IntentSemanticOwnershipReview"
+    return ExactIntentSemanticOwnershipReview
+
+
+_OWNERSHIP_REVIEW_PROMPT = """[INTENT SEMANTIC OWNERSHIP ADJUDICATOR]
+Judge contribution kind and ownership in the latest human turn. Do not resolve outcomes, edit
+action text, add/reorder actions, choose routes, or write story prose. Return exactly
+IntentSemanticOwnershipReview.
+
+For every extracted index first classify contribution_kind by meaning:
+- speech: asking, answering, explaining, naming oneself, greeting, telling information, or staging
+  that dialogue. These are NOT executable world actions, even when phrased as imperatives.
+- world_action: a physical-world act such as travel, inspection, manipulation, inventory, rest.
+  An attempted act stays world_action even when unsuccessful. Actually inspecting/searching the
+  surroundings is world_action even when the desired result is only information, not a state change.
+Then decide from the complete utterance who performs the contribution:
+- speaker: the human-controlled player character commits to performing it;
+- addressee: the human asks another character to perform it.
+
+For each decision, evidence_quote must be the shortest exact verbatim span from LATEST HUMAN INPUT
+that supports the ownership decision. Judge meaning in context; do not use keyword, verb, suffix,
+stem, punctuation, or regex lists.
+
+Set information_request_only=true when the message asks for information without a physical-world
+act. A requested physical act is not information-only; a requested explanation IS information-only.
+A mixed turn with a physical-world act is not information-only, but its speech entries remain speech.
+
+For an information-only turn, classify exactly one semantic recipient:
+- narrator: the human asks for established world/scene state or description. Referring to a
+  character in third person is a request about that character, not speech addressed to them;
+- character: the human directly speaks to an in-world character and expects their answer;
+- none: only for turns that are not information-only.
+
+Use the contextual designation for addressed_character_name with recipient=character; never invent
+a name. "Назови себя и объясни, откуда знаешь меня" is speech, information_request_only=true,
+information_recipient=character. "Открой дверь" is world_action, actor_role=addressee.
+"""
 
 
 def _destination_binding_wire(
@@ -216,35 +287,10 @@ def _compact(value: object) -> str:
     return " ".join(str(value or "").split())
 
 
-def _inventory_operation(player_input: str, action: PlayerActionIntentDraft) -> str | None:
+def _inventory_operation(action: PlayerActionIntentDraft) -> str | None:
     supplied = _compact(action.inventory_operation).casefold()
     if supplied in _INVENTORY_OPERATIONS:
         return supplied
-
-    text = _compact(f"{action.intent} {player_input}").casefold().replace("ё", "е")
-    patterns = (
-        (
-            "give",
-            r"\b(передаю|передать|отдаю|отдать|возвращаю|возвращаюсь\s+с|вернуть|вручаю|вручить|give|hand\s+over)\b",
-        ),
-        (
-            "take",
-            r"\b(поднимаю|поднять|беру|взять|забираю|забрать|подбираю|подобрать|take|pick\s+up)\b",
-        ),
-        ("drop", r"\b(роняю|уронить|бросаю|бросить|выбрасываю|выбросить|drop)\b"),
-    )
-    for operation, pattern in patterns:
-        if re.search(pattern, text):
-            return operation
-
-    # Russian "кладу" is intentionally contextual: floor/ground/near self is a release into the
-    # current place, while a named surface/container is deliberate placement.
-    if re.search(r"\b(кладу|положить|оставляю|оставить)\b", text):
-        if re.search(r"\b(на\s+пол|на\s+земл|рядом\s+с\s+(?:собой|себя))\b", text):
-            return "drop"
-        return "place"
-    if re.search(r"\b(place|put)\b", text):
-        return "place"
     return None
 
 
@@ -258,7 +304,7 @@ def _normalized_action(
     if action_type not in _ACTION_TYPES:
         raise TurnPlanningError(f"unknown action type: {action_type!r}")
 
-    operation = _inventory_operation(player_input, action)
+    operation = _inventory_operation(action)
     item_id = _compact(action.item_id) or None
     inventory_target_id = _compact(action.inventory_target_id) or None
 
@@ -316,14 +362,14 @@ def normalize_intent_draft(
 ) -> PlayerIntentContract:
     """Convert permissive model output into strict immutable player authority.
 
-    This boundary is deterministic: irrelevant conditional fields are discarded, inventory operation
-    labels are recovered only from explicit language, and the final public model still enforces every
-    semantic invariant before anything reaches world-state compilation.
+    This boundary is deterministic: irrelevant conditional fields are discarded, typed inventory
+    operations are preserved only with authoritative item identity, and the final public model still
+    enforces every semantic invariant before anything reaches world-state compilation.
     """
 
     fallback = _compact(player_input)
     summary = _compact(draft.summary) or fallback
-    source_actions = retain_addressed_actions(player_input, draft.actions)
+    source_actions = [] if draft.information_request_only else list(draft.actions)
     addressee_owned = False
     for action in source_actions:
         if action.actor_role == "addressee":
@@ -339,18 +385,20 @@ def normalize_intent_draft(
         _normalized_action(player_input, action, fallback_intent=fallback)
         for action in source_actions
     ]
-    dropped_all = bool(draft.actions) and not actions
-    if dropped_all or (source_actions and all(action.actor_role == "addressee" for action in source_actions)):
-        summary = fallback
+    if draft.information_request_only or (
+        source_actions and all(action.actor_role == "addressee" for action in source_actions)
+    ):
+        summary = fallback if len(fallback) <= 500 else summary[:500]
     return PlayerIntentContract.model_validate(
         {
             "summary": summary,
             "actions": actions,
             "addressed_response_requested": (
-                bool(draft.addressed_response_requested) or dropped_all or addressee_owned
+                bool(draft.addressed_response_requested) or addressee_owned
             ),
             "addressed_character_name": _compact(draft.addressed_character_name) or None,
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
+            "world_state_question": bool(draft.world_state_question),
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
             "protected_player_decisions": [
                 value for raw in draft.protected_player_decisions if (value := _compact(raw))
@@ -360,23 +408,161 @@ def normalize_intent_draft(
 
 
 class PlayerIntentInterpreter:
-    """Single action extraction, bounded place binding, then deterministic normalization.
+    """Structured extraction, independent syntax adjudication, then normalization.
 
-    The previous implementation asked the same small local model to judge and then re-judge its own
-    contract. Live-model evidence showed that this self-review loop rejected every tested turn and
-    often damaged an initially valid intent during repair. Frozen intent now has one semantic owner:
-    one model extraction. A separate identity lookup can bind an unresolved destination to an
-    existing place, but cannot revise the actions. Machine validation owns executable structure.
+    The semantic review can interpret discourse, but it cannot overrule an unambiguous Universal
+    Dependencies parse for actor person, imperative mood, or a direct second-person question. Place
+    identity lookup remains separate and cannot revise the extracted action sequence.
     """
 
-    def __init__(self, router: RoleModelRouter):
+    def __init__(
+        self,
+        router: RoleModelRouter,
+        linguistic_analyzer: LinguisticIntentAnalyzer | None = None,
+    ):
         self._router = router
         self._provider = LLMProvider()
+        self._linguistic_analyzer = linguistic_analyzer or LinguisticIntentAnalyzer()
         self.audit: list[dict] = []
 
     @staticmethod
     def _authoritative_context(context_messages: list[ChatMessage]) -> str:
         return intent_reference_context(context_messages)
+
+    async def _review_semantic_ownership(
+        self,
+        selection: RoleModelSelection,
+        player_input: str,
+        draft: PlayerIntentContractDraft,
+        context_messages: list[ChatMessage] | None = None,
+    ) -> IntentSemanticOwnershipReview | None:
+        """Adjudicate only actor/response ownership without rewriting extracted actions."""
+
+        if not draft.actions:
+            # There is no action owner to adjudicate. Besides wasting a model call, the dynamic
+            # index schema would contain Literal[()] and fail before a provider request.
+            syntax = self._linguistic_analyzer.analyze(player_input)
+            if syntax.information_request_only and syntax.information_recipient == "narrator":
+                draft.information_request_only = True
+                draft.world_state_question = True
+                draft.addressed_response_requested = False
+                draft.addressed_character_name = None
+            self.audit.append({"phase": "semantic_ownership", "review": None,
+                               "syntax": syntax.__dict__})
+            return None
+
+        wire = _intent_semantic_review_wire(len(draft.actions), player_input)
+        data = await self._router.generate_json(
+            self._provider,
+            selection,
+            [
+                ChatMessage(
+                    role="system",
+                    content=(
+                        _OWNERSHIP_REVIEW_PROMPT
+                        + "\n\n[OUTPUT JSON SCHEMA]\n"
+                        + json.dumps(wire.model_json_schema(), ensure_ascii=False)
+                    ),
+                ),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "[LATEST HUMAN INPUT]\n"
+                        + player_input
+                        + "\n\n[EXTRACTED ACTIONS — immutable]\n"
+                        + json.dumps(
+                            [
+                                {
+                                    "action_index": index,
+                                    "action_type": action.action_type,
+                                    "intent": action.intent,
+                                    "proposed_actor_role": action.actor_role,
+                                }
+                                for index, action in enumerate(draft.actions)
+                            ],
+                            ensure_ascii=False,
+                        )
+                        + "\n\n[REFERENCE CONTEXT]\n"
+                        + self._authoritative_context(context_messages or [])
+                    ),
+                ),
+            ],
+            max_tokens=600,
+            temperature=0.0,
+            response_model=wire,
+        )
+        review = wire.model_validate(data)
+        for ownership in review.action_ownership:
+            draft.actions[ownership.action_index].actor_role = ownership.actor_role
+        draft.information_request_only = review.information_request_only
+        draft.world_state_question = bool(
+            review.information_request_only
+            and review.information_recipient == "narrator"
+        )
+        has_addressee_action = any(
+            item.actor_role == "addressee" for item in review.action_ownership
+        )
+        draft.addressed_response_requested = bool(
+            draft.addressed_response_requested
+            or (review.information_request_only and review.information_recipient == "character")
+            or has_addressee_action
+        )
+        draft.addressed_character_name = (
+            review.addressed_character_name
+            if review.information_recipient == "character"
+            else draft.addressed_character_name
+        )
+        syntax = self._linguistic_analyzer.analyze(
+            player_input,
+            [
+                item.evidence_quote if item.evidence_quote in player_input else ""
+                for item in review.action_ownership
+            ],
+        )
+        for index, action_role in enumerate(syntax.action_roles):
+            if action_role is not None:
+                draft.actions[index].actor_role = action_role
+        if len(draft.actions) == 1 and len(syntax.imperative_clauses) == 1:
+            # An imperative clause is itself an unambiguous addressee commitment.  The semantic
+            # reviewer can otherwise cite a neighbouring speech-attribution clause ("I say") and
+            # incorrectly turn the command into the player's own action.
+            draft.actions[0].actor_role = "addressee"
+            draft.actions[0].intent = syntax.imperative_clauses[0]
+        if not syntax.action_roles and syntax.uniform_action_role is not None:
+            for action in draft.actions:
+                action.actor_role = syntax.uniform_action_role
+        if syntax.information_request_only is True and syntax.information_recipient == "narrator":
+            draft.information_request_only = True
+            draft.world_state_question = True
+            draft.addressed_response_requested = False
+            draft.addressed_character_name = None
+        elif not review.information_request_only and any(
+            action.actor_role == "addressee" for action in draft.actions
+        ):
+            draft.information_request_only = False
+            draft.world_state_question = False
+            draft.addressed_response_requested = True
+        self.audit.append(
+            {
+                "phase": "semantic_ownership",
+                "review": review.model_dump(mode="json"),
+                "syntax": {
+                    "uniform_action_role": syntax.uniform_action_role,
+                    "action_roles": syntax.action_roles,
+                    "imperative_clauses": syntax.imperative_clauses,
+                    "information_request_only": syntax.information_request_only,
+                    "information_recipient": syntax.information_recipient,
+                },
+            }
+        )
+        # These are extraction candidates, not frozen actions yet. Syntax decides actor
+        # person/mood, never whether an imperative's meaning is speech or a physical act.
+        kinds = {item.action_index: item.contribution_kind for item in review.action_ownership}
+        draft.actions = [
+            action for index, action in enumerate(draft.actions)
+            if kinds[index] == "world_action"
+        ]
+        return review
 
     async def _bind_destinations(self, selection, draft, player_input, references):
         """Resolve only place identity; this pass cannot change the extracted action sequence.
@@ -386,6 +572,33 @@ class PlayerIntentInterpreter:
         """
         unresolved = {}
         candidates = {}
+
+        def determiner_head_match(destination: str) -> str | None:
+            """Bind a possessed/deictic place by its grammatical head, not word endings.
+
+            This distinguishes «свою комнату» from «Окрестности — Комната Кая»:
+            both contain the room noun, but only the actual room has it as its
+            leading place head. Ambiguous multiple rooms remain for semantic review.
+            """
+            pipeline = getattr(self._linguistic_analyzer, "pipeline", None)
+            if pipeline is None:
+                return None
+            doc = pipeline(destination.casefold())
+            if not any(token.pos_ == "DET" for token in doc):
+                return None
+            head = next((token.lemma_ for token in doc if token.pos_ == "NOUN"), None)
+            if not head:
+                return None
+            matching = []
+            for key, name in references.items():
+                reference_doc = pipeline(name.casefold())
+                first_noun = next(
+                    (token.lemma_ for token in reference_doc if token.pos_ == "NOUN"), None
+                )
+                if first_noun == head:
+                    matching.append(key)
+            return matching[0] if len(matching) == 1 else None
+
         for index, action in enumerate(draft.actions):
             if action.action_type != "movement":
                 continue
@@ -397,6 +610,10 @@ class PlayerIntentInterpreter:
             if len(matches) == 1:
                 action.destination_reference = matches[0]
             else:
+                grammatical_match = determiner_head_match(action.destination_location or "")
+                if grammatical_match is not None:
+                    action.destination_reference = grammatical_match
+                    continue
                 # Identity lookup is conservative candidate matching, not a campaign-wide nearest
                 # neighbour search. A shared lexical anchor permits resolving inflection/possession;
                 # an unrelated named place must never replace the selected new destination.
@@ -489,7 +706,9 @@ class PlayerIntentInterpreter:
                 temperature=settings.PLANNER_TEMPERATURE,
                 response_model=_IntentWire,
             )
+            self.audit.append({"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)})
             draft = PlayerIntentContractDraft.model_validate(data)
+            await self._review_semantic_ownership(selection, player_input, draft, context_messages)
             await self._bind_destinations(selection, draft, player_input, references)
             contract = normalize_intent_draft(draft, player_input)
             self.audit.append(
@@ -503,11 +722,16 @@ class PlayerIntentInterpreter:
             return contract
         except TurnPlanningError:
             raise
-        except (LLMProviderError, ValueError, TypeError) as exc:
-            raise TurnPlanningError(f"player intent interpretation failed: {exc}") from exc
+        except (LLMProviderError, LinguisticParserUnavailable, ValueError, TypeError) as exc:
+            error = TurnPlanningError(f"player intent interpretation failed: {exc}")
+            error.telemetry = {"phase": "player_intent", "provider": dict(self._provider.last_telemetry),
+                               "audit": list(self.audit)}
+            raise error from exc
 
 
 __all__ = [
+    "ActionOwnershipDecision",
+    "IntentSemanticOwnershipReview",
     "PlayerActionIntentDraft",
     "PlayerIntentContractDraft",
     "PlayerIntentInterpreter",

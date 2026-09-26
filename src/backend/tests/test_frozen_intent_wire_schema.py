@@ -128,12 +128,14 @@ def test_wire_normalization_preserves_movement_and_inventory_authority() -> None
             "actions": [
                 {
                     "action_type": "movement",
+                    "actor_role": "speaker",
                     "intent": "Выхожу в коридор.",
                     "destination_location": "Коридор",
                     "movement_method": "ordinary",
                 },
                 {
                     "action_type": "inventory",
+                    "actor_role": "speaker",
                     "intent": "Передаю ключ Мартину.",
                     "inventory_operation": "give",
                     "item_id": "00000000-0000-4000-8000-000000000001",
@@ -158,6 +160,7 @@ def test_special_movement_method_survives_intent_normalization():
             "actions": [
                 {
                     "action_type": "movement",
+                    "actor_role": "speaker",
                     "intent": "Телепортироваться в коридор.",
                     "destination_location": "Коридор",
                     "movement_method": "teleportation",

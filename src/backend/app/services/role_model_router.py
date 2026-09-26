@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from enum import Enum
 from urllib.parse import urlparse
@@ -42,9 +43,6 @@ CONTROL_ROLES = {
     ModelRole.STRUCTURED_REPAIR,
 }
 
-DEFAULT_LOCAL_CONTROL_MODEL = "qwen2.5:7b"
-
-
 @dataclass(frozen=True)
 class RoleModelSelection:
     role: ModelRole
@@ -67,11 +65,10 @@ class RoleModelRouter:
     """Resolve one campaign provider into role-specific model selections.
 
     Narration, session zero, and direct out-of-character game-master dialogue use
-    the campaign's primary model. A local Ollama campaign keeps the intentional
-    narrator/control split (Gemma plus Qwen by default). A remote/cloud campaign
-    uses its selected campaign model for control roles unless a separate control
-    endpoint or per-role model is explicitly configured. Structured control never
-    silently falls back to a different narrator model after a schema failure.
+    the campaign's primary model. Local and remote campaigns honor the configured
+    control model exactly; selecting the same model for narration and control is a
+    supported configuration. Structured control never silently falls back to a
+    different model after a schema failure.
     """
 
     def __init__(self, config_repo: ProviderConfigRepository):
@@ -120,13 +117,14 @@ class RoleModelRouter:
         if not cls._is_local_ollama(primary.base_url):
             return primary.model_name, "campaign_primary_control"
 
-        # RuntimeProviderService historically persisted the narrator model into
-        # PDM_CONTROL_LLM_MODEL when saving local settings. Treat that legacy
-        # same-model value as unset so the intended local split survives restart.
+        # The configured value is authoritative, including when it intentionally
+        # matches the campaign narrator.  The old equality special-case silently
+        # replaced an explicitly selected model with qwen2.5:7b, so the runtime UI
+        # and .env could never actually select one model for both roles.
         configured = settings.CONTROL_LLM_MODEL
-        if configured and configured != primary.model_name:
+        if configured:
             return configured, "control_default"
-        return DEFAULT_LOCAL_CONTROL_MODEL, "local_control_default"
+        return primary.model_name, "campaign_primary_control"
 
     async def resolve(
         self,
@@ -246,6 +244,7 @@ class RoleModelRouter:
             return await request
 
         timeout_seconds = max(1.0, float(settings.CONTROL_LLM_TIMEOUT_SECONDS))
+        started = time.monotonic()
         try:
             return await asyncio.wait_for(request, timeout=timeout_seconds)
         except TimeoutError as exc:
@@ -257,6 +256,7 @@ class RoleModelRouter:
                 "model": config.model_name,
                 "model_role": selection.role.value,
                 "timeout_seconds": timeout_seconds,
+                "duration_ms": round((time.monotonic() - started) * 1000),
             }
             raise LLMProviderError(
                 f"Control model role {selection.role.value} exceeded "

@@ -63,7 +63,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repeat", type=int, default=1, help="Repeat each case in a fresh campaign")
     parser.add_argument("--turn-timeout", type=float, default=300.0)
-    parser.add_argument("--post-turn-timeout", type=float, default=120.0)
+    # Local model swaps can make the asynchronous memory/curator jobs slower than the turn
+    # itself. Keep the completion check, but allow enough time for cold model loads.
+    parser.add_argument("--post-turn-timeout", type=float, default=300.0)
     parser.add_argument("--control-timeout", type=float, default=180.0)
     parser.add_argument("--list", action="store_true", help="List contracts without running models")
     parser.add_argument(

@@ -92,9 +92,14 @@ def _identity_revealed(
 ) -> list[str]:
     failures: list[str] = []
     created = _new_characters(before, after)
-    _fail(len(created) == 1, f"temporary→named reveal split identity: {created}", failures)
-    if len(created) == 1:
-        npc = created[0]
+    _fail(not created, f"temporary→named reveal created a duplicate: {created}", failures)
+    npc_id = world.extra["temporary_npc_id"]
+    npc = next(
+        (row for row in after.entity_rows(entity_type="character") if row["id"] == npc_id),
+        None,
+    )
+    _fail(npc is not None, f"prepared temporary NPC disappeared: {npc_id}", failures)
+    if npc is not None:
         failures.extend(name_binding_failures(npc, after.data['turns']))
         custom = npc.get("custom_fields") or {}
         _fail(
@@ -104,6 +109,41 @@ def _identity_revealed(
         )
     _no_dead_surface(after, failures)
     return failures
+
+
+def _prepare_temporary_npc(client: TestClient, world: FixtureWorld) -> None:
+    """Make name promotion independent of whether a model invents an office attendant."""
+    response = client.post(
+        f"/api/campaigns/{world.campaign_id}/characters",
+        json={
+            "entity_type": "character",
+            "canonical_name": "Дежурный у стойки",
+            "description": "Дежурный конторы; личное имя Каю пока неизвестно.",
+            "appearance": "Мужчина средних лет в серой форме, за стойкой с документами.",
+            "current_location_id": world.locations["Контора"],
+            "custom_fields": {"temporary_name": True, "role": "дежурный у стойки"},
+        },
+    )
+    if response.status_code not in {200, 201}:
+        raise RuntimeError(f"temporary NPC fixture failed: {response.status_code} {response.text}")
+    world.extra["temporary_npc_id"] = response.json()["id"]
+    office_scene = client.post(
+        f"/api/campaigns/{world.campaign_id}/scenes",
+        params={"activate": False},
+        json={
+            "title": "Контора с дежурным",
+            "location_id": world.locations["Контора"],
+            "location_description": "Дежурный у стойки работает с документами в конторе.",
+        },
+    )
+    if office_scene.status_code not in {200, 201}:
+        raise RuntimeError(f"office scene fixture failed: {office_scene.status_code} {office_scene.text}")
+    presence = client.post(
+        f"/api/scenes/{office_scene.json()['id']}/participants",
+        params={"entity_id": world.extra["temporary_npc_id"]},
+    )
+    if presence.status_code not in {200, 201}:
+        raise RuntimeError(f"NPC presence fixture failed: {presence.status_code} {presence.text}")
 
 
 def _compound_blocked(
@@ -331,6 +371,7 @@ def additional_cases() -> Sequence[CaseSpec]:
                 "Я спрашиваю дежурного: «Как тебя зовут?»",
             ),
             oracle=_identity_revealed,
+            prepare=_prepare_temporary_npc,
             suite="extended",
             min_pass_rate=0.7,
         ),

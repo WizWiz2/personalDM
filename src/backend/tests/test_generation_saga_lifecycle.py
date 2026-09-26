@@ -73,3 +73,32 @@ async def test_resumed_generation_starts_new_lifecycle_attempt(
     assert second.planned_at is None
     assert second.prepared_at is None
     assert resumed.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_failed_control_request_persists_phase_diagnostics(db_session, monkeypatch):
+    import json
+    from app.services.turn_saga import TurnSaga
+    from app.services.turn_planner import TurnPlanningError
+
+    campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Control failure trace"))
+    trace = {"phase": "player_intent", "provider": {
+        "status": "control_timeout", "attempt": 2, "timeout_seconds": 180,
+        "response_model": "PlayerIntentContractDraft",
+    }}
+
+    async def fail_plan(self, **kwargs):
+        error = TurnPlanningError("player intent interpretation failed: control timeout")
+        error.telemetry = trace
+        raise error
+
+    monkeypatch.setattr(TurnSaga, "_plan", fail_plan)
+    saga = TurnSaga(db_session)
+    text = "".join([chunk async for chunk in saga.run_turn_stream(
+        campaign.id, TurnCreate(role="user", content="Объясни, откуда знаешь моё имя."),
+    )])
+    assert "control timeout" in text
+    turns = await TurnRepository(db_session).get_history(campaign.id, active_only=False)
+    user = next(turn for turn in turns if turn.role == "user")
+    assert user.status == "failed"
+    assert json.loads(user.context_snapshot)["control_failure"] == trace

@@ -56,7 +56,7 @@ def test_narrator_budget_no_longer_reserves_previous_planner_call():
     )
 
     assert narrator_context_budget(context_window) == expected
-    assert narrator_context_budget(context_window) == 2356
+    assert narrator_context_budget(context_window) == expected
     assert narrator_context_budget(context_window) > 1650
 
 

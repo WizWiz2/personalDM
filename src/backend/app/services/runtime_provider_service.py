@@ -113,6 +113,10 @@ class RuntimeProviderService:
             "PDM_LLM_MODEL": "LLM_MODEL",
             "PDM_LLM_API_KEY": "LLM_API_KEY",
             "PDM_LLM_CONTEXT_WINDOW": "LLM_CONTEXT_WINDOW",
+            "PDM_CONTROL_LLM_BASE_URL": "CONTROL_LLM_BASE_URL",
+            "PDM_CONTROL_LLM_MODEL": "CONTROL_LLM_MODEL",
+            "PDM_CONTROL_LLM_API_KEY": "CONTROL_LLM_API_KEY",
+            "PDM_CONTROL_LLM_CONTEXT_WINDOW": "CONTROL_LLM_CONTEXT_WINDOW",
             "PDM_IMAGE_PROVIDER": "IMAGE_PROVIDER",
             "PDM_IMAGE_ENABLED": "IMAGE_ENABLED",
             "PDM_IMAGE_BASE_URL": "IMAGE_BASE_URL",
@@ -126,8 +130,10 @@ class RuntimeProviderService:
             value = updates[env_key]
             if attr.endswith("_ENABLED"):
                 parsed = str(value).casefold() in {"1", "true", "yes", "on"}
-            elif attr.endswith("CONTEXT_WINDOW"):
+            elif attr == "LLM_CONTEXT_WINDOW":
                 parsed = int(value or 4096)
+            elif attr == "CONTROL_LLM_CONTEXT_WINDOW":
+                parsed = int(value) if value else None
             else:
                 parsed = value
             setattr(settings, attr, parsed)

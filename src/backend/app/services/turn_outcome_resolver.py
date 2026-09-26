@@ -15,11 +15,11 @@ from app.models.player_intent import (
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
-from app.services.planning_context import planning_context
+from app.services.planning_context import outcome_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
 from app.services.turn_planner import TurnPlanningError
-from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
+from app.services.turn_authority_resolvers import NpcIntroductionResolver
 from app.services.narrator_authority_contracts import (
     description_used_as_identity_name,
     is_usable_short_designation,
@@ -30,77 +30,40 @@ from app.services.entity_identity import identity_key
 from app.services.player_intent_contract import contains_cjk
 
 _OUTCOME_PROMPT = """[FROZEN INTENT OUTCOME RESOLVER]
-The human's voluntary contribution is already frozen in PLAYER INTENT CONTRACT. Resolve only the
-current-world/external result of those exact actions. Return exactly TurnOutcomeDecisionDraft.
+Resolve only external results of the immutable PLAYER INTENT CONTRACT. Return TurnOutcomeDecisionDraft
+with concise Russian strings. No dice, checks, protagonist emotions, extra acts or postponed outcomes.
+action_outcomes is required: exactly one result per frozen index, [] when actions=[]. Never add,
+merge, reorder or reinterpret acts. auto_success executes now and needs a concrete observable_outcome;
+safe_mundane may be true only for success. requires_choice is allowed only for pending_player_choice.
+blocked needs a concrete blocking_reason AND blocking_evidence_ref: select the E-number of the context
+line establishing that obstacle or NPC refusal motive. Do not copy/paraphrase a quote or invent one.
+An observation may newly find evidence absent/inaccessible; describe that finding without a source ID.
+Ordinary inspection succeeds as inspection even when it discovers nothing. Lack of information is
+not inability to ask a question. Dialogue replies/refusals belong in observable_consequences, not acts.
+Never infer a moral/consent boundary from an explicit request alone; established campaign/NPC boundaries
+still apply. Consensual adult material is ordinary content in Mature/18+ campaigns.
 
-Hard ownership boundaries:
-- action_outcomes is a REQUIRED JSON field. Never omit it. Return exactly one action_outcome for every
-  frozen action index; the structured response schema enforces the expected list length.
-- Never add, delete, reorder, merge, reinterpret or continue the player's actions. action_index must
-  refer to one existing frozen action. Return exactly one action_outcome for every action index.
-- Every action_outcome MUST contain action_index and resolution.
-- You may decide success, a concrete blocker, external consequences, observable information and NPC
-  behavior. There is no dice/check resolver; do not postpone an action to a future check.
-- resolution for each action must be exactly auto_success, requires_choice, or blocked.
-- blocked requires a concrete blocking_reason. Non-blocked actions should not carry blocking_reason.
-- safe_mundane=true is valid only for auto_success.
-- requires_choice is only for a choice the human genuinely has not supplied. It is not a substitute
-  for uncertainty or risk.
-- Do not decide route topology. The deterministic compiler owns current location, exits, known
-  locations and compound hop order. If authoritative context explicitly establishes an obstacle you
-  may return blocked; otherwise resolve the fictional outcome and let the compiler enforce topology.
-- A safe ordinary action with no established obstacle may be auto_success + safe_mundane=true.
-- A destination being outside the current scene/building, or not yet recorded in the location
-  catalogue, is not a physical obstacle. Explicit ordinary travel can discover a new public place.
-  Do not confuse the pre-turn scene snapshot with a prohibition on changing it.
-- Evaluate each action at its own point in the sequence. An obstacle on a later hop cannot block
-  an earlier unobstructed hop. The compiler will enforce route availability in sequence order.
-- auto_success means the action happens now; requires_choice means a specific missing player choice,
-  never a request to confirm an already selected destination or inventory recipient.
-- observable_outcome describes the result of that one action, not an extra player action.
-- reaction is optional manner of that same outcome: a look, a pause, a line. It is not another
-  result. If the action happens, reaction cannot say it did not. When any action_outcome exists,
-  leave character_beats empty; the reaction belongs on the action.
-  Independent NPC initiative belongs to the subsequent scene-development phase, which sees the
-  executed result and destination. Do not invent player actions to make room for that initiative.
+The compiler owns topology. Unregistered destinations/outside the scene are not physical blockers.
+Evaluate ordered moves in sequence: a later obstacle cannot block an earlier move. reaction is optional
+manner of the same result, not a contradictory outcome; leave character_beats empty for action turns.
+Independent NPC initiative belongs to the later scene-development phase, after execution.
 
-NPC authority:
-- Characters already listed in the context are existing identities, not npc_introductions. Never
-  reintroduce them or move them from another scene. Ordinary travel, inventory transfers and waiting
-  with no contact intent normally have npc_introductions=[]. A new introduction needs a specific
-  encounter/contact reason.
-- Only physically present characters may act unless this turn's frozen actions genuinely encounter,
-  contact or cause the appearance of a new person.
-- A genuinely new responder/person must be typed in npc_introductions; Narrator may not invent one
-  in prose.
-- When the frozen intent seeks contact, presence, company, service, or an encounter in the current
-  place (including speech-only turns with addressed_response_requested, looking for people, walking
-  into inhabited space), do NOT resolve as atmosphere-only emptiness. Either (a) a present person
-  acts/speaks, or (b) emit a grounded npc_introduction with temporary role identity and a concrete
-  observable beat. Empty velvet description with nobody responding is a defect for contact-seeking.
-- Addressing a new local person can be requested through addressed_response_requested even when
-  actions=[] (speech is not an executable action). If such a person responds, create their typed
-  introduction. Never replace that person with a named character located in another scene.
-- Identity naming: canonical_name MUST be a short personal name OR a short role title (roughly
-  2-40 characters, no descriptive clauses). Keep role and description in their own fields.
-  Never copy description/appearance into canonical_name. Role/title-only identity is temporary:
-  temporary_name=true, canonical_name = short grounded role/designation (not an invented personal
-  name), personal_name_evidence=null, and provide concrete description/appearance. Stable personal
-  identity requires explicit current campaign evidence and a proper name distinct from role/description.
-- Asking an existing character's name never creates a duplicate NPC; the published self-identification
-  is handled after narration.
+Only physically present people may respond. Existing identities must never be reintroduced, duplicated
+or moved from another scene. A question about a present person's name creates no NPC. A genuinely new
+encounter needs a typed npc_introductions entry before anyone speaks/appears: short grounded role,
+concrete description/appearance, temporary_name=true; stable names require personal_name_evidence.
+Travel/inventory/wait without contact normally introduce nobody. Contact-seeking needs a concrete
+response; if the physical cast is player-only and a responder is needed, introduce a grounded local
+person, not an absent known character. No atmosphere-only filler or untyped new people.
 
-Narrative fields constrain only external presentation. They cannot authorize another player action.
-For a stationary acknowledgement or speech-only turn, actions may be empty but still supply a
-concrete external response, character beat or observable consequence. Do not add a player action.
-Do not manufacture a complication in a calm routine turn that is not contact-seeking and has no
-established source. If allow_new_complication=true, complication_source must identify that source.
-Contact-seeking turns are not calm routine: when the physical presence allowlist is player-only,
-npc_introductions must be non-empty. Empty atmospheric filler or "nobody is here" is invalid.
-
-For an explicitly new route-discovered destination, destination_profile may describe stable public
-physical traits/ordinary purpose in 2-4 Russian sentences. It is enrichment only; never use it to
-change the destination or route.
+For actions=[] supply a concrete external reply/beat. Answer every addressed question directly with
+available knowledge; express ignorance or a grounded refusal when appropriate. Do not invent secrets.
+When response_requested=true, direct_response must contain the addressee's actual words answering the
+questions now, not a nod, anticipation, atmospheric description or promise to answer later. If the
+information is unknown, say so directly. Never fill this field with the protagonist's reaction.
+For world_state_question answer existing state in observable_consequences without performing it again.
+No complication without a grounded complication_source. destination_profile only enriches an explicitly
+new destination with stable public physical traits; it cannot change the route or introduce people.
 """
 
 _PROFILE_PROMPT = """[NEW DESTINATION PROFILE ENRICHMENT]
@@ -272,6 +235,8 @@ class ActionOutcomeDraft(BaseModel):
     observable_outcome: str | None = None
     reaction: str | None = None
     blocking_reason: str | None = None
+    blocking_evidence_quote: str | None = None
+    blocking_evidence_ref: str | None = None
     destination_profile: str | None = None
 
 
@@ -327,6 +292,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
     resolution: str = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
+    direct_response: str | None = Field(default=None, max_length=1000)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
@@ -354,7 +320,14 @@ class TurnOutcomeDecisionDraft(BaseModel):
 
 
 def _outcome_wire_model(
-    action_count: int, *, allow_choice: bool = True
+    action_count: int,
+    *,
+    allow_choice: bool = True,
+    evidence: str | None = None,
+    ordinary_movement_destinations: dict[int, str] | None = None,
+    observation_indices: set[int] | None = None,
+    allow_introductions: bool = True,
+    requires_response: bool = False,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -363,34 +336,113 @@ def _outcome_wire_model(
     structured decoding should enforce it instead of allowing a vacuous list through to later guards.
     """
 
-    class SuccessfulActionOutcomeDraft(ActionOutcomeDraft):
+    sources = _evidence_sources(evidence or "")
+    reference_type = Literal[tuple(sources)] | None if sources else str | None
+
+    class IndexedActionOutcomeDraft(ActionOutcomeDraft):
+        # Coverage is structural, so enforce the known indices in native decoding too.
+        action_index: Literal[tuple(range(action_count)) or tuple(range(8))]
+        blocking_evidence_ref: reference_type = None
+
+    class SuccessfulActionOutcomeDraft(IndexedActionOutcomeDraft):
         resolution: Literal["auto_success"]
         observable_outcome: str = Field(min_length=2, max_length=1000)
+        blocking_evidence_ref: None = None
 
-    class BlockedActionOutcomeDraft(ActionOutcomeDraft):
+    class BlockedActionOutcomeDraft(IndexedActionOutcomeDraft):
         resolution: Literal["blocked"]
         blocking_reason: str = Field(min_length=2, max_length=1000)
+        blocking_evidence_quote: str | None = Field(default=None, max_length=500)
 
     action_model = (
-        ActionOutcomeDraft
+        IndexedActionOutcomeDraft
         if allow_choice
         else SuccessfulActionOutcomeDraft | BlockedActionOutcomeDraft
     )
 
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
-        action_outcomes: list[action_model] = Field(
+        action_outcomes: list[action_model if action_count else dict[str, Any]] = Field(
             min_length=action_count,
             max_length=action_count,
         )
-        npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(max_length=4)
+        npc_introductions: list[OutcomeNpcIntroductionDraft if allow_introductions else dict[str, Any]] = Field(
+            max_length=4 if allow_introductions else 0,
+        )
+
+        @model_validator(mode="before")
+        @classmethod
+        def discard_unsupported_sole_travel_block(cls, value):
+            # With one ordinary movement, an invented blocker has no authority. Resolve the
+            # selected travel normally and let the deterministic compiler verify actual topology.
+            # Other blocked actions still require evidence; NPC choices must not be auto-granted.
+            if not isinstance(value, dict) or action_count != 1 or evidence is None:
+                return value
+            destination = (ordinary_movement_destinations or {}).get(0)
+            outcomes = value.get("action_outcomes")
+            if not destination or not isinstance(outcomes, list) or len(outcomes) != 1:
+                return value
+            item = outcomes[0]
+            if not isinstance(item, dict) or item.get("resolution") != "blocked":
+                return value
+            quote = _compact(item.get("blocking_evidence_quote"))
+            if item.get("blocking_evidence_ref") in sources or (
+                quote and quote in _compact(evidence)
+            ):
+                return value
+            outcome = f"Переход в место «{destination}» завершён."
+            return {
+                **value,
+                "action_outcomes": [{
+                    **item,
+                    "resolution": "auto_success",
+                    "safe_mundane": True,
+                    "observable_outcome": outcome,
+                    "reaction": None,
+                    "blocking_reason": None,
+                    "blocking_evidence_quote": None,
+                    "blocking_evidence_ref": None,
+                }],
+                "npc_introductions": [],
+                "resolution": "success",
+                "observable_consequences": [outcome],
+                "character_beats": [],
+                "canon_constraints": [],
+                "narration_guidance": [],
+                "ending_hook": "",
+                "allow_new_complication": False,
+                "complication_source": None,
+            }
 
         @model_validator(mode="after")
         def validate_action_indices(self):
             if sorted(item.action_index for item in self.action_outcomes) != list(range(action_count)):
                 raise ValueError(f"action_outcomes must cover exactly indices {list(range(action_count))}")
+            if evidence is not None:
+                for item in self.action_outcomes:
+                    if _compact(item.resolution).casefold() != "blocked":
+                        continue
+                    if item.action_index in (observation_indices or set()):
+                        continue
+                    reference = item.blocking_evidence_ref
+                    if reference in sources:
+                        # The machine owns the verbatim source; the model selects only its ID.
+                        item.blocking_evidence_quote = _compact(sources[reference])[:500]
+                    quote = _compact(item.blocking_evidence_quote)
+                    if not quote or quote not in _compact(evidence):
+                        raise ValueError(
+                            "blocked outcome lacks a verbatim authoritative-context evidence quote "
+                            "or a valid blocking_evidence_ref; select an E-number establishing "
+                            "the obstacle, or resolve the attempt without an invented blocker"
+                        )
             return self
 
-    if action_count == 0:
+    result_model = ExactTurnOutcomeDecisionDraft
+    if requires_response:
+        class RespondingTurnOutcomeDecisionDraft(ExactTurnOutcomeDecisionDraft):
+            direct_response: str = Field(min_length=2, max_length=1000)
+
+        result_model = RespondingTurnOutcomeDecisionDraft
+    if action_count == 0 and not requires_response:
         # No executable action is valid for dialogue/acknowledgement. It still needs an external
         # response or observable beat, otherwise the downstream authority receives a vacuous plan.
         class ResponsiveTurnOutcomeDecisionDraft(ExactTurnOutcomeDecisionDraft):
@@ -399,8 +451,8 @@ def _outcome_wire_model(
         ResponsiveTurnOutcomeDecisionDraft.__name__ = "TurnOutcomeDecisionDraft"
         return ResponsiveTurnOutcomeDecisionDraft
 
-    ExactTurnOutcomeDecisionDraft.__name__ = "TurnOutcomeDecisionDraft"
-    return ExactTurnOutcomeDecisionDraft
+    result_model.__name__ = "TurnOutcomeDecisionDraft"
+    return result_model
 
 
 def _profile_wire_model(
@@ -428,6 +480,16 @@ def _profile_wire_model(
 
 def _compact(value: object) -> str:
     return " ".join(str(value or "").split())
+
+
+def _evidence_sources(context: str) -> dict[str, str]:
+    """Stable request-local anchors; source text remains owned by the engine."""
+    lines = list(dict.fromkeys(line.strip() for line in context.splitlines() if line.strip()))
+    return {f"E{index}": line for index, line in enumerate(lines)}
+
+
+def _indexed_evidence(context: str) -> str:
+    return "\n".join(f"[{reference}] {text}" for reference, text in _evidence_sources(context).items())
 
 
 def _bounded_strings(values: list[str], limit: int) -> list[str]:
@@ -541,6 +603,7 @@ def normalize_outcome_draft(
                 list(
                     dict.fromkeys(
                         [
+                            *([draft.direct_response] if draft.direct_response else []),
                             *draft.observable_consequences,
                             *[
                                 item["observable_outcome"]
@@ -572,6 +635,36 @@ def normalize_outcome_draft(
     )
 
 
+def stamp_world_state_answer(
+    decision: TurnOutcomeDecision,
+    contract: PlayerIntentContract,
+) -> TurnOutcomeDecision:
+    """Make a state-query answer an explicit publication obligation."""
+
+    if not contract.world_state_question:
+        return decision
+    constraints = list(decision.canon_constraints)
+    guidance = list(decision.narration_guidance)
+    constraint = (
+        "[WORLD STATE ANSWER] Answer the latest state question directly and factually from the "
+        "observable consequences; do not perform or advance the queried event."
+    )
+    instruction = (
+        "Begin with the direct answer (including yes/no when applicable), then add at most brief "
+        "grounded description. Do not evade the question with atmosphere."
+    )
+    if constraint not in constraints:
+        constraints.append(constraint)
+    if instruction not in guidance:
+        guidance.append(instruction)
+    return decision.model_copy(
+        update={
+            "canon_constraints": constraints[:8],
+            "narration_guidance": guidance[:6],
+        }
+    )
+
+
 class TurnOutcomeResolver:
     """Resolve external consequences after player authority is frozen."""
 
@@ -584,7 +677,7 @@ class TurnOutcomeResolver:
     def _context(context_messages: list[ChatMessage]) -> str:
         # Outcome resolution needs campaign state/facts, but not the old prose transcript. The first
         # compiled system message is the authoritative layered context used by Planner today.
-        return planning_context(context_messages)
+        return outcome_reference_context(context_messages)
 
     async def _resolve_ordinary_travel(self, selection, context_messages, player_input, contract):
         """A travel-only decision cannot invent NPCs or confuse discovery with missing authority."""
@@ -700,13 +793,32 @@ class TurnOutcomeResolver:
                 return await self._resolve_ordinary_travel(
                     selection, context_messages, player_input, contract,
                 )
+            authoritative_context = self._context(context_messages)
+            existing_addressee = bool(contract.addressed_character_name) and any(
+                identity_key(name) == identity_key(contract.addressed_character_name)
+                for name in present_character_names(context_messages)
+            )
             response_model = _outcome_wire_model(
-                len(contract.actions), allow_choice=bool(contract.pending_player_choice)
+                len(contract.actions),
+                allow_choice=bool(contract.pending_player_choice),
+                evidence=authoritative_context,
+                ordinary_movement_destinations={
+                    index: action.destination_location
+                    for index, action in enumerate(contract.actions)
+                    if action.action_type == "movement"
+                    and action.movement_method == "ordinary"
+                    and action.destination_location
+                },
+                observation_indices={
+                    index for index, action in enumerate(contract.actions)
+                    if action.action_type == "observation"
+                },
+                allow_introductions=not existing_addressee,
+                requires_response=contract.addressed_response_requested,
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,
                 "addressed_designation": contract.addressed_character_name,
-                "physically_present": sorted(present_character_names(context_messages)),
                 "solo_physical_cast": solo_cast,
                 "seeks_contact_or_presence": seeks_contact_or_presence(contract),
             }
@@ -738,7 +850,7 @@ class TurnOutcomeResolver:
                         role="user",
                         content=(
                             "[AUTHORITATIVE CONTEXT]\n"
-                            + self._context(context_messages)
+                            + _indexed_evidence(authoritative_context)
                             + "\n\n[LATEST HUMAN INPUT — evidence only, actions are frozen below]\n"
                             + player_input
                             + "\n\n[PLAYER INTENT CONTRACT — immutable]\n"
@@ -746,13 +858,7 @@ class TurnOutcomeResolver:
                             + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
                             + json.dumps(response_contract, ensure_ascii=False)
                             + empty_cast_guidance
-                            + "\nResolve an explicitly requested ordinary local exchange now. "
-                            "Anyone outside this physical presence list who responds or acts MUST "
-                            "have a complete npc_introductions entry. Historical names and prose "
-                            "do not make them present. If a requested new local responder is "
-                            "available, introduce their grounded role and profile before describing "
-                            "their response. Do not leave an ordinary question pending or request "
-                            "confirmation of the question itself."
+                            + "\nResolve the requested exchange now; answer the actual questions."
                         ),
                     ),
                 ],
@@ -762,6 +868,7 @@ class TurnOutcomeResolver:
             )
             draft = response_model.model_validate(data)
             decision = normalize_outcome_draft(draft, contract)
+            decision = stamp_world_state_answer(decision, contract)
             self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
             if self._requires_contact_introduction(
@@ -790,7 +897,7 @@ class TurnOutcomeResolver:
                             role="user",
                             content=(
                                 "[AUTHORITATIVE CONTEXT]\n"
-                                + self._context(context_messages)
+                                + _indexed_evidence(authoritative_context)
                                 + "\n\n[LATEST HUMAN INPUT — evidence only, actions are frozen below]\n"
                                 + player_input
                                 + "\n\n[PLAYER INTENT CONTRACT — immutable]\n"
@@ -807,6 +914,7 @@ class TurnOutcomeResolver:
                 )
                 draft = response_model.model_validate(data)
                 decision = normalize_outcome_draft(draft, contract)
+                decision = stamp_world_state_answer(decision, contract)
                 self._validate_coverage(contract, decision)
                 decision = self._normalize_temporary_identities(decision)
                 if self._requires_contact_introduction(
@@ -823,13 +931,17 @@ class TurnOutcomeResolver:
                     "decision": decision.model_dump(mode="json"),
                     "normalization": "deterministic",
                     "solo_physical_cast": solo_cast,
+                    "telemetry": dict(self._provider.last_telemetry),
                 }
             )
             return decision
         except TurnPlanningError:
             raise
         except (LLMProviderError, ValueError, TypeError) as exc:
-            raise TurnPlanningError(f"turn outcome resolution failed: {exc}") from exc
+            error = TurnPlanningError(f"turn outcome resolution failed: {exc}")
+            error.telemetry = {"phase": "turn_outcome", "provider": dict(self._provider.last_telemetry),
+                               "audit": list(self.audit)}
+            raise error from exc
 
     async def enrich_destination_profiles(
         self,
@@ -903,4 +1015,5 @@ __all__ = [
     "TurnOutcomeDecisionDraft",
     "TurnOutcomeResolver",
     "normalize_outcome_draft",
+    "stamp_world_state_answer",
 ]

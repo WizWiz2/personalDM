@@ -171,10 +171,20 @@ class MetaCommandRunner:
         )
         snapshot = compiled[0].content if compiled else "[campaign snapshot unavailable]"
         narrative_messages = compiled[1:]
+        persona_suffix = ""
+        try:
+            from app.services.master_service import MasterService
+
+            persona_suffix = await MasterService(self._session).narrator_persona_suffix(
+                campaign_id
+            )
+        except Exception:
+            # Persona decoration must never block the read-only meta channel.
+            pass
         messages = [
             ChatMessage(
                 role="system",
-                content=self._meta_system(snapshot, narrative_messages),
+                content=self._meta_system(snapshot, narrative_messages) + persona_suffix,
             )
         ]
         meta_history = await self._turn_repo.get_meta_history(

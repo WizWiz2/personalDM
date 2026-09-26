@@ -40,10 +40,17 @@ export function MasterPicker({ campaignId, heading = 'Мастер игры', co
         if (cancelled) return
         setPresets(list)
         setCurrent(campaignMaster)
-        setSelectedId(campaignMaster.resolved.id.startsWith('custom_')
-          ? (campaignMaster.state.custom?.base_preset_id || list[0]?.id || 'iron_chronicler')
+        const custom = campaignMaster.state.custom
+        setSelectedId(custom
+          ? (custom.base_preset_id || list[0]?.id || 'iron_chronicler')
           : campaignMaster.resolved.id)
         setCustomMode(campaignMaster.state.kind === 'custom')
+        setCustomName(custom?.display_name || '')
+        setCustomBlurb(custom?.blurb || '')
+        setCustomBrief(custom?.brief || '')
+        setCustomVoice(custom?.voice_style || '')
+        setCustomPhrases(custom?.catchphrases.join('\n') || '')
+        setBasePresetId(custom?.base_preset_id || list[0]?.id || 'soft_keeper')
         onChanged?.(campaignMaster)
       } catch (err) {
         if (!cancelled) setError(readableError(err))
@@ -124,7 +131,7 @@ export function MasterPicker({ campaignId, heading = 'Мастер игры', co
 
       <div className="master-card-grid">
         {presets.map((preset) => {
-          const active = !customMode && selectedId === preset.id
+          const active = current?.state.kind === 'preset' && current.resolved.id === preset.id
           return (
             <button
               key={preset.id}

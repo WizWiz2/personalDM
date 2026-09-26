@@ -1,8 +1,5 @@
-from types import SimpleNamespace
-
 from app.models.player_intent import PlayerIntentContract
 from app.models.turn import ChatMessage
-from app.services.addressee_guard import scrub_uninvited_spawn
 from app.services.turn_outcome_resolver import TurnOutcomeDecision, TurnOutcomeResolver
 
 
@@ -55,13 +52,3 @@ def test_does_not_require_intro_when_not_addressed():
     assert not TurnOutcomeResolver._requires_contact_introduction(
         _contract(addressed=False), context, _empty_decision()
     )
-
-
-def test_scrub_keeps_intros_on_contact_seeking_look():
-    plan = SimpleNamespace(
-        addressed_response_requested=True,
-        npc_introductions=[{"canonical_name": "Анна"}],
-        observable_consequences=["Она отвечает."],
-    )
-    scrub_uninvited_spawn(plan, "Опиши, кто здесь из наложниц")
-    assert plan.npc_introductions

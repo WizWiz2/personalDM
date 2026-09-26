@@ -25,7 +25,7 @@ if not exist "src\backend\venv\Scripts\python.exe" (
 call src\backend\venv\Scripts\activate.bat
 
 rem Existing installations may predate launcher/provider dependencies.
-python -c "import questionary, httpx, fastapi" >nul 2>&1
+python -c "import questionary, httpx, fastapi, spacy, ru_core_news_sm" >nul 2>&1
 if errorlevel 1 (
     echo [Setup] Installing/updating backend dependencies...
     python -m pip install --upgrade pip

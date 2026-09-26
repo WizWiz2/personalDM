@@ -21,7 +21,7 @@ datas = [
 hiddenimports = []
 binaries = []
 
-for pkg in ("uvicorn", "fastapi", "starlette", "anyio", "httpx", "pydantic", "sqlalchemy", "alembic", "aiosqlite", "cryptography", "questionary", "multipart"):
+for pkg in ("uvicorn", "fastapi", "starlette", "anyio", "httpx", "pydantic", "sqlalchemy", "alembic", "aiosqlite", "cryptography", "questionary", "multipart", "spacy", "ru_core_news_sm"):
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
         datas += pkg_datas

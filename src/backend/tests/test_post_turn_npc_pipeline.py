@@ -41,7 +41,7 @@ def authority_plan() -> CoordinatedTurnPlan:
 
 async def role_json(self, provider, selection, messages, **kwargs):
     response_model_name = getattr(kwargs.get("response_model"), "__name__", "")
-    if selection.role == ModelRole.NARRATION_VALIDATOR:
+    if selection.role in {ModelRole.NARRATION_VALIDATOR, ModelRole.EVALUATOR}:
         return {
             "verdict": "pass",
             "summary": "Narration respects scene state and player agency.",

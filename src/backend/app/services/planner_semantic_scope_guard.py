@@ -240,8 +240,6 @@ def install() -> None:
         plan,
         present_names=None,
     ):
-        from app.services.addressee_guard import scrub_uninvited_spawn
-        scrub_uninvited_spawn(plan, player_input)
         _normalize_unproven_npc_introductions(plan)
         review = await original_review(
             self,

@@ -16,6 +16,8 @@ from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 class TurnPlanningError(RuntimeError):
     """Raised when the advisory turn plan cannot be produced or validated."""
 
+    telemetry: dict | None = None
+
 
 class SceneTransitionPlan(BaseModel):
     """A typed scene boundary proposed by Planner before narration."""

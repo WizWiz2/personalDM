@@ -72,6 +72,18 @@ class PersonalNameBindingDecision(PersonalNameRevealDecision):
         return self
 
 
+class PublishedNameRevealDecision(PersonalNameBindingDecision):
+    """Focused recovery when the broad registrar omits a published self-identification."""
+
+    personal_name: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="after")
+    def explicit_reveal_needs_name(self):
+        if self.is_explicit and not (self.personal_name or "").strip():
+            raise ValueError("is_explicit=true requires the published personal name")
+        return self
+
+
 @dataclass
 class EntityRegistrationResult:
     created_ids: list[UUID] = field(default_factory=list)
@@ -480,6 +492,19 @@ class EntityRegistrar:
             elif mention.presence == "departed":
                 await self._scenes.remove_participant(scene_id, character_id)
 
+        if promotion_only:
+            await self._recover_omitted_name_reveal(
+                selection=selection,
+                assistant_content=assistant_content,
+                source_turn_id=source_turn_id,
+                scene=scene,
+                character_entities=character_entities,
+                character_profiles=character_profiles,
+                character_locations=character_locations,
+                extracted_mentions=envelope.characters,
+                result=result,
+            )
+
         await self._session.flush()
         return result
 
@@ -493,6 +518,95 @@ class EntityRegistrar:
             "description": character.description,
             "appearance": getattr(character, "appearance", None),
         }
+
+    async def _recover_omitted_name_reveal(
+        self, *, selection, assistant_content, source_turn_id, scene,
+        character_entities, character_profiles, character_locations,
+        extracted_mentions, result,
+    ) -> None:
+        """Ask a narrow verifier only if a temporary scene participant remains unnamed.
+
+        The broad entity extractor may preserve the role label even when the published
+        dialogue explicitly supplies a personal name. The verifier cannot create an NPC:
+        it must bind an exact published quote and name to an existing participant ID.
+        """
+        candidates = [
+            entity for entity in character_entities
+            if self._is_temporary_identity(entity)
+            and entity.id in scene.participants
+            and character_locations.get(entity.id) == scene.location_id
+        ]
+        if not candidates:
+            return
+        candidate_keys = {
+            identity_key(entity.canonical_name) for entity in candidates
+        }
+        if any(
+            identity_key(mention.canonical_name) not in candidate_keys
+            and self._name_supported_by_text(mention.canonical_name, assistant_content)
+            for mention in extracted_mentions
+        ):
+            # The broad extractor already proposed a distinct name. Its ordinary
+            # binding/evidence checks have handled it; do not retry a rejected binding.
+            return
+        cards = [character_profiles.get(str(entity.id)) for entity in candidates]
+        cards = [card for card in cards if card is not None]
+        if not cards:
+            return
+        try:
+            data = await self._router.generate_json(
+                self._provider, selection,
+                [
+                    ChatMessage(role="system", content=(
+                        "Extract only an explicit personal-name self-identification in the "
+                        "published narrator response. Return is_explicit=false if nobody "
+                        "states their own name, if a name belongs to a third person, or if "
+                        "the speaker cannot be matched unambiguously to exactly one supplied "
+                        "existing NPC identity card. Never infer a name from a role or title. "
+                        "For a true reveal, return the exact short personal_name, the existing "
+                        "speaker's entity_id, and an exact verbatim evidence span containing "
+                        "that name. Do not create a character or use list order to guess."
+                    )),
+                    ChatMessage(role="user", content=json.dumps({
+                        "existing_candidates": [self._identity_card(card) for card in cards],
+                        "published_text": assistant_content,
+                    }, ensure_ascii=False)),
+                ],
+                max_tokens=300, temperature=0.0,
+                response_model=PublishedNameRevealDecision,
+            )
+            decision = PublishedNameRevealDecision.model_validate(data)
+        except (LLMProviderError, ValidationError, ValueError, TypeError):
+            return
+        if not decision.is_explicit:
+            return
+        evidence = (decision.evidence or "").strip()
+        name = self._clean_name(decision.personal_name or "")
+        candidate = next(
+            (entity for entity in candidates if entity.id == decision.entity_id), None
+        )
+        if (
+            candidate is None or not name or not evidence
+            or evidence not in assistant_content
+            or not self._name_supported_by_text(name, evidence)
+            or identity_key(name) == identity_key(candidate.canonical_name)
+            or description_used_as_identity_name(name, role=(candidate.custom_fields or {}).get("role"))
+            or identity_key(name) in occupied_canonical_keys(character_entities)
+        ):
+            return
+        mention = CharacterMention(
+            canonical_name=name,
+            role=(candidate.custom_fields or {}).get("role"),
+            evidence=evidence,
+            personal_name_evidence=evidence,
+            temporary_name=False,
+        )
+        promoted = await self._promote_temporary_identity(
+            candidate, new_name=name, mention=mention,
+            source_turn_id=source_turn_id, binding_evidence=evidence,
+        )
+        if promoted is not None:
+            result.resolved_ids.append(candidate.id)
 
     async def _bind_personal_name_reveal(self, selection, text, mention, candidates):
         """Choose an existing ID using distinguishing evidence, never order or role alone."""

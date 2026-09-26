@@ -73,7 +73,7 @@ async def test_local_control_roles_default_to_qwen_without_narrator_fallback(mon
 
 
 @pytest.mark.asyncio
-async def test_local_legacy_same_model_control_setting_restores_qwen_split(monkeypatch):
+async def test_local_same_model_control_setting_is_honored(monkeypatch):
     primary = primary_config()
     monkeypatch.setattr(settings, "CONTROL_LLM_MODEL", "gemma4:e4b")
     monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", None)
@@ -82,8 +82,22 @@ async def test_local_legacy_same_model_control_setting_restores_qwen_split(monke
 
     selection = await router.resolve(primary.campaign_id, ModelRole.PLANNER)
 
-    assert selection.config.model_name == "qwen2.5:7b"
-    assert selection.source == "local_control_default"
+    assert selection.config.model_name == "gemma4:e4b"
+    assert selection.source == "control_default"
+
+
+@pytest.mark.asyncio
+async def test_local_control_without_override_uses_campaign_model(monkeypatch):
+    primary = primary_config()
+    monkeypatch.setattr(settings, "CONTROL_LLM_MODEL", None)
+    monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", None)
+    monkeypatch.setattr(settings, "PLANNER_LLM_MODEL", None)
+    router = RoleModelRouter(FakeConfigRepo(primary))
+
+    selection = await router.resolve(primary.campaign_id, ModelRole.PLANNER)
+
+    assert selection.config.model_name == "gemma4:e4b"
+    assert selection.source == "campaign_primary_control"
 
 
 @pytest.mark.asyncio
@@ -147,3 +161,41 @@ def test_periodic_job_runs_first_turn_and_then_on_interval():
     assert should_run_periodic_job(2, 3) is False
     assert should_run_periodic_job(3, 3) is True
     assert should_run_periodic_job(4, 1) is True
+
+
+@pytest.mark.asyncio
+async def test_control_timeout_cancels_generation_and_keeps_attempt_diagnostics(monkeypatch):
+    import asyncio
+
+    from app.models.turn import ChatMessage
+    from app.providers.llm_provider import LLMProviderError
+
+    primary = primary_config()
+    router = RoleModelRouter(FakeConfigRepo(primary))
+    selection = await router.resolve(primary.campaign_id, ModelRole.PLANNER)
+    monkeypatch.setattr(settings, "CONTROL_LLM_TIMEOUT_SECONDS", 1.0)
+
+    class SlowProvider:
+        last_telemetry = {}
+        cancelled = False
+        calls = 0
+
+        async def generate_json(self, *args, **kwargs):
+            self.calls += 1
+            self.last_telemetry = {"status": "running", "attempt": 2,
+                                   "response_model": "PlayerIntentContractDraft",
+                                   "attempts": [{"attempt": 1, "status": "error"}]}
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled = True
+
+    provider = SlowProvider()
+    with pytest.raises(LLMProviderError, match="planner exceeded 1s"):
+        await router.generate_json(provider, selection, [ChatMessage(role="user", content="Вопрос.")])
+    assert provider.cancelled is True
+    assert provider.calls == 1
+    assert provider.last_telemetry["status"] == "control_timeout"
+    assert provider.last_telemetry["response_model"] == "PlayerIntentContractDraft"
+    assert provider.last_telemetry["attempts"] == [{"attempt": 1, "status": "error"}]
+    assert provider.last_telemetry["duration_ms"] >= 900

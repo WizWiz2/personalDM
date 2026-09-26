@@ -298,11 +298,53 @@ async def test_native_ollama_uses_schema_and_repairs_validation_error(monkeypatc
     ]
     assert first_payload["options"]["num_ctx"] == 8192
     assert second_payload["options"]["num_ctx"] == 8192
+    assert second_payload["options"]["num_predict"] == 400
     repair_text = second_payload["messages"][-1]["content"]
     assert "awaiting_schema" in repair_text
     assert "validation" in repair_text
     assert provider.last_telemetry["schema_enforced"] is True
     assert provider.last_telemetry["response_model"] == "_EvaluationPayload"
+
+
+def test_schema_compaction_preserves_real_title_fields_and_decoding_constraints():
+    schema = {
+        "title": "Payload", "type": "object", "required": ["title"],
+        "properties": {"title": {"title": "Title", "type": "string", "maxLength": 12}},
+    }
+    compact = LLMProvider._compact_schema(schema)
+    assert compact["properties"]["title"] == {"type": "string", "maxLength": 12}
+    assert compact["required"] == ["title"]
+    assert compact["additionalProperties"] is False
+    assert "title" not in compact
+    assert schema["title"] == "Payload"
+
+
+@pytest.mark.asyncio
+async def test_repair_drops_oversized_rejected_answer_but_preserves_original_evidence(monkeypatch):
+    repeated_bad_answer = "rejected-answer-body-" * 150
+
+    class LargeRejectedClient(_SchemaRepairClient):
+        async def post(self, url, headers=None, json=None):
+            self.requests.append({"url": url, "headers": headers, "json": json})
+            content = ('{"status":"awaiting_schema","evidence":"' + repeated_bad_answer + '"}')
+            if len(self.requests) > 1:
+                content = '{"status":"resolved","evidence":"исправлено"}'
+            return _FakeResponse({"message": {"content": content}, "done": True})
+
+    class SmallConfig(_MockConfig):
+        context_window = 4096
+
+    LargeRejectedClient.requests = []
+    monkeypatch.setattr(llm_provider_module.httpx, "AsyncClient", LargeRejectedClient)
+    evidence = "authoritative-evidence " * 320
+    await LLMProvider().generate_json(
+        [ChatMessage(role="user", content=evidence)], SmallConfig(),
+        max_tokens=1200, response_model=_EvaluationPayload,
+    )
+    retry = LargeRejectedClient.requests[1]["json"]
+    assert retry["messages"][0]["content"] == evidence
+    assert repeated_bad_answer not in retry["messages"][-1]["content"]
+    assert retry["options"]["num_predict"] == 1200
 
 
 @pytest.mark.asyncio

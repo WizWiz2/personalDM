@@ -254,6 +254,48 @@ class LLMProvider:
     def _messages_payload(messages: list[ChatMessage]) -> list[dict[str, str]]:
         return [{"role": message.role, "content": message.content} for message in messages]
 
+    @classmethod
+    def _compact_schema(cls, schema: dict[str, Any]) -> dict[str, Any]:
+        """Keep decoding constraints, omit presentation metadata and close model objects.
+
+        Field names inside properties/$defs are data: a field named `title` or `default`
+        must survive. Open dictionaries keep their explicit additionalProperties schema.
+        """
+        result = {}
+        for key, value in schema.items():
+            if key in {"title", "default", "examples"}:
+                continue
+            if key in {"properties", "$defs", "definitions"}:
+                value = {name: cls._compact_schema(item) for name, item in value.items()}
+            elif isinstance(value, dict):
+                value = cls._compact_schema(value)
+            elif isinstance(value, list):
+                value = [cls._compact_schema(item) if isinstance(item, dict) else item
+                         for item in value]
+            result[key] = value
+        if result.get("type") == "object" and "properties" in result:
+            result.setdefault("additionalProperties", False)
+        return result
+
+    @classmethod
+    def _schema_outline(cls, schema: dict[str, Any]) -> dict[str, Any]:
+        """Model-visible field shapes; the native decoder owns numeric bounds/closed objects."""
+        constraints = {"description", "minLength", "maxLength", "minItems", "maxItems",
+                       "minimum", "maximum", "additionalProperties", "format"}
+        result = {}
+        for key, value in schema.items():
+            if key in constraints:
+                continue
+            if key in {"properties", "$defs", "definitions"}:
+                value = {name: cls._schema_outline(item) for name, item in value.items()}
+            elif isinstance(value, dict):
+                value = cls._schema_outline(value)
+            elif isinstance(value, list):
+                value = [cls._schema_outline(item) if isinstance(item, dict) else item
+                         for item in value]
+            result[key] = value
+        return result
+
     @staticmethod
     def _repair_instruction(
         error: Exception | str | None = None,
@@ -417,23 +459,51 @@ class LLMProvider:
 
         base_budget = max_tokens or settings.CONTROL_RESPONSE_RESERVE_TOKENS
         base_messages = self._messages_payload(messages)
-        response_schema = response_model.model_json_schema() if response_model else None
+        original_schema = response_model.model_json_schema() if response_model else None
+        response_schema = self._compact_schema(original_schema) if original_schema else None
+        if original_schema:
+            # Callers expose the schema in text because native `format` is a decoder constraint,
+            # not model-visible instructions. Replace that copy with the same compact contract.
+            prompt_schema = self._schema_outline(response_schema) if is_ollama else response_schema
+            compact_text = json.dumps(prompt_schema, ensure_ascii=False, separators=(",", ":"))
+            for message in base_messages:
+                for ascii_only in (False, True):
+                    message["content"] = message["content"].replace(
+                        json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
+                    )
         started = time.monotonic()
         last_error: Exception | None = None
         last_raw_text = ""
         attempt_telemetry: list[dict[str, Any]] = []
+        needs_more_output = False
+        from app.services.base_context_compiler import count_tokens
 
         async with httpx.AsyncClient(
             trust_env=False,
             timeout=httpx.Timeout(240.0, connect=10.0),
         ) as client:
             for attempt in range(1, 4):
-                budget = self._adaptive_budget(base_budget, attempt)
+                # More tokens help a truncated JSON object, not a semantically rejected one.
+                # Doubling every validation retry used to extend inference while evicting the
+                # very grounding instructions needed to repair the result from small contexts.
+                budget = self._adaptive_budget(base_budget, attempt) if needs_more_output else base_budget
                 request_messages = list(base_messages)
                 if attempt > 1:
-                    request_messages.append(
-                        self._repair_instruction(last_error, last_raw_text)
-                    )
+                    repair = self._repair_instruction(last_error, last_raw_text)
+                    base_tokens = sum(count_tokens(item["content"]) + 4 for item in base_messages)
+                    if base_tokens + count_tokens(repair["content"]) + budget > config.context_window:
+                        # A rejected answer is disposable. Repeating its entire body must not
+                        # push frozen actions and authoritative evidence out of the control window.
+                        repair = self._repair_instruction(last_error)
+                    request_messages.append(repair)
+
+                prompt_estimate = sum(count_tokens(item["content"]) + 4
+                                      for item in request_messages)
+                attempt_metrics = {
+                    "prompt_tokens_estimate": prompt_estimate,
+                    "context_pressure": prompt_estimate + budget > config.context_window,
+                }
+                attempt_started = time.monotonic()
 
                 if is_ollama:
                     payload: dict[str, Any] = {
@@ -470,6 +540,7 @@ class LLMProvider:
                     "requested_max_tokens": budget,
                     "requested_num_ctx": config.context_window if is_ollama else None,
                     "response_model": response_model.__name__ if response_model else None,
+                    **attempt_metrics,
                 }
                 try:
                     if is_ollama:
@@ -494,6 +565,12 @@ class LLMProvider:
                     usage = self._extract_usage(data)
                     reasoning_chars = self._reasoning_characters(data)
                     raw_text = self._extract_content(data)
+                    attempt_metrics.update({
+                        "finish_reason": finish_reason,
+                        "usage": usage,
+                        "response_characters": len(raw_text),
+                        "reasoning_characters": reasoning_chars,
+                    })
                     if isinstance(data.get("response"), dict):
                         parsed = data["response"]
                         raw_text = json.dumps(parsed, ensure_ascii=False)
@@ -543,6 +620,7 @@ class LLMProvider:
                             ) from exc
 
                     telemetry = {
+                        **attempt_metrics,
                         "attempt": attempt,
                         "requested_max_tokens": budget,
                         "requested_num_ctx": config.context_window if is_ollama else None,
@@ -579,13 +657,22 @@ class LLMProvider:
                     return parsed
                 except (httpx.RequestError, LLMProviderError, json.JSONDecodeError) as exc:
                     last_error = exc
+                    needs_more_output = bool(
+                        self._budget_exhausted(
+                            attempt_metrics.get("finish_reason"),
+                            attempt_metrics.get("usage") or {}, budget,
+                        )
+                        or "incomplete JSON" in str(exc)
+                    )
                     attempt_telemetry.append(
                         {
+                            **attempt_metrics,
                             "attempt": attempt,
                             "requested_max_tokens": budget,
                             "requested_num_ctx": config.context_window if is_ollama else None,
                             "status": "error",
                             "error": str(exc),
+                            "duration_ms": round((time.monotonic() - attempt_started) * 1000),
                         }
                     )
                     if isinstance(exc, LLMProviderError) and (

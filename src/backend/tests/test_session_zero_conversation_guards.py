@@ -9,6 +9,8 @@ from app.models.session_zero_interview import (
     SessionZeroInterviewPatch,
 )
 from app.services.campaign_service import CampaignService
+from app.models.game_master import SetCampaignMasterRequest
+from app.services.master_service import MasterService
 from app.services.session_zero_interview import SessionZeroInterviewService
 
 
@@ -317,6 +319,11 @@ async def test_agent_request_uses_compact_draft_and_conversation_history(
     db_session: AsyncSession,
 ):
     campaign = await _campaign(db_session, "Native agent request")
+    await MasterService(db_session).set_master(
+        campaign.id,
+        SetCampaignMasterRequest(kind="preset", preset_id="soft_keeper"),
+    )
+    await db_session.commit()
     interview = SessionZeroInterviewService(db_session)
     state = await interview.get_state(campaign.id)
     state.messages = [
@@ -340,7 +347,8 @@ async def test_agent_request_uses_compact_draft_and_conversation_history(
 
     kwargs = model.await_args.kwargs
     messages = model.await_args.args[2]
-    assert kwargs["max_tokens"] == 1200
+    assert kwargs["max_tokens"] == 2000
+    assert "Мягкий хранитель" in messages[0].content
     assert kwargs["response_model"].__name__ == "SessionZeroInterviewModelDecision"
     assert len(messages) == SessionZeroInterviewService.MAX_HISTORY_MESSAGES + 1
     assert [item.content for item in messages[1:]] == [

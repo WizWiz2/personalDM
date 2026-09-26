@@ -35,6 +35,11 @@ def test_dm_command_is_read_only_and_allowed_before_session_zero(client: TestCli
         f"/api/campaigns/{campaign_id}/scenes",
         json={"title": "Комната над трактиром", "mood": "спокойствие"},
     ).json()
+    selected = client.put(
+        f"/api/campaigns/{campaign_id}/game-master",
+        json={"kind": "preset", "preset_id": "soft_keeper"},
+    )
+    assert selected.status_code == 200
 
     before = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     captured = {}
@@ -72,6 +77,7 @@ def test_dm_command_is_read_only_and_allowed_before_session_zero(client: TestCli
     assert "read-only" in system
     assert "не перемещай персонажей" in system
     assert "Комната над трактиром" in system
+    assert "Мягкий хранитель" in system
 
     after = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert after["campaign"]["current_scene_id"] == before["campaign"]["current_scene_id"]

@@ -223,6 +223,25 @@ class MasterService:
         await self._session.flush()
         return True
 
+    async def restore_rhythm_snapshot(
+        self,
+        campaign_id: UUID,
+        rhythm_before: dict,
+        *,
+        expected_master_id: str,
+    ) -> bool:
+        """Restore undo rhythm only when the turn belongs to the active master."""
+        row = await self._ensure_setup(campaign_id)
+        custom = dict(self._setups.decode_dict(row.custom_fields))
+        state = self._read_state(custom)
+        if self.resolve_persona(state).id != expected_master_id:
+            return False
+        state.rhythm = MasterRhythmState.model_validate(rhythm_before)
+        custom[GAME_MASTER_FIELD] = state.model_dump(mode="json")
+        await self._setups.update(row, {"custom_fields": custom})
+        await self._session.flush()
+        return True
+
     async def narrator_persona_suffix(self, campaign_id: UUID) -> str:
         current = await self.get(campaign_id)
         return narrator_persona_block(current.resolved)

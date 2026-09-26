@@ -472,7 +472,8 @@ def narrator_persona_block(master: GameMasterPersona) -> str:
         f"Brief:\n{master.brief.strip()}\n"
         f"Voice: {master.voice_style.strip()}\n"
         f"Catchphrases (optional seasoning, do not spam): {phrases}\n"
-        "Use this persona for narration tone and priorities only. "
+        "Use this persona for the game master's voice, tone, and priorities only. "
+        "Channel-specific authority and safety instructions outrank the persona. "
         "Do not invent it as an in-world character or as canon lore.\n"
     )
 

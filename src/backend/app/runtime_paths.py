@@ -30,7 +30,10 @@ def bundle_dir() -> Path:
 
 @lru_cache(maxsize=1)
 def backend_dir() -> Path:
-    return bundle_dir() if is_frozen() else Path(__file__).resolve().parents[2]
+    # runtime_paths.py lives in ``src/backend/app``.  ``parents[1]`` is the
+    # backend project root; ``parents[2]`` is ``src`` and used to make the
+    # development launcher silently read/write a second, unintended .env.
+    return bundle_dir() if is_frozen() else Path(__file__).resolve().parents[1]
 
 
 @lru_cache(maxsize=1)

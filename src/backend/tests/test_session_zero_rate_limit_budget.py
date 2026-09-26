@@ -69,7 +69,7 @@ async def test_session_zero_waits_for_groq_window_and_retries_once(
 
     assert decision.assistant_message == "Какой характер у Кабуто?"
     assert len(calls) == 2
-    assert calls[0][1]["max_tokens"] == 1200
+    assert calls[0][1]["max_tokens"] == 2000
     sleep.assert_awaited_once_with(2.985)
     assert (await interview.get_state(campaign.id)).pending_user_message is None
 
@@ -120,7 +120,7 @@ async def test_session_zero_prompt_uses_compact_draft_and_twelve_message_history
         "m19",
         "Последний ответ",
     ]
-    assert captured["kwargs"]["max_tokens"] == 1200
+    assert captured["kwargs"]["max_tokens"] == 2000
     assert '\n  "world"' not in messages[0].content
     assert (
         '[ТЕКУЩАЯ КАРТОЧКА — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{"world":'
@@ -196,12 +196,17 @@ async def test_structured_provider_does_not_retry_429_with_larger_budget():
         )
 
     assert request.await_count == 1
-    assert provider.last_telemetry["attempts"] == [
-        {
+    attempts = provider.last_telemetry["attempts"]
+    assert len(attempts) == 1
+    assert {
+        key: attempts[0][key] for key in (
+            "attempt", "requested_max_tokens", "requested_num_ctx", "status", "error",
+        )
+    } == {
             "attempt": 1,
             "requested_max_tokens": 1200,
             "requested_num_ctx": None,
             "status": "error",
             "error": "LLM returned HTTP 429: " + _RateLimitedResponse.text,
-        }
-    ]
+    }
+    assert attempts[0]["duration_ms"] >= 0

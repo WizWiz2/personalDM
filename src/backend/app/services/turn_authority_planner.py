@@ -384,7 +384,8 @@ Return repair_required only when the proposed typed plan semantically violates o
 - CONTACT/IDENTITY: when contact with an unspecified person is resolved positively, a previously
   unknown physical responder must be typed in npc_introductions. When the human actively seeks or
   addresses local people and the physical allowlist is player-only, empty no-contact is a defect:
-  type at least one grounded npc_introduction. A known present addressed character is not a new NPC.
+  type at least one grounded npc_introduction. A negative outcome must be explicit: nobody answers/is found,
+  and no NPC is introduced. A known present addressed character is not a new NPC.
   Missing response ownership is not a defect and is not a ban on their speech or other behavior
   in the current place. Do not demand a typed reply, refusal, gesture, or in-place step.
 - PRESENCE CONSISTENCY: treat present_character_names plus npc_introductions as an exhaustive

@@ -81,7 +81,25 @@ def test_local_text_configuration_uses_ollama_defaults(isolated_runtime):
     assert values["PDM_TEXT_PROVIDER"] == "local"
     assert values["PDM_LLM_BASE_URL"] == service.TEXT_LOCAL_BASE_URL
     assert values["PDM_LLM_MODEL"] == service.TEXT_LOCAL_MODEL
+    assert values["PDM_CONTROL_LLM_MODEL"] == service.TEXT_LOCAL_MODEL
     assert values["PDM_LLM_API_KEY"] == ""
+
+
+def test_runtime_settings_update_control_model_in_memory():
+    old_primary = settings.LLM_MODEL
+    old_control = settings.CONTROL_LLM_MODEL
+    try:
+        RuntimeProviderService._apply_runtime_settings(
+            {
+                "PDM_LLM_MODEL": "same-model:test",
+                "PDM_CONTROL_LLM_MODEL": "same-model:test",
+            }
+        )
+        assert settings.LLM_MODEL == "same-model:test"
+        assert settings.CONTROL_LLM_MODEL == "same-model:test"
+    finally:
+        settings.LLM_MODEL = old_primary
+        settings.CONTROL_LLM_MODEL = old_control
 
 
 def test_explicit_provider_modes_override_legacy_flags(isolated_runtime):

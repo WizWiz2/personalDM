@@ -10,6 +10,7 @@ from app.db.repositories.generation_lifecycle_repo import GenerationLifecycleRep
 from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.turn_repo import TurnRepository
+from app.db.tables import Turn
 from app.models.jobs import GenerationPhase
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProviderError
@@ -662,8 +663,6 @@ class TurnSaga:
                     saved_assistant.id
                 )
 
-            from app.db.tables import Turn
-
             assistant_row = await self._session.get(Turn, str(saved_assistant.id))
             if assistant_row:
                 context_metadata["generation_lifecycle"]["phase_at_publication"] = (
@@ -730,6 +729,13 @@ class TurnSaga:
                 "failed",
                 error=str(exc)[:4000],
             )
+            telemetry = getattr(exc, "telemetry", None)
+            if telemetry:
+                failed_user = await self._session.get(Turn, str(user_turn.id))
+                if failed_user is not None:
+                    snapshot = json.loads(failed_user.context_snapshot or "{}")
+                    snapshot["control_failure"] = telemetry
+                    failed_user.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:

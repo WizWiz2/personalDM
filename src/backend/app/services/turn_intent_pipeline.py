@@ -208,7 +208,9 @@ def install() -> None:
             # fallback here used to hide the original control-plane defect until TurnAuthority and
             # every live-model case reported the same generic "no concrete typed outcome" error.
             # Preserve fail-closed semantics by surfacing the phase error at the actual boundary.
-            raise TurnPlanningError(f"frozen intent pipeline failed: {exc}") from exc
+            error = TurnPlanningError(f"frozen intent pipeline failed: {exc}")
+            error.telemetry = getattr(exc, "telemetry", {})
+            raise error from exc
 
     async def compiled_apply_action_sequence(
         self,

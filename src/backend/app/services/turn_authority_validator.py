@@ -89,6 +89,10 @@ Concrete violations:
   without a typed trip. A step inside the current room is not a trip and is not a violation.
   Distinguish that from a true scene transition by meaning, not vocabulary.
 - OUTCOME: prose contradicts observable_consequences or completed structured execution.
+- WORLD STATE ANSWER: when canon_constraints contains [WORLD STATE ANSWER], prose must directly
+  answer the latest state question from observable_consequences. Replaying the queried event,
+  evading a concrete/yes-no answer with atmosphere, or silently omitting the answer is incomplete
+  and must be repair_required.
 - ESTABLISHED STATE: established_state entries are already true. They outrank the opening
   scene description and older prose. Prose that denies one is canon_conflict.
 - ITEM STATE: for a completed inventory step, the `ITEM STATE` record in the structured execution

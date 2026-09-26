@@ -113,8 +113,7 @@ class TurnUndoService:
         # Prefer restoring the pre-commit rhythm snapshot from the undone turn when present.
         try:
             import json
-            from app.models.game_master import MasterRhythmState
-            from app.services.master_service import GAME_MASTER_FIELD, MasterService
+            from app.services.master_service import MasterService
 
             snapshot = {}
             raw = getattr(assistant_turn, "context_snapshot", None) or "{}"
@@ -127,14 +126,13 @@ class TurnUndoService:
             if isinstance(gm, dict):
                 rhythm_before = gm.get("rhythm_before")
             service = MasterService(self._session)
-            if isinstance(rhythm_before, dict):
-                row = await service._ensure_setup(campaign_id)
-                custom = dict(service._setups.decode_dict(row.custom_fields))
-                state = service._read_state(custom)
-                state.rhythm = MasterRhythmState.model_validate(rhythm_before)
-                custom[GAME_MASTER_FIELD] = state.model_dump(mode="json")
-                await service._setups.update(row, {"custom_fields": custom})
-                await self._session.flush()
+            master_id = str(gm.get("id") or "") if isinstance(gm, dict) else ""
+            if isinstance(rhythm_before, dict) and master_id:
+                await service.restore_rhythm_snapshot(
+                    campaign_id,
+                    rhythm_before,
+                    expected_master_id=master_id,
+                )
             else:
                 await service.rewind_pending_rhythm(campaign_id)
         except Exception:

@@ -76,6 +76,7 @@ class SessionZeroAgent(_BaseSessionZeroAgent):
         state: SessionZeroInterviewState,
         *,
         feedback: dict | None = None,
+        persona_suffix: str = "",
     ) -> SessionZeroInterviewModelDecision:
         current = json.dumps(
             state.draft.model_dump(mode="json"),
@@ -85,6 +86,7 @@ class SessionZeroAgent(_BaseSessionZeroAgent):
         critical_gaps = SessionZeroInterviewService.missing_fields(state.draft)
         system_content = (
             f"{self.SYSTEM_PROMPT}\n\n"
+            f"{persona_suffix}\n"
             f"[ТЕКУЩАЯ КАРТОЧКА — ТОЛЬКО ДЛЯ ЧТЕНИЯ]\n{current}\n\n"
             "[ТЕХНИЧЕСКИЙ МИНИМУМ ДЛЯ СОЗДАНИЯ ГЕРОЯ И СЦЕНЫ]\n"
             f"{json.dumps(critical_gaps, ensure_ascii=False)}\n"
@@ -395,7 +397,21 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
         explicit_correction = self._is_explicit_correction(latest_user_message)
         merged = state.draft
         finalize_requested = False
-        model_decision = await self._agent.respond(selection, state)
+        persona_suffix = ""
+        try:
+            from app.services.master_service import MasterService
+
+            persona_suffix = await MasterService(self._session).narrator_persona_suffix(
+                campaign_id
+            )
+        except Exception:
+            # Persona decoration must never block Session Zero.
+            pass
+        model_decision = await self._agent.respond(
+            selection,
+            state,
+            persona_suffix=persona_suffix,
+        )
         unresolved_feedback: dict | None = None
 
         for attempt in range(self.MAX_QUALITY_REPAIRS + 1):
@@ -443,6 +459,7 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
                 selection,
                 state,
                 feedback=feedback,
+                persona_suffix=persona_suffix,
             )
 
         start_signal = (

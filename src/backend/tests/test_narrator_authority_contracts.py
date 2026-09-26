@@ -562,8 +562,8 @@ def test_authorized_cast_names_and_role_titles_still_ok():
     assert unauthorized_named_person_spans(candidate, authority) == []
 
 
-def test_address_present_cast_member_assigns_obligation_name():
-    """Player naming a present cast role/title creates a structural addressee obligation."""
+def test_typed_address_present_cast_member_assigns_obligation_name():
+    """Typed response ownership plus a present cast target creates the obligation."""
     cast = ["Эйдан", "Лира", "Управляющая домом", "Служанка"]
     player_input = "Управляющая домом, есть ли у вас работа по найму?"
 
@@ -571,7 +571,7 @@ def test_address_present_cast_member_assigns_obligation_name():
         player_input,
         cast,
         player_name="Эйдан",
-        addressed_response_requested=False,
+        addressed_response_requested=True,
     )
     assert addressee == "Управляющая домом"
     assert resolve_addressed_present_npc(player_input, cast, player_name="Эйдан") == (
@@ -759,7 +759,7 @@ def test_obligation_binds_to_named_addressee_not_sticky_prior_listener():
         cast,
         player_name="Эйдан",
         hinted_name="Управляющая домом",
-        addressed_response_requested=False,
+        addressed_response_requested=True,
     ) == "Лира"
 
     # Sticky hint alone (no mention this turn) does not mint an obligation.

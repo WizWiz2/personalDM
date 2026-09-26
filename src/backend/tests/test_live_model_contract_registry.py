@@ -1,4 +1,6 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from live_model_contracts.registry import all_cases
 
@@ -61,6 +63,26 @@ def test_contact_contract_enters_scene_before_creating_unknown_npc():
     assert len(case.turns) == 2
     assert "контор" in case.turns[0].casefold()
     assert "дежурн" in case.turns[1].casefold()
+
+
+def test_name_reveal_fixture_establishes_scene_presence_not_only_character_location():
+    from live_model_contracts.world import FixtureWorld
+
+    case = next(case for case in all_cases() if case.id == "npc_temporary_to_stable_identity")
+    world = FixtureWorld("campaign", "hero", "starting-scene", locations={"Контора": "office"})
+    client = SimpleNamespace(post=Mock(side_effect=[
+        SimpleNamespace(status_code=201, json=lambda: {"id": "attendant"}),
+        SimpleNamespace(status_code=201, json=lambda: {"id": "office-scene"}),
+        SimpleNamespace(status_code=200),
+    ]))
+
+    case.prepare(client, world)
+
+    assert world.extra["temporary_npc_id"] == "attendant"
+    assert client.post.call_args_list[1].kwargs["params"] == {"activate": False}
+    assert client.post.call_args_list[1].kwargs["json"]["location_id"] == "office"
+    assert client.post.call_args_list[2].args == ("/api/scenes/office-scene/participants",)
+    assert client.post.call_args_list[2].kwargs["params"] == {"entity_id": "attendant"}
 
 
 def test_live_runner_is_not_allowed_to_import_pytest_mocks_or_call_itself_a_simulation():

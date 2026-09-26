@@ -697,11 +697,6 @@ def unauthorized_named_person_spans(candidate: str, authority) -> list[str]:
 
 _ADDRESSED_OBLIGATION_MARKER = "[ADDRESSED RESPONSE OBLIGATION]"
 
-_QUESTION_OR_DIALOGUE_SHAPE_RE = re.compile(
-    r"(?:\?|^\s*[-—–]|[\n\r]\s*[-—–])",
-)
-
-
 def _cast_mention_strength(player_input: str, cast_name: str) -> int:
     """How strongly player_input names cast_name.
 
@@ -837,8 +832,6 @@ def should_assign_addressed_response_obligation(
     Allowed-unless-banned still permits quiet turns in general; a direct address to a present
     cast member is the structural exception that creates a speak/refuse/deflect/gesture opportunity.
     """
-    from app.services.addressee_guard import is_look_request
-
     addressee = resolve_addressed_present_npc(
         player_input,
         present_names,
@@ -849,12 +842,8 @@ def should_assign_addressed_response_obligation(
         return None
     if addressed_response_requested:
         return addressee
-    # Sticky listener alone is not enough (allowed-unless-banned). Require dialogue/question shape
-    # naming or selecting that present person — not a pure look/describe.
-    if _QUESTION_OR_DIALOGUE_SHAPE_RE.search(player_input or ""):
-        if is_look_request(player_input or ""):
-            return None
-        return addressee
+    # Response ownership is typed semantic output. A sticky listener/name match alone
+    # cannot create an obligation by reinterpreting raw prose here.
     return None
 
 

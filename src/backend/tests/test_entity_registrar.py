@@ -16,7 +16,8 @@ from app.models.location import LocationCreate
 from app.models.provider_config import ProviderConfigCreate
 from app.models.scene import SceneCreate
 from app.services.entity_registrar import (
-    CharacterMention, EntityRegistrar, PersonalNameBindingDecision, PersonalNameRevealDecision,
+    CharacterMention, EntityRegistrar, PersonalNameBindingDecision,
+    PersonalNameRevealDecision, PublishedNameRevealDecision,
 )
 from app.services.scene_lifecycle import SceneLifecycleService
 
@@ -26,6 +27,84 @@ def test_positive_name_binding_requires_quote_and_existing_id():
         PersonalNameRevealDecision(is_explicit=True, evidence=None)
     with pytest.raises(ValidationError, match="entity_id"):
         PersonalNameBindingDecision(is_explicit=True, evidence="Я Серафинна", entity_id=None)
+    with pytest.raises(ValidationError, match="personal name"):
+        PublishedNameRevealDecision(
+            is_explicit=True, evidence="Меня зовут Иван", entity_id=uuid4(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_omitted_published_self_identification_promotes_existing_temporary_npc(db_session):
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    attendant = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Дежурный у стойки", current_location_id=tavern.id,
+        custom_fields={"temporary_name": True, "role": "дежурный"},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, attendant.id)
+    text = 'Мужчина поднимает голову. «Меня зовут Иван», — произносит он.'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=[
+        {"characters": [{
+            "canonical_name": "Дежурный у стойки",
+            "evidence": "Мужчина поднимает голову",
+        }]},
+        {
+            "is_explicit": True,
+            "entity_id": str(attendant.id),
+            "personal_name": "Иван",
+            "evidence": "Меня зовут Иван",
+        },
+    ])
+
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, promotion_only=True,
+    )
+
+    promoted = await entities.get_character(attendant.id)
+    assert promoted.canonical_name == "Иван"
+    assert promoted.custom_fields["temporary_name"] is False
+    assert promoted.custom_fields["identity_binding"]["evidence"] == "Меня зовут Иван"
+    assert result.created_ids == []
+    assert attendant.id in result.resolved_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["foreign_id", "wrong_quote", "third_person"])
+async def test_omitted_name_recovery_requires_speaker_binding_and_exact_self_id(db_session, invalid):
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    attendant = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Дежурный у стойки", current_location_id=tavern.id,
+        custom_fields={"temporary_name": True, "role": "дежурный"},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, attendant.id)
+    text = 'Дежурный говорит: «Меня зовут Иван».'
+    decision = {
+        "is_explicit": True, "entity_id": str(attendant.id),
+        "personal_name": "Иван", "evidence": "Меня зовут Иван",
+    }
+    if invalid == "foreign_id":
+        decision["entity_id"] = str(uuid4())
+    elif invalid == "wrong_quote":
+        decision["evidence"] = "Меня зовут Иван Петров"
+    else:
+        text = 'Дежурный говорит: «Иван — мой начальник».'
+        decision["is_explicit"] = False
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=[
+        {"characters": []}, decision,
+    ])
+
+    await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, promotion_only=True,
+    )
+
+    unchanged = await entities.get_character(attendant.id)
+    assert unchanged.canonical_name == "Дежурный у стойки"
+    assert unchanged.custom_fields["temporary_name"] is True
 
 
 @pytest.mark.asyncio
