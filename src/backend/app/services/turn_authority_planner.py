@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
@@ -675,40 +674,6 @@ short sentence. Return exactly the NpcContactDecision schema.
         """Keep local approach/body motion out of the physical location graph."""
         del context_messages, player_input
         return
-
-        if any(
-            clause.travel for clause in PlayerDestinationAuthorizer._clauses(player_input)
-        ):
-            return
-        changed = False
-        steps = list(plan.action_sequence.steps)
-        for index, step in enumerate(steps):
-            if step.action_type != "movement":
-                continue
-            steps[index] = step.model_copy(
-                update={
-                    "action_type": "interaction",
-                    "observable_outcome": (
-                        step.observable_outcome
-                        or step.intent
-                        or "Действие продолжается в текущей сцене."
-                    ),
-                    "transition": SceneTransitionPlan(),
-                }
-            )
-            changed = True
-        if changed:
-            plan.action_sequence = plan.action_sequence.model_copy(update={"steps": steps})
-            if plan.scene_transition.sequence_payload:
-                plan.scene_transition = plan.scene_transition.model_copy(
-                    update={"sequence_payload": plan.action_sequence.model_dump()}
-                )
-        if (
-            plan.scene_transition.required
-            and plan.scene_transition.transition_type == "location_transition"
-            and plan.scene_transition.destination_location
-        ):
-            plan.scene_transition = SceneTransitionPlan()
 
     @property
     def telemetry(self) -> dict:

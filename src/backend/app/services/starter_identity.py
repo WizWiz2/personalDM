@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from uuid import UUID
 
 from app.models.session_zero_interview import SessionZeroStarterNPC
 
@@ -146,7 +147,18 @@ def present_character_names(context_messages) -> frozenset[str]:
             raw = clean[len(prefix) :].strip()
             if not raw or _key(raw) == "player only / none recorded":
                 continue
-            names.update(part.strip() for part in raw.split(",") if part.strip())
+            for part in raw.split(","):
+                name, marker, suffix = part.strip().rpartition(" [id=")
+                if marker and suffix.endswith("]"):
+                    try:
+                        UUID(suffix[:-1])
+                    except ValueError:
+                        pass
+                    else:
+                        names.add(name)
+                        continue
+                if part.strip():
+                    names.add(part.strip())
     return frozenset(names)
 
 

@@ -6,7 +6,8 @@ A missing addressee or a thing-name must not abort the turn or become a person.
 
 from uuid import uuid4
 
-from app.models.addressed_response import QuestionResponse
+import pytest
+from pydantic import ValidationError
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
 from app.services.narration_publication_guard import NarrationPublicationGuard
@@ -37,36 +38,34 @@ def test_publication_drops_fact_ledger_and_obligation_beat():
     assert "прямое обращение" not in text
 
 
-def test_repeated_question_becomes_ignorance_instead_of_failing():
+def test_repeated_question_requires_regeneration_without_inventing_ignorance():
     model = _outcome_wire_model(
         0,
         question_count=1,
         questions=["Куда смотрит стрелка?"],
         requires_response=True,
     )
-    draft = model.model_validate(
-        {
-            "action_outcomes": [],
-            "npc_introductions": [],
-            "resolution": "success",
-            "direct_response": "Смотрю на латунь.",
-            "response_speaker_name": None,
-            "response_after_action_index": None,
-            "response_revealed_name": None,
-            "response_name_evidence": None,
-            "question_responses": [
-                {
-                    "question_index": 0,
-                    "disposition": "answer",
-                    "words": "Куда смотрит стрелка?",
-                }
-            ],
-        }
-    )
-    answer = draft.question_responses[0]
-    assert isinstance(answer, QuestionResponse)
-    assert answer.disposition == "unknown"
-    assert answer.words == "Этого я не знаю."
+    with pytest.raises(ValidationError, match="a repeated question is not an answer"):
+        model.model_validate(
+            {
+                "action_outcomes": [],
+                "npc_introductions": [],
+                "resolution": "success",
+                "direct_response": "Смотрю на латунь.",
+                "response_speaker_name": None,
+                "response_after_action_index": None,
+                "response_revealed_name": None,
+                "response_name_evidence": None,
+                "question_responses": [
+                    {
+                        "question_index": 0,
+                        "disposition": "answer",
+                        "words": "Куда смотрит стрелка?",
+                    }
+                ],
+            }
+        )
+
 
 
 def _authority(**kwargs) -> TurnAuthority:

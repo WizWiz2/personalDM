@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.models.addressed_response import AddressedResponse, QuestionResponse
 from app.models.player_intent import (
     ActionOutcomeDecision,
     DestinationProfilePatch,
@@ -23,22 +24,21 @@ from app.models.player_intent import (
     TurnOutcomeDecision,
 )
 from app.models.turn import ChatMessage
-from app.models.addressed_response import AddressedResponse, QuestionResponse
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
-from app.services.planning_context import outcome_reference_context
-from app.services.role_model_router import RoleModelRouter, RoleModelSelection
-from app.services.starter_identity import present_character_names
-from app.services.turn_planner import TurnPlanningError
-from app.services.turn_authority_resolvers import NpcIntroductionResolver
+from app.services.entity_identity import identity_key
+from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narrator_authority_contracts import (
     description_used_as_identity_name,
     is_usable_short_designation,
     repair_introduction_identity,
 )
-from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.entity_identity import identity_key
+from app.services.planning_context import outcome_reference_context
 from app.services.player_intent_contract import contains_cjk
+from app.services.role_model_router import RoleModelRouter, RoleModelSelection
+from app.services.starter_identity import present_character_names
+from app.services.turn_authority_resolvers import NpcIntroductionResolver
+from app.services.turn_planner import TurnPlanningError
 
 _OUTCOME_PROMPT = """[FROZEN INTENT OUTCOME RESOLVER]
 Resolve only external results of the immutable PLAYER INTENT CONTRACT. Return TurnOutcomeDecisionDraft
@@ -84,6 +84,9 @@ hop that reaches them. A failed prerequisite must not produce destination answer
 If the temporary responder explicitly introduces themself, response_revealed_name carries their
 personal name and response_name_evidence is the exact self-identification from their approved
 words. Keep response_speaker_name as the CURRENT designation so identity binds to the same entity.
+With indexed questions, question_responses[].words are the authoritative approved speech.
+The revealed name must occur verbatim in those words; an aggregate direct_response cannot
+reveal a different name. Evidence is bound to that actual answer, not a separately paraphrased quote.
 Do not reveal or change an already established personal name. Otherwise both revelation fields null.
 When the frozen contract contains questions, return question_responses with exactly one entry for
 each question_index. Choose answer/unknown/refuse/deflect and actual spoken words. Ignorance and
@@ -373,6 +376,8 @@ def _outcome_wire_model(
     present_names: list[str] | None = None,
     movement_indices: set[int] | None = None,
     questions: list[str] | None = None,
+    allow_name_revelation: bool = True,
+    bound_response_speaker: str | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -384,6 +389,12 @@ def _outcome_wire_model(
     sources = _evidence_sources(evidence or "")
     reference_type = Literal[tuple(sources)] | None if sources else str | None
     participant_type = Literal[tuple(present_names)] if present_names else str
+    prerequisite_type = Literal[tuple(range(action_count))] | None if action_count else type(None)
+    revealed_name_type = str | None if allow_name_revelation else type(None)
+    speaker_type = Literal[bound_response_speaker] | None if bound_response_speaker else str | None
+
+    class IndexedNpcIntroductionDraft(OutcomeNpcIntroductionDraft):
+        after_action_index: prerequisite_type = None
 
     class IndexedActionOutcomeDraft(ActionOutcomeDraft):
         # Coverage is structural, so enforce the known indices in native decoding too.
@@ -438,6 +449,10 @@ def _outcome_wire_model(
         action_model = reduce(or_, variants)
 
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
+        response_speaker_name: speaker_type = None
+        response_after_action_index: prerequisite_type = None
+        response_revealed_name: revealed_name_type = None
+        response_name_evidence: revealed_name_type = None
         question_responses: list[QuestionResponse] = Field(
             default_factory=list, max_length=question_count
         )
@@ -446,7 +461,7 @@ def _outcome_wire_model(
             max_length=action_count,
         )
         npc_introductions: list[
-            OutcomeNpcIntroductionDraft if allow_introductions else dict[str, Any]
+            IndexedNpcIntroductionDraft if allow_introductions else dict[str, Any]
         ] = Field(
             max_length=4 if allow_introductions else 0,
         )
@@ -500,6 +515,27 @@ def _outcome_wire_model(
         @model_validator(mode="after")
         def validate_action_indices(self):
             if self.response_revealed_name:
+                speech = [answer.words for answer in self.question_responses] or (
+                    [self.direct_response] if self.direct_response else []
+                )
+                # Evidence is a reference into approved speech, not an independently generated
+                # assertion. Bind a malformed/paraphrased quote to the actual containing reply.
+                # A name absent from that reply still fails the strict AddressedResponse boundary.
+                if not self.response_name_evidence or not any(
+                    self.response_name_evidence in fragment
+                    and self.response_revealed_name in self.response_name_evidence
+                    for fragment in speech
+                ):
+                    containing_reply = next(
+                        (fragment for fragment in speech if self.response_revealed_name in fragment),
+                        None,
+                    )
+                    if containing_reply:
+                        start = max(0, containing_reply.index(self.response_revealed_name) - 100)
+                        self.response_name_evidence = (
+                            containing_reply if len(containing_reply) <= 500
+                            else containing_reply[start:start + 500]
+                        )
                 AddressedResponse(
                     direct_response=self.direct_response,
                     questions=questions or [""] * question_count,
@@ -519,10 +555,7 @@ def _outcome_wire_model(
                     _compact(answer.words).casefold()
                     == _compact(questions[answer.question_index]).casefold()
                 ):
-                    # Echoing the question is ignorance, not a reason to discard the turn.
-                    answer = answer.model_copy(
-                        update={"disposition": "unknown", "words": "Этого я не знаю."}
-                    )
+                    raise ValueError("a repeated question is not an answer or expressed ignorance")
                 repaired_answers.append(answer)
             self.question_responses = repaired_answers
             if sorted(item.action_index for item in self.action_outcomes) != list(
@@ -560,7 +593,7 @@ def _outcome_wire_model(
                 "response_revealed_name", "response_name_evidence",
             ]})
             direct_response: str = Field(min_length=2, max_length=1000)
-            response_speaker_name: str | None = Field(
+            response_speaker_name: speaker_type = Field(
                 default=None,
                 description="Existing cast designation or typed new NPC owning this response."
             )
@@ -1007,6 +1040,10 @@ class TurnOutcomeResolver:
                     if action.action_type == "observation"
                 },
                 allow_introductions=not existing_addressee,
+                allow_name_revelation=contract.identity_reveal_requested or not existing_addressee,
+                bound_response_speaker=(
+                    contract.addressed_character_name if existing_addressee else None
+                ),
                 requires_response=contract.addressed_response_requested,
                 question_count=len(contract.questions),
                 questions=contract.questions,

@@ -21,6 +21,7 @@ async def test_cli_returns_to_input_without_waiting_for_memory(monkeypatch):
         current_scene_view=AsyncMock(return_value=view),
         route_input=AsyncMock(return_value=SimpleNamespace(channel="narrative", stream=stream())),
         latest_assistant_turn_id=AsyncMock(return_value=uuid4()),
+        latest_narrative_text=AsyncMock(return_value="Проход закрыт."),
         post_turn_status=AsyncMock(return_value=SimpleNamespace(failed_count=0)),
     )
     monkeypatch.setattr(cli, "GameApplication", lambda session: application)

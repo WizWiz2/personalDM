@@ -169,7 +169,7 @@ async def test_actor_silence_post_turn_creates_no_belief(db_session):
         if job.job_type == "memory_scribe"
     )
 
-    generate = AsyncMock(return_value={"segment_ids": [1]})
+    generate = AsyncMock(return_value={"segment_ids": []})
     with patch.object(
         RoleModelRouter,
         "resolve",
@@ -184,4 +184,4 @@ async def test_actor_silence_post_turn_creates_no_belief(db_session):
         )
     ).scalars().all()
     assert beliefs == []
-    assert generate.await_count == 0
+    assert generate.await_count == 1

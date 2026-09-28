@@ -150,9 +150,9 @@ class ActionSequenceExecutor:
                         blocked = True
                         continue
                     allow_route_discovery = (
-                        authorization.applicable and authorization.authorized
+                        step.safe_mundane and authorization.applicable and authorization.authorized
                     )
-                    require_existing_route = not authorization.applicable
+                    require_existing_route = not allow_route_discovery
                     if authorization.authorized:
                         updates = {
                             "destination_location": authorization.destination,

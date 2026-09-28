@@ -107,7 +107,7 @@ async def test_live_return_ignores_trailing_punctuation_in_visited_location_iden
     assert authorization.applicable is True
     assert authorization.authorized is True
     assert authorization.destination_exists is True
-    assert authorization.destination == "Небольшой частный детективный офис в центре города"
+    assert authorization.destination == office.canonical_name
     assert "campaign location" in authorization.reason
 
 

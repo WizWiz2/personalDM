@@ -210,12 +210,13 @@ class SceneTransitionExecutor:
                 and authorization is not None
                 and not authorization.applicable
             ):
-                if existing_target is None:
+                if existing_target is None and not _destination_profile(plan.bridge_summary):
                     raise ValueError(
                         "Player destination is unresolved; "
                         "a new location cannot be created"
                     )
-                require_existing_route = True
+                if existing_target is not None:
+                    require_existing_route = True
 
             if existing_target is not None:
                 target_location_id = existing_target.id
@@ -231,9 +232,12 @@ class SceneTransitionExecutor:
                 )
             if allow_route_discovery is None:
                 allow_route_discovery = bool(
-                    authorization
-                    and authorization.applicable
-                    and authorization.authorized
+                    _destination_profile(plan.bridge_summary)
+                    or (
+                        authorization
+                        and authorization.applicable
+                        and authorization.authorized
+                    )
                 )
             if require_existing_route:
                 await self._require_existing_route(

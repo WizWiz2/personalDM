@@ -3,12 +3,15 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from app.models.turn import ChatMessage
 from app.services.dead_turn_guard import _empty_plan_diagnostic
 from app.services.player_intent_interpreter import (
     PlayerActionIntentDraft,
     PlayerIntentContractDraft,
-    _IntentWire,
     _destination_binding_wire,
+    _intent_semantic_review_wire,
+    _intent_wire_model,
+    _IntentWire,
     normalize_intent_draft,
 )
 from app.services.turn_authority_planner import CoordinatedTurnPlan
@@ -30,6 +33,49 @@ def test_movement_reference_schema_restricts_known_identity_and_allows_discovery
     payload["action_0"] = "invented-id"
     with pytest.raises(ValidationError):
         wire.model_validate(payload)
+
+
+def test_inventory_schema_rejects_a_one_digit_uuid_error_and_self_recipient():
+    item = "00000000-0000-4000-8000-000000000001"
+    player = "00000000-0000-4000-8000-000000000002"
+    npc = "00000000-0000-4000-8000-000000000003"
+    wire = _intent_wire_model([ChatMessage(role="system", content=(
+        f"Controlled character: {player}\nPlayer-owned items: Ключ [id={item}]\n"
+        f"Physically present characters: Кай [id={player}], Мартин [id={npc}]"
+    ))])
+    action = dict(action_type="inventory", actor_role="speaker", intent="Передаю ключ.",
+                  item_id=item, inventory_operation="give", inventory_target_id=npc)
+    payload = {"summary": "Передаю ключ.", "actions": [action]}
+    assert wire.model_validate(payload).actions[0].item_id == item
+    for field, bad_id in (("item_id", item[:-1] + "9"), ("inventory_target_id", player)):
+        with pytest.raises(ValidationError):
+            wire.model_validate({**payload, "actions": [{**action, field: bad_id}]})
+    with pytest.raises(ValidationError, match="own addressee"):
+        wire.model_validate({"summary": "Спрашиваю дежурного.", "actions": [],
+                             "addressed_character_name": "Кай"})
+
+
+def test_empty_action_schema_exposes_only_null_prerequisites():
+    schema = _outcome_wire_model(0).model_json_schema()
+    assert schema["properties"]["response_after_action_index"]["type"] == "null"
+    intro = schema["$defs"]["IndexedNpcIntroductionDraft"]
+    assert intro["properties"]["after_action_index"]["type"] == "null"
+
+
+def test_attempted_movement_cannot_be_combined_with_no_endpoint_or_travel_effect():
+    wire = _intent_semantic_review_wire(1, "Пытаюсь пройти на склад; прямого прохода нет.")
+    action = {"action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action",
+              "action_type": "movement", "spatial_effect": "none", "destination_location": None}
+    payload = {"action_ownership": [action], "information_request_only": False,
+               "information_recipient": "none"}
+    with pytest.raises(ValidationError, match="attempted movement"):
+        wire.model_validate(payload)
+    valid = {**action, "spatial_effect": "travel", "destination_location": "Склад"}
+    assert wire.model_validate({**payload, "action_ownership": [valid]}).action_ownership[0].action_type == "movement"
+    schema = wire.model_json_schema()
+    movement = schema["$defs"]["MovingOwnership"]["properties"]
+    assert movement["spatial_effect"]["const"] == "travel"
+    assert movement["destination_location"]["type"] == "string"
 
 
 def test_intent_wire_schema_cannot_accept_empty_json_object() -> None:
@@ -210,6 +256,62 @@ def test_actionless_turn_requires_a_response_without_inventing_an_action() -> No
         }
     )
     assert parsed.action_outcomes == []
+
+
+def _revealed_response(*, spoken_name: str, evidence: str):
+    return {
+        "action_outcomes": [], "npc_introductions": [],
+        "observable_consequences": [],
+        "direct_response": "Меня зовут Мартин.",
+        "response_revealed_name": "Мартин", "response_name_evidence": evidence,
+        "question_responses": [
+            {"question_index": 0, "disposition": "answer", "words": f"Я {spoken_name}."}
+        ],
+    }
+
+
+def test_name_evidence_binds_to_authoritative_answer_without_paraphrasing():
+    wire = _outcome_wire_model(0, question_count=1, questions=["Как тебя зовут?"], requires_response=True)
+    parsed = wire.model_validate(_revealed_response(
+        spoken_name="Мартин", evidence="Меня зовут Мартин.",
+    ))
+    assert parsed.response_name_evidence == "Я Мартин."
+
+
+def test_aggregate_name_cannot_override_a_different_authoritative_answer():
+    wire = _outcome_wire_model(0, question_count=1, questions=["Как тебя зовут?"], requires_response=True)
+    with pytest.raises(ValidationError, match="name revelation requires exact self-identification"):
+        wire.model_validate(_revealed_response(
+            spoken_name="Эдгар", evidence="Меня зовут Мартин.",
+        ))
+
+
+def test_bound_name_evidence_respects_quote_limit_in_a_long_answer():
+    wire = _outcome_wire_model(0, question_count=1, questions=["Как тебя зовут?"], requires_response=True)
+    payload = _revealed_response(spoken_name="Мартин", evidence="Пересказ")
+    words = "Предисловие. " * 40 + "Я Мартин. " + "Продолжение. " * 20
+    payload["question_responses"][0]["words"] = words
+    parsed = wire.model_validate(payload)
+    assert len(parsed.response_name_evidence) <= 500
+    assert parsed.response_name_evidence in words
+    assert "Мартин" in parsed.response_name_evidence
+
+
+def test_revealed_name_cannot_replace_the_existing_response_owner():
+    wire = _outcome_wire_model(
+        0, question_count=1, questions=["Как тебя зовут?"], requires_response=True,
+        bound_response_speaker="Дежурный у стойки",
+    )
+    payload = _revealed_response(spoken_name="Мартин", evidence="Я Мартин.")
+    payload["response_speaker_name"] = "Мартин"
+    with pytest.raises(ValidationError):
+        wire.model_validate(payload)
+    payload["response_speaker_name"] = "Дежурный у стойки"
+    parsed = wire.model_validate(payload)
+    assert parsed.response_speaker_name == "Дежурный у стойки"
+    assert parsed.response_revealed_name == "Мартин"
+    schema = wire.model_json_schema()["properties"]["response_speaker_name"]
+    assert schema["anyOf"][0]["const"] == "Дежурный у стойки"
 
 
 def test_npc_wire_cannot_omit_encounter_evidence_and_profile() -> None:

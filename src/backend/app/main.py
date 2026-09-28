@@ -1,8 +1,5 @@
 import asyncio
 import os
-from pathlib import Path
-
-from app.runtime_paths import frontend_dist_dir, is_packaged_dist
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -26,6 +23,7 @@ from app.api.world_state import router as world_state_router
 from app.config import settings
 from app.db.engine import get_session
 from app.runtime import install_runtime
+from app.runtime_paths import frontend_dist_dir, is_packaged_dist
 from app.services.post_turn_processor import PostTurnWorker
 
 install_runtime()

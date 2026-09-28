@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from functools import reduce
+from operator import or_
 from typing import Any, Literal
 from uuid import UUID
 
@@ -15,7 +17,7 @@ from app.services.linguistic_intent_analyzer import (
     LinguisticParserUnavailable,
 )
 from app.services.location_identity import location_reference_key, same_location_reference
-from app.services.planning_context import intent_reference_context
+from app.services.planning_context import action_reference_catalog, intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
 
@@ -89,6 +91,7 @@ class PlayerActionIntentDraft(BaseModel):
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     destination_reference: str | None = None
+    destination_reference_mode: Literal["explicit", "contextual"] | None = None
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
     movement_method: Literal[
         "ordinary", "special", "teleportation", "force", "stealth", "ability"
@@ -188,21 +191,77 @@ class _IntentWire(PlayerIntentContractDraft):
 _IntentWire.__name__ = "PlayerIntentContractDraft"
 
 
+def _intent_wire_model(context_messages: list[ChatMessage]):
+    owned = action_reference_catalog(context_messages, "Player-owned items:")
+    objects = action_reference_catalog(context_messages, "Objects physically here:")
+    people = action_reference_catalog(context_messages, "Physically present characters:")
+    controlled_id = next((
+        line.removeprefix("Controlled character:").strip()
+        for message in context_messages for line in message.content.splitlines()
+        if line.startswith("Controlled character:")
+    ), None)
+    controlled_name = people.get(controlled_id)
+    # Legacy/unit contexts may omit catalogs. Production always publishes these sections.
+    if not owned and not objects and not people:
+        return _IntentWire
+    variants = [_MovementWire, _TimeWire, _LocalActionWire]
+    if owned or objects:
+        variants.append(create_model(
+            "ReferencedInventoryAction", __base__=_InventoryWire,
+            item_id=(Literal[tuple(sorted(owned.keys() | objects.keys()))], ...),
+        ))
+    recipients = people.keys() - {controlled_id}
+    if owned and recipients:
+        variants.append(create_model(
+            "ReferencedGiveAction", __base__=_GiveWire,
+            item_id=(Literal[tuple(sorted(owned))], ...),
+            inventory_target_id=(Literal[tuple(sorted(recipients))], ...),
+        ))
+    action_model = reduce(or_, variants)
+
+    class ReferencedIntentWire(_IntentWire):
+        actions: list[action_model] = Field(max_length=8)
+
+        @model_validator(mode="after")
+        def validate_response_owner(self):
+            if controlled_name and _compact(self.addressed_character_name).casefold() == controlled_name.casefold():
+                raise ValueError(
+                    "The controlled protagonist cannot be their own addressee. "
+                    "Use the other person's designation from the input, even if not yet registered."
+                )
+            return self
+
+    ReferencedIntentWire.__name__ = "PlayerIntentContractDraft"
+    return ReferencedIntentWire
+
+
 class ActionOwnershipDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action_index: int = Field(ge=0, le=7)
     actor_role: Literal["speaker", "addressee"]
+    action_type: IntentActionType | None = None
+    item_id: UUID | None = None
+    inventory_operation: Literal["take", "drop", "place", "give"] | None = None
+    inventory_target_id: UUID | None = None
+    elapsed_time: str | None = None
+    time_after: str | None = None
     contribution_kind: Literal["world_action", "speech"] = "world_action"
-    spatial_effect: Literal["local", "travel", "none"] | None = None
-    destination_location: str | None = Field(default=None, max_length=255)
+    spatial_effect: Literal["local", "travel", "none"] | None = Field(
+        default=None, description="Intended spatial effect, never whether the attempt succeeds."
+    )
+    destination_location: str | None = Field(
+        default=None, max_length=255,
+        description="Player-selected travel endpoint, including an unreachable destination.",
+    )
+    destination_reference_mode: Literal["explicit", "contextual"] | None = None
     # The model's quote is a hint for aligning syntax with one action. A paraphrase cannot be
     # trusted as evidence, but it must not abort an otherwise valid turn.
     evidence_quote: str = Field(default="", max_length=500)
 
 
 class IntentSemanticOwnershipReview(BaseModel):
-    """Narrow semantic adjudication that may label ownership but never rewrite actions."""
+    """Classify actor and durable effect without changing action text or order."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -212,7 +271,22 @@ class IntentSemanticOwnershipReview(BaseModel):
     addressed_character_name: str | None = Field(default=None, max_length=120)
 
 
-def _intent_semantic_review_wire(action_count: int, player_input: str):
+def _intent_semantic_review_wire(
+    action_count: int, player_input: str, controlled_name: str | None = None,
+    context_messages: list[ChatMessage] | None = None,
+):
+    owned = action_reference_catalog(context_messages or [], "Player-owned items:")
+    objects = action_reference_catalog(context_messages or [], "Objects physically here:")
+    people = action_reference_catalog(context_messages or [], "Physically present characters:")
+    items = tuple(sorted(owned.keys() | objects.keys()))
+    recipients = tuple(sorted(reference for reference, name in people.items() if name != controlled_name))
+    item_type = UUID | None
+    recipient_type = UUID | None
+    if items or people:
+        item_type = Literal[items] | None if items else type(None)
+    if recipients or people:
+        recipient_type = Literal[recipients] | None if recipients else type(None)
+
     class IndexedActionOwnershipDecision(ActionOwnershipDecision):
         model_config = ConfigDict(
             extra="forbid",
@@ -220,10 +294,108 @@ def _intent_semantic_review_wire(action_count: int, player_input: str):
                 "required": [
                     "action_index", "actor_role", "contribution_kind",
                     "spatial_effect", "destination_location",
+                    "destination_reference_mode",
+                    "action_type", "item_id", "inventory_operation", "inventory_target_id",
+                    "elapsed_time", "time_after",
                 ],
             },
         )
         action_index: Literal[tuple(range(action_count))]
+        item_id: item_type = None
+        inventory_target_id: recipient_type = None
+
+        @model_validator(mode="after")
+        def require_inventory_references(self):
+            if self.contribution_kind == "world_action" and self.action_type == "movement":
+                if self.spatial_effect != "travel" or not _compact(self.destination_location):
+                    raise ValueError(
+                        "An attempted movement keeps its travel effect and selected endpoint, "
+                        "even if an obstacle prevents completion. Local acts use another action_type."
+                    )
+            elif self.action_type is not None and self.spatial_effect == "travel":
+                raise ValueError("Travel to a different place requires action_type=movement")
+            if self.contribution_kind == "world_action" and self.action_type == "inventory":
+                if not self.item_id or not self.inventory_operation:
+                    raise ValueError("Inventory act requires the catalogued item and ownership operation")
+                if self.inventory_operation == "give" and not self.inventory_target_id:
+                    raise ValueError("Giving an item requires the catalogued recipient")
+            return self
+
+    class MovingOwnership(IndexedActionOwnershipDecision):
+        contribution_kind: Literal["world_action"]
+        action_type: Literal["movement"]
+        spatial_effect: Literal["travel"]
+        destination_location: str = Field(min_length=1, max_length=255)
+        destination_reference_mode: Literal["explicit", "contextual"]
+        item_id: None = None
+        inventory_operation: None = None
+        inventory_target_id: None = None
+        elapsed_time: None = None
+        time_after: None = None
+
+    class InventoryOwnership(IndexedActionOwnershipDecision):
+        contribution_kind: Literal["world_action"]
+        action_type: Literal["inventory"]
+        spatial_effect: Literal["local"]
+        destination_location: None = None
+        destination_reference_mode: None = None
+        item_id: Literal[items] if items else UUID = Field(
+            description="Select the exact registered item's ID."
+        )
+        inventory_operation: Literal["take", "drop", "place"]
+        inventory_target_id: None = None
+        elapsed_time: None = None
+        time_after: None = None
+
+    class GivingOwnership(InventoryOwnership):
+        inventory_operation: Literal["give"]
+        inventory_target_id: Literal[recipients] if recipients else UUID
+
+    class TemporalOwnership(IndexedActionOwnershipDecision):
+        contribution_kind: Literal["world_action"]
+        action_type: Literal["rest", "wait"]
+        spatial_effect: Literal["none"]
+        destination_location: None = None
+        destination_reference_mode: None = None
+        item_id: None = None
+        inventory_operation: None = None
+        inventory_target_id: None = None
+
+    class LocalOwnership(IndexedActionOwnershipDecision):
+        contribution_kind: Literal["world_action"]
+        action_type: Literal["service", "interaction", "observation", "other"]
+        spatial_effect: Literal["local", "none"]
+        destination_location: None = None
+        destination_reference_mode: None = None
+        item_id: None = None
+        inventory_operation: None = None
+        inventory_target_id: None = None
+        elapsed_time: None = None
+        time_after: None = None
+
+    class SpeechOwnership(IndexedActionOwnershipDecision):
+        contribution_kind: Literal["speech"]
+        action_type: None = None
+        spatial_effect: Literal["local", "none"]
+        destination_location: None = None
+        destination_reference_mode: None = None
+        item_id: None = None
+        inventory_operation: None = None
+        inventory_target_id: None = None
+        elapsed_time: None = None
+        time_after: None = None
+
+    # Native decoding gets conditional shapes. The permissive Python boundary below still
+    # accepts legacy sparse fixtures, while checking every explicit typed decision.
+    ownership_variants = [MovingOwnership, TemporalOwnership, LocalOwnership, SpeechOwnership]
+    if items or not people:
+        ownership_variants.append(InventoryOwnership)
+        if recipients or not people:
+            ownership_variants.append(GivingOwnership)
+    ownership_model = reduce(or_, ownership_variants)
+
+    class TypedOwnershipSchema(IntentSemanticOwnershipReview):
+        action_ownership: list[ownership_model] = Field(min_length=action_count, max_length=action_count)
 
     class ExactIntentSemanticOwnershipReview(IntentSemanticOwnershipReview):
         action_ownership: list[IndexedActionOwnershipDecision] = Field(
@@ -231,8 +403,17 @@ def _intent_semantic_review_wire(action_count: int, player_input: str):
             max_length=action_count,
         )
 
+        @classmethod
+        def model_json_schema(cls, *args, **kwargs):
+            return TypedOwnershipSchema.model_json_schema(*args, **kwargs)
+
         @model_validator(mode="after")
         def validate_grounding(self):
+            if controlled_name and _compact(self.addressed_character_name).casefold() == controlled_name.casefold():
+                raise ValueError(
+                    "The controlled character cannot answer their own question. "
+                    "Select the interlocutor's designation from the human input."
+                )
             indices = [item.action_index for item in self.action_ownership]
             if sorted(indices) != list(range(action_count)):
                 raise ValueError(
@@ -267,6 +448,11 @@ For every extracted index first classify contribution_kind by meaning:
 - world_action: a physical-world act such as travel, inspection, manipulation, inventory, rest.
   An attempted act stays world_action even when unsuccessful. Actually inspecting/searching the
   surroundings is world_action even when the desired result is only information, not a state change.
+The human message describes what the protagonist does; it is NOT automatically in-world speech.
+Transferring an item, resting for a duration, and attempting blocked travel remain world_action.
+Dialogue accompanying a physical act does not erase that act. In a mixed clause preserve both
+the physical action and the independent addressed response. The controlled character is never
+their own addressee; an unregistered interlocutor keeps the designation used by the human.
 Then decide from the complete utterance who performs the contribution:
 - speaker: the human-controlled player character commits to performing it;
 - addressee: the human asks another character to perform it.
@@ -277,6 +463,17 @@ Locking a workshop, inspecting its doorway, turning toward a sound, or putting a
 local, even if extraction mislabeled it movement. Entering or returning to a workshop is travel.
 For travel supply the endpoint in destination_location from the human's intended reference;
 otherwise return null. This corrects classification only: preserve order, actor and action text.
+For travel classify destination_reference_mode by how the endpoint is identified: explicit means
+the human independently names/describes the destination; contextual means its identity depends
+on deixis, possession, anaphora or a prior scene (home, back, outside). A named public establishment
+with its own description is explicit, even when reaching it involves leaving another building.
+Other actions carry null. This is a semantic reference classification, not a keyword test.
+Independently select action_type by the act's durable effect, regardless of the extraction's label.
+Any change of a registered item's owner or physical placement is inventory, including placing it
+on furniture and withdrawing the hand. Select item_id from the catalog and the take/drop/place/give
+operation; give also selects inventory_target_id. This is NOT an interaction/other action.
+Rest or waiting with elapsed time is rest/wait: preserve elapsed_time and time_after from the input.
+Other domains keep inventory and temporal fields null. Speech uses action_type=null.
 
 For each decision, evidence_quote must be the shortest exact verbatim span from LATEST HUMAN INPUT
 that supports the ownership decision. Judge meaning in context; do not use keyword, verb, suffix,
@@ -476,7 +673,7 @@ class PlayerIntentInterpreter:
         draft: PlayerIntentContractDraft,
         context_messages: list[ChatMessage] | None = None,
     ) -> IntentSemanticOwnershipReview | None:
-        """Adjudicate only actor/response ownership without rewriting extracted actions."""
+        """Verify effect and ownership while preserving the extracted act's text and order."""
 
         if not draft.actions:
             # There is no action owner to adjudicate. Besides wasting a model call, the dynamic
@@ -492,7 +689,16 @@ class PlayerIntentInterpreter:
             )
             return None
 
-        wire = _intent_semantic_review_wire(len(draft.actions), player_input)
+        people = action_reference_catalog(context_messages or [], "Physically present characters:")
+        controlled_id = next((
+            line.removeprefix("Controlled character:").strip()
+            for message in context_messages or [] for line in message.content.splitlines()
+            if line.startswith("Controlled character:")
+        ), None)
+        wire = _intent_semantic_review_wire(
+            len(draft.actions), player_input, people.get(controlled_id), context_messages,
+        )
+
         data = await self._router.generate_json(
             self._provider,
             selection,
@@ -515,8 +721,7 @@ class PlayerIntentInterpreter:
                             [
                                 {
                                     "action_index": index,
-                                    "action_type": action.action_type,
-                                    "intent": action.intent,
+                                    **action.model_dump(mode="json", exclude_none=True),
                                     "proposed_actor_role": action.actor_role,
                                 }
                                 for index, action in enumerate(draft.actions)
@@ -528,14 +733,60 @@ class PlayerIntentInterpreter:
                     ),
                 ),
             ],
-            max_tokens=600,
+            max_tokens=max(600, 200 + len(draft.actions) * 180),
             temperature=0.0,
             response_model=wire,
         )
         review = wire.model_validate(data)
+        disputed = [
+            item.action_index for item in review.action_ownership
+            if item.contribution_kind == "speech" or (
+                draft.actions[item.action_index].action_type == "movement"
+                and item.spatial_effect in {"local", "none"}
+            ) or (
+                draft.actions[item.action_index].inventory_operation is not None
+                and item.action_type is not None and item.action_type != "inventory"
+            ) or (
+                (draft.actions[item.action_index].elapsed_time or draft.actions[item.action_index].time_after)
+                and item.action_type is not None and item.action_type not in {"rest", "wait"}
+            )
+        ]
+        if disputed:
+            # Extraction and review disagree about an executable domain. Resolve the contradiction
+            # before mutating/removing candidates, with full typed payload and original evidence.
+            reconsidered = await self._router.generate_json(
+                self._provider, selection,
+                [ChatMessage(role="system", content=_OWNERSHIP_REVIEW_PROMPT),
+                 ChatMessage(role="user", content=(
+                     "[LATEST HUMAN INPUT]\n" + player_input
+                     + "\n\n[EXTRACTED ACTIONS — immutable]\n"
+                     + json.dumps([action.model_dump(mode="json") for action in draft.actions], ensure_ascii=False)
+                     + "\n\n[DISPUTED REVIEW]\n" + review.model_dump_json()
+                     + "\n\nResolve the contradiction for indices " + str(disputed)
+                     + ". Determine whether these are communicated words or actual attempted acts. "
+                     "A blocked journey still has a travel endpoint. A local act is not travel. "
+                     "Do not discard a real act merely because the human described it in a message. "
+                     "Return the complete review, with verbatim evidence_quote for each decision."
+                     + "\n\n[REFERENCE CONTEXT]\n"
+                     + self._authoritative_context(context_messages or [])
+                 ))],
+                max_tokens=max(700, 220 + len(draft.actions) * 180), temperature=0.0, response_model=wire,
+            )
+            review = wire.model_validate(reconsidered)
+            self.audit.append({"phase": "ownership_disagreement", "indices": disputed,
+                               "resolved_review": review.model_dump(mode="json")})
         for ownership in review.action_ownership:
             action = draft.actions[ownership.action_index]
             action.actor_role = ownership.actor_role
+            if ownership.contribution_kind == "world_action" and ownership.action_type is not None:
+                action.action_type = ownership.action_type
+                if ownership.action_type == "inventory":
+                    action.item_id = ownership.item_id
+                    action.inventory_operation = ownership.inventory_operation
+                    action.inventory_target_id = ownership.inventory_target_id
+                if ownership.action_type in {"rest", "wait"}:
+                    action.elapsed_time = ownership.elapsed_time
+                    action.time_after = ownership.time_after
             if ownership.spatial_effect == "travel":
                 # A step without a catalogued place is movement inside the current
                 # location, not a failed turn. Prose must not invent the destination.
@@ -547,6 +798,7 @@ class PlayerIntentInterpreter:
                 else:
                     action.action_type = "movement"
                     action.destination_location = ownership.destination_location
+                    action.destination_reference_mode = ownership.destination_reference_mode
             elif ownership.spatial_effect in {"local", "none"} and action.action_type == "movement":
                 action.action_type = "interaction"
                 action.destination_location = None
@@ -668,6 +920,12 @@ class PlayerIntentInterpreter:
                     if tokens.intersection(location_reference_key(name))
                     or lemmas.intersection(lexical_lemmas(name))
                 }
+                if action.destination_reference_mode == "explicit" and not plausible:
+                    # The semantic review already established a concrete named endpoint.
+                    # With no identity candidates it is new, not an unresolved deictic reference.
+                    # A second model choice must not replace it or reopen that decision.
+                    action.destination_reference = "new"
+                    continue
                 # Absence of lexical overlap is not evidence of a new place: deictic references
                 # such as "home"/"outside" need the scene and catalogue too. Candidate retrieval
                 # narrows named references; contextual binding owns identity and ambiguity.
@@ -744,6 +1002,7 @@ class PlayerIntentInterpreter:
             + player_input
         )
         try:
+            wire = _intent_wire_model(context_messages)
             data = await self._router.generate_json(
                 self._provider,
                 selection,
@@ -752,13 +1011,13 @@ class PlayerIntentInterpreter:
                         role="system",
                         content=_INTENT_PROMPT
                         + "\n\n[OUTPUT JSON SCHEMA]\n"
-                        + json.dumps(_IntentWire.model_json_schema(), ensure_ascii=False),
+                        + json.dumps(wire.model_json_schema(), ensure_ascii=False),
                     ),
                     ChatMessage(role="user", content=user),
                 ],
                 max_tokens=1000,
                 temperature=settings.PLANNER_TEMPERATURE,
-                response_model=_IntentWire,
+                response_model=wire,
             )
             self.audit.append(
                 {"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)}

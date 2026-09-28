@@ -230,7 +230,9 @@ async def test_generic_travel_shorthand_cannot_choose_between_two_departments(
         TurnCreate(role="user", content="Еду в Департамент."),
     )
 
-    with pytest.raises(ValueError, match="destination reference is ambiguous"):
+    # The semantic binder must leave an ambiguous reference unresolved. The executor receives
+    # that reference, rather than a concrete destination already selected by a mocked planner.
+    with pytest.raises(ValueError, match="destination is unresolved"):
         await SceneTransitionExecutor(db_session).apply(
             campaign_id,
             source.id,
@@ -238,7 +240,7 @@ async def test_generic_travel_shorthand_cannot_choose_between_two_departments(
             SceneTransitionPlan(
                 required=True,
                 transition_type="location_transition",
-                destination_location=department.canonical_name,
+                destination_location="Департамент",
             ),
         )
 

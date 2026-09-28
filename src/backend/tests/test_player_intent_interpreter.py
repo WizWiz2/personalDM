@@ -137,6 +137,62 @@ class _LinguisticAnalyzer:
         return self.analysis
 
 
+@pytest.mark.asyncio
+async def test_disputed_inventory_act_is_reconsidered_before_being_erased():
+    item_id, npc_id = str(uuid4()), str(uuid4())
+    payload = {"summary": "Передаю ключ.", "actions": [{
+        "action_type": "inventory", "intent": "Передаю ключ.", "actor_role": "speaker",
+        "item_id": item_id, "inventory_operation": "give", "inventory_target_id": npc_id,
+    }]}
+    mistaken = {
+        "action_ownership": [{"action_index": 0, "actor_role": "speaker",
+                              "contribution_kind": "speech", "evidence_quote": "Передаю ключ."}],
+        "information_request_only": True, "information_recipient": "narrator",
+    }
+
+    class DisputingRouter(_Router):
+        async def generate_json(self, *args, response_model, **kwargs):
+            if response_model.__name__ == "IntentSemanticOwnershipReview":
+                if self.calls.count("IntentSemanticOwnershipReview"):
+                    self.review = {
+                        "action_ownership": [{"action_index": 0, "actor_role": "speaker",
+                                              "contribution_kind": "world_action",
+                                              "spatial_effect": "local",
+                                              "evidence_quote": "Передаю ключ."}],
+                        "information_request_only": False, "information_recipient": "none",
+                    }
+            return await super().generate_json(*args, response_model=response_model, **kwargs)
+
+    router = DisputingRouter(payload, review=mistaken)
+    result = await _interpreter(router).interpret(SimpleNamespace(), [], "Передаю ключ.")
+    assert result.actions[0].inventory_operation == "give"
+    assert str(result.actions[0].item_id) == item_id
+    assert router.calls.count("IntentSemanticOwnershipReview") == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("effect", ["inventory", "rest"])
+async def test_semantic_effect_review_recovers_durable_operation_from_generic_extraction(effect):
+    item_id = str(uuid4())
+    fields = ({"item_id": item_id, "inventory_operation": "place"} if effect == "inventory"
+              else {"elapsed_time": "восемь часов", "time_after": "утро"})
+    text = "Кладу ключ на стол." if effect == "inventory" else "Сплю восемь часов до утра."
+    router = _Router(
+        {"summary": text, "actions": [{"action_type": "other", "intent": text}]},
+        review={
+            "action_ownership": [{"action_index": 0, "actor_role": "speaker",
+                                  "contribution_kind": "world_action", "action_type": effect,
+                                  "spatial_effect": "local" if effect == "inventory" else "none",
+                                  "evidence_quote": text, **fields}],
+            "information_request_only": False, "information_recipient": "none",
+        },
+    )
+    result = await _interpreter(router).interpret(SimpleNamespace(), [], text)
+    assert result.actions[0].action_type == effect
+    for name, value in fields.items():
+        assert str(getattr(result.actions[0], name)) == value
+
+
 def _interpreter(
     router: _Router,
     analysis: LinguisticIntentAnalysis | None = None,
@@ -840,3 +896,32 @@ async def test_numbered_destination_is_bound_by_semantic_id(number):
     )
     assert result.actions[0].destination_location == persisted
     assert "DestinationIdentityBindings" in router.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("substitute", [False, True])
+async def test_explicit_new_destination_cannot_bind_to_an_unrelated_catalog_entry(substitute):
+    office_id = str(uuid4())
+    router = _Router(
+        {"summary": "Выйти из здания и дойти до прачечной.", "actions": [{
+            "action_type": "movement", "intent": "Выйти из здания.",
+            "destination_location": "наружу",
+        }]},
+        bindings={"action_0": office_id if substitute else "new"},
+        review={
+            "action_ownership": [{
+                "action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action",
+                "action_type": "movement", "spatial_effect": "travel",
+                "destination_location": "круглосуточная прачечная соседнего дома",
+                "destination_reference_mode": "explicit",
+            }],
+            "information_request_only": False, "information_recipient": "none",
+        },
+    )
+    interpreter = _interpreter(router)
+    result = await interpreter.interpret(
+        SimpleNamespace(), [], "Выхожу из здания и иду в прачечную соседнего дома.",
+        location_references={office_id: "Контора"},
+    )
+    assert result.actions[0].destination_location == "круглосуточная прачечная соседнего дома"
+    assert "DestinationIdentityBindings" not in router.calls

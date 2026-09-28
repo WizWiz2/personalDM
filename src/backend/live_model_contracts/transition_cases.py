@@ -35,15 +35,12 @@ def _new_characters(before: TruthSnapshot, after: TruthSnapshot) -> list[dict]:
 
 
 def _no_dead_surface(snapshot: TruthSnapshot, failures: list[str]) -> None:
+    from app.services.narration_publication_guard import NarrationPublicationGuard
+
     surface = _fold(snapshot.assistant_surface)
-    forbidden = (
-        "пока ничего заметно не меняется",
-        "ничего не происходит",
-        "пока ничего не меняется",
-    )
     _fail(bool(surface), "assistant produced no active published surface", failures)
     _fail(
-        not any(value in surface for value in forbidden),
+        not NarrationPublicationGuard.DEAD_TURN_PATTERN.fullmatch(surface),
         f"dead-turn surface escaped: {surface!r}",
         failures,
     )

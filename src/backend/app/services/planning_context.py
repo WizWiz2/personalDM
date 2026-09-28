@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from app.models.turn import ChatMessage
 from app.services.prompt_policy import CURRENT_PROMPT_POLICY
 
@@ -62,9 +64,29 @@ def intent_reference_context(messages: list[ChatMessage]) -> str:
         "Physically present characters:",
         "Objects physically here:",
         "Player-owned items:",
+        "Controlled character:",
     )
     lines = [line for line in context.splitlines() if line.startswith(prefixes)]
     return "\n".join(lines) if lines else context
+
+
+def action_reference_catalog(messages: list[ChatMessage], prefix: str) -> dict[str, str]:
+    """Read UUID/name pairs from engine-owned reference lines, never from player prose."""
+    references: dict[str, str] = {}
+    for message in messages:
+        for line in message.content.splitlines():
+            if not line.startswith(prefix):
+                continue
+            for entry in line[len(prefix):].split(","):
+                name, marker, suffix = entry.strip().rpartition(" [id=")
+                if not marker or not suffix.endswith("]"):
+                    continue
+                try:
+                    reference = str(UUID(suffix[:-1]))
+                except ValueError:
+                    continue
+                references[reference] = name
+    return references
 
 
 def outcome_reference_context(messages: list[ChatMessage]) -> str:

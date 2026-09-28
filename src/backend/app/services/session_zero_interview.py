@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from uuid import UUID
 
 from app.models.session_zero_interview import (
@@ -30,6 +31,8 @@ from app.services.session_zero_agent import (
 from app.services.session_zero_agent import (
     SessionZeroInterviewService as _BaseSessionZeroInterviewService,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SessionZeroAgent(_BaseSessionZeroAgent):
@@ -319,9 +322,9 @@ class SessionZeroInterviewService(_BaseSessionZeroInterviewService):
             persona_suffix = await MasterService(self._session).narrator_persona_suffix(
                 campaign_id
             )
-        except Exception:
+        except Exception as exc:
             # Persona decoration must never block Session Zero.
-            pass
+            logger.debug("Session Zero persona decoration unavailable: %s", exc)
         model_decision = await self._agent.respond(
             selection,
             state,

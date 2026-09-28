@@ -144,7 +144,10 @@ def test_intent_failure_reports_original_cause_without_publishing_turn(client: T
             json={"role": "user", "content": "Я выхожу в коридор."},
         )
 
-    assert "player intent contract remained invalid after one repair" in response.text
+    assert "player intent contract remained invalid after one repair" not in response.text
+    debugger = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
+    assert any("player intent contract remained invalid after one repair" in (run.get("error") or "")
+               for run in debugger["generation_runs"])
     assert "Control-plane recovery produced no concrete typed outcome" not in response.text
     assert client.get(f"/api/campaigns/{campaign_id}/locations").json() == before
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()

@@ -34,15 +34,17 @@ def test_technical_start_defaults_fill_only_missing_fields():
     assert materialized.character.name == "Кабуто"
     assert materialized.character.description == "Эльф-хакер и маг в маске."
     assert materialized.character.first_goal == "Найти кибердеку получше."
-    assert materialized.world.starting_location_name
+    assert materialized.world.starting_location_name is None
     assert materialized.world.starting_situation
-    assert SessionZeroInterviewService.missing_fields(materialized) == []
+    assert "world.starting_location_name" in SessionZeroInterviewService.missing_fields(materialized)
 
 
-def test_start_claim_detection_covers_natural_russian_phrase():
-    assert SessionZeroInterviewService._assistant_claims_start(
-        "Отлично. Начнём расследование с портовых складов."
+def test_start_handoff_uses_typed_disposition_without_phrase_detection():
+    decision = SessionZeroInterviewModelDecision(
+        assistant_message="Отлично. Начнём расследование с портовых складов.",
+        conversation_disposition="start_game",
     )
+    assert any(call.name == "finalize_session_zero" for call in decision.tool_calls)
 
 
 @pytest.mark.asyncio
@@ -56,6 +58,7 @@ async def test_start_claim_without_finalize_becomes_ready(monkeypatch):
     service._router.resolve.return_value = selection
     service._agent.respond.return_value = SessionZeroInterviewModelDecision(
         assistant_message="Отлично. Начнём расследование.",
+        conversation_disposition="start_game",
         tool_calls=[],
         question_topics=[],
     )
@@ -69,6 +72,7 @@ async def test_start_claim_without_finalize_becomes_ready(monkeypatch):
     )
 
     materialized = SessionZeroInterviewService._technical_start_defaults(state.draft)
+    materialized.world.starting_location_name = "Портовые склады"
     service._materialize_start = AsyncMock(return_value=materialized)
     service._save_state = AsyncMock()
 
@@ -91,6 +95,7 @@ async def test_explicit_start_request_does_not_depend_on_finalize_tool(monkeypat
     service._router.resolve.return_value = selection
     service._agent.respond.return_value = SessionZeroInterviewModelDecision(
         assistant_message="Хорошо, подготовлю первую сцену.",
+        conversation_disposition="start_game",
         tool_calls=[],
         question_topics=[],
     )
@@ -101,6 +106,7 @@ async def test_explicit_start_request_does_not_depend_on_finalize_tool(monkeypat
         pending_user_message="Давай играть",
     )
     materialized = SessionZeroInterviewService._technical_start_defaults(state.draft)
+    materialized.world.starting_location_name = "Портовые склады"
     service._materialize_start = AsyncMock(return_value=materialized)
     service._save_state = AsyncMock()
 

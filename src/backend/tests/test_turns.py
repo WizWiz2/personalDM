@@ -95,7 +95,10 @@ def test_rejected_authority_preserves_cause_and_publishes_no_empty_turn(client: 
             json={"role": "user", "content": "I address the attendant."},
         )
 
-    assert "NPC identity is ambiguous" in response.text
+    assert "NPC identity is ambiguous" not in response.text
+    debugger = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
+    assert any("NPC identity is ambiguous" in (run.get("error") or "")
+               for run in debugger["generation_runs"])
     assert build.await_count == 1
     assert not client.get(f"/api/campaigns/{campaign_id}/turns").json()
 

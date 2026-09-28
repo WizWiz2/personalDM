@@ -25,6 +25,15 @@ def _starter(*, role="Посетительница", name=None, description=None
     )
 
 
+def test_physical_cast_deduplicates_plain_and_uuid_decorated_references():
+    messages = [ChatMessage(role="system", content=(
+        "Physically present characters: Кай, Мартин Вэнс\n"
+        "Physically present characters: Кай [id=00000000-0000-4000-8000-000000000001], "
+        "Мартин Вэнс [id=00000000-0000-4000-8000-000000000002]"
+    ))]
+    assert present_character_names(messages) == {"Кай", "Мартин Вэнс"}
+
+
 def test_alternating_role_and_name_starter_specs_collapse_to_one_identity():
     specs = [
         _starter(description="Взволнованная свидетельница ждёт разговора."),

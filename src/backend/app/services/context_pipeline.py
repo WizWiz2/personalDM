@@ -111,7 +111,8 @@ class SceneStateContextProvider:
         ) or "none recorded"
         section = (
             "[STRUCTURED ACTION REFERENCES]\n"
-            f"Player-owned items: {owned}\n"
+            + (f"Controlled character: {campaign.player_character_id}\n" if campaign else "")
+            + f"Player-owned items: {owned}\n"
             f"Physically present characters: {present}\n"
             "Planner inventory contract:\n"
             "- Any explicit take/drop/place/give that changes durable item ownership or location "
