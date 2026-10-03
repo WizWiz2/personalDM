@@ -307,6 +307,7 @@ class PostTurnProcessor:
                 campaign_id=campaign_id,
                 user_turn_id=user_turn.id,
                 assistant_turn_id=assistant.id,
+                bind=self._session.bind,
             )
             if row.job_type == "thesis_curator":
                 if assistant.scene_id:
