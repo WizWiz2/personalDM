@@ -45,6 +45,8 @@ class LLMUsageRepository(BaseRepository):
             estimated_cost_usd=event.get("estimated_cost_usd"),
             pricing_basis=event.get("pricing_basis"),
         )
+        if event.get("created_at"):
+            row.created_at = event["created_at"]  # call time, not buffered-write time
         self._session.add(row)
         await self._session.flush()
 

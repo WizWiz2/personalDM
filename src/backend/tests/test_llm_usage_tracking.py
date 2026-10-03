@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+import time
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.repositories.llm_usage_repo import LLMUsageRepository
-from app.db.tables import Campaign, Turn
+from app.db.engine import Base
+from app.db.tables import Campaign, LLMUsageEvent, Turn
 from app.services.llm_pricing import estimate_openai_text_cost_usd
-from app.services.llm_usage_tracker import LLMUsageContext, _aggregate_usage
+from app.services.llm_usage_tracker import (
+    LLMUsageContext,
+    _aggregate_usage,
+    close_usage_context,
+    record_provider_telemetry,
+    set_usage_context,
+)
 
 
 def test_openai_api_equivalent_pricing_handles_cache_and_long_context():
@@ -150,3 +160,44 @@ async def test_usage_repository_summarizes_entire_turn(db_session):
     assert summary["estimated_cost_usd"] == pytest.approx(0.0072)
     assert summary["cost_complete"] is True
     assert {row["role"] for row in summary["by_role"]} == {"planner", "narrator"}
+
+
+@pytest.mark.asyncio
+async def test_usage_recording_never_waits_on_the_callers_open_transaction(tmp_path):
+    """A turn holds an uncommitted SQLite write while it calls the planner; recording usage from a
+    second session used to wait busy_timeout (5 s) and then drop the event."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'usage.db'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    campaign_id, user_turn_id = uuid4(), uuid4()
+    async with factory() as setup:
+        setup.add(Campaign(id=str(campaign_id), name="Lock test"))
+        setup.add(Turn(id=str(user_turn_id), campaign_id=str(campaign_id), role="user", content="Иду."))
+        await setup.commit()
+
+    token = set_usage_context(campaign_id=campaign_id, user_turn_id=user_turn_id, bind=engine)
+    async with factory() as caller:
+        caller.add(Turn(campaign_id=str(campaign_id), role="system", content="uncommitted"))
+        await caller.flush()  # the caller now owns SQLite's write lock
+        started = time.monotonic()
+        await record_provider_telemetry(
+            {
+                "model": "gpt-5.6-luna",
+                "transport": "chatgpt_responses",
+                "model_role": "planner",
+                "status": "completed",
+                "usage": {"input_tokens": 100, "output_tokens": 10},
+                "duration_ms": 22_000,
+            }
+        )
+        assert time.monotonic() - started < 1
+        await caller.commit()
+    await close_usage_context(token)
+
+    async with factory() as reader:
+        rows = (await reader.execute(select(LLMUsageEvent))).scalars().all()
+    await engine.dispose()
+    assert [(row.model_role, row.input_tokens, row.duration_ms) for row in rows] == [
+        ("planner", 100, 22_000)
+    ]

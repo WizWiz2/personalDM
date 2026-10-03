@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
@@ -23,6 +24,10 @@ class LLMUsageContext:
     generation_run_id: UUID | None = None
     assistant_turn_id: UUID | None = None
     bind: Any | None = None
+    # Events are persisted when the context closes, outside the caller's transaction. Writing
+    # them mid-turn from a second SQLite session blocked for busy_timeout behind the caller's own
+    # uncommitted flush (e.g. the director selection during planning) and then lost the event.
+    pending: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
 
 
 _current_usage_context: ContextVar[LLMUsageContext | None] = ContextVar(
@@ -50,8 +55,24 @@ def set_usage_context(
     )
 
 
-def reset_usage_context(token: Token) -> None:
+async def close_usage_context(token: Token) -> None:
+    context = _current_usage_context.get()
     _current_usage_context.reset(token)
+    if context is None or context.bind is None or not context.pending:
+        return
+    factory = async_sessionmaker(
+        bind=context.bind,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    try:
+        async with factory() as session:
+            repository = LLMUsageRepository(session)
+            for event in context.pending:
+                await repository.record(context, event)
+            await session.commit()
+    except Exception as exc:  # telemetry must never break gameplay
+        logger.warning("LLM usage telemetry write failed: %s", exc, exc_info=True)
 
 
 def current_usage_context() -> LLMUsageContext | None:
@@ -160,7 +181,7 @@ def _provider_kind(telemetry: dict[str, Any]) -> str:
 
 async def record_provider_telemetry(telemetry: dict[str, Any] | None) -> None:
     context = current_usage_context()
-    if context is None or not telemetry:
+    if context is None or context.bind is None or not telemetry:
         return
 
     usage, request_count = _aggregate_usage(telemetry)
@@ -216,18 +237,6 @@ async def record_provider_telemetry(telemetry: dict[str, Any] | None) -> None:
         ),
         "estimated_cost_usd": estimated_cost_usd,
         "pricing_basis": pricing_basis,
+        "created_at": datetime.utcnow(),
     }
-
-    if context.bind is None:
-        return
-    factory = async_sessionmaker(
-        bind=context.bind,
-        expire_on_commit=False,
-        autoflush=False,
-    )
-    try:
-        async with factory() as session:
-            await LLMUsageRepository(session).record(context, event)
-            await session.commit()
-    except Exception as exc:  # telemetry must never break gameplay
-        logger.debug("LLM usage telemetry write failed: %s", exc, exc_info=True)
+    context.pending.append(event)
