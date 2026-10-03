@@ -134,6 +134,19 @@ TurnResolution = Literal[
 DramaticMode = Literal["calm", "routine", "tense", "dangerous"]
 
 
+class DestinationProfilePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_index: int = Field(ge=0, le=7)
+    name: str = Field(min_length=2, max_length=120, description="The place's own nominative name.")
+    within_current: bool = Field(description="True if it lies inside the place the hop starts from.")
+    # The place's typed resident slot (its ID is the location ID); role of who keeps it, or null.
+    resident_role: str | None = Field(
+        default=None, max_length=60, description="Role of the person who keeps this public place, or null."
+    )
+    profile: str = Field(min_length=80, max_length=1000)
+
+
 class ActionOutcomeDecision(BaseModel):
     """External/current-world result for one frozen action index."""
 
@@ -144,11 +157,8 @@ class ActionOutcomeDecision(BaseModel):
     safe_mundane: bool = False
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
-    destination_profile: str | None = Field(default=None, max_length=1200)
-    # A new place's own name and containment come from its generated profile, never player text.
-    destination_name: str | None = Field(default=None, max_length=120)
-    destination_within_current: bool = False
-    destination_resident_role: str | None = Field(default=None, max_length=60)
+    # A new place's name, containment and resident slot come from its generated profile.
+    destination: DestinationProfilePatch | None = None
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
@@ -179,6 +189,7 @@ class OutcomeNpcIntroduction(BaseModel):
     personal_name_evidence: str | None = Field(default=None, max_length=500)
     reason: str = Field(min_length=2, max_length=500)
     after_action_index: int | None = Field(default=None, ge=0, le=7)
+    resident_slot: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def stable_name_requires_evidence(self):
@@ -214,18 +225,6 @@ class TurnOutcomeDecision(BaseModel):
         if not self.allow_new_complication:
             self.complication_source = None
         return self
-
-
-class DestinationProfilePatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    action_index: int = Field(ge=0, le=7)
-    name: str = Field(min_length=2, max_length=120, description="The place's own nominative name.")
-    within_current: bool = Field(description="True if it lies inside the place the hop starts from.")
-    resident_role: str | None = Field(
-        default=None, max_length=60, description="Role of the person who keeps this public place, or null."
-    )
-    profile: str = Field(min_length=80, max_length=1000)
 
 
 class DestinationProfilePatchSet(BaseModel):

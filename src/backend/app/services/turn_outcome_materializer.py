@@ -121,6 +121,7 @@ class TurnOutcomeMaterializer:
                         "introduction_reason": introduction.reason,
                         "role": introduction.role,
                         "temporary_name": introduction.temporary_name,
+                        **({"slot_id": introduction.resident_slot} if introduction.resident_slot else {}),
                     },
                 ),
             )

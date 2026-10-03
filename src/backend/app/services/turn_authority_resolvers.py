@@ -257,10 +257,16 @@ class NpcIntroductionResolver:
             for value in (entity.canonical_name, *entity.aliases)
         }
         existing_arrivals: list[ExistingNpcArrival] = []
+        holders = {
+            (entity.custom_fields or {}).get("slot_id"): entity for entity in all_characters
+        }
         for introduction, reference in zip(introductions, references):
-            # Role normalization must not erase an existing identity reference. Temporary
-            # designations remain local; stable names/aliases remain global.
-            matches = [
+            holder = holders.get(introduction.resident_slot) if introduction.resident_slot else None
+            if holder is not None and character_locations.get(UUID(str(holder.id))) != target_location_id:
+                continue  # The slot's keeper is elsewhere: nobody new takes the slot (ban 1).
+            # A resident slot has one keeper; otherwise role normalization must not erase an
+            # existing identity reference: temporary designations local, stable names global.
+            matches = [holder] if holder is not None else [
                 entity for entity in exact_identity_matches(all_characters, reference)
                 if not (entity.custom_fields or {}).get("temporary_name")
                 or (
@@ -268,7 +274,7 @@ class NpcIntroductionResolver:
                     and character_locations.get(entity.id) == target_location_id
                 )
             ]
-            if not matches:
+            if not matches and holder is None:
                 matches = resolve_character_candidates(
                     all_characters,
                     proposed_name=introduction.canonical_name,

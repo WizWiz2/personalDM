@@ -73,28 +73,29 @@ async def test_changed_role_cannot_clone_referenced_existing_npc(db_session, tem
 
 
 @pytest.mark.asyncio
-async def test_same_role_in_same_establishment_reuses_the_cast_member(db_session):
+async def test_resident_slot_keeper_is_reused_whatever_the_role_wording(db_session):
     campaign_id = uuid4()
-    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Inn cook"))
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Inn keeper"))
     locations = LocationRepository(db_session)
     inn = await locations.create(campaign_id, LocationCreate(canonical_name="Трактир"))
     kitchen = await locations.create(
         campaign_id, LocationCreate(canonical_name="Кухня", parent_location_id=inn.id)
     )
     entities = EntityRepository(db_session)
-    cook = await entities.create_character(campaign_id, CharacterCreate(
-        canonical_name="Кухарка трактира", current_location_id=inn.id,
-        custom_fields={"temporary_name": True, "role": "Кухарка трактира"},
+    keeper = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Трактирщик", current_location_id=inn.id,
+        custom_fields={"temporary_name": True, "role": "трактирщик", "slot_id": str(inn.id)},
     ))
     introduction = PlannedNpcIntroduction.model_validate({
-        **_npc(), "canonical_name": "Кухарка трактира", "role": "кухарка трактира",
+        **_npc(), "canonical_name": "Хозяин трактира", "role": "хозяин трактира",
+        "resident_slot": str(inn.id),
     })
     result = await NpcIntroductionResolver(db_session).resolve(
         campaign_id=campaign_id, introductions=[introduction], present_names=[],
         target_location_id=kitchen.id,
     )
     assert result.new_introductions == []
-    assert [item.entity_id for item in result.existing_arrivals] == [cook.id]
+    assert [item.entity_id for item in result.existing_arrivals] == [keeper.id]
     assert len(await entities.list_by_campaign(campaign_id, "character")) == 1
 
 

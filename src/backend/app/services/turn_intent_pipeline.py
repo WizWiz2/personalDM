@@ -86,9 +86,7 @@ class TurnIntentPlanningPipeline:
             persist_rhythm=False,
         )
 
-        resident_role = (
-            await self._compiler.unfilled_resident_role(campaign_id) if seek_contact else None
-        )
+        resident_slots = await self._compiler.resident_slots(campaign_id)
         decision = await self._compiler.resolve_known_travel(campaign_id, contract)
         outcome_owner = "route_graph" if decision is not None else "external_resolver"
         if decision is None:
@@ -98,7 +96,7 @@ class TurnIntentPlanningPipeline:
                 user_input,
                 contract,
                 force_introduce_contact=director.forced_introduce_contact,
-                resident_role=resident_role,
+                resident_slots=resident_slots,
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
             # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so

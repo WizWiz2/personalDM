@@ -24,6 +24,8 @@ class PlannedNpcIntroduction(BaseModel):
     personal_name_evidence: str | None = Field(default=None, max_length=500)
     reason: str = Field(min_length=2, max_length=500)
     after_action_index: int | None = Field(default=None, ge=0, le=7)
+    # Typed resident slot (a location ID) this person keeps; one holder per slot.
+    resident_slot: str | None = Field(default=None, max_length=64)
 
 
 class ExistingNpcArrival(BaseModel):

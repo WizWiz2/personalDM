@@ -7,6 +7,7 @@ import pytest
 
 from app.models.player_intent import (
     ActionOutcomeDecision,
+    DestinationProfilePatch,
     PlayerActionIntent,
     PlayerIntentContract,
     TurnOutcomeDecision,
@@ -236,8 +237,10 @@ async def test_unknown_explicit_destination_becomes_one_route_discovery_step() -
                 resolution="auto_success",
                 safe_mundane=True,
                 observable_outcome="Кай добирается до прачечной.",
-                destination_profile=profile,
-                destination_name="Круглосуточная прачечная",
+                destination=DestinationProfilePatch(
+                    action_index=0, name="Круглосуточная прачечная", within_current=False,
+                    profile=profile,
+                ),
             ),
             _success(1),
         ],

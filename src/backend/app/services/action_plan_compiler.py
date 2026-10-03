@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
-from app.db.tables import Campaign, Character, Entity
+from app.db.tables import Campaign, Entity
 from app.models.player_intent import (
     ActionOutcomeDecision,
     PlayerActionIntent,
@@ -16,7 +16,6 @@ from app.models.player_intent import (
     TurnOutcomeDecision,
 )
 from app.models.turn_authority import PlannedNpcIntroduction
-from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_planner import (
@@ -180,20 +179,23 @@ class ActionPlanCompiler:
             ))
         return TurnOutcomeDecision(action_outcomes=outcomes, resolution="sequence")
 
-    async def unfilled_resident_role(self, campaign_id: UUID) -> str | None:
-        """The current place's typed resident role when no character located here holds it."""
+    async def resident_slots(self, campaign_id: UUID) -> list[tuple[str, str, bool]]:
+        """Typed resident slots here and in the places containing here: (location ID, role, filled)."""
         _scene_id, state, locations = await self._world(campaign_id)
-        here = next((item for item in locations if item.id == state.location_id), None)
-        role = (here.custom_fields or {}).get("resident_role") if here else None
-        if not role:
-            return None
-        rows = (await self._session.execute(
-            select(Entity.custom_fields)
-            .join(Character, Character.entity_id == Entity.id)
-            .where(Character.current_location_id == str(here.id))
-        )).scalars().all()
-        held = {identity_key(json.loads(row or "{}").get("role") or "") for row in rows}
-        return None if identity_key(role) in held else role
+        by_id = {item.id: item for item in locations}
+        holders = {
+            json.loads(row or "{}").get("slot_id")
+            for row in (await self._session.execute(
+                select(Entity.custom_fields).where(Entity.entity_type == "character")
+            )).scalars()
+        }
+        slots, place = [], by_id.get(state.location_id)
+        while place is not None:
+            role = (place.custom_fields or {}).get("resident_role")
+            if role:
+                slots.append((str(place.id), role, str(place.id) in holders))
+            place = by_id.get(place.parent_location_id)
+        return slots
 
     async def missing_destination_profiles(
         self,
@@ -214,7 +216,7 @@ class ActionPlanCompiler:
             if (
                 outcome.resolution == "auto_success"
                 and action.destination_location_id is None
-                and not outcome.destination_name
+                and not outcome.destination
             ):
                 missing.append(MissingDestinationProfile(index, action.destination_location, origin))
             origin = names.get(action.destination_location_id, action.destination_location)
@@ -297,24 +299,25 @@ class ActionPlanCompiler:
 
         # A new place: frozen intent selected it, the resolver let it auto-succeed, and its name and
         # containment come from the generated profile, never from the player's inflected wording.
-        profile = " ".join(str(outcome.destination_profile or "").split())
-        if len(profile) < 80 or not outcome.destination_name:
+        destination = outcome.destination
+        if destination is None:
             raise TurnPlanningError("new destination lacks a generated name and durable profile")
+        name = " ".join(destination.name.split())
         origin, origin_parent = pending or (
             current.canonical_name,
             getattr(by_id.get(current.parent_location_id), "canonical_name", None),
         )
-        parent = origin if outcome.destination_within_current else origin_parent
+        parent = origin if destination.within_current else origin_parent
         transition = SceneTransitionPlan(
             required=True,
             transition_type="location_transition",
-            destination_location=outcome.destination_name,
+            destination_location=name,
             destination_parent_location=parent,
-            destination_resident_role=outcome.destination_resident_role,
+            destination_resident_role=" ".join((destination.resident_role or "").split()) or None,
             reason=action.intent,
             bridge_summary=(
                 "DESTINATION PROFILE: "
-                + profile
+                + " ".join(destination.profile.split())
                 + "\nTRANSITION: "
                 + (outcome.observable_outcome or action.intent)
             ),
@@ -328,7 +331,7 @@ class ActionPlanCompiler:
                 observable_outcome=outcome.observable_outcome,
                 transition=transition,
             ),
-            (location_id, (outcome.destination_name, parent)),
+            (location_id, (name, parent)),
             True,
         )
 
@@ -422,6 +425,7 @@ class ActionPlanCompiler:
                 personal_name_evidence=item.personal_name_evidence,
                 reason=item.reason,
                 after_action_index=item.after_action_index,
+                resident_slot=item.resident_slot,
             )
             for item in decision.npc_introductions
         ]

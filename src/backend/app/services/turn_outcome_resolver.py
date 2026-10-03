@@ -231,6 +231,7 @@ class OutcomeNpcIntroductionDraft(BaseModel):
     personal_name_evidence: str | None = None
     reason: str = Field(min_length=2, max_length=500)
     after_action_index: int | None = Field(default=None, ge=0, le=7)
+    resident_slot: str | None = Field(default=None, description="ID of the place this person keeps.")
 
     @model_validator(mode="after")
     def validate_identity(self):
@@ -312,7 +313,8 @@ def _outcome_wire_model(
     movement_indices: set[int] | None = None,
     allow_name_revelation: bool = True,
     bound_response_speaker: str | None = None,
-    resident_role: str | None = None,
+    resident_slots: list[str] | None = None,
+    required_slot: str | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -328,14 +330,17 @@ def _outcome_wire_model(
     revealed_name_type = str | None if allow_name_revelation else type(None)
     speaker_type = Literal[bound_response_speaker] | None if bound_response_speaker else str | None
 
+    slot_type = Literal[tuple(resident_slots)] | None if resident_slots else type(None)
+
     class IndexedNpcIntroductionDraft(OutcomeNpcIntroductionDraft):
         after_action_index: prerequisite_type = None
+        resident_slot: slot_type = None
 
-    if resident_role:
-        # The place's typed resident role is unfilled: its holder is introduced now.
+    if required_slot:
+        # An unfilled resident slot of this place: its keeper is introduced now.
         IndexedNpcIntroductionDraft = create_model(
             "ResidentNpcIntroductionDraft", __base__=IndexedNpcIntroductionDraft,
-            role=(Literal[resident_role], ...),
+            resident_slot=(Literal[required_slot], ...),
         )
 
     class IndexedActionOutcomeDraft(ActionOutcomeDraft):
@@ -400,8 +405,8 @@ def _outcome_wire_model(
             max_length=action_count,
         )
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
-            min_length=1 if resident_role and allow_introductions else 0,
-            max_length=(1 if resident_role else 4) if allow_introductions else 0,
+            min_length=1 if required_slot and allow_introductions else 0,
+            max_length=(1 if required_slot else 4) if allow_introductions else 0,
         )
 
         @model_validator(mode="before")
@@ -622,6 +627,7 @@ def normalize_outcome_draft(
                 "personal_name_evidence": evidence if not temporary_name else None,
                 "reason": reason,
                 "after_action_index": npc.after_action_index,
+                "resident_slot": npc.resident_slot,
             }
         )
 
@@ -779,7 +785,7 @@ class TurnOutcomeResolver:
         contract: PlayerIntentContract,
         *,
         force_introduce_contact: bool = False,
-        resident_role: str | None = None,
+        resident_slots: list[tuple[str, str, bool]] | None = None,
     ) -> TurnOutcomeDecision:
         try:
             solo_cast = solo_physical_presence(context_messages)
@@ -804,6 +810,11 @@ class TurnOutcomeResolver:
                 identity_key(name) == identity_key(contract.addressed_character_name)
                 for name in present_character_names(context_messages)
             )
+            slots = resident_slots or []
+            required_slot = next(
+                (slot_id for slot_id, _role, filled in slots if not filled),
+                None,
+            ) if seeks_contact_or_presence(contract) and not existing_addressee else None
             response_model = _outcome_wire_model(
                 len(contract.actions),
                 allow_choice=bool(contract.pending_player_choice),
@@ -826,7 +837,8 @@ class TurnOutcomeResolver:
                     contract.addressed_character_name if existing_addressee else None
                 ),
                 present_names=present_character_names(context_messages),
-                resident_role=resident_role,
+                resident_slots=[slot_id for slot_id, _role, _filled in slots],
+                required_slot=required_slot,
                 movement_indices={
                     index
                     for index, action in enumerate(contract.actions)
@@ -838,12 +850,13 @@ class TurnOutcomeResolver:
                 "addressed_designation": contract.addressed_character_name,
                 "solo_physical_cast": solo_cast,
                 "seeks_contact_or_presence": seeks_contact_or_presence(contract),
+                "resident_slots": {slot_id: role for slot_id, role, _filled in slots},
             }
             empty_cast_guidance = ""
-            if resident_role and not existing_addressee:
+            if required_slot:
                 empty_cast_guidance = (
-                    f"\n[UNFILLED RESIDENT ROLE] This place's {resident_role} is here now: introduce "
-                    "them in npc_introductions."
+                    f"\n[UNFILLED RESIDENT SLOT] The keeper of slot {required_slot} is here now: "
+                    "introduce them in npc_introductions."
                 )
             elif (solo_cast and seeks_contact_or_presence(contract)) or force_introduce_contact:
                 # Optional guidance only: a search that finds nobody is a valid outcome.
@@ -967,10 +980,7 @@ class TurnOutcomeResolver:
         enriched = decision.model_copy(deep=True)
         outcomes = {item.action_index: item for item in enriched.action_outcomes}
         for index, patch in by_index.items():
-            outcomes[index].destination_profile = patch.profile.strip()
-            outcomes[index].destination_name = " ".join(patch.name.split())
-            outcomes[index].destination_within_current = patch.within_current
-            outcomes[index].destination_resident_role = _compact(patch.resident_role) or None
+            outcomes[index].destination = patch
         self.audit.append({
             "phase": "destination_profiles", "requests": requests,
             "patches": {index: patch.model_dump() for index, patch in by_index.items()},
