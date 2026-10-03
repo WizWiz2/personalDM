@@ -20,13 +20,15 @@ class ProviderConfigRepository(BaseRepository):
             if data.api_key is not None:  # only update if provided
                 db_config.api_key_encrypted = encrypted_key
             db_config.context_window = data.context_window
+            db_config.provider_kind = data.provider_kind
         else:
             db_config = ProviderConfig(
                 campaign_id=str(campaign_id),
                 base_url=data.base_url,
                 model_name=data.model_name,
                 api_key_encrypted=encrypted_key,
-                context_window=data.context_window
+                context_window=data.context_window,
+                provider_kind=data.provider_kind,
             )
             self._session.add(db_config)
             
@@ -60,5 +62,6 @@ class ProviderConfigRepository(BaseRepository):
             model_name=db_config.model_name,
             has_api_key=has_key,
             context_window=db_config.context_window,
+            provider_kind=db_config.provider_kind or "openai_compatible",
             created_at=db_config.created_at
         )
