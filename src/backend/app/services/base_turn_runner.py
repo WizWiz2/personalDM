@@ -244,6 +244,7 @@ class TurnRunner:
             campaign_id=campaign_id,
             user_turn_id=user_turn.id,
             generation_run_id=generation_run.id,
+            bind=self._session.bind,
         )
 
         from app.services.context_compiler import ContextCompiler
