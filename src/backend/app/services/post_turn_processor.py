@@ -22,6 +22,7 @@ from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
 from app.services.memory_scribe import MemoryScribe
 from app.services.memory_taxonomy import MemoryTaxonomyService
+from app.services.llm_usage_tracker import reset_usage_context, set_usage_context
 from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.thesis_curator import ThesisCurator
 from app.services.truth_engine_shadow import SemanticResidualShadowService
@@ -258,6 +259,8 @@ class PostTurnProcessor:
     ) -> None:
         from app.db.tables import PostTurnJob
 
+        usage_context_token = None
+
         row = await self._session.get(PostTurnJob, str(job_id))
         if not row:
             raise ValueError(f"Post-turn job {job_id} not found")
@@ -300,6 +303,11 @@ class PostTurnProcessor:
                 return
 
             campaign_id = UUID(row.campaign_id)
+            usage_context_token = set_usage_context(
+                campaign_id=campaign_id,
+                user_turn_id=user_turn.id,
+                assistant_turn_id=assistant.id,
+            )
             if row.job_type == "thesis_curator":
                 if assistant.scene_id:
                     scene_turn = await self._turns.assistant_turn_number_in_scene(assistant.id)
@@ -571,6 +579,9 @@ class PostTurnProcessor:
                 row.locked_at = None
                 await self._session.commit()
             raise
+        finally:
+            if usage_context_token is not None:
+                reset_usage_context(usage_context_token)
 
 
 class PostTurnWorker:
