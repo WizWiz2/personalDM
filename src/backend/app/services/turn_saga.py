@@ -17,6 +17,7 @@ from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProviderError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.initial_world_state import InitialWorldStateService
+from app.services.llm_usage_tracker import reset_usage_context, set_usage_context
 from app.services.post_turn_dispatcher import PostTurnDispatcher
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -346,6 +347,11 @@ class TurnSaga:
         generation_run = await self._generation_runs.start_or_resume(campaign_id, user_turn.id)
         await self._generation_lifecycle.start_attempt(generation_run.id)
         await self._session.commit()
+        usage_context_token = set_usage_context(
+            campaign_id=campaign_id,
+            user_turn_id=user_turn.id,
+            generation_run_id=generation_run.id,
+        )
 
         source_scene_id = user_turn.scene_id
         effective_scene_id = source_scene_id
@@ -763,6 +769,7 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
+            reset_usage_context(usage_context_token)
             if campaign_key in active_tasks and active_tasks[campaign_key] == current_task:
                 del active_tasks[campaign_key]
 
