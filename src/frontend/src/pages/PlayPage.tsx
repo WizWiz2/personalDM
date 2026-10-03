@@ -10,6 +10,7 @@ import { GenerationFailurePanel } from '../components/GenerationFailurePanel'
 import { Icons } from '../components/Icons'
 import { PixelScene } from '../components/PixelArt'
 import { ErrorState, LoadingState } from '../components/States'
+import { TextProviderQuickSwitch } from '../components/TextProviderQuickSwitch'
 
 type Mode = 'play' | 'dm'
 
@@ -384,6 +385,7 @@ export function PlayPage() {
           <div><h1>{campaign.name}</h1><p>{topbarSubtitle}{master ? ` · ${master.display_name}` : ''}</p></div>
         </div>
         <div className="topbar-actions">
+          <TextProviderQuickSwitch campaignId={campaign.id} disabled={busy} onError={setError} />
           <button className="btn primary context-toggle" type="button" aria-expanded={drawer} aria-controls="play-scene-context" onClick={() => setDrawer(true)}>Сейчас</button>
           <button className="btn primary scene-generate" type="button" disabled={!scene || sceneGenerating || busy} onClick={() => void generateScene()} title={busy ? 'Дождись окончания хода: текстовая и графическая модели делят видеопамять' : sceneGenerating ? 'Рисуем в фоне. Можно отправлять ход — графика подождёт и продолжит после ответа мастера.' : 'Собрать пиксель-арт сцену по последним ходам и портретам присутствующих персонажей'} aria-label={sceneGenerating ? 'Рисуем сцену' : 'Сгенерировать сцену'}><Icons.spark /><span>{sceneGenerating ? 'Рисуем…' : 'Сгенерировать сцену'}</span></button>
         </div>
