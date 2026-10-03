@@ -351,6 +351,7 @@ class TurnSaga:
             campaign_id=campaign_id,
             user_turn_id=user_turn.id,
             generation_run_id=generation_run.id,
+            bind=self._session.bind,
         )
 
         source_scene_id = user_turn.scene_id
