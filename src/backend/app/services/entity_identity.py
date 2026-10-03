@@ -78,13 +78,18 @@ def exact_identity_matches(entities: Iterable, value: object) -> list:
     return matches
 
 
+def _role_key(entity) -> str:
+    custom_fields = getattr(entity, "custom_fields", None) or {}
+    if not isinstance(custom_fields, dict):
+        return ""
+    return identity_key(custom_fields.get("role") or custom_fields.get("bootstrap_role"))
+
+
 def _temporary_role_key(entity) -> str:
     """Return the stored role key for any explicitly temporary character identity."""
     custom_fields = getattr(entity, "custom_fields", None) or {}
-    if not isinstance(custom_fields, dict) or not custom_fields.get("temporary_name"):
-        return ""
-    role = custom_fields.get("role") or custom_fields.get("bootstrap_role")
-    return identity_key(role)
+    temporary = isinstance(custom_fields, dict) and custom_fields.get("temporary_name")
+    return _role_key(entity) if temporary else ""
 
 
 def resolve_character_candidates(
@@ -100,9 +105,8 @@ def resolve_character_candidates(
 
     Resolution order:
     1. Script-normalized canonical name / alias equality is authoritative.
-    2. A named proposal may reconcile with a *unique same-location temporary identity* whose
-       stored role exactly equals the proposed role. This covers both structured Session Zero
-       placeholders and temporary identities extracted during normal play. Ambiguity fails closed.
+    2. (location_id, role) is one person: a temporary designation reconciles with the cast member
+       holding that role there; a named proposal only with a temporary holder. Ambiguity fails closed.
     Role synonyms are resolved upstream by the semantic identity owner, never by a role lexicon.
     """
 
@@ -129,7 +133,9 @@ def resolve_character_candidates(
                 entity_id = UUID(str(entity.id))
                 if character_locations.get(entity_id) != target_location_id:
                     continue
-                if _temporary_role_key(entity) == requested_role:
+                # A role designation is whoever holds that role here; a new personal name can
+                # only be a temporary holder's reveal, never another named person.
+                if (_role_key if temporary_name else _temporary_role_key)(entity) == requested_role:
                     temporary_matches.append(entity)
             if temporary_matches:
                 return temporary_matches

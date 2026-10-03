@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.location_repo import LocationRepository
 from app.db.tables import Character, Turn
 from app.models.turn_authority import ExistingNpcArrival
 from app.services.entity_identity import exact_identity_matches, identity_key, resolve_character_candidates
@@ -231,11 +232,22 @@ class NpcIntroductionResolver:
                 )
             ).scalars().all()
         character_states = {UUID(row.entity_id): row for row in rows}
+        # The target place with its parent and child places is one establishment for identity
+        # (the inn's cook is the kitchen's cook). Typed location IDs only.
+        same_place = {target_location_id} if target_location_id else set()
+        if target_location_id:
+            for location in await LocationRepository(self._session).list_by_campaign(campaign_id):
+                if location.id == target_location_id and location.parent_location_id:
+                    same_place.add(location.parent_location_id)
+                if location.parent_location_id == target_location_id:
+                    same_place.add(location.id)
         character_locations: dict[UUID, UUID | None] = {
             entity_id: (
-                UUID(row.current_location_id) if row.current_location_id else None
+                target_location_id if location in same_place
+                else location
             )
             for entity_id, row in character_states.items()
+            for location in [UUID(row.current_location_id) if row.current_location_id else None]
         }
 
         new_introductions = []
@@ -323,12 +335,7 @@ class NpcIntroductionResolver:
             if existing_key in present_keys:
                 continue
 
-            character = character_states.get(existing_id)
-            current_location_id = (
-                UUID(character.current_location_id)
-                if character and character.current_location_id
-                else None
-            )
+            current_location_id = character_locations.get(existing_id)
             if target_location_id and current_location_id == target_location_id:
                 existing_arrivals.append(
                     ExistingNpcArrival(

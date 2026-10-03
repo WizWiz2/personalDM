@@ -77,12 +77,12 @@ class TurnOutcomeMaterializer:
         for arrival in authority.allowed_existing_npc_arrivals:
             if arrival.entity_id in existing_participants:
                 continue
-            # Authority already checked current_location_id == target location. Keep movement
-            # disabled here so materialization can never turn an identity repair into teleportation.
+            # Authority already checked the character is at the target place or a parent/child place
+            # of it; stepping within one establishment is not a trip.
             await self._scenes.add_participant(
                 authority.target_scene_id,
                 arrival.entity_id,
-                allow_movement=False,
+                allow_movement=True,
             )
             arrived_existing.append((authority.target_scene_id, arrival.entity_id))
             existing_participants.add(arrival.entity_id)

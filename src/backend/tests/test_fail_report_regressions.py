@@ -73,6 +73,32 @@ async def test_changed_role_cannot_clone_referenced_existing_npc(db_session, tem
 
 
 @pytest.mark.asyncio
+async def test_same_role_in_same_establishment_reuses_the_cast_member(db_session):
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Inn cook"))
+    locations = LocationRepository(db_session)
+    inn = await locations.create(campaign_id, LocationCreate(canonical_name="Трактир"))
+    kitchen = await locations.create(
+        campaign_id, LocationCreate(canonical_name="Кухня", parent_location_id=inn.id)
+    )
+    entities = EntityRepository(db_session)
+    cook = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Кухарка трактира", current_location_id=inn.id,
+        custom_fields={"temporary_name": True, "role": "Кухарка трактира"},
+    ))
+    introduction = PlannedNpcIntroduction.model_validate({
+        **_npc(), "canonical_name": "Кухарка трактира", "role": "кухарка трактира",
+    })
+    result = await NpcIntroductionResolver(db_session).resolve(
+        campaign_id=campaign_id, introductions=[introduction], present_names=[],
+        target_location_id=kitchen.id,
+    )
+    assert result.new_introductions == []
+    assert [item.entity_id for item in result.existing_arrivals] == [cook.id]
+    assert len(await entities.list_by_campaign(campaign_id, "character")) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "case", ["travel_index", "profile", "long_role", "long_name", "identity"]
 )
