@@ -14,6 +14,7 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
 from app.services.chatgpt_auth_service import ChatGPTAuthService
+from app.services.llm_usage_tracker import record_provider_telemetry
 
 
 class ModelRole(str, Enum):
@@ -292,27 +293,46 @@ class RoleModelRouter:
                 messages,
                 **kwargs,
             )
+        except LLMProviderError as primary_error:
             telemetry = dict(provider.last_telemetry or {})
             telemetry.update(
                 {
                     "model_role": selection.role.value,
                     "role_model_source": selection.source,
                     "role_router_fallback": False,
+                    "role_model_error": str(primary_error)[:1200],
                 }
             )
             provider.last_telemetry = telemetry
-            return result
-        except LLMProviderError as primary_error:
+            await record_provider_telemetry(telemetry)
             if not selection.has_distinct_fallback:
                 raise
-            result = await self._generate_json_once(
-                provider,
-                selection,
-                selection.fallback_config,
-                selection.fallback_api_key,
-                messages,
-                **kwargs,
-            )
+
+            try:
+                result = await self._generate_json_once(
+                    provider,
+                    selection,
+                    selection.fallback_config,
+                    selection.fallback_api_key,
+                    messages,
+                    **kwargs,
+                )
+            except LLMProviderError as fallback_error:
+                telemetry = dict(provider.last_telemetry or {})
+                telemetry.update(
+                    {
+                        "model_role": selection.role.value,
+                        "role_model_source": selection.source,
+                        "role_router_fallback": True,
+                        "requested_role_model": selection.config.model_name,
+                        "role_model_error": str(primary_error)[:1200],
+                        "fallback_model_error": str(fallback_error)[:1200],
+                    }
+                )
+                provider.last_telemetry = telemetry
+                await record_provider_telemetry(telemetry)
+                raise
+
             telemetry = dict(provider.last_telemetry or {})
             telemetry.update(
                 {
@@ -324,4 +344,17 @@ class RoleModelRouter:
                 }
             )
             provider.last_telemetry = telemetry
+            await record_provider_telemetry(telemetry)
             return result
+
+        telemetry = dict(provider.last_telemetry or {})
+        telemetry.update(
+            {
+                "model_role": selection.role.value,
+                "role_model_source": selection.source,
+                "role_router_fallback": False,
+            }
+        )
+        provider.last_telemetry = telemetry
+        await record_provider_telemetry(telemetry)
+        return result

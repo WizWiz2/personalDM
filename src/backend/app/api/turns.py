@@ -14,6 +14,8 @@ from app.application import (
     TurnRegenerationError,
 )
 from app.db.engine import get_session
+from app.db.repositories.job_repo import GenerationRunRepository, PostTurnJobRepository
+from app.db.repositories.llm_usage_repo import LLMUsageRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.models.jobs import GenerationRunRead
 from app.models.turn import TurnCreate, TurnRead
@@ -110,6 +112,52 @@ async def get_latest_generation(
     session: AsyncSession = Depends(get_session),
 ):
     return await DetachedTurnDispatcher.latest_generation(campaign_id, session)
+
+
+@router.get("/usage/{user_turn_id}")
+async def get_turn_usage(
+    campaign_id: UUID,
+    user_turn_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    turn = await TurnRepository(session).get_by_id(user_turn_id)
+    if turn is None or str(turn.campaign_id) != str(campaign_id):
+        raise HTTPException(status_code=404, detail="Turn not found")
+
+    summary = await LLMUsageRepository(session).summary_for_turn(
+        campaign_id,
+        user_turn_id,
+    )
+    generation = await GenerationRunRepository(session).get_by_user_turn(user_turn_id)
+
+    job_statuses: list[str] = []
+    if generation and generation.assistant_turn_id:
+        jobs = await PostTurnJobRepository(session).list_for_turn(
+            generation.assistant_turn_id
+        )
+        job_statuses = [job.status for job in jobs]
+
+    post_turn_status = (
+        "processing"
+        if any(status in {"pending", "running"} for status in job_statuses)
+        else "partial"
+        if any(status == "failed" for status in job_statuses)
+        else "completed"
+        if job_statuses
+        else "none"
+    )
+    generation_status = generation.status if generation else None
+    return {
+        **summary,
+        "campaign_id": campaign_id,
+        "user_turn_id": user_turn_id,
+        "generation_status": generation_status,
+        "post_turn_status": post_turn_status,
+        "complete": bool(
+            generation_status in {"completed", "failed", "cancelled"}
+            and post_turn_status != "processing"
+        ),
+    }
 
 
 @router.post("/stop")

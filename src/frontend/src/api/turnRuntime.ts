@@ -16,6 +16,29 @@ export interface GenerationRun {
   updated_at: string
 }
 
+export interface UsageBucket {
+  calls: number
+  input_tokens: number
+  cached_input_tokens: number
+  cache_write_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
+  estimated_cost_usd: number | null
+  cost_complete: boolean
+}
+
+export interface TurnUsageSummary extends UsageBucket {
+  campaign_id: UUID
+  user_turn_id: UUID
+  event_count: number
+  generation_status: string | null
+  post_turn_status: 'processing' | 'partial' | 'completed' | 'none'
+  complete: boolean
+  by_role: Array<UsageBucket & { role: string }>
+  by_model: Array<UsageBucket & { model: string }>
+}
+
 export interface AcceptedTurn {
   accepted: true
   channel: 'narrative' | 'meta'
@@ -59,4 +82,17 @@ export async function getLatestGeneration(
   )
   if (!response.ok) await parseError(response)
   return await response.json() as GenerationRun | null
+}
+
+
+export async function getTurnUsage(
+  campaignId: UUID,
+  userTurnId: UUID,
+): Promise<TurnUsageSummary> {
+  const response = await fetch(
+    `${API_BASE}/api/campaigns/${campaignId}/turns/usage/${userTurnId}`,
+    { headers: { 'Content-Type': 'application/json' } },
+  )
+  if (!response.ok) await parseError(response)
+  return await response.json() as TurnUsageSummary
 }
