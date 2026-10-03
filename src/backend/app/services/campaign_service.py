@@ -11,6 +11,7 @@ from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
 from app.models.provider_config import ProviderConfigCreate, ProviderConfigRead
 from app.providers.llm_provider import LLMProvider
+from app.services.chatgpt_auth_service import ChatGPTAuthService
 
 
 class CampaignService:
@@ -88,9 +89,14 @@ class CampaignService:
         config = await self._config_repo.get_by_campaign_id(campaign_id)
         if not config:
             return False
-        api_key = await self._config_repo.get_decrypted_key(campaign_id)
+        if config.provider_kind == "chatgpt":
+            import asyncio
+            api_key = await asyncio.to_thread(ChatGPTAuthService().get_access_token)
+        else:
+            api_key = await self._config_repo.get_decrypted_key(campaign_id)
         return await self._llm_provider.check_connection(
             base_url=config.base_url,
             model_name=config.model_name,
             api_key=api_key,
+            provider_kind=config.provider_kind,
         )
