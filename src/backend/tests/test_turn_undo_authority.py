@@ -235,3 +235,18 @@ async def test_undo_resolves_latest_pair_by_parent_when_rows_are_not_adjacent(
     assert statuses[latest_assistant.id] == "undone"
     assert statuses[first_user.id] == "active"
     assert statuses[delayed_old_assistant.id] == "active"
+
+
+@pytest.mark.asyncio
+async def test_undo_retires_a_place_the_undone_turn_catalogued(db_session: AsyncSession):
+    """Live B4 T7: the redo bound to the ghost «Стойка трактира» left by the undone turn."""
+    campaign_id, _player, _scene, _user, _assistant = await _base_turn(db_session)
+    locations = LocationRepository(db_session)
+    await locations.create(campaign_id, LocationCreate(canonical_name="Стойка"))
+    await db_session.commit()
+
+    assert await TurnUndoService(db_session).undo_last_pair(campaign_id) is True
+
+    statuses = {place.canonical_name: place.status
+                for place in await locations.list_by_campaign(campaign_id)}
+    assert statuses == {"Переулок": "active", "Стойка": "inactive"}

@@ -109,6 +109,12 @@ class TurnUndoService:
             assistant_turn.id,
         ):
             return False
+        # A place the undone turn catalogued must not stay a binding target for the redo.
+        for place in (await self._session.execute(select(Entity).where(
+            Entity.campaign_id == str(campaign_id), Entity.entity_type == "location",
+            Entity.created_at >= user_turn.created_at,
+        ))).scalars():
+            place.status = "inactive"
 
         # Prefer restoring the pre-commit rhythm snapshot from the undone turn when present.
         try:

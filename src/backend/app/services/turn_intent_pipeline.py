@@ -50,7 +50,10 @@ class TurnIntentPlanningPipeline:
         context_messages,
         selection,
     ) -> tuple[CoordinatedTurnPlan, dict]:
-        locations = await LocationRepository(self._session).list_by_campaign(campaign_id)
+        locations = [
+            place for place in await LocationRepository(self._session).list_by_campaign(campaign_id)
+            if place.status != "inactive"
+        ]
         names = {str(location.id): location.canonical_name for location in locations}
         openings = dict((await self._session.execute(
             select(SceneLocationLink.location_id, Turn.content)
