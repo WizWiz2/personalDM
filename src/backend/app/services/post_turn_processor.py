@@ -20,7 +20,7 @@ from app.services.actor_turn_authority_guard import extract_actor_segment_propos
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
-from app.services.llm_usage_tracker import reset_usage_context, set_usage_context
+from app.services.llm_usage_tracker import close_usage_context, set_usage_context
 from app.services.memory_scribe import MemoryScribe
 from app.services.memory_taxonomy import MemoryTaxonomyService
 from app.services.proposal_presence import ProposalPresenceResolver
@@ -582,7 +582,7 @@ class PostTurnProcessor:
             raise
         finally:
             if usage_context_token is not None:
-                reset_usage_context(usage_context_token)
+                await close_usage_context(usage_context_token)
 
 
 class PostTurnWorker:

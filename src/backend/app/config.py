@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "gemma4:e4b"  # Gemma 4 (4B effective parameters)
     LLM_API_KEY: str | None = None
     LLM_CONTEXT_WINDOW: int = 4096
+    # Responses API reasoning effort for the ChatGPT plan transport (every role). The model
+    # default is `medium`; `low` keeps sequential control calls fast. Valid values are the
+    # model's `supported_reasoning_levels` (plus `none`); empty sends no reasoning field.
+    LLM_REASONING_EFFORT: str | None = "low"
 
     # Visual generation can be local (ComfyUI), cloud (OpenAI-compatible images API)
     # or off. IMAGE_ENABLED is retained as a backward-compatible runtime gate.
