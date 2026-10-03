@@ -142,21 +142,31 @@ class LLMProvider:
         return None
 
     @staticmethod
-    def _extract_usage(data: dict) -> dict[str, int]:
+    def _extract_usage(data: dict) -> dict[str, Any]:
         usage = data.get("usage")
         if isinstance(usage, dict):
-            return {
-                key: int(value)
-                for key, value in usage.items()
-                if isinstance(value, (int, float))
-            }
-        result: dict[str, int] = {}
+            result: dict[str, Any] = {}
+            for key, value in usage.items():
+                if isinstance(value, (int, float)):
+                    result[key] = int(value)
+                elif isinstance(value, dict):
+                    details = {
+                        detail_key: int(detail_value)
+                        for detail_key, detail_value in value.items()
+                        if isinstance(detail_value, (int, float))
+                    }
+                    if details:
+                        result[key] = details
+            return result
+        result: dict[str, Any] = {}
         if isinstance(data.get("prompt_eval_count"), int):
             result["prompt_tokens"] = data["prompt_eval_count"]
         if isinstance(data.get("eval_count"), int):
             result["completion_tokens"] = data["eval_count"]
         if result:
-            result["total_tokens"] = sum(result.values())
+            result["total_tokens"] = sum(
+                value for value in result.values() if isinstance(value, int)
+            )
         return result
 
     @staticmethod
@@ -451,18 +461,26 @@ class LLMProvider:
         return result
 
     @staticmethod
-    def _responses_usage(data: dict[str, Any]) -> dict[str, int]:
+    def _responses_usage(data: dict[str, Any]) -> dict[str, Any]:
         response = data.get("response")
         if not isinstance(response, dict):
             return {}
         usage = response.get("usage")
         if not isinstance(usage, dict):
             return {}
-        return {
-            key: int(value)
-            for key, value in usage.items()
-            if isinstance(value, (int, float))
-        }
+        result: dict[str, Any] = {}
+        for key, value in usage.items():
+            if isinstance(value, (int, float)):
+                result[key] = int(value)
+            elif isinstance(value, dict):
+                details = {
+                    detail_key: int(detail_value)
+                    for detail_key, detail_value in value.items()
+                    if isinstance(detail_value, (int, float))
+                }
+                if details:
+                    result[key] = details
+        return result
 
     @staticmethod
     def _responses_error(data: dict[str, Any]) -> str | None:
