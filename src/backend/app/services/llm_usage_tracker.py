@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
-from app.db.engine import AsyncSessionLocal
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.db.repositories.llm_usage_repo import LLMUsageRepository
 from app.services.llm_pricing import estimate_openai_text_cost_usd
 
@@ -17,6 +17,7 @@ class LLMUsageContext:
     user_turn_id: UUID
     generation_run_id: UUID | None = None
     assistant_turn_id: UUID | None = None
+    bind: Any | None = None
 
 
 _current_usage_context: ContextVar[LLMUsageContext | None] = ContextVar(
@@ -31,6 +32,7 @@ def set_usage_context(
     user_turn_id: UUID,
     generation_run_id: UUID | None = None,
     assistant_turn_id: UUID | None = None,
+    bind: Any | None = None,
 ) -> Token:
     return _current_usage_context.set(
         LLMUsageContext(
@@ -38,6 +40,7 @@ def set_usage_context(
             user_turn_id=user_turn_id,
             generation_run_id=generation_run_id,
             assistant_turn_id=assistant_turn_id,
+            bind=bind,
         )
     )
 
@@ -192,6 +195,13 @@ async def record_provider_telemetry(telemetry: dict[str, Any] | None) -> None:
         "pricing_basis": pricing_basis,
     }
 
-    async with AsyncSessionLocal() as session:
+    if context.bind is None:
+        return
+    factory = async_sessionmaker(
+        bind=context.bind,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+    async with factory() as session:
         await LLMUsageRepository(session).record(context, event)
         await session.commit()
