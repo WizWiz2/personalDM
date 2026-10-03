@@ -987,8 +987,11 @@ class TurnOutcomeResolver:
             )
         enriched = decision.model_copy(deep=True)
         outcomes = {item.action_index: item for item in enriched.action_outcomes}
+        inside = {item.action_index for item in missing if item.inside}
         for index, patch in by_index.items():
-            outcomes[index].destination = patch
+            outcomes[index].destination = (
+                patch.model_copy(update={"within_current": True}) if index in inside else patch
+            )
         self.audit.append({
             "phase": "destination_profiles", "requests": requests,
             "patches": {index: patch.model_dump() for index, patch in by_index.items()},
