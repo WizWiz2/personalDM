@@ -489,8 +489,9 @@ def _destination_binding_wire(indices: list[int], references: dict[str, str]):
         __config__=ConfigDict(extra="forbid"),
         **{
             f"action_{index}": (
-                Literal[tuple(references) + ("new", "unresolved")],
-                Field(description="Same-place ID, new for a new place, unresolved for ambiguity."),
+                Literal[tuple(references) + ("new_inside", "new", "unresolved")],
+                Field(description="Same-place ID; new_inside for a new place inside where the "
+                      "player is now; new for a new place elsewhere; unresolved for ambiguity."),
             )
             for index in indices
         },
@@ -554,8 +555,9 @@ def _normalized_action(
 
     if action_type == "movement":
         payload["destination_location"] = destination
-        if action.destination_reference not in (None, "new", "unresolved"):
+        if action.destination_reference not in (None, "new_inside", "new", "unresolved"):
             payload["destination_location_id"] = action.destination_reference
+        payload["destination_within_origin"] = action.destination_reference == "new_inside"
         payload["requested_companions"] = list(dict.fromkeys(action.requested_companions))
         payload["movement_method"] = (
             "ordinary" if action.movement_method == "ordinary" else "special"
@@ -874,7 +876,8 @@ class PlayerIntentInterpreter:
                             "of the SAME known place in LOCATION REFERENCES (each has name, parent, "
                             "description and the opening of the scene held there, so a spot where an earlier "
                             "scene took place belongs to that location's ID). Compare meanings, not spelling. "
-                            "Select new for a concrete physical place not yet catalogued, unresolved when the "
+                            "Select new_inside for a place not yet catalogued that lies inside the location the "
+                            "player is in now, new for one elsewhere, unresolved when the "
                             "endpoint is unclear. Do not judge accessibility, feasibility or actions. "
                             "Return DestinationIdentityBindings.\n\n[OUTPUT JSON SCHEMA]\n"
                             + json.dumps(wire.model_json_schema(), ensure_ascii=False)
@@ -907,7 +910,7 @@ class PlayerIntentInterpreter:
             reference = action.destination_reference
             if action.action_type == "movement" and (
                 reference == "unresolved"
-                or (reference and reference != "new" and reference not in references)
+                or (reference and reference not in ("new", "new_inside") and reference not in references)
             ):
                 # An unclear endpoint creates no topology and moves nobody (ban 4); the attempt
                 # stays a local act for the narrator instead of failing the turn.
@@ -916,7 +919,7 @@ class PlayerIntentInterpreter:
                 action.destination_reference = None
                 action.requested_companions = []
                 continue
-            if action.action_type == "movement" and reference and reference != "new":
+            if action.action_type == "movement" and reference in references:
                 action.destination_location = references[reference]
 
     async def interpret(

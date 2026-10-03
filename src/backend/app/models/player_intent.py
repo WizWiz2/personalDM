@@ -36,6 +36,8 @@ class PlayerActionIntent(BaseModel):
     destination_location: str | None = Field(default=None, max_length=255)
     # Bound identity of a known place; None means the player selected a new place.
     destination_location_id: UUID | None = None
+    # A new place inside the location the hop starts from (a building in this town, a room here).
+    destination_within_origin: bool = False
     movement_method: Literal["ordinary", "special"] = "ordinary"
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
 

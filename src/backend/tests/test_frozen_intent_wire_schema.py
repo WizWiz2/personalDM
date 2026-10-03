@@ -138,6 +138,10 @@ def test_required_movement_draft_still_normalizes_into_strict_ir() -> None:
     assert len(contract.actions) == 1
     assert contract.actions[0].action_type == "movement"
     assert contract.actions[0].destination_location == "Коридор"
+    assert contract.actions[0].destination_within_origin is False
+    draft.actions[0].destination_reference = "new_inside"
+    inside = normalize_intent_draft(draft, "Я выхожу из своей комнаты в коридор.").actions[0]
+    assert (inside.destination_location_id, inside.destination_within_origin) == (None, True)
 
 
 def test_outcome_wire_schema_requires_action_outcomes_field() -> None:

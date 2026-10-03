@@ -102,23 +102,28 @@ def _success(index: int) -> ActionOutcomeDecision:
 
 
 @pytest.mark.asyncio
-async def test_travel_bound_to_its_own_origin_is_a_new_place_inside_it():
-    # Live T3a: «иду в трактир у торговой площади» was bound to the current town's ID.
+async def test_same_place_is_a_local_step_and_new_inside_is_a_child_place():
     compiler = _Compiler([_location(ROOM, "Весьегонск")], {ROOM: []})
-    contract = PlayerIntentContract(summary="Иду в трактир.", actions=[
-        _move("Весьегонск", ROOM), PlayerActionIntent(action_type="observation", intent="Осмотреть зал."),
-    ])
-    contract.actions[0].intent = "Идти в трактир у торговой площади."
-    assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
-    decision = TurnOutcomeDecision(action_outcomes=[_success(0), _success(1)])
+    # «Подхожу к стойке» bound to the current place: a step inside it, no trip.
+    here = PlayerIntentContract(summary="Подхожу к стойке.", actions=[_move("Весьегонск", ROOM)])
+    assert await compiler.resolve_known_travel(CAMPAIGN, here) is None
+    plan = await compiler.compile(CAMPAIGN, here, TurnOutcomeDecision(action_outcomes=[_success(0)]))
+    assert plan.action_sequence.steps[0].action_type == "interaction"
+    assert not plan.action_sequence.steps[0].transition.required
+    # Live T3a: «иду в трактир у торговой площади» is a new place inside the town (typed new_inside).
+    inn = PlayerActionIntent(
+        action_type="movement", intent="Идти в трактир.",
+        destination_location="трактир у торговой площади", destination_within_origin=True,
+    )
+    contract = PlayerIntentContract(summary="Иду в трактир.", actions=[inn])
+    decision = TurnOutcomeDecision(action_outcomes=[_success(0)])
     [missing] = await compiler.missing_destination_profiles(CAMPAIGN, contract, decision)
-    assert (missing.inside, missing.destination) == (True, "Идти в трактир у торговой площади.")
+    assert missing.inside is True
     decision.action_outcomes[0].destination = DestinationProfilePatch(
         action_index=0, name="Трактир у торговой площади", within_current=True,
         profile="Бревенчатый трактир с вывеской у торговой площади; внутри общий зал, печь, лавки и стойка для приезжих.",
     )
-    plan = await compiler.compile(CAMPAIGN, contract, decision)
-    step = plan.action_sequence.steps[0]
+    step = (await compiler.compile(CAMPAIGN, contract, decision)).action_sequence.steps[0]
     assert step.transition.destination_location == "Трактир у торговой площади"
     assert step.transition.destination_parent_location == "Весьегонск"
 

@@ -32,7 +32,7 @@ class MissingDestinationProfile:
     action_index: int
     destination: str
     origin: str | None = None
-    inside: bool = False  # the hop was bound to its own origin: a new place inside it
+    inside: bool = False  # typed: the new place lies inside the hop's origin
 
 
 class ActionPlanCompiler:
@@ -156,7 +156,7 @@ class ActionPlanCompiler:
                 ))
                 continue
             if action.destination_location_id == cursor[0] and cursor[1] is None:
-                return None  # bound to its own origin: a new place inside it needs a profile
+                return None  # the same place: the resolver describes the local step
             exits = await self._state.list_exits(campaign_id, cursor[0], include_hidden=True)
             if any(
                 item.access_rule and item.to_location_id == action.destination_location_id
@@ -210,23 +210,21 @@ class ActionPlanCompiler:
         _scene_id, state, locations = await self._world(campaign_id)
         names = {item.id: item.canonical_name for item in locations}
         outcome_by_index = self._outcome_map(contract, decision)
-        origin_id, origin = state.location_id, names.get(state.location_id)
+        origin = names.get(state.location_id)
         missing: list[MissingDestinationProfile] = []
         for index, action in enumerate(contract.actions):
             if action.action_type != "movement":
                 continue
             outcome = outcome_by_index[index]
-            inside = origin_id is not None and action.destination_location_id == origin_id
             if (
                 outcome.resolution == "auto_success"
-                and (action.destination_location_id is None or inside)
+                and action.destination_location_id is None
                 and not outcome.destination
             ):
                 missing.append(MissingDestinationProfile(
-                    index, action.intent if inside else action.destination_location, origin, inside
+                    index, action.destination_location, origin, action.destination_within_origin
                 ))
-            origin_id = None if inside else action.destination_location_id
-            origin = names.get(origin_id, action.destination_location)
+            origin = names.get(action.destination_location_id, action.destination_location)
         return missing
 
     async def _compile_movement(
@@ -266,7 +264,14 @@ class ActionPlanCompiler:
                 False,
             )
         target = by_id.get(action.destination_location_id)
-        if target is not None and not (target.id == location_id and pending is None):
+        if target is not None and target.id == location_id and pending is None:
+            # The same place: a step inside it, not a trip.
+            step = self._compile_nonmovement(action.model_copy(update={
+                "action_type": "interaction", "destination_location": None,
+                "destination_location_id": None, "requested_companions": [],
+            }), outcome)
+            return step, cursor, False
+        if target is not None:
             # A place created earlier this turn is joined only to its origin, the cursor.
             blocker = await self._route_blocker(campaign_id, location_id, target.id)
             if blocker is not None:
