@@ -153,9 +153,11 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
   const disconnectChatGPT = async () => {
     setBusy('chatgpt-disconnect'); onError(''); onMessage('')
     try {
-      await runtimeProviderApi.disconnectChatGPT()
+      const result = await runtimeProviderApi.disconnectChatGPT()
       await load()
-      onMessage('Локальная сессия ChatGPT отключена.')
+      onMessage(result.revocation_confirmed
+        ? 'ChatGPT отключён, renewable session отозвана.'
+        : 'Локальная сессия отключена. Не удалось подтвердить удалённый revoke — при необходимости отключите PersonalDM в ChatGPT Settings → Security and login.')
     } catch (error) {
       onError(error instanceof Error ? error.message : 'Не удалось отключить ChatGPT')
     } finally { setBusy('') }
