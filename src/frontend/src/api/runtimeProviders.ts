@@ -9,12 +9,25 @@ export interface RuntimeProviderStatus {
   installable: boolean
 }
 
+export interface ChatGPTConnection {
+  connected: boolean
+  email: string | null
+  name: string | null
+  plan_usage_enabled: boolean
+}
+
+export interface ChatGPTModel {
+  slug: string
+  display_name: string
+}
+
 export interface TextRuntimeProvider {
-  mode: 'local' | 'cloud'
+  mode: 'local' | 'cloud' | 'chatgpt'
   base_url: string
   model: string
   context_window: number
   has_api_key: boolean
+  chatgpt: ChatGPTConnection
   status: RuntimeProviderStatus
 }
 
@@ -66,7 +79,7 @@ export const runtimeProviderApi = {
     { method: 'POST' },
   ),
   configureText: (payload: {
-    mode: 'local' | 'cloud'
+    mode: 'local' | 'cloud' | 'chatgpt'
     base_url?: string
     model?: string
     api_key?: string
@@ -76,6 +89,17 @@ export const runtimeProviderApi = {
     method: 'PUT',
     body: JSON.stringify(payload),
   }),
+  startChatGPTSignIn: (returnUrl: string) => request<{ authorization_url: string }>(
+    '/api/runtime/providers/chatgpt/sign-in',
+    { method: 'POST', body: JSON.stringify({ return_url: returnUrl }) },
+  ),
+  chatGPTModels: () => request<{ models: ChatGPTModel[] }>(
+    '/api/runtime/providers/chatgpt/models',
+  ),
+  disconnectChatGPT: () => request<{ connected: boolean }>(
+    '/api/runtime/providers/chatgpt',
+    { method: 'DELETE' },
+  ),
   configureImage: (payload: {
     mode: 'local' | 'cloud' | 'off'
     base_url?: string
