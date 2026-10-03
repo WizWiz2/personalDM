@@ -19,6 +19,7 @@ from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_repetition_guard import NarrationRepetitionGuard
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
+from app.services.llm_usage_tracker import record_provider_telemetry
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
@@ -52,6 +53,20 @@ class AuthorityNarrationPipeline:
     @property
     def last_telemetry(self) -> dict:
         return dict(self._provider.last_telemetry or {})
+
+    async def _record_narrator_usage(
+        self,
+        selection: RoleModelSelection,
+        telemetry: dict,
+    ) -> dict:
+        annotated = {
+            **dict(telemetry or {}),
+            "model_role": ModelRole.NARRATOR.value,
+            "role_model_source": selection.source,
+            "resolved_model": selection.config.model_name,
+        }
+        await record_provider_telemetry(annotated)
+        return annotated
 
     @staticmethod
     def _merge_continuation(prefix: str, continuation: str) -> str:
@@ -108,7 +123,11 @@ class AuthorityNarrationPipeline:
         text = "".join(chunks).strip()
         if not text:
             raise LLMProviderError("Narrator returned empty prose")
-        return text, dict(self._provider.last_telemetry or {})
+        telemetry = await self._record_narrator_usage(
+            selection,
+            dict(self._provider.last_telemetry or {}),
+        )
+        return text, telemetry
 
     async def _generate_text(
         self,
@@ -127,7 +146,10 @@ class AuthorityNarrationPipeline:
             ):
                 chunks.append(token)
         except LLMProviderTruncatedError as exc:
-            first_telemetry = dict(self._provider.last_telemetry or {})
+            first_telemetry = await self._record_narrator_usage(
+                selection,
+                dict(self._provider.last_telemetry or {}),
+            )
             partial = "".join(chunks).strip() or exc.partial_text.strip()
             finish_reason = str(first_telemetry.get("finish_reason") or "").casefold()
             if partial and finish_reason == "stop":
@@ -159,7 +181,11 @@ class AuthorityNarrationPipeline:
         text = "".join(chunks).strip()
         if not text:
             raise LLMProviderError("Narrator returned empty prose")
-        return text, dict(self._provider.last_telemetry or {})
+        telemetry = await self._record_narrator_usage(
+            selection,
+            dict(self._provider.last_telemetry or {}),
+        )
+        return text, telemetry
 
     async def _generate_non_repeating(
         self,
