@@ -32,6 +32,10 @@ class CampaignService:
                 model_name=settings.LLM_MODEL,
                 api_key=settings.LLM_API_KEY,
                 context_window=settings.LLM_CONTEXT_WINDOW,
+                provider_kind=(
+                    "chatgpt" if settings.TEXT_PROVIDER == "chatgpt"
+                    else "openai_compatible"
+                ),
             ),
         )
         await self._setup_repo.create_draft(
