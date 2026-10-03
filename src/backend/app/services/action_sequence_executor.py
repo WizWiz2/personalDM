@@ -137,39 +137,8 @@ class ActionSequenceExecutor:
                     # Compiled identity or a profiled new place: the compiler is the route authority.
                     allow_route_discovery = True
                 elif step.transition.transition_type == "location_transition":
-                    authorization = await self._transitions.authorize_destination(
-                        route_discovery_turn_id,
-                        step.transition.destination_location,
-                    )
-                    if authorization.applicable and not authorization.authorized:
-                        db_step.status = "blocked"
-                        db_step.blocking_reason = (
-                            "Player destination is not authorized: "
-                            f"{authorization.reason}"
-                        )
-                        db_step.observable_outcome = None
-                        db_step.public_blocking_reason = "Нужно уточнить, куда именно ты направляешься."
-                        db_step.target_scene_id = (
-                            str(current_scene_id) if current_scene_id else None
-                        )
-                        sequence.blocked_step_index = index
-                        blocked = True
-                        continue
-                    allow_route_discovery = (
-                        step.safe_mundane and authorization.applicable and authorization.authorized
-                    )
-                    require_existing_route = not allow_route_discovery
-                    if authorization.authorized:
-                        updates = {
-                            "destination_location": authorization.destination,
-                        }
-                        # Planner's destination_parent_location is not human authority. For a newly
-                        # discovered travel destination, treating the source as its parent corrupts
-                        # geography (Office -> House). Until containment is independently known, a
-                        # new route-discovered physical location is created at root level.
-                        if not authorization.destination_exists:
-                            updates["destination_parent_location"] = None
-                        transition_plan = step.transition.model_copy(update=updates)
+                    # Not compiled: only an existing route may carry it; no new topology.
+                    require_existing_route = True
                 try:
                     applied = await self._transitions.apply(
                         campaign_id,
