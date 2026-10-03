@@ -290,8 +290,8 @@ export function PlayPage() {
         if (!active) return
         setTurnUsage(usage)
         attempts += 1
-        if (!usage.complete && attempts < 12) {
-          timer = window.setTimeout(() => { void pollUsage() }, 750)
+        if (!usage.complete && attempts < 90) {
+          timer = window.setTimeout(() => { void pollUsage() }, 1000)
         }
       } catch {
         // Usage is diagnostic. Never block play if the accounting endpoint is unavailable.
