@@ -128,18 +128,6 @@ class SceneTransitionExecutor:
             destination,
         )
 
-    async def route_discovery_allowed(
-        self,
-        trigger_turn_id: UUID | None,
-        destination: str | None,
-    ) -> bool:
-        """Compatibility helper: discovery is allowed only for an authorized destination."""
-        authorization = await self.authorize_destination(
-            trigger_turn_id,
-            destination,
-        )
-        return authorization.applicable and authorization.authorized
-
     async def apply(
         self,
         campaign_id: UUID,

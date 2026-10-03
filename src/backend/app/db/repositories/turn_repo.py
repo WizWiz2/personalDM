@@ -5,7 +5,7 @@ from sqlalchemy import desc, func, literal_column, select
 
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Campaign, Scene, Turn
-from app.models.turn import ChatMessage, TurnCreate, TurnRead
+from app.models.turn import TurnCreate, TurnRead
 
 
 NARRATIVE_ROLES = ("user", "assistant", "system")
@@ -176,27 +176,6 @@ class TurnRepository(BaseRepository):
             )
         )
         return int(result.scalar_one())
-
-    async def get_sliding_window(
-        self,
-        campaign_id: UUID,
-        max_turns: int,
-    ) -> list[ChatMessage]:
-        result = await self._session.execute(
-            select(Turn)
-            .where(
-                Turn.campaign_id == str(campaign_id),
-                Turn.status == "active",
-                Turn.role.in_(NARRATIVE_ROLES),
-            )
-            .order_by(desc(Turn.created_at))
-            .limit(max_turns)
-        )
-        turns = result.scalars().all()
-        return [
-            ChatMessage(role=turn.role, content=turn.content)
-            for turn in reversed(turns)
-        ]
 
     async def get_latest_undoable_pair(
         self,

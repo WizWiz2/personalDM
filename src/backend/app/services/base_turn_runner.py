@@ -163,10 +163,6 @@ class TurnRunner:
         snapshot["generation_attempt"] = attempt
         return snapshot, completion_tokens
 
-    async def _player_character_id(self, campaign_id: UUID) -> UUID | None:
-        campaign = await self._campaign_repo.get_by_id(campaign_id)
-        return campaign.player_character_id if campaign else None
-
     async def _cancel_requested(self, run_id: UUID) -> bool:
         factory = async_sessionmaker(
             bind=self._session.bind,

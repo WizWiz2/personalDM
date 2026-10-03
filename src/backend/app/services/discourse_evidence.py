@@ -22,17 +22,6 @@ def quoted_positions(source: str) -> set[int]:
     return positions
 
 
-def narrator_evidence_start(source: str, quote: str) -> bool:
-    positions = quoted_positions(source)
-    start = source.find(quote)
-    while start >= 0:
-        first = start + len(quote) - len(quote.lstrip())
-        if first not in positions:
-            return True
-        start = source.find(quote, start + 1)
-    return False
-
-
 def exclusively_quoted(source: str, designation: str) -> bool:
     """A negative constraint: a literal designation occurs, but only inside quotations.
 
