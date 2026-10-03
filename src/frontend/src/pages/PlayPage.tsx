@@ -1,7 +1,11 @@
 ﻿import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
-import { submitDetachedTurn } from '../api/turnRuntime'
+import {
+  getTurnUsage,
+  submitDetachedTurn,
+  type TurnUsageSummary,
+} from '../api/turnRuntime'
 import type { GameMasterPersona, SceneState, Turn } from '../api/types'
 import { friendlyVisualError, visualApi, visualUrls } from '../api/visuals'
 import { useCampaignWorkspace } from '../components/CampaignWorkspace'
@@ -26,6 +30,46 @@ function readStoredTurn(key: string): Turn | null {
 function readStoredMode(key: string): Mode {
   const value = window.sessionStorage.getItem(key)
   return value === 'dm' ? 'dm' : 'play'
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 1 : 2)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}k`
+  return String(value)
+}
+
+function formatUsageCost(value: number): string {
+  if (value >= 1) return `${value.toFixed(2)}`
+  if (value >= 0.01) return `${value.toFixed(3)}`
+  if (value >= 0.001) return `${value.toFixed(4)}`
+  return `${value.toFixed(5)}`
+}
+
+function usageBreakdownTitle(usage: TurnUsageSummary): string {
+  const rows = usage.by_role
+    .filter((item) => item.total_tokens > 0 || item.calls > 0)
+    .sort((a, b) => b.total_tokens - a.total_tokens)
+    .map((item) => {
+      const cost = item.estimated_cost_usd == null
+        ? ''
+        : ` · ≈${formatUsageCost(item.estimated_cost_usd)}`
+      return `${item.role}: ${formatTokenCount(item.total_tokens)} токенов · ${item.calls} выз.\${cost}`
+    })
+  const cache = usage.cached_input_tokens
+    ? `Cached input: ${formatTokenCount(usage.cached_input_tokens)} токенов.`
+    : ''
+  const reasoning = usage.reasoning_tokens
+    ? `Reasoning: ${formatTokenCount(usage.reasoning_tokens)} токенов.`
+    : ''
+  return [
+    `Всего: ${formatTokenCount(usage.total_tokens)} токенов · ${usage.calls} вызовов.`,
+    cache,
+    reasoning,
+    ...rows,
+    usage.cost_complete
+      ? 'Цена — эквивалент обычного OpenAI API, не списание с ChatGPT plan.'
+      : 'Цена частичная: для некоторых моделей нет известного OpenAI API тарифа.',
+  ].filter(Boolean).join('\n')
 }
 
 function uniquePath(path: string[] | undefined | null): string[] {
@@ -68,6 +112,7 @@ export function PlayPage() {
   const [sceneArtAvailable, setSceneArtAvailable] = useState(false)
   const [stickToBottom, setStickToBottom] = useState(true)
   const [showJumpLatest, setShowJumpLatest] = useState(false)
+  const [turnUsage, setTurnUsage] = useState<TurnUsageSummary | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLFormElement>(null)
   const [jumpBottom, setJumpBottom] = useState(96)
@@ -233,6 +278,36 @@ export function PlayPage() {
       void load(false)
     }
   }, [generation?.id, generation?.status])
+
+  useEffect(() => {
+    if (!generation?.user_turn_id || generation.status === 'running') {
+      return
+    }
+
+    let active = true
+    let timer: number | undefined
+    let attempts = 0
+
+    const pollUsage = async () => {
+      try {
+        const usage = await getTurnUsage(campaign.id, generation.user_turn_id)
+        if (!active) return
+        setTurnUsage(usage)
+        attempts += 1
+        if (!usage.complete && attempts < 12) {
+          timer = window.setTimeout(() => { void pollUsage() }, 750)
+        }
+      } catch {
+        // Usage is diagnostic. Never block play if the accounting endpoint is unavailable.
+      }
+    }
+
+    void pollUsage()
+    return () => {
+      active = false
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [campaign.id, generation?.status, generation?.user_turn_id])
 
   const visibleTurns = useMemo(() => turns.filter((turn) => turn.role !== 'system'), [turns])
   const latestMasterTurnId = useMemo(
@@ -460,6 +535,18 @@ export function PlayPage() {
               {busy
                 ? <><span className="turn-runtime-note">Ход сохранён. Можно открыть Героя, Мир или Хронику — мастер продолжит работу.</span><button type="button" className="quiet-action danger" onClick={() => void stop()}><Icons.stop />Остановить</button></>
                 : <span className="turn-runtime-note">{stickToBottom ? 'Черновик ввода сохраняется при переходах между разделами.' : 'Лента отвязана от низа — новые ответы не утянут скролл.'}</span>}
+              {!busy && turnUsage && turnUsage.event_count > 0 && (
+                <span
+                  className={`turn-usage-summary ${turnUsage.complete ? '' : 'pending'}`}
+                  title={usageBreakdownTitle(turnUsage)}
+                >
+                  Ход: {formatTokenCount(turnUsage.total_tokens)} токенов
+                  {turnUsage.estimated_cost_usd != null
+                    ? ` · ≈${formatUsageCost(turnUsage.estimated_cost_usd)}`
+                    : ''}
+                  {!turnUsage.complete ? ' · считаем…' : ''}
+                </span>
+              )}
             </div>
           </form>
         </section>
