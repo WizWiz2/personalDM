@@ -18,6 +18,7 @@
 - `PDM_LLM_MODEL`, default `gemma4:e4b`.
 - `PDM_LLM_API_KEY`.
 - `PDM_LLM_CONTEXT_WINDOW`, default `4096`.
+- `PDM_LLM_REASONING_EFFORT`, default `low` — `reasoning.effort` для ChatGPT plan (Responses API) во всех ролях; допустимы `supported_reasoning_levels` модели и `none`, пустое значение оставляет default модели (`medium`).
 
 Для cloud OpenAI-compatible endpoint campaign model name остаётся model id для control roles, если отдельный supported role override не задан. Локальный runtime может использовать narrator/control split.
 

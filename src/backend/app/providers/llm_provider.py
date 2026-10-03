@@ -460,6 +460,22 @@ class LLMProvider:
             result.append({"role": role, "content": message.get("content", "")})
         return result
 
+    @classmethod
+    def _responses_payload(
+        cls,
+        config: ProviderConfigRead,
+        messages: list[dict[str, str]],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": config.model_name,
+            "input": cls._responses_input(messages),
+            "stream": True,
+            "store": False,
+        }
+        if settings.LLM_REASONING_EFFORT:
+            payload["reasoning"] = {"effort": settings.LLM_REASONING_EFFORT}
+        return payload
+
     @staticmethod
     def _responses_usage(data: dict[str, Any]) -> dict[str, Any]:
         response = data.get("response")
@@ -566,12 +582,7 @@ class LLMProvider:
                 request_messages = list(base_messages)
                 if attempt > 1:
                     request_messages.append(self._repair_instruction(last_error, last_raw_text))
-                payload: dict[str, Any] = {
-                    "model": config.model_name,
-                    "input": self._responses_input(request_messages),
-                    "stream": True,
-                    "store": False,
-                }
+                payload = self._responses_payload(config, request_messages)
                 attempt_started = time.monotonic()
                 try:
                     raw_text, usage, frames = await self._collect_chatgpt_response(
@@ -657,12 +668,7 @@ class LLMProvider:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
-        payload = {
-            "model": config.model_name,
-            "input": self._responses_input(self._messages_payload(messages)),
-            "stream": True,
-            "store": False,
-        }
+        payload = self._responses_payload(config, self._messages_payload(messages))
         started = time.monotonic()
         parts: list[str] = []
         usage: dict[str, int] = {}

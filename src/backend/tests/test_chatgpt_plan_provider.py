@@ -119,6 +119,7 @@ async def test_chatgpt_plan_stream_uses_stateless_responses_contract(monkeypatch
     assert request["json"]["input"][1]["role"] == "user"
     assert "temperature" not in request["json"]
     assert "max_output_tokens" not in request["json"]
+    assert request["json"]["reasoning"] == {"effort": settings.LLM_REASONING_EFFORT}
     assert provider.last_telemetry["transport"] == "chatgpt_responses"
 
 
@@ -139,7 +140,25 @@ async def test_chatgpt_plan_structured_calls_parse_streamed_json(monkeypatch):
     assert result == {"ok": True}
     assert _ResponsesClient.requests[0]["json"]["stream"] is True
     assert _ResponsesClient.requests[0]["json"]["store"] is False
+    assert _ResponsesClient.requests[0]["json"]["reasoning"] == {
+        "effort": settings.LLM_REASONING_EFFORT
+    }
     assert provider.last_telemetry["transport"] == "chatgpt_responses"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_plan_reasoning_effort_is_one_setting_defaulting_to_low(monkeypatch):
+    assert type(settings).model_fields["LLM_REASONING_EFFORT"].default == "low"
+    monkeypatch.setattr(llm_provider_module.httpx, "AsyncClient", _ResponsesClient)
+    _ResponsesClient.response_text = "Ок."
+    for configured, expected in (("none", {"effort": "none"}), ("", None)):
+        _ResponsesClient.requests = []
+        monkeypatch.setattr(settings, "LLM_REASONING_EFFORT", configured)
+        async for _chunk in LLMProvider().generate_stream(
+            [ChatMessage(role="user", content="Привет")], _chatgpt_config(), "oauth-token"
+        ):
+            pass
+        assert _ResponsesClient.requests[0]["json"].get("reasoning") == expected
 
 
 def test_chatgpt_sign_in_uses_dynamic_client_pkce_and_loopback(monkeypatch, tmp_path):
