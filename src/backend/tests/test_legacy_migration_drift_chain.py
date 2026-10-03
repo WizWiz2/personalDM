@@ -230,6 +230,12 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
                 "PRAGMA table_info('provider_configs')"
             ).fetchall()
         }
+        usage_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('llm_usage_events')"
+            ).fetchall()
+        }
         truth_tables = {
             row[0]
             for row in connection.execute(
@@ -249,6 +255,8 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
     assert "ix_scene_transitions_campaign_id" in indexes
     assert "system_key" in semantic_columns
     assert "provider_kind" in provider_columns
+    assert "total_tokens" in usage_columns
+    assert "estimated_cost_usd" in usage_columns
     assert {
         "truth_event_records",
         "truth_event_effects",
