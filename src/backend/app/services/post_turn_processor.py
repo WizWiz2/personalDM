@@ -20,9 +20,9 @@ from app.services.actor_turn_authority_guard import extract_actor_segment_propos
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
+from app.services.llm_usage_tracker import reset_usage_context, set_usage_context
 from app.services.memory_scribe import MemoryScribe
 from app.services.memory_taxonomy import MemoryTaxonomyService
-from app.services.llm_usage_tracker import reset_usage_context, set_usage_context
 from app.services.proposal_presence import ProposalPresenceResolver
 from app.services.thesis_curator import ThesisCurator
 from app.services.truth_engine_shadow import SemanticResidualShadowService
