@@ -172,17 +172,24 @@ class RuntimeProviderService:
             api_key = ""
             context_window = context_window or 4096
         elif mode == "chatgpt":
-            auth = ChatGPTAuthService().connection_summary()
+            chatgpt = ChatGPTAuthService()
+            auth = chatgpt.connection_summary()
             if not auth["connected"] or not auth["plan_usage_enabled"]:
                 raise ValueError("Сначала войдите через ChatGPT и разрешите использование плана")
-            if not model:
+            try:
+                models = chatgpt.list_models()
+            except ChatGPTAuthError as exc:
+                raise ValueError(str(exc)) from exc
+            model = model or chatgpt.default_model(models)
+            windows = {item["slug"]: item["context_window"] for item in models}
+            context_window = context_window or windows.get(model)
+            if model not in windows or not context_window:
                 raise ValueError("Выберите модель, доступную в вашем ChatGPT плане")
-            base_url = "https://api.openai.com/v1"
+            base_url = chatgpt.RESOURCE
             api_key = ""
-            context_window = context_window or 128000
         else:
             base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
-            model = model or "gpt-5.6-luna"
+            model = model or ChatGPTAuthService.DEFAULT_MODEL
             if not api_key and not self.read_env().get("PDM_LLM_API_KEY"):
                 raise ValueError("Cloud text provider requires an API key")
             api_key = api_key if api_key is not None else self.read_env().get("PDM_LLM_API_KEY", "")

@@ -27,11 +27,16 @@ export function TextProviderQuickSwitch({ campaignId, disabled = false, onError 
     setProfile((current) => current ? { ...current, text } : current)
   }, [])
 
-  const fetchModels = useCallback(async () => {
-    const result = await runtimeProviderApi.chatGPTModels()
-    setModels(result.models)
-    return result.models
-  }, [])
+  const activateChatGPT = useCallback(async (currentModel: string) => {
+    const { models: available, default_model } = await runtimeProviderApi.chatGPTModels()
+    setModels(available)
+    if (!default_model) throw new Error('В ChatGPT plan нет доступных текстовых моделей')
+    return runtimeProviderApi.configureText({
+      mode: 'chatgpt',
+      model: available.some((item) => item.slug === currentModel) ? currentModel : default_model,
+      campaign_id: campaignId,
+    })
+  }, [campaignId])
 
   const initialize = useCallback(async () => {
     try {
@@ -41,30 +46,20 @@ export function TextProviderQuickSwitch({ campaignId, disabled = false, onError 
       const pendingCampaign = window.sessionStorage.getItem(OAUTH_SWITCH_KEY)
       const returningFromOAuth = pendingCampaign === campaignId
 
-      if (next.text.chatgpt.connected && (next.text.mode === 'chatgpt' || returningFromOAuth)) {
-        const available = await fetchModels()
-        if (returningFromOAuth) {
-          if (!available.length) throw new Error('ChatGPT подключён, но доступных текстовых моделей нет')
-          const selected = available.some((item) => item.slug === next.text.model)
-            ? next.text.model
-            : available[0].slug
-          const text = await runtimeProviderApi.configureText({
-            mode: 'chatgpt',
-            model: selected,
-            context_window: 128000,
-            campaign_id: campaignId,
-          })
-          window.sessionStorage.removeItem(OAUTH_SWITCH_KEY)
-          next = { ...next, text }
-          setProfile(next)
-        }
+      if (next.text.chatgpt.connected && returningFromOAuth) {
+        const text = await activateChatGPT(next.text.model)
+        window.sessionStorage.removeItem(OAUTH_SWITCH_KEY)
+        next = { ...next, text }
+        setProfile(next)
+      } else if (next.text.chatgpt.connected && next.text.mode === 'chatgpt') {
+        setModels((await runtimeProviderApi.chatGPTModels()).models)
       } else if (returningFromOAuth && !next.text.chatgpt.connected) {
         window.sessionStorage.removeItem(OAUTH_SWITCH_KEY)
       }
     } catch (error) {
       onError(error instanceof Error ? error.message : 'Не удалось загрузить текстовый provider')
     }
-  }, [campaignId, fetchModels, onError])
+  }, [campaignId, activateChatGPT, onError])
 
   useEffect(() => {
     void initialize()
@@ -98,18 +93,7 @@ export function TextProviderQuickSwitch({ campaignId, disabled = false, onError 
         return
       }
 
-      const available = models.length ? models : await fetchModels()
-      if (!available.length) throw new Error('В ChatGPT plan нет доступных текстовых моделей')
-      const selected = available.some((item) => item.slug === profile.text.model)
-        ? profile.text.model
-        : available[0].slug
-      const text = await runtimeProviderApi.configureText({
-        mode: 'chatgpt',
-        model: selected,
-        context_window: 128000,
-        campaign_id: campaignId,
-      })
-      applyText(text)
+      applyText(await activateChatGPT(profile.text.model))
     } catch (error) {
       window.sessionStorage.removeItem(OAUTH_SWITCH_KEY)
       onError(error instanceof Error ? error.message : 'Не удалось переключить текстовый provider')
@@ -127,7 +111,6 @@ export function TextProviderQuickSwitch({ campaignId, disabled = false, onError 
       const text = await runtimeProviderApi.configureText({
         mode: 'chatgpt',
         model,
-        context_window: profile.text.context_window || 128000,
         campaign_id: campaignId,
       })
       applyText(text)

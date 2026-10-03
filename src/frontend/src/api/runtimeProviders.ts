@@ -19,6 +19,7 @@ export interface ChatGPTConnection {
 export interface ChatGPTModel {
   slug: string
   display_name: string
+  context_window: number
 }
 
 export interface TextRuntimeProvider {
@@ -93,7 +94,7 @@ export const runtimeProviderApi = {
     '/api/runtime/providers/chatgpt/sign-in',
     { method: 'POST', body: JSON.stringify({ return_url: returnUrl }) },
   ),
-  chatGPTModels: () => request<{ models: ChatGPTModel[] }>(
+  chatGPTModels: () => request<{ models: ChatGPTModel[]; default_model: string | null }>(
     '/api/runtime/providers/chatgpt/models',
   ),
   disconnectChatGPT: () => request<{ connected: boolean; revocation_confirmed: boolean }>(
