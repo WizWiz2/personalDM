@@ -13,6 +13,7 @@ from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.providers import llm_provider as llm_provider_module
 from app.providers.llm_provider import LLMProvider
+from app.services import chatgpt_auth_service as chatgpt_auth_module
 from app.services.chatgpt_auth_service import ChatGPTAuthError, ChatGPTAuthService
 
 
@@ -170,3 +171,124 @@ def test_chatgpt_sign_in_rejects_nonlocal_return_url(monkeypatch, tmp_path):
             redirect_uri="http://127.0.0.1:8000/api/runtime/providers/chatgpt/callback",
             return_url="https://example.com/steal",
         )
+
+
+class _FakeSyncResponse:
+    def __init__(self, payload: dict, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._payload
+
+
+class _FakeSyncClient:
+    calls: list[tuple[str, str, dict]] = []
+
+    def __init__(self, *args, **kwargs):
+        self.init_kwargs = kwargs
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        if url.endswith("/.well-known/openid-configuration"):
+            return _FakeSyncResponse(
+                {"revocation_endpoint": "https://auth.openai.com/oauth/revoke"}
+            )
+        if url.endswith("/v1/models"):
+            return _FakeSyncResponse(
+                {
+                    "models": [
+                        {
+                            "slug": "gpt-test",
+                            "display_name": "GPT Test",
+                            "visibility": "list",
+                        },
+                        {
+                            "slug": "hidden-test",
+                            "display_name": "Hidden",
+                            "visibility": "hidden",
+                        },
+                    ]
+                }
+            )
+        raise AssertionError(f"Unexpected GET {url}")
+
+    def post(self, url, **kwargs):
+        self.calls.append(("POST", url, kwargs))
+        if url.endswith("/oauth/revoke"):
+            return _FakeSyncResponse({})
+        raise AssertionError(f"Unexpected POST {url}")
+
+
+def _connected_profile() -> dict:
+    import time
+
+    return {
+        "email": "user@example.com",
+        "name": "User",
+        "issuer": ChatGPTAuthService.ISSUER,
+        "subject": "account-subject",
+        "client_id": "issued-client-id",
+        "ext_agent_host_id": "urn:uuid:00000000-0000-4000-8000-000000000001",
+        "id_token": "id-token",
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "scopes": [ChatGPTAuthService.REQUIRED_SCOPE],
+        "saved_at": time.time(),
+    }
+
+
+def test_chatgpt_model_listing_uses_sync_client_and_filters_visibility(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(chatgpt_auth_module.httpx, "Client", _FakeSyncClient)
+    _FakeSyncClient.calls = []
+
+    service = ChatGPTAuthService()
+    service._save_profile(_connected_profile())
+
+    assert service.list_models() == [
+        {"slug": "gpt-test", "display_name": "GPT Test"}
+    ]
+    assert _FakeSyncClient.calls[0][0:2] == (
+        "GET",
+        "https://api.openai.com/v1/models",
+    )
+
+
+def test_chatgpt_disconnect_revokes_refresh_and_keeps_registration(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(chatgpt_auth_module.httpx, "Client", _FakeSyncClient)
+    _FakeSyncClient.calls = []
+
+    service = ChatGPTAuthService()
+    service._save_profile(_connected_profile())
+
+    assert service.disconnect() is True
+    assert service.connection_summary()["connected"] is False
+
+    retained = service._load_profile()
+    assert retained is not None
+    assert retained["client_id"] == "issued-client-id"
+    assert retained["subject"] == "account-subject"
+    assert "access_token" not in retained
+    assert "refresh_token" not in retained
+    assert any(
+        method == "POST" and url.endswith("/oauth/revoke")
+        for method, url, _ in _FakeSyncClient.calls
+    )
