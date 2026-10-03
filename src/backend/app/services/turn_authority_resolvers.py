@@ -313,6 +313,7 @@ class NpcIntroductionResolver:
                     allow_locale_mismatch=bool(
                         getattr(introduction, "personal_name_evidence", None)
                     ),
+                    personal=not introduction.temporary_name,
                 )
                 candidate = accepted or allocate_needs_name_canonical(
                     reserved_names,

@@ -58,3 +58,12 @@ def test_description_only_identity_without_short_role_fails_closed():
     )
     with pytest.raises(AuthorityResolutionError):
         NpcIntroductionResolver.sanitize_introductions([bad])
+
+
+def test_personal_name_near_twin_keeps_a_unique_designation():
+    from app.services.name_identity_contract import accept_short_canonical, occupied_canonical_keys
+
+    occupied = occupied_canonical_keys(["Афанасий Кузьмин"])
+    assert accept_short_canonical("Афанасий Кузьмич", occupied_canonical_keys=occupied) == "Афанасий Кузьмич"
+    assert accept_short_canonical("Афанасий Кузьмич", occupied_canonical_keys=occupied, personal=True) is None
+    assert accept_short_canonical("Фёдор Лапин", occupied_canonical_keys=occupied, personal=True)

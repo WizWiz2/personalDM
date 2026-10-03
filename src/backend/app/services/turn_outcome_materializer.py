@@ -13,6 +13,7 @@ from app.db.tables import Entity, SceneParticipant
 from app.models.character import CharacterCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
+from app.services.name_identity_contract import given_name_collides
 
 
 @dataclass(frozen=True)
@@ -163,12 +164,12 @@ class TurnOutcomeMaterializer:
         if not fields.get("temporary_name"):
             raise ValueError("Name revelation cannot overwrite an established personal identity")
         known = await self._entities.list_by_campaign(authority.campaign_id)
-        if any(
-            entity.id != response.speaker_id and identity_key(response.revealed_name) in {
-                identity_key(entity.canonical_name), *(identity_key(alias) for alias in entity.aliases)
-            } for entity in known
-        ):
-            raise ValueError("Name revelation conflicts with another existing identity")
+        taken = {
+            identity_key(name) for entity in known if entity.id != response.speaker_id
+            for name in (entity.canonical_name, *entity.aliases)
+        }
+        if given_name_collides(response.revealed_name, taken):
+            return None  # Another identity owns this name or its given name; keep the designation.
         update = IdentityUpdate(
             response.speaker_id, row.canonical_name, row.aliases or "[]", row.custom_fields or "{}",
         )

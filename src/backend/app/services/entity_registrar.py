@@ -21,6 +21,7 @@ from app.services.canon_semantics import evidence_supported
 from app.services.entity_identity import identity_key, resolve_character_candidates
 from app.services.name_identity_contract import (
     accept_short_canonical,
+    given_name_collides,
     description_used_as_identity_name,
     occupied_canonical_keys,
 )
@@ -710,6 +711,9 @@ class EntityRegistrar:
         source_turn_id: UUID,
         binding_evidence: str,
     ):
+        others = await self._entities.list_by_campaign(entity.campaign_id, entity_type="character")
+        if given_name_collides(new_name, occupied_canonical_keys(others, exclude_entity_id=entity.id)):
+            return None  # A near-twin of another cast name keeps its unique designation.
         old_name = entity.canonical_name
         aliases = self._clean_aliases(
             [old_name, *entity.aliases, *mention.aliases],
