@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import pytest
+from pydantic import ValidationError
 
 from app.models.player_intent import PlayerIntentContract
+from app.providers.llm_provider import LLMProvider
 from app.services.turn_outcome_resolver import (
     TurnOutcomeDecisionDraft,
     _outcome_wire_model,
@@ -102,13 +106,18 @@ def test_missing_frozen_action_outcome_still_fails_closed() -> None:
         normalize_outcome_draft(draft, _movement_contract())
 
 
-def test_unknown_action_resolution_still_fails_closed() -> None:
-    draft = TurnOutcomeDecisionDraft.model_validate(
-        {"action_outcomes": [{"action_index": 0, "resolution": "maybe"}]}
+@pytest.mark.parametrize("resolution", ["success", "успех", "pending_player_choice"])
+def test_resolution_is_a_typed_enum_at_the_wire_boundary(resolution: str) -> None:
+    with pytest.raises(ValidationError):
+        TurnOutcomeDecisionDraft.model_validate(
+            {"action_outcomes": [{"action_index": 0, "resolution": resolution}]}
+        )
+    schema = LLMProvider._strict_schema(
+        LLMProvider._compact_schema(_outcome_wire_model(2).model_json_schema())
     )
-
-    with pytest.raises(TurnPlanningError, match="unknown resolution"):
-        normalize_outcome_draft(draft, _movement_contract())
+    assert '"enum":["auto_success","requires_choice","blocked"]' in json.dumps(
+        schema, separators=(",", ":")
+    )
 
 def test_typed_outcome_keeps_its_reaction_and_drops_an_unbound_beat() -> None:
     draft = TurnOutcomeDecisionDraft.model_validate(

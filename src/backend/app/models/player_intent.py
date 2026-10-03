@@ -116,13 +116,27 @@ class PlayerIntentReview(BaseModel):
     summary: str = Field(default="", max_length=800)
 
 
+ActionResolution = Literal["auto_success", "requires_choice", "blocked"]
+TurnResolution = Literal[
+    "success",
+    "partial_success",
+    "failure",
+    "uncertain",
+    "conversation",
+    "observation",
+    "transition",
+    "sequence",
+]
+DramaticMode = Literal["calm", "routine", "tense", "dangerous"]
+
+
 class ActionOutcomeDecision(BaseModel):
     """External/current-world result for one frozen action index."""
 
     model_config = ConfigDict(extra="forbid")
 
     action_index: int = Field(ge=0, le=7)
-    resolution: Literal["auto_success", "requires_choice", "blocked"]
+    resolution: ActionResolution
     safe_mundane: bool = False
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
@@ -174,23 +188,14 @@ class TurnOutcomeDecision(BaseModel):
     npc_introductions: list[OutcomeNpcIntroduction] = Field(default_factory=list, max_length=4)
 
     # These fields constrain narration/external consequences only; they cannot add player actions.
-    resolution: Literal[
-        "success",
-        "partial_success",
-        "failure",
-        "uncertain",
-        "conversation",
-        "observation",
-        "transition",
-        "sequence",
-    ] = "success"
+    resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     addressed_response: AddressedResponse | None = None
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
     ending_hook: str = Field(default="", max_length=500)
-    dramatic_mode: Literal["calm", "routine", "tense", "dangerous"] = "calm"
+    dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = Field(default=None, max_length=1000)
 

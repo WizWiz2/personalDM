@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import settings
 from app.models.action_sequence import ActionSequenceExecution
+from app.models.player_intent import ActionResolution, DramaticMode, TurnResolution
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
@@ -72,11 +73,7 @@ class ActionStepPlan(BaseModel):
         "other",
     ]
     intent: str = Field(min_length=1, max_length=500)
-    resolution: Literal[
-        "auto_success",
-        "requires_choice",
-        "blocked",
-    ]
+    resolution: ActionResolution
     safe_mundane: bool = False
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
@@ -159,7 +156,7 @@ class NarrationPolicy(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    dramatic_mode: Literal["calm", "routine", "tense", "dangerous"] = "calm"
+    dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = Field(default=None, max_length=1000)
     pending_player_choice: str | None = Field(default=None, max_length=1000)
@@ -182,16 +179,7 @@ class TurnPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     player_intent: str = Field(min_length=1, max_length=500)
-    resolution: Literal[
-        "success",
-        "partial_success",
-        "failure",
-        "uncertain",
-        "conversation",
-        "observation",
-        "transition",
-        "sequence",
-    ]
+    resolution: TurnResolution
     action_sequence: ActionSequencePlan = Field(default_factory=ActionSequencePlan)
     scene_transition: SceneTransitionPlan = Field(default_factory=SceneTransitionPlan)
     narration_policy: NarrationPolicy = Field(default_factory=NarrationPolicy)

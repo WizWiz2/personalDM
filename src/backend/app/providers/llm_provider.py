@@ -2,7 +2,7 @@ import json
 import time
 from collections import Counter
 from collections.abc import AsyncIterator
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from copy import deepcopy
 from typing import Any
 from urllib.parse import urlparse
@@ -288,6 +288,20 @@ class LLMProvider:
         return result
 
     @classmethod
+    def _strict_schema(cls, schema: Any) -> Any:
+        """Strict decoding: closed objects with every property required (ValueError if open)."""
+        if isinstance(schema, list):
+            return [cls._strict_schema(item) for item in schema]
+        if not isinstance(schema, dict):
+            return schema
+        result = {key: cls._strict_schema(value) for key, value in schema.items()}
+        if result.get("type") == "object":
+            if result.get("additionalProperties") is not False:
+                raise ValueError("strict decoding cannot express an open object")
+            result["required"] = list(result["properties"])
+        return result
+
+    @classmethod
     def _schema_outline(cls, schema: dict[str, Any]) -> dict[str, Any]:
         """Model-visible field shapes; the native decoder owns numeric bounds/closed objects."""
         constraints = {"description", "minLength", "maxLength", "minItems", "maxItems",
@@ -562,13 +576,17 @@ class LLMProvider:
         base_messages = self._messages_payload(messages)
         original_schema = response_model.model_json_schema() if response_model else None
         response_schema = self._compact_schema(original_schema) if original_schema else None
-        if original_schema:
+        text_format = None
+        if response_schema:
             compact_text = json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))
             for message in base_messages:
                 for ascii_only in (False, True):
                     message["content"] = message["content"].replace(
                         json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
                     )
+            with suppress(ValueError):  # an open dictionary stays prompt-only
+                text_format = {"type": "json_schema", "name": response_model.__name__[:64],
+                               "schema": self._strict_schema(response_schema), "strict": True}
 
         started = time.monotonic()
         last_error: Exception | None = None
@@ -583,6 +601,8 @@ class LLMProvider:
                 if attempt > 1:
                     request_messages.append(self._repair_instruction(last_error, last_raw_text))
                 payload = self._responses_payload(config, request_messages)
+                if text_format:
+                    payload["text"] = {"format": text_format}
                 attempt_started = time.monotonic()
                 try:
                     raw_text, usage, frames = await self._collect_chatgpt_response(

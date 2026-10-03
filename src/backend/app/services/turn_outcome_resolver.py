@@ -18,10 +18,13 @@ from pydantic import (
 from app.models.addressed_response import AddressedResponse
 from app.models.player_intent import (
     ActionOutcomeDecision,
+    ActionResolution,
     DestinationProfilePatch,
     DestinationProfilePatchSet,
+    DramaticMode,
     PlayerIntentContract,
     TurnOutcomeDecision,
+    TurnResolution,
 )
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
@@ -47,7 +50,7 @@ Resolve only external results of the immutable PLAYER INTENT CONTRACT. Return Tu
 with concise Russian strings. No dice, checks, protagonist emotions, extra acts or postponed outcomes.
 action_outcomes is required: exactly one result per frozen index, [] when actions=[]. Never add,
 merge, reorder or reinterpret acts. auto_success executes now and needs a concrete observable_outcome;
-safe_mundane may be true only for success. requires_choice is allowed only for pending_player_choice.
+safe_mundane only with auto_success; requires_choice only while the player must still choose.
 blocked needs a concrete blocking_reason AND blocking_evidence_ref: select the E-number of the context
 line establishing that obstacle or NPC refusal motive. Do not copy/paraphrase a quote or invent one.
 An observation may newly find evidence absent/inaccessible; describe that finding without a source ID.
@@ -200,18 +203,6 @@ def seeks_contact_or_presence(contract: PlayerIntentContract) -> bool:
     )
 
 
-_ACTION_RESOLUTIONS = {"auto_success", "requires_choice", "blocked"}
-_TURN_RESOLUTIONS = {
-    "success",
-    "partial_success",
-    "failure",
-    "uncertain",
-    "conversation",
-    "observation",
-    "transition",
-    "sequence",
-}
-_DRAMATIC_MODES = {"calm", "routine", "tense", "dangerous"}
 
 
 class ActionOutcomeDraft(BaseModel):
@@ -220,7 +211,7 @@ class ActionOutcomeDraft(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     action_index: int = Field(ge=0, le=7)
-    resolution: str = Field(min_length=2, max_length=32)
+    resolution: ActionResolution
     safe_mundane: bool = False
     observable_outcome: str | None = None
     reaction: str | None = None
@@ -280,7 +271,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
 
     action_outcomes: list[ActionOutcomeDraft] = Field(max_length=8)
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
-    resolution: str = "success"
+    resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     response_speaker_name: str | None = Field(default=None, max_length=120)
     response_after_action_index: int | None = Field(default=None, ge=0, le=7)
@@ -290,7 +281,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
     ending_hook: str = ""
-    dramatic_mode: str = "calm"
+    dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = None
 
@@ -399,13 +390,11 @@ def _outcome_wire_model(
         response_after_action_index: prerequisite_type = None
         response_revealed_name: revealed_name_type = None
         response_name_evidence: revealed_name_type = None
-        action_outcomes: list[action_model if action_count else dict[str, Any]] = Field(
+        action_outcomes: list[action_model] = Field(
             min_length=action_count,
             max_length=action_count,
         )
-        npc_introductions: list[
-            IndexedNpcIntroductionDraft if allow_introductions else dict[str, Any]
-        ] = Field(
+        npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
             max_length=4 if allow_introductions else 0,
         )
 
@@ -572,11 +561,7 @@ def normalize_outcome_draft(
     action_outcomes: list[dict[str, Any]] = []
     for item in draft.action_outcomes:
         moving = contract.actions[item.action_index].action_type == "movement"
-        resolution = _compact(item.resolution).casefold()
-        if resolution not in _ACTION_RESOLUTIONS:
-            raise TurnPlanningError(
-                f"outcome action {item.action_index} returned unknown resolution={resolution!r}"
-            )
+        resolution = item.resolution
         blocking_reason = _compact(item.blocking_reason) or None
         if resolution == "blocked" and not blocking_reason:
             raise TurnPlanningError(
@@ -635,12 +620,6 @@ def normalize_outcome_draft(
             }
         )
 
-    resolution = _compact(draft.resolution).casefold()
-    if resolution not in _TURN_RESOLUTIONS:
-        resolution = "success"
-    dramatic_mode = _compact(draft.dramatic_mode).casefold()
-    if dramatic_mode not in _DRAMATIC_MODES:
-        dramatic_mode = "calm"
     complication_source = _compact(draft.complication_source) or None
     allow_complication = bool(draft.allow_new_complication and complication_source)
 
@@ -658,7 +637,7 @@ def normalize_outcome_draft(
         {
             "action_outcomes": public_outcomes,
             "npc_introductions": introductions,
-            "resolution": resolution,
+            "resolution": draft.resolution,
             "addressed_response": AddressedResponse(
                 speaker_name=response_speaker,
                 after_action_index=draft.response_after_action_index,
@@ -691,7 +670,7 @@ def normalize_outcome_draft(
             "canon_constraints": _bounded_strings(draft.canon_constraints, 8),
             "narration_guidance": _bounded_strings(draft.narration_guidance, 6),
             "ending_hook": _compact(draft.ending_hook),
-            "dramatic_mode": dramatic_mode,
+            "dramatic_mode": draft.dramatic_mode,
             "allow_new_complication": allow_complication,
             "complication_source": complication_source if allow_complication else None,
         }
