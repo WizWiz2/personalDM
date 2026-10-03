@@ -67,6 +67,14 @@ class ChatGPTAuthService:
         self.profile_file = self.storage_dir / "profile.enc"
 
     @staticmethod
+    def _http_client(timeout: float) -> httpx.Client:
+        return httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            trust_env=False,
+        )
+
+    @staticmethod
     def _write_private_text(path: Path, value: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -223,13 +231,9 @@ class ChatGPTAuthService:
             raise ChatGPTAuthError("Неподдерживаемая подпись ID token")
 
         try:
-            response = httpx.get(
-                cls.JWKS_URL,
-                timeout=10.0,
-                follow_redirects=True,
-                trust_env=False,
-            )
-            response.raise_for_status()
+            with cls._http_client(10.0) as client:
+                response = client.get(cls.JWKS_URL)
+                response.raise_for_status()
             keys = response.json().get("keys", [])
             jwk_data = next(
                 item for item in keys
@@ -281,21 +285,19 @@ class ChatGPTAuthService:
                 raise ChatGPTAuthError("OpenAI вернул неожиданный client_id")
 
         try:
-            response = httpx.post(
-                self.TOKEN_URL,
-                data={
-                    "grant_type": "authorization_code",
-                    "client_id": client_id,
-                    "code": code,
-                    "code_verifier": attempt.code_verifier,
-                    "redirect_uri": attempt.redirect_uri,
-                    "resource": self.RESOURCE,
-                },
-                headers={"Accept": "application/json"},
-                timeout=20.0,
-                follow_redirects=True,
-                trust_env=False,
-            )
+            with self._http_client(20.0) as client:
+                response = client.post(
+                    self.TOKEN_URL,
+                    data={
+                        "grant_type": "authorization_code",
+                        "client_id": client_id,
+                        "code": code,
+                        "code_verifier": attempt.code_verifier,
+                        "redirect_uri": attempt.redirect_uri,
+                        "resource": self.RESOURCE,
+                    },
+                    headers={"Accept": "application/json"},
+                )
             if response.status_code != 200:
                 raise ChatGPTAuthError(
                     f"OpenAI token exchange вернул HTTP {response.status_code}"
@@ -378,29 +380,23 @@ class ChatGPTAuthService:
         revocation_confirmed = not refresh_token
         if refresh_token and client_id:
             try:
-                discovery = httpx.get(
-                    self.DISCOVERY_URL,
-                    timeout=10.0,
-                    follow_redirects=True,
-                    trust_env=False,
-                )
-                discovery.raise_for_status()
+                with self._http_client(10.0) as client:
+                    discovery = client.get(self.DISCOVERY_URL)
+                    discovery.raise_for_status()
                 revocation_endpoint = str(
                     discovery.json().get("revocation_endpoint") or ""
                 )
                 if revocation_endpoint:
-                    response = httpx.post(
-                        revocation_endpoint,
-                        data={
-                            "token": refresh_token,
-                            "token_type_hint": "refresh_token",
-                            "client_id": client_id,
-                        },
-                        headers={"Accept": "application/json"},
-                        timeout=10.0,
-                        follow_redirects=True,
-                        trust_env=False,
-                    )
+                    with self._http_client(10.0) as client:
+                        response = client.post(
+                            revocation_endpoint,
+                            data={
+                                "token": refresh_token,
+                                "token_type_hint": "refresh_token",
+                                "client_id": client_id,
+                            },
+                            headers={"Accept": "application/json"},
+                        )
                     revocation_confirmed = response.status_code == 200
             except (httpx.HTTPError, ValueError, TypeError):
                 revocation_confirmed = False
@@ -436,19 +432,17 @@ class ChatGPTAuthService:
         if not refresh_token or not client_id:
             raise ChatGPTAuthError("ChatGPT OAuth session нужно подключить заново")
         try:
-            response = httpx.post(
-                self.TOKEN_URL,
-                data={
-                    "grant_type": "refresh_token",
-                    "client_id": client_id,
-                    "refresh_token": refresh_token,
-                    "resource": self.RESOURCE,
-                },
-                headers={"Accept": "application/json"},
-                timeout=20.0,
-                follow_redirects=True,
-                trust_env=False,
-            )
+            with self._http_client(20.0) as client:
+                response = client.post(
+                    self.TOKEN_URL,
+                    data={
+                        "grant_type": "refresh_token",
+                        "client_id": client_id,
+                        "refresh_token": refresh_token,
+                        "resource": self.RESOURCE,
+                    },
+                    headers={"Accept": "application/json"},
+                )
             if response.status_code != 200:
                 raise ChatGPTAuthError(
                     f"Обновление ChatGPT OAuth token вернуло HTTP {response.status_code}"
@@ -503,13 +497,11 @@ class ChatGPTAuthService:
     def list_models(self) -> list[dict[str, str]]:
         token = self.get_access_token()
         try:
-            response = httpx.get(
-                self.MODELS_URL,
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=15.0,
-                follow_redirects=True,
-                trust_env=False,
-            )
+            with self._http_client(15.0) as client:
+                response = client.get(
+                    self.MODELS_URL,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
             if response.status_code != 200:
                 raise ChatGPTAuthError(
                     f"OpenAI models endpoint вернул HTTP {response.status_code}"
