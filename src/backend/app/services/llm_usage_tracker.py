@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+import logging
 from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
@@ -9,6 +10,9 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.db.repositories.llm_usage_repo import LLMUsageRepository
 from app.services.llm_pricing import estimate_openai_text_cost_usd
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -220,6 +224,9 @@ async def record_provider_telemetry(telemetry: dict[str, Any] | None) -> None:
         expire_on_commit=False,
         autoflush=False,
     )
-    async with factory() as session:
-        await LLMUsageRepository(session).record(context, event)
-        await session.commit()
+    try:
+        async with factory() as session:
+            await LLMUsageRepository(session).record(context, event)
+            await session.commit()
+    except Exception as exc:  # telemetry must never break gameplay
+        logger.debug("LLM usage telemetry write failed: %s", exc, exc_info=True)
