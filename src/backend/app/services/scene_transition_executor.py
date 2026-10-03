@@ -231,6 +231,7 @@ class SceneTransitionExecutor:
                         destination,
                         plan.destination_parent_location,
                         profile=_destination_profile(plan.bridge_summary),
+                        resident_role=plan.destination_resident_role,
                     )
                 )
             if allow_route_discovery is None:
@@ -683,6 +684,7 @@ class SceneTransitionExecutor:
         destination: str,
         parent_name: str | None,
         profile: str | None = None,
+        resident_role: str | None = None,
     ) -> tuple[UUID, bool]:
         clean_destination = display_location_name(" ".join(destination.split()))
         if not clean_destination:
@@ -711,6 +713,7 @@ class SceneTransitionExecutor:
                 custom_fields={
                     "created_by": "turn_planner",
                     **({"profile_source": "turn_planner_destination_profile"} if profile else {}),
+                    **({"resident_role": resident_role} if resident_role else {}),
                 },
             ),
         )

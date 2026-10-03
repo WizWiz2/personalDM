@@ -36,6 +36,7 @@ class SceneTransitionPlan(BaseModel):
     # Compiled identity of a known destination; the executor never re-matches it by name.
     destination_location_id: UUID | None = None
     destination_parent_location: str | None = Field(default=None, max_length=255)
+    destination_resident_role: str | None = Field(default=None, max_length=60)
     scene_title: str | None = Field(default=None, max_length=255)
     elapsed_time: str | None = Field(default=None, max_length=255)
     time_after: str | None = Field(default=None, max_length=255)

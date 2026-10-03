@@ -258,6 +258,22 @@ def test_actionless_turn_requires_a_response_without_inventing_an_action() -> No
     assert parsed.action_outcomes == []
 
 
+def test_unfilled_resident_role_is_introduced_through_npc_introductions() -> None:
+    wire = _outcome_wire_model(0, resident_role="трактирщик")
+    base = {"action_outcomes": [], "observable_consequences": ["За стойкой стоит хозяин."]}
+    keeper = {
+        "canonical_name": "Трактирщик", "role": "трактирщик", "reason": "Хозяин за стойкой.",
+        "description": "Плотный немолодой мужчина в фартуке, хозяин этого трактира.",
+        "appearance": "Седая борода, закатанные рукава, полотенце через плечо.",
+    }
+    with pytest.raises(ValidationError):
+        wire.model_validate({**base, "npc_introductions": []})
+    with pytest.raises(ValidationError):
+        wire.model_validate({**base, "npc_introductions": [{**keeper, "role": "кухарка"}]})
+    parsed = wire.model_validate({**base, "npc_introductions": [keeper]})
+    assert parsed.npc_introductions[0].role == "трактирщик"
+
+
 def _revealed_response(*, evidence: str):
     return {
         "action_outcomes": [], "npc_introductions": [],

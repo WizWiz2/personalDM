@@ -93,7 +93,7 @@ No complication without a grounded complication_source.
 _PROFILE_PROMPT = """[NEW DESTINATION PROFILE ENRICHMENT]
 Return exactly DestinationProfilePatchSet, one patch per requested action index. Each request is a
 new place the player travels to from the place named in "from". Give its own nominative name, whether
-it lies inside "from", and a stable public physical profile: 2-4 Russian sentences, at least 80
+it lies inside "from", the role of whoever keeps it if it is a public place, and a stable public physical profile: 2-4 Russian sentences, at least 80
 characters, ordinary purpose/appearance only. Do not change routes, actions, outcomes or NPCs.
 """
 
@@ -312,6 +312,7 @@ def _outcome_wire_model(
     movement_indices: set[int] | None = None,
     allow_name_revelation: bool = True,
     bound_response_speaker: str | None = None,
+    resident_role: str | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -329,6 +330,13 @@ def _outcome_wire_model(
 
     class IndexedNpcIntroductionDraft(OutcomeNpcIntroductionDraft):
         after_action_index: prerequisite_type = None
+
+    if resident_role:
+        # The place's typed resident role is unfilled: its holder is introduced now.
+        IndexedNpcIntroductionDraft = create_model(
+            "ResidentNpcIntroductionDraft", __base__=IndexedNpcIntroductionDraft,
+            role=(Literal[resident_role], ...),
+        )
 
     class IndexedActionOutcomeDraft(ActionOutcomeDraft):
         # Coverage is structural, so enforce the known indices in native decoding too.
@@ -392,7 +400,8 @@ def _outcome_wire_model(
             max_length=action_count,
         )
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
-            max_length=4 if allow_introductions else 0,
+            min_length=1 if resident_role and allow_introductions else 0,
+            max_length=(1 if resident_role else 4) if allow_introductions else 0,
         )
 
         @model_validator(mode="before")
@@ -770,6 +779,7 @@ class TurnOutcomeResolver:
         contract: PlayerIntentContract,
         *,
         force_introduce_contact: bool = False,
+        resident_role: str | None = None,
     ) -> TurnOutcomeDecision:
         try:
             solo_cast = solo_physical_presence(context_messages)
@@ -816,6 +826,7 @@ class TurnOutcomeResolver:
                     contract.addressed_character_name if existing_addressee else None
                 ),
                 present_names=present_character_names(context_messages),
+                resident_role=resident_role,
                 movement_indices={
                     index
                     for index, action in enumerate(contract.actions)
@@ -829,7 +840,12 @@ class TurnOutcomeResolver:
                 "seeks_contact_or_presence": seeks_contact_or_presence(contract),
             }
             empty_cast_guidance = ""
-            if (solo_cast and seeks_contact_or_presence(contract)) or force_introduce_contact:
+            if resident_role and not existing_addressee:
+                empty_cast_guidance = (
+                    f"\n[UNFILLED RESIDENT ROLE] This place's {resident_role} is here now: introduce "
+                    "them in npc_introductions."
+                )
+            elif (solo_cast and seeks_contact_or_presence(contract)) or force_introduce_contact:
                 # Optional guidance only: a search that finds nobody is a valid outcome.
                 empty_cast_guidance = (
                     "\n[EMPTY CAST / CONTACT-SEEKING — guidance]\n"
@@ -954,6 +970,7 @@ class TurnOutcomeResolver:
             outcomes[index].destination_profile = patch.profile.strip()
             outcomes[index].destination_name = " ".join(patch.name.split())
             outcomes[index].destination_within_current = patch.within_current
+            outcomes[index].destination_resident_role = _compact(patch.resident_role) or None
         self.audit.append({
             "phase": "destination_profiles", "requests": requests,
             "patches": {index: patch.model_dump() for index, patch in by_index.items()},

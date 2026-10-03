@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
-from app.db.tables import Campaign
+from app.db.tables import Campaign, Character, Entity
 from app.models.player_intent import (
     ActionOutcomeDecision,
     PlayerActionIntent,
@@ -14,6 +16,7 @@ from app.models.player_intent import (
     TurnOutcomeDecision,
 )
 from app.models.turn_authority import PlannedNpcIntroduction
+from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_planner import (
@@ -177,6 +180,21 @@ class ActionPlanCompiler:
             ))
         return TurnOutcomeDecision(action_outcomes=outcomes, resolution="sequence")
 
+    async def unfilled_resident_role(self, campaign_id: UUID) -> str | None:
+        """The current place's typed resident role when no character located here holds it."""
+        _scene_id, state, locations = await self._world(campaign_id)
+        here = next((item for item in locations if item.id == state.location_id), None)
+        role = (here.custom_fields or {}).get("resident_role") if here else None
+        if not role:
+            return None
+        rows = (await self._session.execute(
+            select(Entity.custom_fields)
+            .join(Character, Character.entity_id == Entity.id)
+            .where(Character.current_location_id == str(here.id))
+        )).scalars().all()
+        held = {identity_key(json.loads(row or "{}").get("role") or "") for row in rows}
+        return None if identity_key(role) in held else role
+
     async def missing_destination_profiles(
         self,
         campaign_id: UUID,
@@ -292,6 +310,7 @@ class ActionPlanCompiler:
             transition_type="location_transition",
             destination_location=outcome.destination_name,
             destination_parent_location=parent,
+            destination_resident_role=outcome.destination_resident_role,
             reason=action.intent,
             bridge_summary=(
                 "DESTINATION PROFILE: "

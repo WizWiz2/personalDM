@@ -146,6 +146,7 @@ class ActionOutcomeDecision(BaseModel):
     # A new place's own name and containment come from its generated profile, never player text.
     destination_name: str | None = Field(default=None, max_length=120)
     destination_within_current: bool = False
+    destination_resident_role: str | None = Field(default=None, max_length=60)
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
@@ -219,6 +220,9 @@ class DestinationProfilePatch(BaseModel):
     action_index: int = Field(ge=0, le=7)
     name: str = Field(min_length=2, max_length=120, description="The place's own nominative name.")
     within_current: bool = Field(description="True if it lies inside the place the hop starts from.")
+    resident_role: str | None = Field(
+        default=None, max_length=60, description="Role of the person who keeps this public place, or null."
+    )
     profile: str = Field(min_length=80, max_length=1000)
 
 
