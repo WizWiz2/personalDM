@@ -56,7 +56,7 @@ class GrantedBeat(BaseModel):
 
     cast_id: str = Field(min_length=1, max_length=64)
     kind: Literal["speech", "refusal", "leave", "act"]
-    evidence: str = Field(min_length=1, max_length=500)
+    evidence: str = Field(min_length=1)
 
     def failure(self, owner_id: object, prose: str) -> str | None:
         """Structural check: owner ID, exact fragment, and speech overlapping a dialogue line or quote span."""
