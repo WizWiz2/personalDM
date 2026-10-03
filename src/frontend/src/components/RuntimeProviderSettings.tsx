@@ -34,7 +34,13 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
 
   const applyProfile = (next: RuntimeProviderProfile) => {
     setProfile(next)
-    setTextMode(next.text.mode)
+    const returningFromChatGPT = window.sessionStorage.getItem('pdm-chatgpt-connect-return') === '1'
+    if (returningFromChatGPT && next.text.chatgpt.connected) {
+      setTextMode('chatgpt')
+      window.sessionStorage.removeItem('pdm-chatgpt-connect-return')
+    } else {
+      setTextMode(next.text.mode)
+    }
     setTextBaseUrl(next.text.base_url)
     setTextModel(next.text.model)
     setTextContext(next.text.context_window)
@@ -134,9 +140,11 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
   const connectChatGPT = async () => {
     setBusy('chatgpt-connect'); onError(''); onMessage('')
     try {
+      window.sessionStorage.setItem('pdm-chatgpt-connect-return', '1')
       const { authorization_url } = await runtimeProviderApi.startChatGPTSignIn(window.location.href)
       window.location.assign(authorization_url)
     } catch (error) {
+      window.sessionStorage.removeItem('pdm-chatgpt-connect-return')
       onError(error instanceof Error ? error.message : 'Не удалось начать вход через ChatGPT')
       setBusy('')
     }
