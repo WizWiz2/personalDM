@@ -17,7 +17,11 @@ from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProviderError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.initial_world_state import InitialWorldStateService
-from app.services.llm_usage_tracker import close_usage_context, set_usage_context
+from app.services.llm_usage_tracker import (
+    close_usage_context,
+    record_decision,
+    set_usage_context,
+)
 from app.services.post_turn_dispatcher import PostTurnDispatcher
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -606,6 +610,7 @@ class TurnSaga:
                 }
             )
 
+            record_decision("authority", "frozen", authority.trace_summary())
             pipeline = AuthorityNarrationPipeline(self._session, role_router)
             narration = await pipeline.generate(
                 campaign_id=campaign_id,
@@ -720,10 +725,19 @@ class TurnSaga:
                 pass
             await self._session.commit()
 
+            record_decision(
+                "final",
+                "published",
+                {
+                    "validation_status": narration.validation_status,
+                    "publication_mode": publication.get("mode"),
+                },
+            )
             PostTurnDispatcher.schedule(self._session.bind, saved_assistant.id)
             yield narration.text
 
         except asyncio.CancelledError:
+            record_decision("final", "cancelled", {"reason": "Cancellation requested"})
             await self._compensate(
                 generation_run.id,
                 transition_executor,
@@ -741,6 +755,11 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
         except Exception as exc:
+            record_decision(
+                "final",
+                "failed",
+                {"error_type": type(exc).__name__, "reason": str(exc)[:2000]},
+            )
             await self._compensate(
                 generation_run.id,
                 transition_executor,

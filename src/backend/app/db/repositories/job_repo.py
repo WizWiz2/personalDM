@@ -30,6 +30,9 @@ class GenerationRunRepository(BaseRepository):
         await self._session.flush()
         return await self._read(db_run)
 
+    async def get(self, run_id: UUID) -> GenerationRunRead | None:
+        return await self._read(await self._session.get(GenerationRun, str(run_id)))
+
     async def get_by_user_turn(self, user_turn_id: UUID) -> GenerationRunRead | None:
         result = await self._session.execute(
             select(GenerationRun).where(GenerationRun.user_turn_id == str(user_turn_id))

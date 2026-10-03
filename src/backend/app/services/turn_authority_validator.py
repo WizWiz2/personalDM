@@ -11,6 +11,7 @@ from app.models.narration_validation import (
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.llm_usage_tracker import record_decision
 from app.services.narration_validator import NarrationValidationError
 from app.services.narrator_authority_contracts import (
     addressed_response_erasure_spans,
@@ -20,7 +21,7 @@ from app.services.narrator_authority_contracts import (
     unauthorized_named_person_spans,
 )
 from app.services.player_intent_contract import language_mismatch
-from app.services.role_model_router import RoleModelRouter, RoleModelSelection
+from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 
 
 class TurnAuthorityValidator:
@@ -174,6 +175,21 @@ Return exactly:
         return dict(self._provider.last_telemetry or {})
 
     async def validate(
+        self,
+        selection: RoleModelSelection,
+        authority: TurnAuthority,
+        candidate_text: str,
+    ) -> NarrationValidationResult:
+        role = ModelRole.NARRATION_VALIDATOR.value
+        try:
+            result = await self._validate(selection, authority, candidate_text)
+        except NarrationValidationError as exc:
+            record_decision("validate", "error", {"error": str(exc)[:500]}, role=role)
+            raise
+        record_decision("validate", result.verdict, result.trace(candidate_text), role=role)
+        return result
+
+    async def _validate(
         self,
         selection: RoleModelSelection,
         authority: TurnAuthority,

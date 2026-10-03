@@ -11,6 +11,7 @@ from app.services.authority_narration_pipeline import (
     AuthorityNarrationPipeline,
     AuthorityNarrationResult,
 )
+from app.services.llm_usage_tracker import record_decision
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
 
@@ -47,8 +48,9 @@ async def recover_presentation_failure(
     therefore not allowed to compensate that structured result or leak its exception text to the
     player. Database/state failures are intentionally outside this boundary and still abort normally.
     """
-    published, publication = NarrationPublicationGuard.publish(authority, "", None)
     reason = f"{type(error).__name__}: {error}"[:2000]
+    record_decision("publish", "presentation_fallback", {"reason": reason[:500]})
+    published, publication = NarrationPublicationGuard.publish(authority, "", None)
 
     validation_run_id: UUID | None = None
     run = await _latest_validating_run(pipeline, trigger_turn_id)
