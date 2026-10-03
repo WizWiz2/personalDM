@@ -227,24 +227,6 @@ _SUBSTANCE_FIRST_QUIET = (
 )
 
 
-def has_substance_stamp(
-    *,
-    committed_travel: bool = False,
-    addressed_response_obligation: str | None = None,
-    canon_constraints: list[str] | None = None,
-) -> bool:
-    """True when a machine-stamped substance obligation outranks Soft Keeper quiet padding."""
-    if committed_travel:
-        return True
-    if " ".join(str(addressed_response_obligation or "").split()):
-        return True
-    for item in list(canon_constraints or []):
-        text = " ".join(str(item or "").split())
-        if "honor_travel" in text:
-            return True
-    return False
-
-
 def subordinate_quiet_guidance_to_substance(
     guidance: list[str] | None,
     *,
@@ -446,7 +428,6 @@ __all__ = [
     "adjust_weights",
     "apply_moves_to_narration_guidance",
     "apply_moves_to_outcome_decision",
-    "has_substance_stamp",
     "narrator_persona_block",
     "pick_moves",
     "sampling_seed",

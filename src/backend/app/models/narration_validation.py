@@ -49,13 +49,42 @@ class NarrationViolation(BaseModel):
         }
 
 
-class BeatOwnerTurn(BaseModel):
-    """How the granted cast member took the beat, with the exact candidate fragment."""
+class GrantedBeat(BaseModel):
+    """The narrator's typed claim of how the beat owner took the beat, with exact prose evidence."""
 
     model_config = ConfigDict(extra="forbid")
 
-    form: Literal["dialogue", "action", "none"]
-    evidence: str = Field(default="", max_length=500)
+    cast_id: str = Field(min_length=1, max_length=64)
+    kind: Literal["speech", "refusal", "leave", "act"]
+    evidence: str = Field(min_length=1, max_length=500)
+
+    def failure(self, owner_id: object, prose: str) -> str | None:
+        """Structural check: owner ID, exact fragment, and speech inside a dialogue or quote span."""
+        if self.cast_id != str(owner_id):
+            return f"beat cast_id {self.cast_id} is not the grant owner {owner_id}"
+        evidence = self.evidence.strip()
+        start = prose.find(evidence)
+        if not evidence or start < 0:
+            return "beat evidence is not an exact fragment of the prose"
+        middle = start + len(evidence) // 2
+        line = prose[prose.rfind("\n", 0, middle) + 1:].lstrip()
+        before = prose[:middle]
+        spoken = (
+            line.startswith(("—", "–"))
+            or before.count("«") > before.count("»")
+            or before.count("„") > before.count("“")
+            or before.count('"') % 2 == 1
+        )
+        if self.kind in {"speech", "refusal"} and not spoken:
+            return f"{self.kind} evidence is outside any dialogue line or quote"
+        return None
+
+
+class GrantedNarration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prose: str = Field(min_length=1)
+    beat: GrantedBeat
 
 
 class NarrationValidationResult(BaseModel):
@@ -64,7 +93,6 @@ class NarrationValidationResult(BaseModel):
     verdict: Literal["pass", "repair_required"]
     summary: str = Field(default="", max_length=1500)
     violations: list[NarrationViolation] = Field(default_factory=list, max_length=12)
-    beat_owner_turn: BeatOwnerTurn | None = None
 
     def trace(self, candidate: str) -> dict:
         """Compact decision payload: the verdict, every violation and a short candidate head."""

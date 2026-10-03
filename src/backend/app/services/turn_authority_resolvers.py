@@ -12,7 +12,7 @@ from app.db.repositories.location_repo import LocationRepository
 from app.db.tables import Character, Turn
 from app.models.turn_authority import ExistingNpcArrival
 from app.services.entity_identity import exact_identity_matches, identity_key, resolve_character_candidates
-from app.services.narrator_authority_contracts import (
+from app.services.name_identity_contract import (
     description_used_as_identity_name,
     is_usable_short_designation,
     repair_introduction_identity,

@@ -117,7 +117,8 @@ async def test_response_binds_to_present_stable_id(db_session):
         plan=plan,
         acting_character_id=None,
     )
-    assert unbound.addressed_response is None
+    # The grant decides who answers: a planner-named absent speaker cannot take the beat.
+    assert unbound.addressed_response.speaker_id == unbound.beat_owner_id == marta.id
     assert "Отсутствующий капитан" not in unbound.present_character_names
 
 

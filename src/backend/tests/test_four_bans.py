@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.models.narration_validation import NarrationValidationResult
+from app.models.narration_validation import GrantedBeat, NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
@@ -114,24 +114,24 @@ async def test_one_validator_call_per_narration():
     assert DIALOGUE in router.calls[0][-1].content
 
 
-@pytest.mark.asyncio
-async def test_beat_grant_is_honored_only_by_an_exact_owner_fragment():
+def test_beat_grant_is_checked_structurally_against_owner_and_dialogue_span():
     owner = uuid4()
     authority = _authority(beat_owner_id=owner, beat_owner_name="Дежурный")
     assert authority.narrator_payload()["beat_owner"] == {"id": str(owner), "name": "Дежурный"}
-    honored = {**_verdict(), "beat_owner_turn": {"form": "dialogue", "evidence": "Ступай"}}
-    invented = {**_verdict(), "beat_owner_turn": {"form": "action", "evidence": "уходит прочь"}}
-    silent = {**_verdict(), "beat_owner_turn": {"form": "none", "evidence": ""}}
-    router = _Router(honored, invented, silent)
-    validator = TurnAuthorityValidator(router)
-    selection = SimpleNamespace(config=SimpleNamespace(model_name="control"))
-    results = [await validator.validate(selection, authority, DIALOGUE) for _ in range(3)]
-    assert [validator.beat_unhonored(authority, item, DIALOGUE) for item in results] == [
-        False, True, True,
-    ]
-    assert "[BEAT OWNER] Дежурный" in router.calls[0][-1].content
-    assert "Этот бит принадлежит Дежурный" in validator.repair_prompt(authority, DIALOGUE, results[2])
-    assert not validator.beat_unhonored(_authority(), results[2], DIALOGUE)
+    prose = "Дежурный встаёт из-за стола.\n" + DIALOGUE
+
+    def beat(kind, evidence, cast_id=str(owner)):
+        return GrantedBeat(cast_id=cast_id, kind=kind, evidence=evidence).failure(owner, prose)
+
+    assert beat("speech", "Ступай") is None
+    assert beat("refusal", "Не знаю я никакого Шептуна") is None
+    assert beat("act", "Дежурный встаёт из-за стола") is None
+    assert "outside" in beat("speech", "Дежурный встаёт из-за стола")
+    assert "exact fragment" in beat("act", "уходит прочь")
+    assert "grant owner" in beat("speech", "Ступай", cast_id=str(uuid4()))
+    assert "Бит принадлежит Дежурный" in TurnAuthorityValidator.repair_prompt(
+        authority, prose, None, "no beat returned"
+    )
 
 
 def test_validated_dialogue_with_dashes_is_published_verbatim():

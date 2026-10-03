@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
-from app.models.narration_validation import NarrationValidationResult
+from app.models.narration_validation import GrantedBeat, GrantedNarration, NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import (
@@ -33,8 +33,8 @@ class AuthorityNarrationResult:
 class AuthorityNarrationPipeline:
     """Render one authoritative turn without letting renderer mistakes cancel game state.
 
-    Planner/engine own the outcome. One validator call judges the four bans; a rejected draft gets
-    one model repair; if that fails too, the typed step outcome is published as plain text.
+    Planner/engine own the outcome. Code checks the typed beat grant, one validator call judges the
+    four bans; a rejected draft gets one model repair; then the typed step outcome is published.
     """
 
     def __init__(
@@ -190,6 +190,38 @@ class AuthorityNarrationPipeline:
         )
         return text, telemetry
 
+    async def _narrate(
+        self,
+        messages: list[ChatMessage],
+        selection: RoleModelSelection,
+        authority: TurnAuthority,
+        *,
+        temperature: float,
+    ) -> tuple[str, GrantedBeat | None, dict]:
+        """Prose; under a beat grant, structured prose plus the narrator's typed beat claim."""
+        if authority.beat_owner_id is None:
+            text, telemetry = await self._generate_text(messages, selection, temperature=temperature)
+            return text, None, telemetry
+        try:
+            narration = GrantedNarration.model_validate(await self._router.generate_json(
+                self._provider, selection, messages,
+                temperature=temperature, response_model=GrantedNarration,
+            ))
+        except (ValueError, TypeError) as exc:
+            raise LLMProviderError(f"granted narration is malformed: {exc}") from exc
+        return narration.prose.strip(), narration.beat, self.last_telemetry
+
+    @staticmethod
+    def _beat_failure(authority: TurnAuthority, prose: str, beat: GrantedBeat | None) -> str | None:
+        if authority.beat_owner_id is None:
+            return None
+        failure = beat.failure(authority.beat_owner_id, prose) if beat else "no beat returned"
+        record_decision("beat", "unhonored" if failure else "honored", {
+            "owner": authority.beat_owner_name, "owner_id": str(authority.beat_owner_id),
+            **(beat.model_dump() if beat else {}), "failure": failure,
+        })
+        return failure
+
     async def _check(
         self,
         *,
@@ -289,9 +321,10 @@ class AuthorityNarrationPipeline:
             RoleModelRouter(ProviderConfigRepository(self._session)),
         )
         try:
-            draft, telemetry = await self._generate_text(
+            draft, beat, telemetry = await self._narrate(
                 narrator_messages,
                 narrator_selection,
+                authority,
                 temperature=settings.NARRATOR_TEMPERATURE,
             )
         except LLMProviderError as exc:
@@ -353,8 +386,11 @@ class AuthorityNarrationPipeline:
             "authority": authority,
         }
         try:
-            result = await self._check(**check, candidate=draft, attempt_index=0)
-            if result.verdict == "pass" and not validator.beat_unhonored(authority, result, draft):
+            beat_failure = self._beat_failure(authority, draft, beat)
+            result = None if beat_failure else await self._check(
+                **check, candidate=draft, attempt_index=0
+            )
+            if result and result.verdict == "pass":
                 return await accepted(draft, "passed", 0)
 
             record_decision(
@@ -365,13 +401,14 @@ class AuthorityNarrationPipeline:
                 *narrator_messages,
                 ChatMessage(
                     role="user",
-                    content=validator.repair_prompt(authority, draft, result),
+                    content=validator.repair_prompt(authority, draft, result, beat_failure),
                 ),
             ]
             try:
-                repaired, repair_telemetry = await self._generate_text(
+                repaired, repaired_beat, repair_telemetry = await self._narrate(
                     repair_messages,
                     narrator_selection,
+                    authority,
                     temperature=settings.NARRATION_REPAIR_TEMPERATURE,
                 )
             except LLMProviderError as exc:
@@ -384,14 +421,21 @@ class AuthorityNarrationPipeline:
                     telemetry=telemetry,
                 )
             telemetry = {**telemetry, "repair_generation": repair_telemetry}
-            repaired_result = await self._check(**check, candidate=repaired, attempt_index=1)
-            if repaired_result.verdict == "pass":
+            repaired_failure = self._beat_failure(authority, repaired, repaired_beat)
+            repaired_result = None if repaired_failure else await self._check(
+                **check, candidate=repaired, attempt_index=1
+            )
+            if repaired_result and repaired_result.verdict == "pass":
                 return await accepted(repaired, "repaired", 1)
             return await self._fallback(
                 audit=audit,
                 run=run,
                 authority=authority,
-                reason=repaired_result.summary or "narration still breaks a ban after one repair",
+                reason=(
+                    f"beat grant not honored after one repair: {repaired_failure}"
+                    if repaired_failure
+                    else repaired_result.summary or "narration still breaks a ban after one repair"
+                ),
                 repair_attempts=1,
                 telemetry=telemetry,
             )

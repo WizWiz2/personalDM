@@ -168,7 +168,7 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
     assert steps[0] == "authority"
     authority = decisions[0]["payload"]
     assert set(authority["present_characters"]) >= {"Кай", "Лада"}
-    assert {"addressed_response_obligation", "action_steps", "established_subjects"} <= set(authority)
+    assert {"beat_owner", "action_steps", "established_subjects"} <= set(authority)
 
     first = decisions[1]
     assert (first["step"], first["role"], first["outcome"]) == (

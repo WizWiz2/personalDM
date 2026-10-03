@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from app.config import settings
-from app.models.narration_validation import BeatOwnerTurn, NarrationValidationResult
+from app.models.narration_validation import NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
@@ -27,12 +27,7 @@ def four_bans_only(result: NarrationValidationResult) -> NarrationValidationResu
         verdict="repair_required" if errors else "pass",
         summary=result.summary,
         violations=violations,
-        beat_owner_turn=result.beat_owner_turn,
     )
-
-
-class BeatCheckedResult(NarrationValidationResult):
-    beat_owner_turn: BeatOwnerTurn
 
 
 class TurnAuthorityValidator:
@@ -118,13 +113,6 @@ short prose-only fix in Russian. Return exactly:
                     + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
                     + "\n\n[CANDIDATE NARRATION]\n"
                     + candidate_text
-                    + (
-                        f"\n\n[BEAT OWNER] {authority.beat_owner_name} (id {authority.beat_owner_id}). "
-                        "Report in beat_owner_turn how this cast member takes the beat: dialogue "
-                        "(a line attributed to them), action (their own act) or none; evidence is the "
-                        "exact candidate fragment. This is not a ban."
-                        if authority.beat_owner_id else ""
-                    )
                 ),
             ),
         ]
@@ -135,50 +123,37 @@ short prose-only fix in Russian. Return exactly:
                 messages,
                 max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS, 700),
                 temperature=0.0,
-                response_model=(
-                    BeatCheckedResult if authority.beat_owner_id else NarrationValidationResult
-                ),
+                response_model=NarrationValidationResult,
             )
             return four_bans_only(NarrationValidationResult.model_validate(data))
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise NarrationValidationError(str(exc)) from exc
 
     @staticmethod
-    def beat_unhonored(
-        authority: TurnAuthority, result: NarrationValidationResult, candidate: str
-    ) -> bool:
-        """The grant holds only if the owner's line or act is an exact fragment of the candidate."""
-        turn = result.beat_owner_turn
-        evidence = (turn.evidence if turn else "").strip()
-        return bool(authority.beat_owner_id) and not (
-            turn and turn.form != "none" and evidence and evidence in candidate
-        )
-
-    @staticmethod
     def repair_prompt(
         authority: TurnAuthority,
         candidate: str,
-        result: NarrationValidationResult,
+        result: NarrationValidationResult | None,
+        beat_failure: str | None = None,
     ) -> str:
-        violations = "\n".join(
+        violations = [
             f"- {item.violation_type}: «{item.evidence}» -> {item.correction}"
-            for item in result.violations
+            for item in (result.violations if result else [])
             if item.severity == "error"
-        )
+        ]
+        if beat_failure:
+            violations.append(
+                f"- Бит принадлежит {authority.beat_owner_name}: он сам говорит, отказывает, "
+                f"уходит или действует ({beat_failure})."
+            )
         return (
             "[REPAIR REJECTED NARRATION]\n"
             "Отредактируй текст минимально: исправь только перечисленные места и сохрани всё "
-            "остальное, включая реплики присутствующих персонажей. Верни только художественную "
-            "прозу на русском языке.\n\n"
+            "остальное, включая реплики присутствующих персонажей. Ответ на русском языке.\n\n"
             "ФАКТЫ ХОДА:\n"
             + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
             + "\n\nНАРУШЕНИЯ:\n"
-            + (violations or result.summary)
-            + (
-                f"\n- Этот бит принадлежит {authority.beat_owner_name}: пусть он сам ответит, "
-                "откажет, уйдёт или сделает что-то."
-                if TurnAuthorityValidator.beat_unhonored(authority, result, candidate) else ""
-            )
+            + ("\n".join(violations) or (result.summary if result else ""))
             + "\n\n[REJECTED CANDIDATE]\n"
             + candidate
         )

@@ -138,7 +138,9 @@ class TurnSaga:
             "(scene_disposition/transition_type). Moving inside the current place is fine.\n"
             "Present characters may speak, answer, refuse, stay silent or act; none of it is "
             "required, except that beat_owner, when set, takes this beat itself: it may speak, "
-            "refuse, leave or act. Everything else in the facts is optional context.\n\n"
+            "refuse, leave or act, and you return the prose with beat = {cast_id: beat_owner.id, "
+            "kind, evidence: the exact prose fragment of that beat}. Everything else in the facts "
+            "is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose, usually 2-3 paragraphs, "
             "and stop before the player's next choice."
         )

@@ -26,7 +26,6 @@ from app.services.master_director import (
     advance_rhythm,
     apply_moves_to_narration_guidance,
     apply_moves_to_outcome_decision,
-    has_substance_stamp,
     narrator_persona_block,
     pick_moves,
     sampling_seed,
@@ -585,20 +584,6 @@ def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
     stamped = apply_moves_to_narration_guidance(["keep stakes"], quiet, substance_active=True)
     assert any("subordinated" in item for item in stamped)
     assert not any("Atmospheric beat with low plot push" in item for item in stamped)
-    assert has_substance_stamp(committed_travel=True) is True
-    assert (
-        has_substance_stamp(
-            addressed_response_obligation="Управляющая домом",
-        )
-        is True
-    )
-    assert (
-        has_substance_stamp(
-            canon_constraints=["[DIRECTOR STRUCTURAL: honor_travel] Arrive or hard-block."],
-        )
-        is True
-    )
-    assert has_substance_stamp() is False
 
     rewritten = subordinate_quiet_guidance_to_substance(
         [

@@ -130,13 +130,10 @@ class TurnOutcomeMaterializer:
                 allow_movement=True,
             )
             created_ids.append(character.id)
-            response = authority.addressed_response
-            if response and identity_key(response.speaker_name or "") == key:
-                authority.addressed_response = response.model_copy(
-                    update={"speaker_id": character.id}
-                )
-                authority.acting_character_id = character.id
-                authority.acting_character_name = character.canonical_name
+            if authority.beat_owner_id is None and identity_key(authority.beat_owner_name or "") == key:
+                authority.beat_owner_id = authority.acting_character_id = character.id
+                if authority.addressed_response:
+                    authority.addressed_response.speaker_id = character.id
             if character.canonical_name not in authority.present_character_names:
                 authority.present_character_names.append(character.canonical_name)
             known_names.add(key)
@@ -197,9 +194,7 @@ class TurnOutcomeMaterializer:
             for npc in authority.allowed_new_npcs
         ]
         authority.addressed_response = response.model_copy(update={"speaker_name": response.revealed_name})
-        authority.addressed_response_obligation = response.revealed_name
-        authority.acting_character_id = response.speaker_id
-        authority.acting_character_name = response.revealed_name
+        authority.beat_owner_name = authority.acting_character_name = response.revealed_name
         await self._session.flush()
         return update
 
