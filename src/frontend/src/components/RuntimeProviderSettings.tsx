@@ -67,16 +67,22 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
       return
     }
     void runtimeProviderApi.chatGPTModels()
-      .then(({ models }) => {
+      .then(({ models, default_model }) => {
         setChatGPTModels(models)
-        if (models.length && !models.some((item) => item.slug === textModel)) {
-          setTextModel(models[0].slug)
+        if (!models.some((item) => item.slug === textModel)) {
+          selectChatGPTModel(models.find((item) => item.slug === default_model))
         }
       })
       .catch((error) => onError(
         error instanceof Error ? error.message : 'Не удалось получить модели ChatGPT',
       ))
   }, [textMode, profile?.text.chatgpt.connected])
+
+  const selectChatGPTModel = (model?: ChatGPTModel) => {
+    if (!model) return
+    setTextModel(model.slug)
+    setTextContext(model.context_window)
+  }
 
   const changeTextMode = (mode: 'local' | 'cloud' | 'chatgpt') => {
     setTextMode(mode)
@@ -89,11 +95,7 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
       setTextModel('gpt-4.1-mini')
       setTextContext(128000)
     } else {
-      setTextBaseUrl('https://api.openai.com/v1')
-      setTextContext(128000)
-      if (chatGPTModels.length && !chatGPTModels.some((item) => item.slug === textModel)) {
-        setTextModel(chatGPTModels[0].slug)
-      }
+      setTextModel('')
     }
   }
 
@@ -279,7 +281,7 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
       {textMode === 'cloud' && <label>Base URL<input value={textBaseUrl} onChange={(e) => setTextBaseUrl(e.target.value)} /></label>}
       {textMode === 'chatgpt' ? (
         <label>Модель
-          <select value={textModel} onChange={(e) => setTextModel(e.target.value)} disabled={!chatGPTModels.length}>
+          <select value={textModel} onChange={(e) => selectChatGPTModel(chatGPTModels.find((item) => item.slug === e.target.value))} disabled={!chatGPTModels.length}>
             {!chatGPTModels.length && <option value="">Сначала подключите ChatGPT</option>}
             {chatGPTModels.map((item) => <option key={item.slug} value={item.slug}>{item.display_name}</option>)}
           </select>

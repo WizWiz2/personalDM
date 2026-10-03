@@ -178,7 +178,7 @@ async def chatgpt_callback(
 async def list_chatgpt_models():
     try:
         models = await asyncio.to_thread(ChatGPTAuthService().list_models)
-        return {"models": models}
+        return {"models": models, "default_model": ChatGPTAuthService.default_model(models)}
     except ChatGPTAuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
 

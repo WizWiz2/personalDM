@@ -15,6 +15,7 @@ from app.providers import llm_provider as llm_provider_module
 from app.providers.llm_provider import LLMProvider
 from app.services import chatgpt_auth_service as chatgpt_auth_module
 from app.services.chatgpt_auth_service import ChatGPTAuthError, ChatGPTAuthService
+from app.services.runtime_provider_service import RuntimeProviderService
 
 
 class _StructuredPayload(BaseModel):
@@ -214,6 +215,14 @@ class _FakeSyncClient:
                             "slug": "gpt-test",
                             "display_name": "GPT Test",
                             "visibility": "list",
+                            "context_window": 272000,
+                            "max_context_window": 872000,
+                        },
+                        {
+                            "slug": ChatGPTAuthService.DEFAULT_MODEL,
+                            "display_name": "Luna",
+                            "visibility": "list",
+                            "context_window": 272000,
                         },
                         {
                             "slug": "hidden-test",
@@ -262,13 +271,43 @@ def test_chatgpt_model_listing_uses_sync_client_and_filters_visibility(
     service = ChatGPTAuthService()
     service._save_profile(_connected_profile())
 
-    assert service.list_models() == [
-        {"slug": "gpt-test", "display_name": "GPT Test"}
+    models = service.list_models()
+    assert models == [
+        {"slug": "gpt-test", "display_name": "GPT Test", "context_window": 872000},
+        {"slug": ChatGPTAuthService.DEFAULT_MODEL, "display_name": "Luna", "context_window": 272000},
     ]
     assert _FakeSyncClient.calls[0][0:2] == (
         "GET",
         "https://api.openai.com/v1/models",
     )
+    assert ChatGPTAuthService.default_model(models) == "gpt-5.6-luna"
+    assert ChatGPTAuthService.default_model(models[:1]) == "gpt-test"
+    assert ChatGPTAuthService.default_model([]) is None
+
+
+def test_chatgpt_text_configuration_defaults_model_and_context_from_metadata(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(settings, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(chatgpt_auth_module.httpx, "Client", _FakeSyncClient)
+    monkeypatch.setattr(RuntimeProviderService, "ENV_FILE", tmp_path / ".env")
+    monkeypatch.setattr(
+        RuntimeProviderService, "_apply_runtime_settings", staticmethod(lambda updates: None)
+    )
+    ChatGPTAuthService()._save_profile(_connected_profile())
+    service = RuntimeProviderService()
+
+    service.configure_text("chatgpt")
+    values = service.read_env()
+    assert values["PDM_TEXT_PROVIDER"] == "chatgpt"
+    assert values["PDM_LLM_MODEL"] == "gpt-5.6-luna"
+    assert values["PDM_LLM_CONTEXT_WINDOW"] == "272000"
+
+    service.configure_text("chatgpt", model="gpt-test")
+    assert service.read_env()["PDM_LLM_CONTEXT_WINDOW"] == "872000"
+
+    with pytest.raises(ValueError, match="Выберите модель"):
+        service.configure_text("chatgpt", model="hidden-test")
 
 
 def test_chatgpt_disconnect_revokes_refresh_and_keeps_registration(

@@ -51,6 +51,7 @@ class ChatGPTAuthService:
     DISCOVERY_URL = f"{ISSUER}/.well-known/openid-configuration"
     RESOURCE = "https://api.openai.com/v1"
     MODELS_URL = f"{RESOURCE}/models"
+    DEFAULT_MODEL = "gpt-5.6-luna"
     DYNAMIC_CLIENT_ID = "dynamic_agent_client"
     REQUIRED_SCOPE = "chatgpt.tokens.use.direct"
     SCOPES = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
@@ -494,7 +495,12 @@ class ChatGPTAuthService:
             raise ChatGPTAuthError("ChatGPT OAuth access token отсутствует")
         return token
 
-    def list_models(self) -> list[dict[str, str]]:
+    @classmethod
+    def default_model(cls, models: list[dict]) -> str | None:
+        slugs = [item["slug"] for item in models]
+        return cls.DEFAULT_MODEL if cls.DEFAULT_MODEL in slugs else next(iter(slugs), None)
+
+    def list_models(self) -> list[dict]:
         token = self.get_access_token()
         try:
             with self._http_client(15.0) as client:
@@ -516,7 +522,7 @@ class ChatGPTAuthService:
         if not isinstance(raw_models, list):
             raise ChatGPTAuthError("OpenAI models endpoint вернул неожиданный формат")
 
-        models: list[dict[str, str]] = []
+        models: list[dict] = []
         for item in raw_models:
             if not isinstance(item, dict):
                 continue
@@ -529,6 +535,9 @@ class ChatGPTAuthService:
                 {
                     "slug": slug,
                     "display_name": str(item.get("display_name") or slug),
+                    "context_window": int(
+                        item.get("max_context_window") or item.get("context_window") or 0
+                    ),
                 }
             )
         return models
