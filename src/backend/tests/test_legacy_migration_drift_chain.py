@@ -224,6 +224,12 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
                 "PRAGMA table_info('semantic_types')"
             ).fetchall()
         }
+        provider_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info('provider_configs')"
+            ).fetchall()
+        }
         truth_tables = {
             row[0]
             for row in connection.execute(
@@ -242,6 +248,7 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
     assert duplicate_labels == [("legacy-guard",), ("second-guard",)]
     assert "ix_scene_transitions_campaign_id" in indexes
     assert "system_key" in semantic_columns
+    assert "provider_kind" in provider_columns
     assert {
         "truth_event_records",
         "truth_event_effects",
