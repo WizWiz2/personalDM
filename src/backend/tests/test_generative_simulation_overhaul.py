@@ -254,6 +254,13 @@ def test_simulation_database_runs_real_alembic_chain(tmp_path):
             ).fetchall()
         }
         assert {"scene_id", "location_id"} <= link_columns
+        provider_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(provider_configs)"
+            ).fetchall()
+        }
+        assert "provider_kind" in provider_columns
         transition_columns = {
             row[1]
             for row in connection.execute(
