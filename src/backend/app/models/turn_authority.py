@@ -189,122 +189,72 @@ class TurnAuthority(BaseModel):
             "observable_consequence_count": len(self.observable_consequences),
         }
 
+    def executed_steps(self) -> list[dict]:
+        """Public view of what the executor did: the only step results prose must not overwrite."""
+        steps = (self.action_sequence or {}).get("steps")
+        result = []
+        for step in steps if isinstance(steps, list) else []:
+            if not isinstance(step, dict) or step.get("status") not in {"completed", "blocked"}:
+                continue
+            outcome = (
+                self._public_blocked_outcome(step)
+                if step.get("status") == "blocked"
+                else " ".join(str(step.get("observable_outcome") or "").split())
+            )
+            result.append(
+                {
+                    "action_type": step.get("action_type"),
+                    "status": step.get("status"),
+                    "outcome": outcome or None,
+                }
+            )
+        return result
+
     def validator_payload(self) -> dict:
-        """Compact authority for continuity judging, without competing prompt prose."""
-        payload = {
+        """Typed facts the four bans are judged against, and nothing else."""
+        return {
             "player_character": self.player_character_name,
-            "acting_character": self.acting_character_name,
             "player_input": self.player_input,
+            "present_characters": self.present_character_names,
+            "allowed_new_npcs": [
+                {"canonical_name": item.canonical_name, "role": item.role}
+                for item in self.allowed_new_npcs
+            ],
+            "allowed_existing_npc_arrivals": self.allowed_existing_npc_arrival_names,
+            "known_absent_characters": self.known_absent_character_names,
+            "established_state": self.established_state,
+            "executed_steps": self.executed_steps(),
             "scene_disposition": self.scene_disposition,
             "transition_type": self.transition_type,
             "source_location": self.source_location_path,
             "target_location": self.target_location_path,
-            "present_characters": self.present_character_names,
-            "addressed_response_obligation": self.addressed_response_obligation,
-            "addressed_response": (
-                self.addressed_response.model_dump(mode="json") if self.addressed_response else None
-            ),
-            "known_absent_characters": self.known_absent_character_names,
-            "allowed_speakers": self.allowed_speakers,
+        }
+
+    def narrator_payload(self) -> dict:
+        """Four-bans facts plus optional rendering context. Nothing here is an obligation."""
+        payload = {
+            **self.validator_payload(),
             "allowed_new_npcs": [
                 {
-                    "canonical_name": item.canonical_name,
-                    "role": item.role,
-                    "reason": item.reason,
+                    key: value
+                    for key, value in item.model_dump(mode="json").items()
+                    if key in {"canonical_name", "role", "description", "appearance", "voice"}
                 }
                 for item in self.allowed_new_npcs
             ],
-            "allowed_existing_npc_arrivals": [
-                {
-                    "entity_id": str(item.entity_id),
-                    "canonical_name": item.canonical_name,
-                    "reason": item.reason,
-                }
-                for item in self.allowed_existing_npc_arrivals
-            ],
+            "player_addressed": self.addressed_response_obligation,
             "objects_here": self.object_names,
             "resolution": self.resolution,
-            "dramatic_mode": self.dramatic_mode,
             "observable_consequences": self.observable_consequences,
+            "character_beats": self.character_beats,
             "canon_constraints": self.canon_constraints,
-            "established_state": self.established_state,
-            "established_subjects": self.established_subjects,
-            "protected_player_decisions": self.protected_player_decisions,
+            "narration_guidance": self.narration_guidance,
+            "ending_hook": self.ending_hook,
+            "dramatic_mode": self.dramatic_mode,
             "pending_player_choice": self.pending_player_choice,
             "allow_new_complication": self.allow_new_complication,
-            "complication_source": self.complication_source,
-            "action_sequence": self._public_action_sequence(),
-            "scene_development": (
-                self.scene_development.model_dump(mode="json") if self.scene_development else None
-            ),
         }
-        if self.acting_character_id and self.acting_character_name:
-            from app.services.mixed_actor_response_guard import actor_response_contract
-
-            contract = actor_response_contract(self)
-            if contract:
-                payload["actor_turn_contract"] = contract
-        return payload
-
-    def narrator_payload(self) -> dict:
-        """Complete prose rendering contract derived from the same authority object."""
-        payload = self.validator_payload()
-        if self.scene_development:
-            # Private purposes/source references are audit data, not omniscient prose to publish.
-            payload["scene_development"] = {
-                "disposition": self.scene_development.disposition,
-                "actions": [
-                    {
-                        "actor_id": str(action.actor_id),
-                        "action": action.action,
-                        "player_opportunity": action.player_opportunity,
-                    }
-                    for action in self.scene_development.actions
-                ],
-            }
-        payload.update(
-            {
-                "allowed_new_npcs": [
-                    item.model_dump(mode="json") for item in self.allowed_new_npcs
-                ],
-                "character_beats": self.character_beats,
-                "narration_guidance": self.narration_guidance,
-                "ending_hook": self.ending_hook,
-                "player_agency_contract": {
-                    "response_focus": "world_or_npc_response_to_current_input",
-                    "do_not_restate_player_voluntary_action": True,
-                    "do_not_extend_player_voluntary_action": True,
-                    "do_not_assign_player_thoughts_emotions_or_decisions": True,
-                    "do_not_invent_player_dialogue": True,
-                    "do_not_perform_protagonist_speech": True,
-                    "allowed_speakers_only": True,
-                    "perspective": "second_person_only_for_immediate_perception_or_external_effect",
-                    "stop_before_next_player_choice": True,
-                },
-                "execution_section": "[EXECUTED ACTION SEQUENCE]",
-            }
-        )
-        return payload
-
-    def _public_action_sequence(self) -> dict | None:
-        if not self.action_sequence:
-            return None
-        # Explicit projection prevents an exception string or an unexecuted plan from becoming
-        # narrator evidence. The complete receipt remains in the durable authority snapshot.
-        return {
-            "status": self.action_sequence.get("status"),
-            "steps": [
-                {key: (
-                    self._public_blocked_outcome(step)
-                    if key == "observable_outcome" and step.get("status") == "blocked"
-                    else step.get(key)
-                ) for key in (
-                    "step_index", "action_type", "status", "source_scene_id", "target_scene_id",
-                    "observable_outcome", "item_id", "item_operation",
-                )}
-                for step in self.action_sequence.get("steps", []) if isinstance(step, dict)
-            ],
-        }
+        return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
 
 __all__ = ["ExistingNpcArrival", "PlannedNpcIntroduction", "TurnAuthority"]

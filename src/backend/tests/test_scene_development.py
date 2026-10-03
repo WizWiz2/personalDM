@@ -207,21 +207,6 @@ async def test_disposition_actions_coerce_to_legal_pair_without_abort(db_session
     assert audit["status"] == "completed"
 
 
-async def test_development_survives_blocked_sequence_and_hides_private_purpose(db_session):
-    authority, npc, absent, goal = await world(db_session)
-    data = authority.model_dump()
-    data.update(
-        scene_development=initiative(npc, goal),
-        action_sequence={"steps": [{"status": "blocked", "blocking_reason": "Дверь заперта."}]},
-    )
-    rebuilt = TurnAuthority.model_validate(data)
-    assert rebuilt.scene_development.actions[0].actor_id == npc.id
-    public = rebuilt.narrator_payload()["scene_development"]
-    assert "purpose" not in public["actions"][0]
-    assert "source_refs" not in public["actions"][0]
-    assert rebuilt.validator_payload()["scene_development"]["actions"][0]["purpose"]
-
-
 async def test_published_action_is_durable_idempotent_epistemic_and_undoable(db_session):
     authority, npc, absent, goal = await world(db_session)
     authority.scene_development = initiative(npc, goal)

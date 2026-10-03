@@ -123,67 +123,38 @@ class TurnSaga:
         messages: list[ChatMessage],
         authority,
     ) -> list[ChatMessage]:
-        """Give the narrator one and only one machine-readable turn contract."""
+        """Give the narrator the typed turn facts once, plus the four bans. Nothing is mandatory."""
         if not messages:
             return messages
         first, *rest = messages
         contract = (
-            "[TYPED TURN AUTHORITY — authoritative, not advisory]\n"
-            + json.dumps(authority.narrator_payload(), ensure_ascii=False, indent=2)
-            + "\nHard rules:\n"
-            "- The sheet lists confirmed outcomes and bans. It is not the only prose you may write.\n"
-            "- Only allowed_speakers may receive new dialogue; the player is never an allowed "
-            "speaker. Protagonist speech stays limited to player_input.\n"
-            "- People already present may speak, refuse, gesture, or move inside the current place. "
-            "Speech is not required, and a missing mark is not a ban.\n"
-            "- Do not invent a person who is not already present and not structurally authorized. "
-            "Do not contradict or overwrite established_state. "
-            "Do not write the protagonist's next voluntary choice, dialogue, or action. "
-            "Do not move anyone to another place without a typed trip. "
-            "A step inside the current room is not a trip.\n"
-            "- The human player's voluntary actions/dialogue are limited to player_input.\n"
-            "- allowed_new_npcs are approved structured first appearances; "
-            "allowed_existing_npc_arrivals are known identities approved to be present here.\n"
-            "- known_absent_characters may not appear physically.\n"
-            "- Never complete a scene boundary absent from scene_disposition/transition_type.\n"
-            "- Preserve observable_consequences, canon_constraints and completed action steps.\n"
-            "- addressed_response contains the approved speech act: answer every indexed question "
-            "with its assigned speaker, meaning and disposition before any hook. Atmosphere is not "
-            "an answer. These words remain character claims, not omniscient world facts.\n"
-            "- Explicit negative player boundaries remain binding even for sensory actions.\n"
-            "- narration_guidance and ending_hook affect prose only; they never override state.\n"
-            "- Complete the current exchange before any hook. A closing opportunity must refer "
-            "to an actual approved outcome, open choice or NPC offer; do not replace it with "
-            "abstract suspense or a rhetorical challenge. A complete quiet answer may simply end.\n"
-            "- scene_development actions are approved NPC-owned acts AFTER the executed outcome. "
-            "Render them concretely, preserving the actor and leaving player_opportunity open. "
-            "They do not authorize accepting an offer for the hero or changing physical state. "
-            "A quiet disposition needs no added hook or explanation.\n"
-            "- End before inventing the protagonist's next voluntary response.\n"
+            "[TYPED TURN FACTS]\n"
+            + json.dumps(authority.narrator_payload(), ensure_ascii=False)
+            + "\n\nWhat is not forbidden is allowed. Only four bans:\n"
+            "1. Do not put a person physically into the scene unless they are in present_characters, "
+            "allowed_new_npcs or allowed_existing_npc_arrivals. Mentioning anyone else is fine.\n"
+            "2. Do not contradict established_state or executed_steps.\n"
+            "3. Do not write the player character's speech, decisions, thoughts, feelings or "
+            "voluntary actions beyond player_input.\n"
+            "4. Do not move anyone to another place without a typed trip "
+            "(scene_disposition/transition_type). Moving inside the current place is fine.\n"
+            "Present characters may speak, answer, refuse, stay silent or act; none of it is "
+            "required. player_addressed only says whom the player spoke to. Everything else in the "
+            "facts is optional context.\n\n"
+            "Render the immediate result as natural Russian literary prose, usually 2-3 paragraphs, "
+            "and stop before the player's next choice."
         )
-        result = [
+        return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
             *rest,
-        ]
-        # Recent narrative history is evidence for style only, not physical canon. Keep the
-        # authority as the final instruction as well, otherwise a model can repeat an untyped
-        # person mentioned in an earlier prose turn after a planner fallback.
-        result.append(
             ChatMessage(
                 role="user",
                 content=(
-                    "[FINAL AUTHORITY REMINDER]\n"
-                    "Physical presence is limited to present_character_names plus "
-                    "allowed_new_npcs and allowed_existing_npc_arrivals in the typed authority. "
-                    "Do not physically show, approach, or describe any other person, even if "
-                    "older narrative prose mentioned one. Historical prose cannot create canon. "
-                    "If established_state is present, those slots are already true and outrank "
-                    "the opening scene description. Older prose is not canon. "
-                    "People already present may speak, refuse, gesture, or move inside the current place. Speech is not required, and a missing mark is not a ban."
+                    "[REMINDER] Older prose is not canon: only people in the typed facts are "
+                    "physically here. Others may only be mentioned."
                 ),
-            )
-        )
-        return result
+            ),
+        ]
 
     async def _compile(
         self,

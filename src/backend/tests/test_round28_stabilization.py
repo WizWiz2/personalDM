@@ -10,8 +10,6 @@ from app.services.actor_memory_observability_guard import (
     extract_actor_segment_proposals_with_audit,
 )
 from app.services.systemless_authority_guard import (
-    detect_contained_repetition,
-    detect_prefixed_repetition,
     ensure_distinct_physical_location,
     normalize_addressed_conversation,
 )
@@ -101,24 +99,6 @@ def test_location_transition_cannot_resolve_to_current_physical_location() -> No
         ensure_distinct_physical_location(location_id, resolved)
 
 
-def test_repetition_guard_detects_old_reply_embedded_in_larger_answer() -> None:
-    previous = (
-        "Я был у старого особняка около полуночи и видел у боковой двери серый автомобиль, "
-        "который стоял там примерно десять минут."
-    )
-    candidate = (
-        previous
-        + " Потом я ушёл к остановке. Ещё я вспомнил, что возле ворот лежала мокрая газета."
-    )
-
-    match = detect_contained_repetition(candidate, [previous])
-
-    assert match is not None
-    assert match.previous_text == previous
-    assert match.similarity == 1.0
-    assert match.exact is False
-
-
 @pytest.mark.asyncio
 async def test_actor_selector_retries_empty_selection_without_rewriting_evidence() -> None:
     actor_id = uuid4()
@@ -189,21 +169,4 @@ def test_flight_recorder_surfaces_persisted_actor_selector_audit() -> None:
 
     assert augmented["memory"]["actor_selector"] == audit
 
-def test_repetition_guard_detects_reprinted_published_paragraph() -> None:
-    head = (
-        "Сквозняк из приоткрытого окна уносил пыль и слабый запах влажного камня, который "
-        "всегда витал в утренней комнате этого дома. Солнечный свет падал на паркет, а две "
-        "фигуры продолжали утреннюю уборку без лишних слов."
-    )
-    previous = head + "\n\n" + "Илья остановился у порога и не стал нарушать эту тишину."
-    candidate = head + "\n\n" + "С этими словами Мария повернулась к окну, и ставни начали открываться."
-
-    match = detect_prefixed_repetition(candidate, [previous])
-
-    assert match is not None
-    assert match.previous_text == previous
-    assert detect_prefixed_repetition(
-        "Мария вытерла край стола и открыла ставни.",
-        ["Мария вытерла край стола и отложила тряпку."],
-    ) is None
 

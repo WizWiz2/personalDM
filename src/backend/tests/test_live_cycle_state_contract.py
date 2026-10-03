@@ -3,7 +3,6 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
@@ -18,7 +17,6 @@ from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.response_memory import ResponseMemoryService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_authority_service import TurnAuthorityService
@@ -84,12 +82,10 @@ async def test_new_npc_answers_and_is_talkable_in_same_published_scene(db_sessio
     materializer = TurnOutcomeMaterializer(db_session)
     outcome = await materializer.materialize(authority, source_turn_id=authority.trigger_turn_id)
     frame = await TurnWorldFrame.capture(db_session, campaign_id, scene.id)
-    published, _ = NarrationPublicationGuard.publish(authority, "", None)
     npc = await EntityRepository(db_session).get_character(authority.addressed_response.speaker_id)
     assert npc.id in frame.participant_ids
     assert npc.current_location_id == location.id
     assert authority.acting_character_id == npc.id
-    assert "Продавец: «Номер дела 123456789, дата 15.03.2023.»" in published
     await materializer.rollback(outcome)
     assert await EntityRepository(db_session).get_by_id(npc.id) is None
     assert (await SceneRepository(db_session).get_participants(scene.id)) == [player.id]
@@ -148,39 +144,6 @@ async def test_publication_refuses_world_drift(db_session):
         await frame.assert_unchanged(db_session, campaign_id)
 
 
-@pytest.mark.asyncio
-async def test_exact_answer_memory_is_atomic_sourced_and_undoable(db_session):
-    campaign_id, player, location, scene = await world(db_session)
-    entities = EntityRepository(db_session)
-    npc = await entities.create_character(campaign_id, CharacterCreate(
-        canonical_name="Продавец", current_location_id=location.id,
-    ))
-    await SceneRepository(db_session).add_participant(scene.id, npc.id)
-    turns = TurnRepository(db_session)
-    user = await turns.create(campaign_id, TurnCreate(role="user", content="Спрашиваю дату."))
-    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
-        player_intent="Спрашиваю дату.", resolution="conversation", addressed_response_requested=True,
-        addressed_response=response(),
-    ), user.id)
-    text, _ = NarrationPublicationGuard.publish(authority, "", None)
-    assistant = await turns.create(campaign_id, TurnCreate(
-        role="assistant", content=text, scene_id=scene.id, parent_turn_id=user.id,
-        acting_character_id=npc.id, context_snapshot={"turn_authority": authority.model_dump(mode="json")},
-    ))
-    memory = ResponseMemoryService(db_session)
-    await memory.publish(authority, assistant.id)
-    await memory.publish(authority, assistant.id)
-    beliefs = await BeliefRepository(db_session).get_for_character(player.id)
-    assert len(beliefs) == 1
-    assert "123456789" in beliefs[0].proposition and "15.03.2023" in beliefs[0].proposition
-    assert beliefs[0].source_character_id == npc.id
-    assert beliefs[0].source_turn_id == assistant.id
-    assert beliefs[0].status == "heard"
-    await db_session.commit()
-    assert await TurnUndoService(db_session).undo_last_pair(campaign_id)
-    assert not await BeliefRepository(db_session).get_for_character(player.id)
-
-
 def test_repeating_question_cannot_satisfy_answer_schema():
     wire = _outcome_wire_model(0, question_count=1, questions=["Кто пришёл?"])
     with pytest.raises(ValidationError, match="repeated question"):
@@ -220,7 +183,7 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
     assert renamed.canonical_name == "Александр Ковалёв"
     assert "Посетитель" in renamed.aliases
     assert authority.addressed_response.speaker_id == npc.id
-    text, _ = NarrationPublicationGuard.publish(authority, "", None)
+    text = "— Меня зовут Александр Ковалёв, — отвечает посетитель."
     assistant = await turns.create(campaign_id, TurnCreate(
         role="assistant", content=text, scene_id=scene.id, parent_turn_id=user.id,
         context_snapshot={"turn_materialization": {

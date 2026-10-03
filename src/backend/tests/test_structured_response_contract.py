@@ -5,16 +5,12 @@ from pydantic import ValidationError
 
 from app.models.addressed_response import AddressedResponse, QuestionResponse
 from app.models.player_intent import PlayerIntentContract
-from app.models.turn_authority import TurnAuthority
-from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.turn_outcome_resolver import (
     TurnOutcomeDecisionDraft,
     _outcome_wire_model,
     normalize_outcome_draft,
 )
 from app.services.turn_planner import TurnPlanningError
-from app.models.narration_validation import NarrationValidationResult, NarrationQuestionCoverage
-from app.services.turn_authority_validator import TurnAuthorityValidator
 from app.services.turn_authority_service import TurnAuthorityService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.db.repositories.campaign_repo import CampaignRepository
@@ -76,76 +72,6 @@ def test_native_schema_requires_question_count():
         wire.model_validate(
             {"action_outcomes": [], "npc_introductions": [], "direct_response": "Марта кивает."}
         )
-
-
-def test_safe_publication_preserves_speaker_and_all_answers():
-    authority = TurnAuthority(
-        campaign_id=uuid4(),
-        trigger_turn_id=uuid4(),
-        player_input="Назовись.",
-        addressed_response=AddressedResponse(
-            speaker_name="Марта", questions=contract().questions, answers=answers()
-        ),
-    )
-    published, telemetry = NarrationPublicationGuard.publish(
-        authority, "Только загадочный гул.", None
-    )
-    assert "Марта: «Меня зовут Марта.»" in published
-    assert "Марта: «О грузе я не знаю.»" in published
-    assert "гул" not in published
-    assert telemetry["mode"] == "authority_projection"
-
-
-def test_validator_pass_requires_extractive_question_coverage():
-    authority = TurnAuthority(
-        campaign_id=uuid4(),
-        trigger_turn_id=uuid4(),
-        player_input="Назовись.",
-        addressed_response=AddressedResponse(
-            speaker_name="Марта", questions=contract().questions, answers=answers()
-        ),
-    )
-    candidate = "Марта: «Меня зовут Марта. О грузе я не знаю»."
-    missing = NarrationValidationResult(verdict="pass")
-    assert (
-        TurnAuthorityValidator.apply_question_coverage(missing, authority, candidate).verdict
-        == "repair_required"
-    )
-    covered = NarrationValidationResult(
-        verdict="pass",
-        response_coverage=[
-            NarrationQuestionCoverage(question_index=0, evidence="Меня зовут Марта."),
-            NarrationQuestionCoverage(question_index=1, evidence="О грузе я не знаю"),
-        ],
-    )
-    assert (
-        TurnAuthorityValidator.apply_question_coverage(covered, authority, candidate).verdict
-        == "pass"
-    )
-    covered.response_coverage[1].evidence = "Выдуманная цитата"
-    assert (
-        TurnAuthorityValidator.apply_question_coverage(covered, authority, candidate).verdict
-        == "repair_required"
-    )
-
-
-def test_blocked_action_does_not_erase_independent_answer():
-    authority = TurnAuthority(
-        campaign_id=uuid4(),
-        trigger_turn_id=uuid4(),
-        player_input="Попробую дверь и спрошу Марту.",
-        addressed_response=AddressedResponse(
-            speaker_name="Марта", questions=contract().questions, answers=answers()
-        ),
-        action_sequence={"steps": [{
-            "status": "blocked", "blocking_reason": "door_locked",
-            "public_blocking_reason": "Дверь заперта.",
-        }]},
-    )
-    published, _ = NarrationPublicationGuard.publish(authority, "", None)
-    assert "Дверь заперта" in published
-    assert "Меня зовут Марта" in published
-    assert "О грузе я не знаю" in published
 
 
 def test_native_schema_does_not_offer_companions_to_nonmovement():
@@ -211,7 +137,6 @@ async def test_response_binds_to_present_stable_id(db_session):
         acting_character_id=None,
     )
     assert authority.addressed_response.speaker_id == marta.id
-    assert authority.validator_payload()["addressed_response"]["speaker_id"] == str(marta.id)
     plan.addressed_response.speaker_name = "Отсутствующий капитан"
     unbound = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,

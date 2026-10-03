@@ -16,7 +16,6 @@ from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProviderError, LLMProviderTruncatedError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.campaign_service import CampaignService
-from app.services.narration_failure_containment_guard import install as install_containment
 from app.services.role_model_router import RoleModelRouter
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
@@ -43,12 +42,11 @@ def _authority(*, campaign_id=None, trigger_turn_id=None) -> TurnAuthority:
         LLMProviderError("LLM returned HTTP 500: internal provider failure"),
     ],
 )
-async def test_provider_failure_after_authority_publishes_safe_projection(
+async def test_provider_failure_publishes_typed_outcome_as_plain_text(
     db_session,
     monkeypatch,
     error,
 ):
-    install_containment()
     pipeline = AuthorityNarrationPipeline(
         db_session,
         RoleModelRouter(ProviderConfigRepository(db_session)),
@@ -77,11 +75,6 @@ async def test_provider_failure_after_authority_publishes_safe_projection(
     assert "HTTP 500" not in result.text
     assert result.validation_status == "safe_fallback"
     assert result.telemetry["narration_degraded"] is True
-    assert result.telemetry["structured_outcome_preserved"] is True
-    assert (
-        result.telemetry["narration_validation"]["presentation_failure_recovered"]
-        is True
-    )
 
 
 @pytest.mark.asyncio
@@ -89,7 +82,6 @@ async def test_repair_generation_failure_finalizes_validation_audit_and_preserve
     db_session,
     monkeypatch,
 ):
-    install_containment()
     campaign = await CampaignService(db_session).create_campaign(
         CampaignCreate(name="Presentation containment")
     )

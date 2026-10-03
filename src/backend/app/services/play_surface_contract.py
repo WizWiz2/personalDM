@@ -8,8 +8,6 @@ from __future__ import annotations
 
 import re
 
-from app.models.turn_authority import TurnAuthority
-
 
 def _distance(left: str, right: str) -> int:
     if abs(len(left) - len(right)) > 2:
@@ -66,18 +64,3 @@ def snap_near_names(text: str, names: list[str]) -> str:
         return token
 
     return re.sub(r"[А-Яа-яЁёA-Za-z-]{4,}", replace, text)
-
-
-def apply_play_surface(authority: TurnAuthority, text: str) -> str:
-    cleaned = str(text or "")
-    if not cleaned.strip():
-        return cleaned
-    names = [
-        name
-        for name in (
-            authority.player_character_name,
-            *authority.present_character_names,
-        )
-        if name
-    ]
-    return snap_near_names(cleaned, names)

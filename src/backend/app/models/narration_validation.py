@@ -49,20 +49,12 @@ class NarrationViolation(BaseModel):
         }
 
 
-class NarrationQuestionCoverage(BaseModel):
-    """Reviewer-selected exact prose evidence for one frozen information request."""
-
-    question_index: int = Field(ge=0, le=7)
-    evidence: str = Field(min_length=1, max_length=500)
-
-
 class NarrationValidationResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     verdict: Literal["pass", "repair_required"]
     summary: str = Field(default="", max_length=1500)
     violations: list[NarrationViolation] = Field(default_factory=list, max_length=12)
-    response_coverage: list[NarrationQuestionCoverage] = Field(default_factory=list, max_length=8)
 
     def trace(self, candidate: str) -> dict:
         """Compact decision payload: the verdict, every violation and a short candidate head."""
@@ -73,17 +65,6 @@ class NarrationValidationResult(BaseModel):
             "candidate_excerpt": candidate[:_TRACE_TEXT_LIMIT],
             "violations": [item.trace(candidate) for item in self.violations],
         }
-
-    def covers_questions(self, question_count: int, candidate: str) -> bool:
-        indices = [item.question_index for item in self.response_coverage]
-        return (
-            len(indices) == len(set(indices))
-            and set(indices) == set(range(question_count))
-            and all(
-                item.evidence.strip() and item.evidence.strip() in candidate
-                for item in self.response_coverage
-            )
-        )
 
     @model_validator(mode="after")
     def validate_verdict(self):

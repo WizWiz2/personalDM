@@ -10,7 +10,6 @@ from app.db.tables import Turn
 from app.models.turn import ChatMessage, TurnCreate
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProviderError
-from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
 from app.services.role_model_router import ModelRole
 from app.services.turn_authority_validator import TurnAuthorityValidator
@@ -254,49 +253,6 @@ async def _generate_opening(self, campaign_id, state, completion) -> tuple[str, 
                 "opening_validation": {"status": "passed", "attempts": attempts},
             }
 
-        surgical, surgery = NarrationPublicationGuard.surgical_repair_candidate(text, initial)
-        if surgical is not None:
-            surgical_result = await validator.validate(
-                validation_selection,
-                authority,
-                surgical,
-            )
-            attempts.append(
-                {
-                    "index": 1,
-                    "strategy": "deterministic_span_removal",
-                    "candidate_text": surgical,
-                    "repair": surgery,
-                    "validation": _validation_payload(surgical_result),
-                    "validator_telemetry": validator.telemetry,
-                }
-            )
-            if len(surgical) >= 400:
-                return surgical, selection.config.model_name, {
-                    **narrator_telemetry,
-                    "opening_fallback": None,
-                    "opening_raw_draft": text,
-                    "opening_validation": {
-                        "status": "repaired",
-                        "repair_strategy": "deterministic_span_removal",
-                        "attempts": attempts,
-                    },
-                }
-
-        kept, keep_meta = NarrationPublicationGuard.keep_substantial_opening(text, initial)
-        if kept is not None:
-            return kept, selection.config.model_name, {
-                **narrator_telemetry,
-                "opening_fallback": None,
-                "opening_raw_draft": text,
-                "opening_validation": {
-                    "status": "repaired",
-                    "repair_strategy": keep_meta.get("strategy", "keep_raw_texture"),
-                    "attempts": attempts,
-                    "keep": keep_meta,
-                },
-            }
-
         repair_messages = [
             *messages,
             ChatMessage(
@@ -334,23 +290,6 @@ async def _generate_opening(self, campaign_id, state, completion) -> tuple[str, 
                     "status": "repaired",
                     "repair_strategy": "preserve_first_model_edit",
                     "attempts": attempts,
-                },
-            }
-
-        kept, keep_meta = NarrationPublicationGuard.keep_substantial_opening(
-            text,
-            initial,
-        )
-        if kept is not None:
-            return kept, selection.config.model_name, {
-                **narrator_telemetry,
-                "opening_fallback": None,
-                "opening_raw_draft": text,
-                "opening_validation": {
-                    "status": "repaired",
-                    "repair_strategy": keep_meta.get("strategy", "keep_raw_texture"),
-                    "attempts": attempts,
-                    "keep": keep_meta,
                 },
             }
 

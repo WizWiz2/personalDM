@@ -27,7 +27,6 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
 from app.services.entity_identity import identity_key
-from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narrator_authority_contracts import (
     description_used_as_identity_name,
     is_usable_short_designation,
@@ -208,45 +207,6 @@ def seeks_contact_or_presence(contract: PlayerIntentContract) -> bool:
         action.action_type in {"interaction", "service", "observation", "movement"}
         for action in contract.actions
     )
-
-
-def _is_dead_or_blank(value: object) -> bool:
-    clean = " ".join(str(value or "").split()).strip()
-    if not clean:
-        return True
-    return bool(NarrationPublicationGuard.DEAD_TURN_PATTERN.fullmatch(clean))
-
-
-def _is_mundane_travel_outcome(value: object) -> bool:
-    clean = " ".join(str(value or "").split()).strip()
-    return clean.startswith("Переход в место") and clean.endswith("завершён.")
-
-
-def has_plot_bearing_outcome(decision: TurnOutcomeDecision) -> bool:
-    """Reject atmosphere-only control payloads for contact-seeking turns.
-
-    A grounded npc_introduction, character beat, complication, concrete blocker, or non-dead
-    observable consequence is enough. Explicit no-contact counts; velvet / «ничего не происходит»
-    does not. Missing intro alone is not a ban when another real beat exists.
-    """
-    if decision.npc_introductions:
-        return True
-    if any(" ".join(str(beat or "").split()) for beat in decision.character_beats):
-        return True
-    if decision.allow_new_complication and " ".join(
-        str(decision.complication_source or "").split()
-    ):
-        return True
-    for text in decision.observable_consequences:
-        if not _is_dead_or_blank(text):
-            return True
-    for outcome in decision.action_outcomes:
-        if outcome.resolution == "blocked" and " ".join(str(outcome.blocking_reason or "").split()):
-            return True
-        oo = outcome.observable_outcome
-        if oo and not _is_dead_or_blank(oo) and not _is_mundane_travel_outcome(oo):
-            return True
-    return False
 
 
 _ACTION_RESOLUTIONS = {"auto_success", "requires_choice", "blocked"}
@@ -1254,7 +1214,6 @@ __all__ = [
     "solo_physical_presence",
     "is_pure_ordinary_travel",
     "seeks_contact_or_presence",
-    "has_plot_bearing_outcome",
     "ActionOutcomeDraft",
     "OutcomeNpcIntroductionDraft",
     "TurnOutcomeDecisionDraft",

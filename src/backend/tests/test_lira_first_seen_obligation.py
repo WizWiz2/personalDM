@@ -10,17 +10,11 @@ import pytest
 
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
-from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.narrator_authority_contracts import (
-    addressed_response_beat_present,
-    addressed_response_erasure_spans,
-)
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_authority_service import (
     TurnAuthorityService,
     _address_repair_colocated,
 )
-from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
 def _authority(**updates) -> TurnAuthority:
@@ -177,7 +171,7 @@ async def test_placed_scene_unplaced_lira_first_seen_stamps_obligation(monkeypat
     assert authority.acting_character_name == "Лира"
     payload = authority.narrator_payload()
     assert "Лира" in payload["present_characters"]
-    assert "Лира" not in payload["known_absent_characters"]
+    assert "Лира" not in payload.get("known_absent_characters", [])
 
 
 @pytest.mark.asyncio
@@ -272,31 +266,3 @@ async def test_null_scene_sticky_upravlyayushchaya_addresses_lira_stamps(monkeyp
     assert "Лира" in authority.present_character_names
 
 
-def test_obligation_rejects_absence_claim_with_rival_hiring_speech():
-    authority = _authority(
-        player_character_name="Эйдан",
-        player_input="Лира, где здесь хлеб? Ответь коротко именно ты, Лира.",
-        present_character_names=["Эйдан", "Лира", "Управляющая домом"],
-        addressed_response_obligation="Лира",
-    )
-    candidate = (
-        "Лира сейчас не находится на кухне. Управляющая домом подходит ближе и спокойно отвечает: "
-        "«Наймом распоряжаюсь я. Хлеб лежит на полке у очага.»"
-    )
-    assert (
-        addressed_response_beat_present(
-            candidate, "Лира", rival_names=["Управляющая домом"]
-        )
-        is False
-    )
-    spans = addressed_response_erasure_spans(candidate, authority)
-    assert any("no_response_beat" in span for span in spans)
-    result = TurnAuthorityValidator.apply_deterministic_speaker_authority(
-        _pass(), authority, candidate
-    )
-    assert result.verdict == "repair_required"
-    surgical, audit = NarrationPublicationGuard.surgical_repair_candidate(
-        candidate, result
-    )
-    assert surgical is None
-    assert audit["reason"] == "addressed_response_obligation_not_surgically_repairable"

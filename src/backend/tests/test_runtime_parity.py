@@ -72,13 +72,10 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest == api_manifest
     assert cli_manifest["installed"] is True
     assert cli_manifest["guards"] == [
-        "actor_turn_authority",
         "actor_memory_observability",
         "narrator_memory_audit",
         "systemless_authority",
-        "mixed_actor_response",
         "narrator_quality_recovery",
-        "narration_failure_containment",
         "session_zero_finalize",
         "session_zero_placeholder",
         "planner_compound",
@@ -108,7 +105,7 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "compile_narrator_context",
         "plan_scene_development_from_prepared_world",
         "render_narration",
-        "validate_authority",
+        "validate_four_bans",
         "publish_assistant_turn",
         "record_scene_development_events",
         "enqueue_post_turn",
@@ -124,13 +121,10 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     }
     assert cli_manifest["narration_pipeline"] == [
         "generate_draft",
-        "guard_repetition",
-        "validate_authority",
-        "semantic_re_adjudication_on_failure",
+        "validate_four_bans",
         "repair_once",
-        "guard_repetition",
-        "contain_presentation_failure",
-        "publish_accepted",
+        "validate_four_bans",
+        "publish_accepted_or_typed_outcome",
     ]
     assert cli_manifest["semantic_policy"] == {
         "player_action_ownership": "frozen_player_intent_ir",
@@ -160,8 +154,8 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
     assert cli_manifest["narration_pipeline_impl"].endswith(
         "AuthorityNarrationPipeline.generate"
     )
-    assert "semantic_authority_guard" in cli_manifest["authority_validator"]
-    assert cli_manifest["authority_validator"].endswith("semantically_adjudicated_validate")
+    # One validator call: no monkeypatched second semantic review.
+    assert cli_manifest["authority_validator"].endswith("TurnAuthorityValidator.validate")
     assert cli_manifest["context_compiler"].endswith(
         "ContextCompiler.compile_context"
     )

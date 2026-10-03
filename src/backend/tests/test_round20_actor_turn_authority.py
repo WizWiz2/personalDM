@@ -7,13 +7,10 @@ import pytest
 from app.models.proposed_change import ChangeType
 from app.models.turn_authority import TurnAuthority
 from app.services.actor_turn_authority_guard import (
-    actor_turn_contract,
     build_actor_segment_proposals,
     extract_actor_segment_proposals,
     segment_actor_response,
 )
-from app.services.turn_authority_validator import TurnAuthorityValidator
-from app.runtime import runtime_manifest
 
 
 def _authority(
@@ -33,29 +30,6 @@ def _authority(
         scene_disposition="actor_turn",
         present_character_names=[player_name, actor_name],
     )
-
-
-def test_actor_turn_contract_is_role_scoped_not_name_specific():
-    authority = _authority()
-    contract = actor_turn_contract(authority)
-
-    assert contract is not None
-    assert contract["acting_character"] == "Грузчик"
-    assert "speak_as_self" in contract["authorized"]
-    assert "state_personal_memories_observations_and_claims" in contract["authorized"]
-    assert "mention_absent_people_places_objects_or_past_events_as_claims" in contract["authorized"]
-    assert "invent_player_dialogue_or_voluntary_action" in contract["not_authorized"]
-    assert "move_to_another_location_without_structured_authority" in contract["not_authorized"]
-    assert "character_claim" in contract["epistemic_rule"]
-
-
-def test_actor_rights_are_semantic_validator_contract_not_post_filter():
-    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
-
-    assert "NPC OWNERSHIP" in prompt
-    assert "PRESENT NPC DIALOGUE" in prompt
-    assert "SPEAKER CONSISTENCY" in prompt
-    assert "Never decide from" in prompt
 
 
 def test_actor_claim_provenance_is_fixed_by_typed_actor():
@@ -157,5 +131,3 @@ async def test_empty_general_scribe_can_recover_actor_claims():
     assert "брата зовут Иван Сергеевич" in proposals[0].payload["proposition"]
 
 
-def test_runtime_manifest_reports_actor_turn_guard():
-    assert "actor_turn_authority" in runtime_manifest()["guards"]

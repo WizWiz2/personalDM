@@ -10,7 +10,6 @@ from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
 from app.services.role_model_router import ModelRole
 
-_INSTALLED = False
 
 
 class ActorSegmentSelection(BaseModel):
@@ -33,39 +32,6 @@ def _key(value: object) -> str:
 def _word_key(value: object) -> str:
     """Normalize immutable evidence for duplicate detection, not semantic classification."""
     return " ".join(_WORD_RE.findall(_key(value)))
-
-
-def actor_turn_contract(authority) -> dict | None:
-    if authority.scene_disposition != "actor_turn" or not authority.acting_character_id:
-        return None
-    return {
-        "acting_character_id": str(authority.acting_character_id),
-        "acting_character": authority.acting_character_name,
-        "authorized": [
-            "speak_as_self",
-            "answer_current_player_input",
-            "state_personal_memories_observations_and_claims",
-            "mention_absent_people_places_objects_or_past_events_as_claims",
-            "local_reversible_conversational_body_language",
-            "transient_actor_emotion_tone_or_affect",
-        ],
-        "not_authorized": [
-            "invent_player_dialogue_or_voluntary_action",
-            "move_to_another_location_without_structured_authority",
-            "physically_introduce_or_control_other_characters",
-            "transfer_items_or_create_irversible_world_outcomes_without_authority",
-            "establish_world_outcomes_beyond_the_actor_own_claims",
-        ],
-        "epistemic_rule": (
-            "New factual content spoken by the acting character is a character_claim, not an "
-            "objective fact/event. The claim may be novel, mistaken or false. Novel actor-owned "
-            "speech is not a new complication merely because Planner did not pre-state it."
-        ),
-        "presence_rule": (
-            "Mentioning an absent person/place/object in actor-owned speech does not materialize "
-            "that entity or make it physically present."
-        ),
-    }
 
 
 def _split_candidate_text(value: str) -> list[str]:
@@ -261,51 +227,9 @@ async def extract_actor_segment_proposals(
     )
 
 
-def install() -> None:
-    """Install actor rights as typed Validator context, without lexical post-filtering."""
-    global _INSTALLED
-    if _INSTALLED:
-        return
-    _INSTALLED = True
-
-    from app.models.turn_authority import TurnAuthority
-    from app.services.turn_authority_validator import TurnAuthorityValidator
-
-    original_validator_payload = TurnAuthority.validator_payload
-
-    if "ACTOR TURN RIGHTS" not in TurnAuthorityValidator.SYSTEM_PROMPT:
-        TurnAuthorityValidator.SYSTEM_PROMPT += """
-
-ACTOR TURN RIGHTS
-When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
-- acting_character is explicitly authorized to speak as themselves, answer the current player
-  message, reveal their own memories/observations/claims and use local reversible conversational
-  body language or transient affect;
-- new information in actor-owned speech is epistemic character_claim, not objective world canon;
-- an actor claim may mention absent people, places, objects or past events without materializing them;
-- actor-owned speech/gesture/thought/emotion is NOT PLAYER AGENCY;
-- player_character remains fully protected from invented speech, voluntary action, choice, thought
-  or emotion;
-- actor_turn does not authorize physical relocation, item transfer, new physical characters or
-  objective world mutations beyond typed authority.
-Judge ownership semantically from subject/context. Do not use word-marker lists.
-"""
-
-    def actor_aware_validator_payload(self):
-        payload = original_validator_payload(self)
-        contract = actor_turn_contract(self)
-        if contract:
-            payload["actor_turn_contract"] = contract
-        return payload
-
-    TurnAuthority.validator_payload = actor_aware_validator_payload
-
-
 __all__ = [
     "ActorSegmentSelection",
-    "actor_turn_contract",
     "build_actor_segment_proposals",
     "extract_actor_segment_proposals",
-    "install",
     "segment_actor_response",
 ]
