@@ -27,11 +27,6 @@ FORBIDDEN = {
     ),
     "actor_memory_observability_guard.py": ("_SILENCE_PATTERN",),
     "playtest_trace.py": ("_ACTION_RE", "_MOVEMENT_RE", "_SILENCE_RE"),
-    "narrator_authority_contracts.py": (
-        "_SECOND_PERSON_ATTR_RE", "_LEADING_FIRST_PERSON_STAGE_RE",
-        "_PREPOSITION_BEFORE_RE", "_PC_FINITE_VERB_TOKEN_RE", "post_quote_ty_re",
-        "_PROPER_NAME_SPAN_RE", "_MIDCLAUSE_PROPER_NAME_RE",
-    ),
     "location_identity.py": ("_NUMBER_FORMS", "_NUMBER_WORDS", "_NUMBER_LABELS"),
     "turn_authority_resolvers.py": ("SYNTHETIC_PLACEHOLDERS",),
     "session_zero_placeholder_guard.py": ("_PLACEHOLDER_LOCATIONS",),

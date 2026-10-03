@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from fastapi.testclient import TestClient
 
-from live_model_contracts.cases import CaseSpec
+from live_model_contracts.cases import DEAD_SURFACE, CaseSpec
 from live_model_contracts.identity_oracles import name_binding_failures
 from live_model_contracts.snapshot import TruthSnapshot
 from live_model_contracts.state_oracles import is_lighting_fact, light_is_on
@@ -35,12 +35,10 @@ def _new_characters(before: TruthSnapshot, after: TruthSnapshot) -> list[dict]:
 
 
 def _no_dead_surface(snapshot: TruthSnapshot, failures: list[str]) -> None:
-    from app.services.narration_publication_guard import NarrationPublicationGuard
-
     surface = _fold(snapshot.assistant_surface)
     _fail(bool(surface), "assistant produced no active published surface", failures)
     _fail(
-        not NarrationPublicationGuard.DEAD_TURN_PATTERN.fullmatch(surface),
+        not DEAD_SURFACE.fullmatch(surface),
         f"dead-turn surface escaped: {surface!r}",
         failures,
     )

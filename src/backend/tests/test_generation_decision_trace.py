@@ -116,7 +116,7 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
     monkeypatch.setattr(AuthorityNarrationPipeline, "_generate_text", narrate)
     monkeypatch.setattr(RoleModelRouter, "generate_json", control)
     monkeypatch.setattr(
-        NarrationPublicationGuard, "_safe_authority_projection", classmethod(no_projection),
+        NarrationPublicationGuard, "render_authority", classmethod(no_projection),
     )
 
     output = "".join([
@@ -168,7 +168,7 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
     assert steps[0] == "authority"
     authority = decisions[0]["payload"]
     assert set(authority["present_characters"]) >= {"Кай", "Лада"}
-    assert {"addressed_response_obligation", "action_steps", "established_subjects"} <= set(authority)
+    assert {"beat_owner", "action_steps", "established_subjects"} <= set(authority)
 
     first = decisions[1]
     assert (first["step"], first["role"], first["outcome"]) == (
@@ -182,13 +182,10 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
     assert (violation["span"]["start"], violation["span"]["end"]) == (start, start + len(EVIDENCE))
     assert EVIDENCE in violation["span"]["excerpt"]
 
-    assert "evaluate" in steps
-    evaluator = next(item for item in decisions if item["step"] == "evaluate")
-    assert evaluator["role"] == "evaluator"
+    assert "evaluate" not in steps
     repairs = [item for item in decisions if item["step"] == "repair"]
-    assert repairs and repairs[0]["payload"]["strategy"] == "deterministic_span_removal"
-    assert any(item["outcome"] == "requested" for item in repairs)
-    assert steps.count("validate") >= 2
+    assert [item["payload"]["strategy"] for item in repairs] == ["single_model_repair"]
+    assert steps.count("validate") == 2
 
     final = decisions[-1]
     assert (final["step"], final["outcome"]) == ("final", "failed")
@@ -196,7 +193,11 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
     assert decisions[-2]["step"] == "publish"
 
     calls = [item for item in timeline if item["kind"] == "call"]
-    assert {"narrator", "narration_validator", "evaluator"} <= {item["role"] for item in calls}
+    assert {item["role"] for item in calls} >= {"narrator", "narration_validator"}
+    assert "evaluator" not in {item["role"] for item in calls}
+    narration_calls = [item for item in calls if item["role"] in {"narrator", "narration_validator"}]
+    # draft, validate, one repair, validate: never more than four narration-side calls.
+    assert len(narration_calls) == 4
     # The validator's verdict follows the validator call that produced it.
     first_index = timeline.index(first)
     assert timeline[first_index - 1]["kind"] == "call"

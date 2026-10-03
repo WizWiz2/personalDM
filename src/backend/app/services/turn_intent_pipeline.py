@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
+
 from app.db.repositories.location_repo import LocationRepository
+from app.db.scene_location_table import SceneLocationLink
+from app.db.tables import Turn
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -47,16 +51,31 @@ class TurnIntentPlanningPipeline:
         selection,
     ) -> tuple[CoordinatedTurnPlan, dict]:
         locations = await LocationRepository(self._session).list_by_campaign(campaign_id)
+        names = {str(location.id): location.canonical_name for location in locations}
+        openings = dict((await self._session.execute(
+            select(SceneLocationLink.location_id, Turn.content)
+            .join(Turn, Turn.scene_id == SceneLocationLink.scene_id)
+            .where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant")
+            .order_by(Turn.created_at.desc())
+        )).all())
         contract = await self._intent.interpret(
             selection,
             context_messages,
             user_input,
-            location_references={
-                str(location.id): location.canonical_name for location in locations
+            location_references=names,
+            location_catalog={
+                key: {
+                    "name": name,
+                    "parent": names.get(str(location.parent_location_id)),
+                    "description": (location.description or "")[:240],
+                    "scene_opening": (openings.get(key) or "")[:240],
+                }
+                for location in locations
+                for key, name in [(str(location.id), location.canonical_name)]
             },
         )
         # Director moves are selected before outcome resolution so force_introduce_contact
-        # can drive the existing contact-seeking recovery path. Rhythm is NOT persisted here.
+        # can add optional contact guidance to the resolver. Rhythm is NOT persisted here.
         seek_contact = seeks_contact_or_presence(contract)
         empty_cast = solo_physical_presence(context_messages)
         master_service = MasterService(self._session)
@@ -67,6 +86,7 @@ class TurnIntentPlanningPipeline:
             persist_rhythm=False,
         )
 
+        resident_slots = await self._compiler.resident_slots(campaign_id)
         decision = await self._compiler.resolve_known_travel(campaign_id, contract)
         outcome_owner = "route_graph" if decision is not None else "external_resolver"
         if decision is None:
@@ -76,10 +96,11 @@ class TurnIntentPlanningPipeline:
                 user_input,
                 contract,
                 force_introduce_contact=director.forced_introduce_contact,
+                resident_slots=resident_slots,
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
-            # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver
-            # so forced contact-seeking still requires typed introductions.
+            # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so
+            # forced contact-seeking gets its (optional) chance at a typed introduction.
             decision = await self._outcomes.resolve(
                 selection,
                 context_messages,

@@ -8,10 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.location_repo import LocationRepository
 from app.db.tables import Character, Turn
 from app.models.turn_authority import ExistingNpcArrival
 from app.services.entity_identity import exact_identity_matches, identity_key, resolve_character_candidates
-from app.services.narrator_authority_contracts import (
+from app.services.name_identity_contract import (
     description_used_as_identity_name,
     is_usable_short_designation,
     repair_introduction_identity,
@@ -231,11 +232,22 @@ class NpcIntroductionResolver:
                 )
             ).scalars().all()
         character_states = {UUID(row.entity_id): row for row in rows}
+        # The target place with its parent and child places is one establishment for identity
+        # (the inn's cook is the kitchen's cook). Typed location IDs only.
+        same_place = {target_location_id} if target_location_id else set()
+        if target_location_id:
+            for location in await LocationRepository(self._session).list_by_campaign(campaign_id):
+                if location.id == target_location_id and location.parent_location_id:
+                    same_place.add(location.parent_location_id)
+                if location.parent_location_id == target_location_id:
+                    same_place.add(location.id)
         character_locations: dict[UUID, UUID | None] = {
             entity_id: (
-                UUID(row.current_location_id) if row.current_location_id else None
+                target_location_id if location in same_place
+                else location
             )
             for entity_id, row in character_states.items()
+            for location in [UUID(row.current_location_id) if row.current_location_id else None]
         }
 
         new_introductions = []
@@ -245,10 +257,16 @@ class NpcIntroductionResolver:
             for value in (entity.canonical_name, *entity.aliases)
         }
         existing_arrivals: list[ExistingNpcArrival] = []
+        holders = {
+            (entity.custom_fields or {}).get("slot_id"): entity for entity in all_characters
+        }
         for introduction, reference in zip(introductions, references):
-            # Role normalization must not erase an existing identity reference. Temporary
-            # designations remain local; stable names/aliases remain global.
-            matches = [
+            holder = holders.get(introduction.resident_slot) if introduction.resident_slot else None
+            if holder is not None and character_locations.get(UUID(str(holder.id))) != target_location_id:
+                continue  # The slot's keeper is elsewhere: nobody new takes the slot (ban 1).
+            # A resident slot has one keeper; otherwise role normalization must not erase an
+            # existing identity reference: temporary designations local, stable names global.
+            matches = [holder] if holder is not None else [
                 entity for entity in exact_identity_matches(all_characters, reference)
                 if not (entity.custom_fields or {}).get("temporary_name")
                 or (
@@ -256,7 +274,7 @@ class NpcIntroductionResolver:
                     and character_locations.get(entity.id) == target_location_id
                 )
             ]
-            if not matches:
+            if not matches and holder is None:
                 matches = resolve_character_candidates(
                     all_characters,
                     proposed_name=introduction.canonical_name,
@@ -295,6 +313,7 @@ class NpcIntroductionResolver:
                     allow_locale_mismatch=bool(
                         getattr(introduction, "personal_name_evidence", None)
                     ),
+                    personal=not introduction.temporary_name,
                 )
                 candidate = accepted or allocate_needs_name_canonical(
                     reserved_names,
@@ -323,12 +342,7 @@ class NpcIntroductionResolver:
             if existing_key in present_keys:
                 continue
 
-            character = character_states.get(existing_id)
-            current_location_id = (
-                UUID(character.current_location_id)
-                if character and character.current_location_id
-                else None
-            )
+            current_location_id = character_locations.get(existing_id)
             if target_location_id and current_location_id == target_location_id:
                 existing_arrivals.append(
                     ExistingNpcArrival(

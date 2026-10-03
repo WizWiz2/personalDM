@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
-from app.models.narration_validation import NarrationValidationResult
+from app.models.narration_validation import GrantedBeat, GrantedNarration, NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import (
@@ -16,7 +16,6 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.narration_repetition_guard import NarrationRepetitionGuard
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.llm_usage_tracker import record_decision, record_provider_telemetry
@@ -34,10 +33,8 @@ class AuthorityNarrationResult:
 class AuthorityNarrationPipeline:
     """Render one authoritative turn without letting renderer mistakes cancel game state.
 
-    Planner/engine own the outcome. Narrator and validator are presentation layers. A semantic prose
-    violation first gets a deterministic surgical removal when exact evidence permits it, then one
-    preserve-first model repair if necessary, and finally a deterministic safe publication. Only
-    real provider or structured-state failures are allowed to fail the turn.
+    Planner/engine own the outcome. Code checks the typed beat grant, one validator call judges the
+    four bans; a rejected draft gets one model repair; then the typed step outcome is published.
     """
 
     def __init__(
@@ -193,98 +190,81 @@ class AuthorityNarrationPipeline:
         )
         return text, telemetry
 
-    async def _generate_non_repeating(
+    async def _narrate(
         self,
-        *,
-        campaign_id: UUID,
-        scene_id: UUID | None,
-        authority: TurnAuthority,
         messages: list[ChatMessage],
         selection: RoleModelSelection,
+        authority: TurnAuthority,
+        *,
         temperature: float,
-    ) -> tuple[str, dict, bool]:
-        guard = NarrationRepetitionGuard(self._session)
-        previous = await guard.recent_responses(campaign_id, scene_id, authority)
-        candidate, first_telemetry = await self._generate_text(
-            messages,
-            selection,
-            temperature=temperature,
-        )
-        actor_turn = authority.scene_disposition == "actor_turn"
-        first_match = guard.detect(candidate, previous, actor_turn=actor_turn)
-        if first_match is None:
-            return candidate, first_telemetry, False
-
-        retry, retry_telemetry = await self._generate_text(
-            guard.retry_messages(messages, authority, first_match),
-            selection,
-            temperature=min(0.7, max(temperature, 0.35)),
-        )
-        second_match = guard.detect(retry, previous, actor_turn=actor_turn)
-        return retry, {
-            **retry_telemetry,
-            "repetition_guard": {
-                "detected": True,
-                "first_similarity": round(first_match.similarity, 4),
-                "first_exact": first_match.exact,
-                "retried": True,
-                "retry_similarity": (
-                    round(second_match.similarity, 4) if second_match else None
-                ),
-                "exhausted": second_match is not None,
-                "first_generation": first_telemetry,
-            },
-        }, second_match is not None
+    ) -> tuple[str, GrantedBeat | None, dict]:
+        """Prose; under a beat grant, structured prose plus the narrator's typed beat claim."""
+        if authority.beat_owner_id is None:
+            text, telemetry = await self._generate_text(messages, selection, temperature=temperature)
+            return text, None, telemetry
+        try:
+            narration = GrantedNarration.model_validate(await self._router.generate_json(
+                self._provider, selection, messages,
+                temperature=temperature, response_model=GrantedNarration,
+            ))
+        except (ValueError, TypeError) as exc:
+            raise LLMProviderError(f"granted narration is malformed: {exc}") from exc
+        return narration.prose.strip(), narration.beat, self.last_telemetry
 
     @staticmethod
-    def _synthetic_safe_result(summary: str) -> NarrationValidationResult:
-        return NarrationValidationResult(
-            verdict="pass",
-            summary=summary,
-            violations=[],
-        )
+    def _beat_failure(authority: TurnAuthority, prose: str, beat: GrantedBeat | None) -> str | None:
+        if authority.beat_owner_id is None:
+            return None
+        failure = beat.failure(authority.beat_owner_id, prose) if beat else "no beat returned"
+        record_decision("beat", "unhonored" if failure else "honored", {
+            "owner": authority.beat_owner_name, "owner_id": str(authority.beat_owner_id),
+            **(beat.model_dump() if beat else {}), "failure": failure,
+        })
+        return failure
 
-    async def _publish_fallback(
+    async def _check(
+        self,
+        *,
+        validator: TurnAuthorityValidator,
+        audit: NarrationValidator,
+        run,
+        selection: RoleModelSelection,
+        authority: TurnAuthority,
+        candidate: str,
+        attempt_index: int,
+    ) -> NarrationValidationResult:
+        result = await validator.validate(selection, authority, candidate)
+        await audit.record_attempt(
+            run,
+            attempt_index=attempt_index,
+            candidate_text=candidate,
+            result=result,
+            telemetry={**validator.telemetry, "authority_version": authority.version},
+        )
+        return result
+
+    async def _finish(
         self,
         *,
         audit: NarrationValidator,
         run,
         authority: TurnAuthority,
-        candidate: str,
-        validation: NarrationValidationResult | None,
+        text: str,
+        status: str,
         repair_attempts: int,
-        attempt_index: int,
-        reason: str,
         telemetry: dict,
+        publication: dict,
+        reason: str | None = None,
     ) -> AuthorityNarrationResult:
-        record_decision("publish", "authority_projection", {"reason": reason[:500]})
-        published, publication = NarrationPublicationGuard.publish(
-            authority,
-            candidate,
-            validation,
-        )
-        await audit.record_attempt(
-            run,
-            attempt_index=attempt_index,
-            candidate_text=published,
-            result=self._synthetic_safe_result(
-                "Deterministic publication guard rendered the already-authoritative turn."
-            ),
-            telemetry={
-                "authority_version": authority.version,
-                "publication_guard": publication,
-                "reason": reason,
-            },
-        )
         gate = await audit.finalize(
             run,
-            status="repaired",
-            final_text=published,
+            status="repaired" if status == "safe_fallback" else status,
+            final_text=text,
             repair_attempts=repair_attempts,
-            failure_reason=reason[:2000],
+            failure_reason=reason[:2000] if reason else None,
         )
         return AuthorityNarrationResult(
-            text=published,
+            text=text,
             telemetry={
                 **telemetry,
                 "narration_validation": {
@@ -292,60 +272,37 @@ class AuthorityNarrationPipeline:
                     "validation_run_id": str(gate.validation_run_id),
                     "authority_version": authority.version,
                     "publication_guard": publication,
-                    "semantic_failure_recovered": True,
-                    "reason": reason[:2000],
+                    **({"reason": reason[:2000]} if reason else {}),
                 },
             },
             validation_run_id=gate.validation_run_id,
-            validation_status="safe_fallback",
+            validation_status=status,
         )
 
-    async def _try_surgical_repair(
+    async def _fallback(
         self,
         *,
         audit: NarrationValidator,
         run,
-        validator: TurnAuthorityValidator,
-        validation_selection: RoleModelSelection,
         authority: TurnAuthority,
-        draft: str,
-        initial_result: NarrationValidationResult,
-        attempt_index: int,
-    ) -> tuple[str | None, NarrationValidationResult | None, dict, bool]:
-        candidate, surgery = NarrationPublicationGuard.surgical_repair_candidate(
-            draft,
-            initial_result,
-        )
-        record_decision(
-            "repair",
-            str(surgery.get("status") or surgery.get("strategy")),
-            {**surgery, "attempt_index": attempt_index},
-        )
-        if candidate is None:
-            return None, None, surgery, False
-
-        result = await validator.validate(
-            validation_selection,
-            authority,
-            candidate,
-        )
-        await audit.record_attempt(
-            run,
-            attempt_index=attempt_index,
-            candidate_text=candidate,
-            result=result,
-            telemetry={
-                **validator.telemetry,
-                "authority_version": authority.version,
-                "repair_strategy": "deterministic_span_removal",
-                "surgical_repair": surgery,
-            },
-        )
-        return (
-            candidate if result.verdict == "pass" else None,
-            result,
-            surgery,
-            True,
+        reason: str,
+        repair_attempts: int,
+        telemetry: dict,
+        status: str = "safe_fallback",
+    ) -> AuthorityNarrationResult:
+        """Publish the typed step outcome as plain text; raises only if there is none."""
+        record_decision("publish", "authority_projection", {"reason": reason[:500]})
+        text, publication = NarrationPublicationGuard.publish(authority, "", None)
+        return await self._finish(
+            audit=audit,
+            run=run,
+            authority=authority,
+            text=text,
+            status=status,
+            repair_attempts=repair_attempts,
+            telemetry=telemetry,
+            publication=publication,
+            reason=reason,
         )
 
     async def generate(
@@ -358,366 +315,132 @@ class AuthorityNarrationPipeline:
         narrator_selection: RoleModelSelection,
         authority: TurnAuthority,
     ) -> AuthorityNarrationResult:
-        draft, narrator_telemetry, repetition_exhausted = await self._generate_non_repeating(
-            campaign_id=campaign_id,
-            scene_id=scene_id,
-            authority=authority,
-            messages=narrator_messages,
-            selection=narrator_selection,
-            temperature=settings.NARRATOR_TEMPERATURE,
+        """Draft, one validator call, at most one repair, then the typed-outcome fallback."""
+        audit = NarrationValidator(
+            self._session,
+            RoleModelRouter(ProviderConfigRepository(self._session)),
         )
-
+        try:
+            draft, beat, telemetry = await self._narrate(
+                narrator_messages,
+                narrator_selection,
+                authority,
+                temperature=settings.NARRATOR_TEMPERATURE,
+            )
+        except LLMProviderError as exc:
+            run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, "", None)
+            return await self._fallback(
+                audit=audit,
+                run=run,
+                authority=authority,
+                reason=f"narrator failed: {type(exc).__name__}: {exc}",
+                repair_attempts=0,
+                telemetry={**self.last_telemetry, "narration_degraded": True},
+            )
         validation_selection = await self._router.resolve(
             campaign_id,
             ModelRole.NARRATION_VALIDATOR,
             narrator_selection.config,
         )
-        audit = NarrationValidator(
-            self._session,
-            RoleModelRouter(ProviderConfigRepository(self._session)),
-        )
-        run = await audit.start_run(
-            campaign_id,
-            trigger_turn_id,
-            scene_id,
-            draft,
-            validation_selection.config.model_name if validation_selection else None,
-        )
+        validator_model = validation_selection.config.model_name if validation_selection else None
+        run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, draft, validator_model)
 
-        if repetition_exhausted:
-            return await self._publish_fallback(
+        def accepted(text: str, status: str, attempts: int, reason: str | None = None):
+            record_decision("publish", "validated_candidate", {"status": status})
+            return self._finish(
                 audit=audit,
                 run=run,
                 authority=authority,
-                candidate="",
-                validation=None,
-                repair_attempts=1,
-                attempt_index=0,
-                reason="near-verbatim narration repetition persisted after one regeneration",
-                telemetry=narrator_telemetry,
+                text=text.strip(),
+                status=status,
+                repair_attempts=attempts,
+                telemetry=telemetry,
+                publication={"mode": "validated_candidate", "validated_surface": True},
+                reason=reason,
+            )
+
+        async def validator_down(reason: str):
+            # An unchecked draft stays off the surface while a typed outcome exists.
+            # Fail-open publishes the draft only when there is nothing typed to show.
+            if settings.NARRATION_VALIDATOR_FAIL_OPEN and not NarrationPublicationGuard.has_typed_outcome(authority):
+                return await accepted(draft, "failed_open", 0, reason)
+            return await self._fallback(
+                audit=audit,
+                run=run,
+                authority=authority,
+                reason=reason,
+                repair_attempts=0,
+                telemetry=telemetry,
+                status="failed_open" if settings.NARRATION_VALIDATOR_FAIL_OPEN else "safe_fallback",
             )
 
         if validation_selection is None:
-            if settings.NARRATION_VALIDATOR_FAIL_OPEN:
-                published, publication = NarrationPublicationGuard.publish(
-                    authority,
-                    draft,
-                    None,
-                )
-                gate = await audit.finalize(
-                    run,
-                    status="failed_open",
-                    final_text=published,
-                    repair_attempts=0,
-                    failure_reason="validator routing unavailable",
-                )
-                return AuthorityNarrationResult(
-                    text=published,
-                    telemetry={
-                        **narrator_telemetry,
-                        "narration_validation": {
-                            "status": gate.status,
-                            "reason": "validator routing unavailable",
-                            "authority_version": authority.version,
-                            "publication_guard": publication,
-                        },
-                    },
-                    validation_run_id=gate.validation_run_id,
-                    validation_status="failed_open",
-                )
-            return await self._publish_fallback(
-                audit=audit,
-                run=run,
-                authority=authority,
-                candidate=draft,
-                validation=None,
-                repair_attempts=0,
-                attempt_index=0,
-                reason="validator routing unavailable",
-                telemetry=narrator_telemetry,
-            )
+            return await validator_down("validator routing unavailable")
 
         validator = TurnAuthorityValidator(self._router)
+        check = {
+            "validator": validator,
+            "audit": audit,
+            "run": run,
+            "selection": validation_selection,
+            "authority": authority,
+        }
         try:
-            result = await validator.validate(validation_selection, authority, draft)
-            await audit.record_attempt(
-                run,
-                attempt_index=0,
-                candidate_text=draft,
-                result=result,
-                telemetry={
-                    **validator.telemetry,
-                    "authority_version": authority.version,
-                },
+            beat_failure = self._beat_failure(authority, draft, beat)
+            result = None if beat_failure else await self._check(
+                **check, candidate=draft, attempt_index=0
             )
-            if result.verdict == "pass":
-                published, publication = NarrationPublicationGuard.publish(
-                    authority,
-                    draft,
-                    result,
-                )
-                publication_changed = published != draft
-                if publication_changed:
-                    await audit.record_attempt(
-                        run,
-                        attempt_index=1,
-                        candidate_text=published,
-                        result=self._synthetic_safe_result(
-                            "Deterministic publication guard overruled a validator-approved surface."
-                        ),
-                        telemetry={
-                            "authority_version": authority.version,
-                            "publication_guard": publication,
-                            "reason": "validator_pass_overruled_by_publication_guard",
-                        },
-                    )
-                gate = await audit.finalize(
-                    run,
-                    status="repaired" if publication_changed else "passed",
-                    final_text=published,
-                    repair_attempts=1 if publication_changed else 0,
-                    failure_reason=(
-                        "validator-approved narration failed deterministic publication invariants"
-                        if publication_changed
-                        else None
-                    ),
-                )
-                return AuthorityNarrationResult(
-                    text=published,
-                    telemetry={
-                        **narrator_telemetry,
-                        "narration_validation": {
-                            "status": gate.status,
-                            "validation_run_id": str(gate.validation_run_id),
-                            "authority_version": authority.version,
-                            "validator_telemetry": validator.telemetry,
-                            "publication_guard": publication,
-                            "deterministic_publication_override": publication_changed,
-                        },
-                    },
-                    validation_run_id=gate.validation_run_id,
-                    validation_status=gate.status,
-                )
-
-            surgical, surgical_result, surgery, surgery_attempted = (
-                await self._try_surgical_repair(
-                    audit=audit,
-                    run=run,
-                    validator=validator,
-                    validation_selection=validation_selection,
-                    authority=authority,
-                    draft=draft,
-                    initial_result=result,
-                    attempt_index=1,
-                )
-            )
-            if surgical is not None:
-                # Store exactly the publication-guard surface (same as validator-pass path).
-                # Do not finalize a pre-publication alternate that could retain uncleared prior EN.
-                published, publication = NarrationPublicationGuard.publish(
-                    authority,
-                    surgical,
-                    surgical_result,
-                )
-                gate = await audit.finalize(
-                    run,
-                    status="repaired",
-                    final_text=published,
-                    repair_attempts=1,
-                )
-                return AuthorityNarrationResult(
-                    text=published,
-                    telemetry={
-                        **narrator_telemetry,
-                        "narration_validation": {
-                            "status": gate.status,
-                            "validation_run_id": str(gate.validation_run_id),
-                            "authority_version": authority.version,
-                            "repair_strategy": "deterministic_span_removal",
-                            "surgical_repair": surgery,
-                            "publication_guard": publication,
-                            "validator_telemetry": validator.telemetry,
-                        },
-                    },
-                    validation_run_id=gate.validation_run_id,
-                    validation_status=gate.status,
-                )
+            if result and result.verdict == "pass":
+                return await accepted(draft, "passed", 0)
 
             record_decision(
-                "repair",
-                "requested",
-                {"strategy": "preserve_first_model_edit"},
+                "repair", "requested", {"strategy": "single_model_repair"},
                 role=ModelRole.NARRATOR.value,
             )
             repair_messages = [
                 *narrator_messages,
                 ChatMessage(
                     role="user",
-                    content=(
-                        "[REPAIR AGAINST TURN AUTHORITY]\n"
-                        + validator.repair_prompt(authority, draft, result)
-                    ),
+                    content=validator.repair_prompt(authority, draft, result, beat_failure),
                 ),
             ]
-            repaired, repair_telemetry, repair_repetition_exhausted = (
-                await self._generate_non_repeating(
-                    campaign_id=campaign_id,
-                    scene_id=scene_id,
-                    authority=authority,
-                    messages=repair_messages,
-                    selection=narrator_selection,
+            try:
+                repaired, repaired_beat, repair_telemetry = await self._narrate(
+                    repair_messages,
+                    narrator_selection,
+                    authority,
                     temperature=settings.NARRATION_REPAIR_TEMPERATURE,
                 )
-            )
-            model_attempt_index = 2 if surgery_attempted else 1
-            repair_attempts = 2 if surgery_attempted else 1
-            if repair_repetition_exhausted:
-                return await self._publish_fallback(
+            except LLMProviderError as exc:
+                return await self._fallback(
                     audit=audit,
                     run=run,
                     authority=authority,
-                    candidate="",
-                    validation=None,
-                    repair_attempts=repair_attempts,
-                    attempt_index=model_attempt_index,
-                    reason="repaired narration repeated a prior published response after retry",
-                    telemetry={
-                        **narrator_telemetry,
-                        "surgical_repair": surgery,
-                        "repair_generation": repair_telemetry,
-                    },
+                    reason=f"repair narrator failed: {type(exc).__name__}: {exc}",
+                    repair_attempts=1,
+                    telemetry=telemetry,
                 )
-
-            repaired_result = await validator.validate(
-                validation_selection,
-                authority,
-                repaired,
+            telemetry = {**telemetry, "repair_generation": repair_telemetry}
+            repaired_failure = self._beat_failure(authority, repaired, repaired_beat)
+            repaired_result = None if repaired_failure else await self._check(
+                **check, candidate=repaired, attempt_index=1
             )
-            await audit.record_attempt(
-                run,
-                attempt_index=model_attempt_index,
-                candidate_text=repaired,
-                result=repaired_result,
-                telemetry={
-                    **validator.telemetry,
-                    "authority_version": authority.version,
-                    "repair_strategy": "preserve_first_model_edit",
-                    "surgical_repair": surgery,
-                    "repair_generation": repair_telemetry,
-                },
-            )
-            if repaired_result.verdict != "pass":
-                return await self._publish_fallback(
-                    audit=audit,
-                    run=run,
-                    authority=authority,
-                    candidate=repaired,
-                    validation=repaired_result,
-                    repair_attempts=repair_attempts,
-                    attempt_index=model_attempt_index + 1,
-                    reason=(
-                        repaired_result.summary
-                        or "narration remained outside turn authority after repair"
-                    ),
-                    telemetry={
-                        **narrator_telemetry,
-                        "surgical_repair": surgery,
-                        "repair_generation": repair_telemetry,
-                        "validator_telemetry": validator.telemetry,
-                    },
-                )
-
-            published, publication = NarrationPublicationGuard.publish(
-                authority,
-                repaired,
-                repaired_result,
-            )
-            publication_changed = published != repaired
-            if publication_changed:
-                await audit.record_attempt(
-                    run,
-                    attempt_index=model_attempt_index + 1,
-                    candidate_text=published,
-                    result=self._synthetic_safe_result(
-                        "Deterministic publication guard corrected validator-approved repaired prose."
-                    ),
-                    telemetry={
-                        "authority_version": authority.version,
-                        "publication_guard": publication,
-                        "repair_strategy": "deterministic_publication_projection",
-                    },
-                )
-            final_repair_attempts = repair_attempts + (1 if publication_changed else 0)
-            gate = await audit.finalize(
-                run,
-                status="repaired",
-                final_text=published,
-                repair_attempts=final_repair_attempts,
-                failure_reason=(
-                    "validator-approved repaired narration failed deterministic publication invariants"
-                    if publication_changed
-                    else None
-                ),
-            )
-            return AuthorityNarrationResult(
-                text=published,
-                telemetry={
-                    **narrator_telemetry,
-                    "repair_generation": repair_telemetry,
-                    "narration_validation": {
-                        "status": gate.status,
-                        "validation_run_id": str(gate.validation_run_id),
-                        "authority_version": authority.version,
-                        "repair_strategy": "preserve_first_model_edit",
-                        "surgical_repair": surgery,
-                        "validator_telemetry": validator.telemetry,
-                        "publication_guard": publication,
-                        "deterministic_publication_override": publication_changed,
-                    },
-                },
-                validation_run_id=gate.validation_run_id,
-                validation_status=gate.status,
-            )
-        except NarrationValidationError as exc:
-            if settings.NARRATION_VALIDATOR_FAIL_OPEN:
-                published, publication = NarrationPublicationGuard.publish(
-                    authority,
-                    draft,
-                    None,
-                )
-                gate = await audit.finalize(
-                    run,
-                    status="failed_open",
-                    final_text=published,
-                    repair_attempts=0,
-                    failure_reason=str(exc)[:2000],
-                )
-                return AuthorityNarrationResult(
-                    text=published,
-                    telemetry={
-                        **narrator_telemetry,
-                        "narration_validation": {
-                            "status": gate.status,
-                            "validation_run_id": str(gate.validation_run_id),
-                            "reason": str(exc)[:2000],
-                            "authority_version": authority.version,
-                            "publication_guard": publication,
-                        },
-                    },
-                    validation_run_id=gate.validation_run_id,
-                    validation_status=gate.status,
-                )
-            return await self._publish_fallback(
+            if repaired_result and repaired_result.verdict == "pass":
+                return await accepted(repaired, "repaired", 1)
+            return await self._fallback(
                 audit=audit,
                 run=run,
                 authority=authority,
-                candidate=draft,
-                validation=None,
-                repair_attempts=0,
-                attempt_index=0,
-                reason=f"authority validator failed: {exc}",
-                telemetry=narrator_telemetry,
+                reason=(
+                    f"beat grant not honored after one repair: {repaired_failure}"
+                    if repaired_failure
+                    else repaired_result.summary or "narration still breaks a ban after one repair"
+                ),
+                repair_attempts=1,
+                telemetry=telemetry,
             )
+        except NarrationValidationError as exc:
+            return await validator_down(f"authority validator failed: {exc}")
 
 
 __all__ = ["AuthorityNarrationPipeline", "AuthorityNarrationResult"]

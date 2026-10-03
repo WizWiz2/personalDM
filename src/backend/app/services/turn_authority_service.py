@@ -6,15 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
-from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
-from app.services.entity_identity import exact_identity_matches, identity_key
-from app.services.narrator_authority_contracts import (
-    addressed_response_obligation_constraint,
-    addressed_response_obligation_guidance,
-    presence_vs_solitude_constraint,
-    resolve_addressed_present_npc,
-    should_assign_addressed_response_obligation,
-)
+from app.models.turn_authority import TurnAuthority
+from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
 from app.services.outcome_fact_authority import established_state_lines, established_subjects
 from app.services.turn_authority_planner import CoordinatedTurnPlan
@@ -28,76 +21,6 @@ from app.services.turn_authority_resolvers import (
 
 class TurnAuthorityError(ValueError):
     """The planned turn cannot be represented as one coherent authority object."""
-
-
-def _location_id_key(value: object) -> str | None:
-    """Stable comparison key for location ids (UUID or str); None if unset/invalid."""
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return str(UUID(text))
-    except (TypeError, ValueError):
-        return None
-
-
-def _address_repair_colocated(
-    *,
-    scene_location_id: object,
-    character_location_id: object,
-    player_location_id: object,
-    same_scene_unplaced: bool = False,
-) -> bool:
-    """True when the named campaign entity shares the active scene's physical place.
-
-    Live residual after #188: kitchen scenes may lack ``scene_location_links`` (null
-    ``location_id``) while the PC already has ``current_location_id`` and the named
-    addressee row is still unplaced. Requiring *all three* nulls then never promotes
-    Лира, so obligation never stamps and sticky Housekeeper / Управляющая prose can
-    publish. Anchor order:
-    1. scene location when set;
-    2. else PC location when set (unstructured scene, placed cast);
-    3. unstructured scene (null scene location) + unplaced named campaign entity —
-       same bag as live kitchen even when PC location is already set (not a cross-map
-       teleport of a placed character; unplaced NPC is not invented into a *placed*
-       scene).
-
-    #190: when the scene *is* placed but the named addressee is still unplaced, allow
-    co-locate only if ``same_scene_unplaced`` (first_seen_scene_id matches the effective
-    scene). That repairs live kitchen Лира without teleports of placed cast elsewhere.
-    """
-    scene = _location_id_key(scene_location_id)
-    character = _location_id_key(character_location_id)
-    player = _location_id_key(player_location_id)
-    anchor = scene or player
-    if anchor is not None and character is not None:
-        return anchor == character
-    if character is not None:
-        return False
-    # Unplaced named campaign entity.
-    if scene is None:
-        return True
-    return bool(same_scene_unplaced)
-
-
-def _first_seen_scene_matches(entity: object, scene_id: object) -> bool:
-    """True when entity.custom_fields.first_seen_scene_id equals the active scene."""
-    if scene_id is None:
-        return False
-    fields = getattr(entity, "custom_fields", None)
-    if not isinstance(fields, dict):
-        return False
-    raw = fields.get("first_seen_scene_id")
-    if raw is None or not str(raw).strip():
-        return False
-    # UUID-normalize; scene ids share UUID shape with location keys.
-    scene_key = _location_id_key(scene_id)
-    seen_key = _location_id_key(raw)
-    if scene_key and seen_key:
-        return scene_key == seen_key
-    return str(raw).strip() == str(scene_id).strip()
 
 
 class TurnAuthorityService:
@@ -210,55 +133,6 @@ class TurnAuthorityService:
             campaign_id,
             entity_type="character",
         )
-        # Co-located known entities named in player_input but missing from scene participants
-        # are repaired into present cast (no inventing people, no cross-location teleport).
-        presence_arrivals: list[ExistingNpcArrival] = []
-        campaign_cast = [
-            entity.canonical_name
-            for entity in all_characters
-            if str(entity.canonical_name or "").strip()
-        ]
-        named = resolve_addressed_present_npc(
-            player_input,
-            campaign_cast,
-            player_name=(player.canonical_name if player else None),
-        )
-        if named and identity_key(named) not in present_keys:
-            match = next(
-                (
-                    entity
-                    for entity in all_characters
-                    if identity_key(entity.canonical_name) == identity_key(named)
-                ),
-                None,
-            )
-            if match is not None:
-                character = await self._entities.get_character(match.id)
-                target_loc = target_state.location_id if target_state else None
-                char_loc = getattr(character, "current_location_id", None) if character else None
-                player_loc = getattr(player, "current_location_id", None) if player else None
-                same_scene_unplaced = _first_seen_scene_matches(
-                    character if character is not None else match,
-                    effective_scene_id,
-                )
-                if _address_repair_colocated(
-                    scene_location_id=target_loc,
-                    character_location_id=char_loc,
-                    player_location_id=player_loc,
-                    same_scene_unplaced=same_scene_unplaced,
-                ):
-                    present_names.append(match.canonical_name)
-                    present_keys.add(identity_key(match.canonical_name))
-                    presence_arrivals.append(
-                        ExistingNpcArrival(
-                            entity_id=match.id,
-                            canonical_name=match.canonical_name,
-                            reason=(
-                                "Addressed known character is already at this location "
-                                "but was missing from scene participants."
-                            ),
-                        )
-                    )
         absent_names = [
             entity.canonical_name
             for entity in all_characters
@@ -300,13 +174,11 @@ class TurnAuthorityService:
             transition_type=transition_type,
             source_location_path=(list(source_state.location_path) if source_state else []),
             target_location_path=(list(target_state.location_path) if target_state else []),
+            scene_time=getattr(target_state, "world_time_label", None),
             present_character_names=present_names,
             known_absent_character_names=absent_names,
             allowed_new_npcs=npc_resolution.new_introductions,
-            allowed_existing_npc_arrivals=[
-                *npc_resolution.existing_arrivals,
-                *presence_arrivals,
-            ],
+            allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
             identity_reveal_requested=(
@@ -334,221 +206,35 @@ class TurnAuthorityService:
             action_sequence=executed_sequence,
         )
 
-        if authority.identity_reveal_requested:
-            authority.narration_guidance.append(
-                "Игрок спросил имя присутствующего персонажа: явно передай разрешённый ответ, "
-                "незнание или мотивированный отказ. Не придумывай новое имя ради заполнения ответа. "
-                "Только проверенное самоназывание может стабилизировать личность персонажа; "
-                "сам вопрос не разрешает переименование или создание дубля."
-            )
-
-        addressee = should_assign_addressed_response_obligation(
-            player_input,
-            authority.present_character_names,
-            player_name=authority.player_character_name,
-            hinted_name=authority.acting_character_name,
-            addressed_response_requested=bool(
-                plan and getattr(plan, "addressed_response_requested", False)
-                and (plan.addressed_response is None or planned_response is not None)
-            ),
+        # The beat grant is the single source of NPC response: the /talk listener, else the sole
+        # present NPC when the plan marks the player's line as addressed. Typed cast identity
+        # only; a new introduction receives its ID when it is materialized.
+        npcs = [
+            name for name in present_names
+            if identity_key(name) != identity_key(authority.player_character_name or "")
+        ]
+        addressed = bool(plan and plan.addressed_response_requested)
+        owner_name = actor.canonical_name if actor else (
+            npcs[0] if addressed and len(npcs) == 1 else None
         )
-        if addressee:
-            from app.services.master_director import subordinate_quiet_guidance_to_substance
-
-            guidance = list(authority.narration_guidance)
-            tip = addressed_response_obligation_guidance(addressee)
-            if tip not in guidance:
-                guidance.append(tip)
-            # Soft Keeper quiet may keep atmospheric voice, but not before the response beat.
-            guidance = subordinate_quiet_guidance_to_substance(
-                guidance,
-                substance_active=True,
-            )
-            constraints = list(authority.canon_constraints)
-            constraint = addressed_response_obligation_constraint(addressee)
-            if constraint not in constraints:
-                constraints.append(constraint)
-            beats = list(authority.character_beats)
-            beat = (
-                f"{addressee} получает прямое обращение и даёт ответ, отказывает, "
-                f"уклоняется или жестом сообщает ответ."
-            )
-            if beat not in beats:
-                beats.append(beat)
-            authority = authority.model_copy(
-                update={
-                    "addressed_response_obligation": addressee,
-                    "narration_guidance": guidance,
-                    "canon_constraints": constraints,
-                    "character_beats": beats,
-                }
-            )
-
-        presence_constraint = presence_vs_solitude_constraint(authority)
-        if presence_constraint:
-            constraints = list(authority.canon_constraints)
-            if presence_constraint not in constraints:
-                constraints.append(presence_constraint)
-            authority = authority.model_copy(update={"canon_constraints": constraints})
-
-        # Response ownership follows THIS turn's obligated addressee. Sticky `/talk` is only
-        # input provenance: it must not keep a prior listener (and their dialogue history) when
-        # the player names a different present cast member. Explicit actor-scoped callers
-        # (acting_character_id argument) remain authoritative.
-        if acting_character_id is None:
-            from app.services.systemless_authority_guard import addressed_response_requested
-
-            obligated = authority.addressed_response_obligation
-            if obligated:
-                obligated_key = identity_key(obligated)
-                obligated_entity = next(
-                    (
-                        entity
-                        for entity in all_characters
-                        if identity_key(entity.canonical_name) == obligated_key
-                        and identity_key(entity.canonical_name) in present_keys
-                    ),
-                    None,
-                )
-                if obligated_entity is not None:
-                    if authority.acting_character_id != obligated_entity.id:
-                        update = {
-                            "acting_character_id": obligated_entity.id,
-                            "acting_character_name": obligated_entity.canonical_name,
-                        }
-                        if planned_disposition == "stay":
-                            update["scene_disposition"] = "actor_turn"
-                            update["transition_type"] = "none"
-                        authority = authority.model_copy(update=update)
-                elif authority.acting_character_id is not None:
-                    # Obligated designation is not a resolvable present entity — drop sticky
-                    # so a prior listener's answered topic cannot bleed into this turn.
-                    update = {
-                        "acting_character_id": None,
-                        "acting_character_name": None,
-                    }
-                    if authority.scene_disposition == "actor_turn":
-                        update["scene_disposition"] = planned_disposition
-                        if planned_disposition == "stay":
-                            update["transition_type"] = "none"
-                    authority = authority.model_copy(update=update)
-            elif authority.acting_character_id is not None:
-                # No obligation: sticky listener stays only when the planner marks addressed
-                # response ownership for this turn; otherwise clear.
-                if not addressed_response_requested(player_input, plan):
-                    update = {
-                        "acting_character_id": None,
-                        "acting_character_name": None,
-                    }
-                    if authority.scene_disposition == "actor_turn":
-                        update["scene_disposition"] = planned_disposition
-                        if planned_disposition == "stay":
-                            update["transition_type"] = "none"
-                    authority = authority.model_copy(update=update)
-
-            # Defense in depth after #188: THIS turn uniquely names a different campaign
-            # entity than the sticky /talk listener (e.g. Лира vs Housekeeper). Never leave
-            # the prior EN twin / steward as acting character for that address — even when
-            # promotion/obligation failed and addressed_response_requested would otherwise
-            # retain sticky ownership.
-            if (
-                named
-                and authority.acting_character_id is not None
-                and identity_key(named) != identity_key(authority.acting_character_name or "")
-            ):
-                update = {
-                    "acting_character_id": None,
-                    "acting_character_name": None,
-                }
-                if authority.scene_disposition == "actor_turn":
-                    update["scene_disposition"] = planned_disposition
-                    if planned_disposition == "stay":
-                        update["transition_type"] = "none"
-                authority = authority.model_copy(update=update)
-
-        if plan and plan.addressed_response and planned_response is None:
-            authority.acting_character_id = None
-            authority.acting_character_name = None
-            authority.addressed_response_obligation = None
-
-        if authority.addressed_response:
-            response = authority.addressed_response
-            # A typed introduction is part of the post-turn cast even before it has a database ID.
-            # Bind aliases to an existing ID; a response must not invent or rename its owner.
-            response_cast = list(dict.fromkeys([
-                *authority.present_character_names, *authority.allowed_new_npc_names,
-                *authority.allowed_existing_npc_arrival_names,
-            ]))
-            present_entities = [
-                entity for entity in all_characters
-                if identity_key(entity.canonical_name) in {identity_key(n) for n in response_cast}
-                and entity.id != authority.player_character_id
-            ]
-            designation = (
-                response.speaker_name or authority.addressed_response_obligation
-                or authority.acting_character_name or ""
-            )
-            matches = exact_identity_matches(present_entities, designation)
-            if response.speaker_id is not None:
-                id_matches = [e for e in present_entities if e.id == response.speaker_id]
-                if len(id_matches) != 1 or (matches and matches[0].id != response.speaker_id):
-                    raise TurnAuthorityError("Planned response speaker ID is absent or inconsistent")
-                matches = id_matches
-            if len(matches) > 1:
-                raise TurnAuthorityError("Planned response speaker identity is ambiguous")
-            speaker = resolve_addressed_present_npc(
-                matches[0].canonical_name if matches else designation,
-                response_cast,
-                player_name=authority.player_character_name,
-            )
-            speaker_entity = next(
-                (
-                    entity
-                    for entity in all_characters
-                    if speaker and identity_key(entity.canonical_name) == identity_key(speaker)
-                ),
-                None,
-            )
-            if response.speaker_name and not speaker:
-                # The planner named someone who is not in this scene. Drop the reply
-                # instead of inventing them or aborting the turn.
-                speaker = None
-                unbound = True
-            else:
-                unbound = False
-            if not speaker and not unbound and plan and plan.addressed_response_requested:
-                non_player = [
-                    name for name in response_cast
-                    if identity_key(name) != identity_key(authority.player_character_name or "")
-                ]
-                if len(non_player) == 1:
-                    speaker = non_player[0]
-                    speaker_entity = next(
-                        (entity for entity in present_entities
-                         if identity_key(entity.canonical_name) == identity_key(speaker)), None,
-                    )
-                else:
-                    # Nobody present, or more than one: the line is not a bound reply.
-                    unbound = True
-            if unbound:
-                authority.addressed_response = None
-                authority.addressed_response_obligation = None
-                authority.acting_character_id = None
-                authority.acting_character_name = None
-            else:
-                authority.addressed_response = response.model_copy(
-                    update={
-                        "speaker_name": speaker,
-                        "speaker_id": speaker_entity.id if speaker_entity else None,
-                    }
-                )
-                if speaker_entity:
-                    # The frozen semantic addressee outranks a stale /talk selection. Persist
-                    # ownership by ID so a later public name reveal does not change the actor.
-                    authority.acting_character_id = speaker_entity.id
-                    authority.acting_character_name = speaker_entity.canonical_name
-                if speaker:
-                    authority.addressed_response_obligation = speaker
+        owner = next(
+            (entity for entity in all_characters
+             if owner_name and identity_key(entity.canonical_name) == identity_key(owner_name)),
+            None,
+        )
+        response = authority.addressed_response if owner_name else None
+        update = {
+            "beat_owner_id": owner.id if owner else None,
+            "beat_owner_name": owner_name,
+            "acting_character_id": owner.id if owner else None,
+            "acting_character_name": owner_name,
+            "addressed_response": (
+                response.model_copy(update={
+                    "speaker_name": owner_name, "speaker_id": owner.id if owner else None,
+                }) if response else None
+            ),
+        }
+        authority = authority.model_copy(update=update)
 
         lines = await established_state_lines(
             self._session,

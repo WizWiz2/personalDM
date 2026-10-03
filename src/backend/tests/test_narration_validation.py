@@ -114,7 +114,7 @@ async def test_invalid_draft_is_repaired_before_delivery(
     ).json()["id"]
 
     with patch(
-        "app.services.narration_pipeline.LLMProvider.generate_stream",
+        "app.providers.llm_provider.LLMProvider.generate_stream",
         new=raw_narrator,
     ), patch.object(
         NarrationValidator,
@@ -152,7 +152,7 @@ async def test_validator_failure_keeps_unvalidated_draft_off_published_surface(
     ).json()["id"]
 
     with patch(
-        "app.services.narration_pipeline.LLMProvider.generate_stream",
+        "app.providers.llm_provider.LLMProvider.generate_stream",
         new=raw_narrator,
     ), patch.object(
         NarrationValidator,
@@ -192,7 +192,7 @@ async def test_exhausted_repairs_publish_safe_authority_projection(
     ).json()["id"]
 
     with patch(
-        "app.services.narration_pipeline.LLMProvider.generate_stream",
+        "app.providers.llm_provider.LLMProvider.generate_stream",
         new=raw_narrator,
     ), patch.object(
         NarrationValidator,

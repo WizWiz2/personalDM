@@ -270,21 +270,6 @@ async def test_established_state_comes_only_from_completed_world_steps(db_sessio
     assert lines == ["ставни — открыты: да."]
 
 
-def test_publication_fallback_keeps_established_state():
-    from app.models.turn_authority import TurnAuthority
-    from app.services.narration_publication_guard import NarrationPublicationGuard
-
-    authority = TurnAuthority(
-        campaign_id=uuid4(),
-        trigger_turn_id=uuid4(),
-        player_input="Опиши ставни.",
-        observable_consequences=["Илья осмотрел ставни."],
-        established_state=["ставни открыты да"],
-    )
-    text = NarrationPublicationGuard.render_authority(authority)
-    assert "ставни открыты да" in text
-
-
 def test_observation_outcome_does_not_override_established_state():
     from app.models.turn_authority import TurnAuthority
     from app.services.narration_publication_guard import NarrationPublicationGuard
@@ -309,42 +294,6 @@ def test_observation_outcome_does_not_override_established_state():
     text = NarrationPublicationGuard.render_authority(authority)
     assert "закрыт" not in text
     assert "ставни открыты да" in text
-
-
-def test_observation_publication_yields_to_established_state():
-    from app.models.narration_validation import NarrationValidationResult
-    from app.models.turn_authority import TurnAuthority
-    from app.services.narration_publication_guard import NarrationPublicationGuard
-
-    lie = "Деревянные ставни закрывали яркий свет, и в комнате стоял полумрак. На столе стоит кувшин с водой."
-    authority = TurnAuthority(
-        campaign_id=uuid4(),
-        trigger_turn_id=uuid4(),
-        player_input="Опиши ставни.",
-        resolution="auto_success",
-        observable_consequences=["Илья осмотрел окна и кувшин."],
-        established_state=["ставни открыты да"],
-        established_subjects=["ставни"],
-        action_sequence={
-            "steps": [
-                {
-                    "action_type": "observation",
-                    "status": "completed",
-                    "observable_outcome": "Илья осмотрел окна и кувшин.",
-                }
-            ]
-        },
-    )
-    published, guard = NarrationPublicationGuard.publish(
-        authority,
-        lie,
-        NarrationValidationResult(verdict="pass", summary="ok", violations=[]),
-    )
-    assert guard["candidate_discarded"] is True
-    assert "закрывал" not in published
-    assert "полумрак" not in published
-    assert "ставни открыты да" in published
-    assert "кувшин с водой" in published
 
 
 def test_non_observation_keeps_validated_prose_beside_established_state():
@@ -375,5 +324,5 @@ def test_non_observation_keeps_validated_prose_beside_established_state():
         prose,
         NarrationValidationResult(verdict="pass", summary="ok", violations=[]),
     )
-    assert guard["candidate_discarded"] is False
+    assert guard["validated_surface"] is True
     assert published == prose

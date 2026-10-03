@@ -64,6 +64,7 @@ def test_actor_publication_guard_discards_rejected_actor_candidate():
         acting_character_name="Старуха Грета",
         player_input="В какой дом сворачивала тень?",
         scene_disposition="actor_turn",
+        observable_consequences=["Грета оглядывается на тёмную улицу."],
     )
     candidate = (
         "Грета хмурится. «Тень свернула к старому складу у фабрики», — шепчет она. "
@@ -93,7 +94,7 @@ def test_actor_publication_guard_discards_rejected_actor_candidate():
     assert "Тень свернула" not in published
     assert "кивнул" not in published
     assert "Спасибо, Грета" not in published
-    assert published == "Старуха Грета умолкает."
+    assert published == "Грета оглядывается на тёмную улицу."
     assert diagnostics["mode"] == "authority_projection"
     assert diagnostics["candidate_discarded"] is True
 
@@ -253,7 +254,6 @@ async def test_second_semantic_reject_publishes_authority_instead_of_failing_tur
     assert result.validation_status == "safe_fallback"
     assert result.text == "На стук дверь открывает дежурный."
     assert "ждёт вопроса" not in result.text
-    assert result.telemetry["narration_validation"]["semantic_failure_recovered"] is True
 
 
 class _TruncateThenContinueProvider:

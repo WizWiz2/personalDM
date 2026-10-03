@@ -185,7 +185,10 @@ class SceneTransitionExecutor:
         )
         target_location_id = source_location_id
         destination_created = False
-        if plan.transition_type == "location_transition":
+        if plan.transition_type == "location_transition" and plan.destination_location_id:
+            # The compiler already proved identity and an open route; nothing is re-matched by name.
+            target_location_id = plan.destination_location_id
+        elif plan.transition_type == "location_transition":
             destination = plan.destination_location or ""
             authorization = None
             if trigger_turn_id:
@@ -228,6 +231,7 @@ class SceneTransitionExecutor:
                         destination,
                         plan.destination_parent_location,
                         profile=_destination_profile(plan.bridge_summary),
+                        resident_role=plan.destination_resident_role,
                     )
                 )
             if allow_route_discovery is None:
@@ -680,6 +684,7 @@ class SceneTransitionExecutor:
         destination: str,
         parent_name: str | None,
         profile: str | None = None,
+        resident_role: str | None = None,
     ) -> tuple[UUID, bool]:
         clean_destination = display_location_name(" ".join(destination.split()))
         if not clean_destination:
@@ -708,6 +713,7 @@ class SceneTransitionExecutor:
                 custom_fields={
                     "created_by": "turn_planner",
                     **({"profile_source": "turn_planner_destination_profile"} if profile else {}),
+                    **({"resident_role": resident_role} if resident_role else {}),
                 },
             ),
         )

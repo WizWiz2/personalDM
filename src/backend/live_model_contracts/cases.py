@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from fastapi.testclient import TestClient
 
 from live_model_contracts.snapshot import TruthSnapshot
+
+# Live-evaluation oracle only: the runtime no longer filters published prose.
+DEAD_SURFACE = re.compile(
+    r"^(?:пока\s+)?ничего(?:\s+заметно)?\s+не\s+(?:меняется|происходит)[.!?…]*$",
+    flags=re.IGNORECASE,
+)
 from live_model_contracts.world import (
     FixtureWorld,
     add_belief,
@@ -66,11 +73,9 @@ def _locations(snapshot: TruthSnapshot) -> list[dict]:
 
 
 def _no_dead_surface(snapshot: TruthSnapshot, failures: list[str]) -> None:
-    from app.services.narration_publication_guard import NarrationPublicationGuard
-
     surface = _fold(snapshot.assistant_surface)
     _fail(bool(surface), "assistant produced no active published surface", failures)
-    _fail(not NarrationPublicationGuard.DEAD_TURN_PATTERN.fullmatch(surface),
+    _fail(not DEAD_SURFACE.fullmatch(surface),
           f"dead-turn surface escaped: {surface!r}", failures)
 
 

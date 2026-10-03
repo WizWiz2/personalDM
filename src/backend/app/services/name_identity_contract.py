@@ -161,6 +161,13 @@ def designation_collides(
     return bool(key) and key in occupied_keys
 
 
+def given_name_collides(candidate: object, occupied_keys: Collection[str] | None) -> bool:
+    """True when a personal name's first token opens another live identity («Афанасий Кузьмич»
+    beside «Афанасий Кузьмин»); such near-twins keep a unique short designation instead."""
+    given = identity_key(candidate).split()[:1]
+    return bool(given) and any(key.split()[:1] == given for key in occupied_keys or ())
+
+
 def designation_locale_mismatch(
     candidate: object,
     *,
@@ -297,13 +304,16 @@ def accept_short_canonical(
     occupied_canonical_keys: Collection[str] | None = None,
     locale_text: object = None,
     allow_locale_mismatch: bool = False,
+    personal: bool = False,
 ) -> str | None:
     """Return titled candidate when usable, free, and locale-ok; else None (→ needs_name)."""
     text = _compact(candidate)
     if not is_usable_short_designation(text):
         return None
     titled = _title_role(text)
-    if designation_collides(titled, occupied_canonical_keys):
+    if designation_collides(titled, occupied_canonical_keys) or (
+        personal and given_name_collides(titled, occupied_canonical_keys)
+    ):
         return None
     if not allow_locale_mismatch and designation_locale_mismatch(
         titled, locale_text=locale_text

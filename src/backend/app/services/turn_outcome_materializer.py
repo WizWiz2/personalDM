@@ -13,6 +13,7 @@ from app.db.tables import Entity, SceneParticipant
 from app.models.character import CharacterCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
+from app.services.name_identity_contract import given_name_collides
 
 
 @dataclass(frozen=True)
@@ -77,12 +78,12 @@ class TurnOutcomeMaterializer:
         for arrival in authority.allowed_existing_npc_arrivals:
             if arrival.entity_id in existing_participants:
                 continue
-            # Authority already checked current_location_id == target location. Keep movement
-            # disabled here so materialization can never turn an identity repair into teleportation.
+            # Authority already checked the character is at the target place or a parent/child place
+            # of it; stepping within one establishment is not a trip.
             await self._scenes.add_participant(
                 authority.target_scene_id,
                 arrival.entity_id,
-                allow_movement=False,
+                allow_movement=True,
             )
             arrived_existing.append((authority.target_scene_id, arrival.entity_id))
             existing_participants.add(arrival.entity_id)
@@ -121,6 +122,7 @@ class TurnOutcomeMaterializer:
                         "introduction_reason": introduction.reason,
                         "role": introduction.role,
                         "temporary_name": introduction.temporary_name,
+                        **({"slot_id": introduction.resident_slot} if introduction.resident_slot else {}),
                     },
                 ),
             )
@@ -130,13 +132,10 @@ class TurnOutcomeMaterializer:
                 allow_movement=True,
             )
             created_ids.append(character.id)
-            response = authority.addressed_response
-            if response and identity_key(response.speaker_name or "") == key:
-                authority.addressed_response = response.model_copy(
-                    update={"speaker_id": character.id}
-                )
-                authority.acting_character_id = character.id
-                authority.acting_character_name = character.canonical_name
+            if authority.beat_owner_id is None and identity_key(authority.beat_owner_name or "") == key:
+                authority.beat_owner_id = authority.acting_character_id = character.id
+                if authority.addressed_response:
+                    authority.addressed_response.speaker_id = character.id
             if character.canonical_name not in authority.present_character_names:
                 authority.present_character_names.append(character.canonical_name)
             known_names.add(key)
@@ -165,12 +164,12 @@ class TurnOutcomeMaterializer:
         if not fields.get("temporary_name"):
             raise ValueError("Name revelation cannot overwrite an established personal identity")
         known = await self._entities.list_by_campaign(authority.campaign_id)
-        if any(
-            entity.id != response.speaker_id and identity_key(response.revealed_name) in {
-                identity_key(entity.canonical_name), *(identity_key(alias) for alias in entity.aliases)
-            } for entity in known
-        ):
-            raise ValueError("Name revelation conflicts with another existing identity")
+        taken = {
+            identity_key(name) for entity in known if entity.id != response.speaker_id
+            for name in (entity.canonical_name, *entity.aliases)
+        }
+        if given_name_collides(response.revealed_name, taken):
+            return None  # Another identity owns this name or its given name; keep the designation.
         update = IdentityUpdate(
             response.speaker_id, row.canonical_name, row.aliases or "[]", row.custom_fields or "{}",
         )
@@ -197,9 +196,7 @@ class TurnOutcomeMaterializer:
             for npc in authority.allowed_new_npcs
         ]
         authority.addressed_response = response.model_copy(update={"speaker_name": response.revealed_name})
-        authority.addressed_response_obligation = response.revealed_name
-        authority.acting_character_id = response.speaker_id
-        authority.acting_character_name = response.revealed_name
+        authority.beat_owner_name = authority.acting_character_name = response.revealed_name
         await self._session.flush()
         return update
 

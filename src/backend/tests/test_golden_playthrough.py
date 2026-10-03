@@ -228,7 +228,7 @@ async def _intro_narrator(messages, *args, **kwargs):
 
 
 async def _sequence_narrator(messages, *args, **kwargs):
-    if "[REPAIR AGAINST TURN AUTHORITY]" in messages[-1].content:
+    if "[REPAIR REJECTED NARRATION]" in messages[-1].content:
         yield REPAIRED_SEQUENCE_TEXT
     else:
         yield INVALID_SEQUENCE_DRAFT

@@ -61,7 +61,7 @@ def _obligation_text(move: DirectorMove) -> str:
         ),
         "npc_initiative": (
             f"[DIRECTOR MOVE: {move} / {label}] A present NPC acts on their own agenda "
-            "(fits SceneDevelopment). Do not wait for the player to puppet them."
+            "now. Do not wait for the player to puppet them."
         ),
         "harden_consequence": (
             f"[DIRECTOR MOVE: {move} / {label}] Failure or cost lands harder; the world stays "
@@ -227,24 +227,6 @@ _SUBSTANCE_FIRST_QUIET = (
 )
 
 
-def has_substance_stamp(
-    *,
-    committed_travel: bool = False,
-    addressed_response_obligation: str | None = None,
-    canon_constraints: list[str] | None = None,
-) -> bool:
-    """True when a machine-stamped substance obligation outranks Soft Keeper quiet padding."""
-    if committed_travel:
-        return True
-    if " ".join(str(addressed_response_obligation or "").split()):
-        return True
-    for item in list(canon_constraints or []):
-        text = " ".join(str(item or "").split())
-        if "honor_travel" in text or "[ADDRESSED RESPONSE OBLIGATION]" in text:
-            return True
-    return False
-
-
 def subordinate_quiet_guidance_to_substance(
     guidance: list[str] | None,
     *,
@@ -370,8 +352,8 @@ def apply_moves_to_outcome_decision(
     if "npc_initiative" in moves:
         constraints = _append_constraint(
             constraints,
-            "[DIRECTOR STRUCTURAL: npc_initiative] Prefer SceneDevelopment disposition=act "
-            "when eligible present NPCs exist; quiet only with a concrete reason.",
+            "[DIRECTOR STRUCTURAL: npc_initiative] A present NPC may act on their own agenda "
+            "this turn; quiet only with a concrete reason.",
         )
 
     if quietish and not pressureish:
@@ -425,30 +407,6 @@ def apply_moves_to_outcome_decision(
     )
 
 
-def scene_development_disposition_bias(
-    selected: DirectorMoveSelection | None,
-    *,
-    committed_travel: bool = False,
-) -> str | None:
-    """Return 'act', 'quiet', or None for SceneDevelopment preference.
-
-    Committed travel outranks Soft Keeper quiet disposition: arrival must not be
-    soft-stalled into atmosphere-only quiet when the player just moved.
-    """
-    if selected is None:
-        return None
-    moves = set(selected.moves)
-    if "npc_initiative" in moves:
-        return "act"
-    if committed_travel:
-        return None
-    if moves & QUIET_MOVES and not (
-        moves & {"npc_initiative", "advance_conflict", "escalate_chaos"}
-    ):
-        return "quiet"
-    return None
-
-
 def narrator_persona_block(master: GameMasterPersona) -> str:
     phrases = " | ".join(master.catchphrases[:5])
     return (
@@ -470,11 +428,9 @@ __all__ = [
     "adjust_weights",
     "apply_moves_to_narration_guidance",
     "apply_moves_to_outcome_decision",
-    "has_substance_stamp",
     "narrator_persona_block",
     "pick_moves",
     "sampling_seed",
-    "scene_development_disposition_bias",
     "select_director_moves",
     "subordinate_quiet_guidance_to_substance",
 ]

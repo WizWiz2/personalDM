@@ -447,7 +447,7 @@ def test_full_turn_and_undo_keep_sequence_atomic(
         )
 
     assert response.status_code == 200, response.text
-    assert "[EXECUTED ACTION SEQUENCE]" in captured["system"]
+    assert "[TYPED TURN FACTS]" in captured["system"]
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["campaign"]["player_location_id"] == merchants["id"]
 

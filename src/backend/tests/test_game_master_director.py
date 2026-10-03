@@ -26,11 +26,9 @@ from app.services.master_director import (
     advance_rhythm,
     apply_moves_to_narration_guidance,
     apply_moves_to_outcome_decision,
-    has_substance_stamp,
     narrator_persona_block,
     pick_moves,
     sampling_seed,
-    scene_development_disposition_bias,
     select_director_moves,
     subordinate_quiet_guidance_to_substance,
 )
@@ -244,8 +242,6 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
     )
     asserted = apply_moves_to_outcome_decision(base, initiative)
     assert any("npc_initiative" in item for item in asserted.canon_constraints)
-    assert scene_development_disposition_bias(initiative) == "act"
-    assert scene_development_disposition_bias(quiet) == "quiet"
 
 
 def test_narrator_persona_block_is_style_only() -> None:
@@ -283,38 +279,6 @@ def test_move_policy_rejects_negative_weights() -> None:
         assert False, "expected validation error"
     except Exception:
         pass
-
-
-def test_requires_contact_introduction_honors_director_force() -> None:
-    from app.models.player_intent import PlayerIntentContract
-    from app.models.turn import ChatMessage
-    from app.services.turn_outcome_resolver import TurnOutcomeResolver
-
-    contract = PlayerIntentContract.model_validate(
-        {
-            "summary": "look around for people",
-            "actions": [{"action_type": "observation", "intent": "seek attendants"}],
-            "addressed_response_requested": False,
-        }
-    )
-    context = [ChatMessage(role="system", content="Physically present characters: Эйдан")]
-    empty = TurnOutcomeDecision.model_validate(
-        {
-            "action_outcomes": [
-                {
-                    "action_index": 0,
-                    "resolution": "auto_success",
-                    "observable_outcome": "Тишина.",
-                }
-            ],
-            "npc_introductions": [],
-            "resolution": "observation",
-        }
-    )
-    assert not TurnOutcomeResolver._requires_contact_introduction(contract, context, empty)
-    assert TurnOutcomeResolver._requires_contact_introduction(
-        contract, context, empty, force_introduce_contact=True
-    )
 
 
 @pytest.mark.asyncio
@@ -572,8 +536,6 @@ def test_soft_keeper_quiet_cannot_soft_stall_committed_travel() -> None:
     assert any("quiet" in item for item in decided.canon_constraints)
     # Outcomes must remain typed success — quiet must not rewrite travel.
     assert decided.action_outcomes[0].resolution == "auto_success"
-    assert scene_development_disposition_bias(quiet, committed_travel=True) is None
-    assert scene_development_disposition_bias(quiet, committed_travel=False) == "quiet"
 
 
 def test_honor_travel_also_stamps_without_quiet_moves() -> None:
@@ -622,20 +584,6 @@ def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
     stamped = apply_moves_to_narration_guidance(["keep stakes"], quiet, substance_active=True)
     assert any("subordinated" in item for item in stamped)
     assert not any("Atmospheric beat with low plot push" in item for item in stamped)
-    assert has_substance_stamp(committed_travel=True) is True
-    assert (
-        has_substance_stamp(
-            addressed_response_obligation="Управляющая домом",
-        )
-        is True
-    )
-    assert (
-        has_substance_stamp(
-            canon_constraints=["[DIRECTOR STRUCTURAL: honor_travel] Arrive or hard-block."],
-        )
-        is True
-    )
-    assert has_substance_stamp() is False
 
     rewritten = subordinate_quiet_guidance_to_substance(
         [

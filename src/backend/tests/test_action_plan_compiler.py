@@ -7,6 +7,7 @@ import pytest
 
 from app.models.player_intent import (
     ActionOutcomeDecision,
+    DestinationProfilePatch,
     PlayerActionIntent,
     PlayerIntentContract,
     TurnOutcomeDecision,
@@ -22,7 +23,7 @@ CAMPAIGN = UUID("00000000-0000-4000-8000-000000000301")
 
 
 def _location(location_id: UUID, name: str):
-    return SimpleNamespace(id=location_id, canonical_name=name, aliases=[])
+    return SimpleNamespace(id=location_id, canonical_name=name, aliases=[], parent_location_id=None)
 
 
 def _exit(source: UUID, target: UUID, target_name: str):
@@ -65,7 +66,7 @@ async def test_conditional_route_and_explicit_contact_keep_external_resolution()
     compiler = _Compiler(
         [_location(ROOM, "Комната"), _location(CORRIDOR, "Коридор")], {ROOM: [route]}
     )
-    contract = PlayerIntentContract(summary="Иду в коридор.", actions=[_move("Коридор")])
+    contract = PlayerIntentContract(summary="Иду в коридор.", actions=[_move("Коридор", CORRIDOR)])
     assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
     route.access_rule = None
     contract.actions[0].movement_method = "special"
@@ -82,11 +83,12 @@ async def test_unknown_destination_still_requires_world_resolution():
     assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
 
 
-def _move(destination: str) -> PlayerActionIntent:
+def _move(destination: str, location_id: UUID | None = None) -> PlayerActionIntent:
     return PlayerActionIntent(
         action_type="movement",
         intent=f"Переместиться в {destination}.",
         destination_location=destination,
+        destination_location_id=location_id,
     )
 
 
@@ -103,7 +105,7 @@ def _success(index: int) -> ActionOutcomeDecision:
 async def test_same_location_request_does_not_block_following_actions():
     compiler = _Compiler([_location(ROOM, "Мастерская")], {})
     contract = PlayerIntentContract(summary="Вхожу в мастерскую и смотрю стол.", actions=[
-        _move("Мастерская"), PlayerActionIntent(action_type="observation", intent="Осмотреть стол."),
+        _move("Мастерская", ROOM), PlayerActionIntent(action_type="observation", intent="Осмотреть стол."),
     ])
     plan = await compiler.compile(CAMPAIGN, contract, TurnOutcomeDecision(action_outcomes=[
         _success(0), ActionOutcomeDecision(
@@ -121,7 +123,7 @@ async def test_approved_companion_survives_movement_compilation():
         [_location(ROOM, "Комната"), _location(CORRIDOR, "Коридор")],
         {ROOM: [_exit(ROOM, CORRIDOR, "Коридор")]},
     )
-    action = _move("Коридор")
+    action = _move("Коридор", CORRIDOR)
     action.requested_companions = ["Валерьян"]
     contract = PlayerIntentContract(summary="Следую за Валерьяном.", actions=[action])
     assert await compiler.resolve_known_travel(CAMPAIGN, contract) is None
@@ -147,7 +149,7 @@ async def test_compound_route_is_compiled_from_each_virtual_intermediate_locatio
     )
     contract = PlayerIntentContract(
         summary="Кай идёт из комнаты через коридор в контору.",
-        actions=[_move("Коридор"), _move("Контора")],
+        actions=[_move("Коридор", CORRIDOR), _move("Контора", OFFICE)],
     )
     decision = await compiler.resolve_known_travel(CAMPAIGN, contract)
     assert decision is not None
@@ -179,7 +181,7 @@ async def test_missing_second_edge_blocks_that_hop_without_erasing_completed_pre
     )
     contract = PlayerIntentContract(
         summary="Кай выходит в коридор и затем пытается пройти на склад.",
-        actions=[_move("Коридор"), _move("Склад")],
+        actions=[_move("Коридор", CORRIDOR), _move("Склад", WAREHOUSE)],
     )
     decision = await compiler.resolve_known_travel(CAMPAIGN, contract)
     assert decision is not None
@@ -191,7 +193,24 @@ async def test_missing_second_edge_blocks_that_hop_without_erasing_completed_pre
     assert first.transition.destination_location == "Коридор"
     assert second.resolution == "blocked"
     assert second.transition.required is False
-    assert "not an available exit" in (second.blocking_reason or "")
+    assert "not reachable over known open routes" in (second.blocking_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_known_place_over_open_routes_is_one_trip() -> None:
+    compiler = _Compiler(
+        [_location(ROOM, "Комната Кая"), _location(CORRIDOR, "Коридор"), _location(OFFICE, "Контора")],
+        {
+            ROOM: [_exit(ROOM, CORRIDOR, "Коридор")],
+            CORRIDOR: [_exit(CORRIDOR, ROOM, "Комната Кая"), _exit(CORRIDOR, OFFICE, "Контора")],
+        },
+    )
+    contract = PlayerIntentContract(summary="Иду в контору.", actions=[_move("Контора", OFFICE)])
+    decision = await compiler.resolve_known_travel(CAMPAIGN, contract)
+    plan = await compiler.compile(CAMPAIGN, contract, decision)
+    (step,) = plan.action_sequence.steps
+    assert step.resolution == "auto_success"
+    assert step.transition.destination_location_id == OFFICE
 
 
 @pytest.mark.asyncio
@@ -218,16 +237,45 @@ async def test_unknown_explicit_destination_becomes_one_route_discovery_step() -
                 resolution="auto_success",
                 safe_mundane=True,
                 observable_outcome="Кай добирается до прачечной.",
-                destination_profile=profile,
-            )
+                destination=DestinationProfilePatch(
+                    action_index=0, name="Круглосуточная прачечная", within_current=False,
+                    profile=profile,
+                ),
+            ),
+            _success(1),
         ],
     )
+    contract.actions.append(_move("Комната Кая", ROOM))
 
     plan = await compiler.compile(CAMPAIGN, contract, decision)
     payload = plan.scene_transition.sequence_payload
 
     assert payload["_route_discovery_steps"] == [0]
-    assert plan.action_sequence.steps[0].transition.destination_location == (
-        "Круглосуточная прачечная соседнего дома"
+    first, back = plan.action_sequence.steps
+    # The name comes from the generated profile; containment from its typed flag.
+    assert first.transition.destination_location == "Круглосуточная прачечная"
+    assert first.transition.destination_parent_location is None
+    assert "DESTINATION PROFILE:" in (first.transition.bridge_summary or "")
+    # A hop after a place created this turn compiles from it instead of losing the origin.
+    assert back.resolution == "auto_success"
+    assert back.transition.destination_location_id == ROOM
+
+
+@pytest.mark.asyncio
+async def test_typed_time_advance_moves_the_scene_clock_with_the_first_act() -> None:
+    compiler = _Compiler(
+        [_location(ROOM, "Комната"), _location(CORRIDOR, "Коридор")],
+        {ROOM: [_exit(ROOM, CORRIDOR, "Коридор")]},
     )
-    assert "DESTINATION PROFILE:" in (plan.action_sequence.steps[0].transition.bridge_summary or "")
+    trip = PlayerIntentContract(
+        summary="Утром выхожу в коридор.", actions=[_move("Коридор", CORRIDOR)], time_advance="утром",
+    )
+    plan = await compiler.compile(CAMPAIGN, trip, TurnOutcomeDecision(action_outcomes=[_success(0)]))
+    assert plan.action_sequence.steps[0].transition.time_after == "утром"
+    look = PlayerIntentContract(
+        summary="Утром осматриваю стол.", time_advance="утром",
+        actions=[PlayerActionIntent(action_type="observation", intent="Осмотреть стол.")],
+    )
+    plan = await compiler.compile(CAMPAIGN, look, TurnOutcomeDecision(action_outcomes=[_success(0)]))
+    transition = plan.action_sequence.steps[0].transition
+    assert (transition.transition_type, transition.time_after) == ("time_transition", "утром")
