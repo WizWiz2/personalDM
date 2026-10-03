@@ -243,7 +243,7 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
             ).fetchall()
         }
 
-    assert revision == ("c0d1e2f3a4b5",)
+    assert revision == ("d1e2f3a4b5c6",)
     assert transition == ("preserve me", "legacy-runtime")
     assert lifecycle == ("received", 1)
     assert preserved_entity == (
@@ -264,4 +264,5 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
         "fluent_assertions",
         "world_relation_assertions",
         "entity_mentions",
+        "generation_decisions",
     }.issubset(truth_tables)

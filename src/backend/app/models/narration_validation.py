@@ -4,6 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+_TRACE_TEXT_LIMIT = 300
+_EXCERPT_CONTEXT = 80
+
 
 class NarrationViolation(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -25,6 +28,26 @@ class NarrationViolation(BaseModel):
     evidence: str = Field(min_length=1, max_length=1000)
     correction: str = Field(min_length=1, max_length=1000)
 
+    def trace(self, candidate: str) -> dict:
+        """Compact record of this violation and the exact candidate span it rejected."""
+        evidence = self.evidence.strip()
+        start = candidate.find(evidence)
+        span = None
+        if start >= 0:
+            end = start + len(evidence)
+            span = {
+                "start": start,
+                "end": end,
+                "excerpt": candidate[max(0, start - _EXCERPT_CONTEXT) : end + _EXCERPT_CONTEXT],
+            }
+        return {
+            "code": self.violation_type,
+            "severity": self.severity,
+            "evidence": evidence[:_TRACE_TEXT_LIMIT],
+            "correction": self.correction[:_TRACE_TEXT_LIMIT],
+            "span": span,
+        }
+
 
 class NarrationQuestionCoverage(BaseModel):
     """Reviewer-selected exact prose evidence for one frozen information request."""
@@ -40,6 +63,16 @@ class NarrationValidationResult(BaseModel):
     summary: str = Field(default="", max_length=1500)
     violations: list[NarrationViolation] = Field(default_factory=list, max_length=12)
     response_coverage: list[NarrationQuestionCoverage] = Field(default_factory=list, max_length=8)
+
+    def trace(self, candidate: str) -> dict:
+        """Compact decision payload: the verdict, every violation and a short candidate head."""
+        return {
+            "verdict": self.verdict,
+            "summary": self.summary[:_TRACE_TEXT_LIMIT],
+            "candidate_characters": len(candidate),
+            "candidate_excerpt": candidate[:_TRACE_TEXT_LIMIT],
+            "violations": [item.trace(candidate) for item in self.violations],
+        }
 
     def covers_questions(self, question_count: int, candidate: str) -> bool:
         indices = [item.question_index for item in self.response_coverage]

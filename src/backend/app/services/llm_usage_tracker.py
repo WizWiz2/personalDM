@@ -28,6 +28,9 @@ class LLMUsageContext:
     # them mid-turn from a second SQLite session blocked for busy_timeout behind the caller's own
     # uncommitted flush (e.g. the director selection during planning) and then lost the event.
     pending: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
+    # Pipeline decisions (validator verdicts, repairs, final reason) ride the same buffer so a
+    # failed or cancelled turn still explains itself after its own transaction rolls back.
+    decisions: list[dict[str, Any]] = field(default_factory=list, compare=False, repr=False)
 
 
 _current_usage_context: ContextVar[LLMUsageContext | None] = ContextVar(
@@ -58,21 +61,57 @@ def set_usage_context(
 async def close_usage_context(token: Token) -> None:
     context = _current_usage_context.get()
     _current_usage_context.reset(token)
-    if context is None or context.bind is None or not context.pending:
+    if context is None or context.bind is None:
         return
     factory = async_sessionmaker(
         bind=context.bind,
         expire_on_commit=False,
         autoflush=False,
     )
+    # Separate transactions: a missing decisions table must not cost the usage accounting.
+    await _flush(factory, "LLM usage telemetry", context, context.pending, LLMUsageRepository.record)
+    await _flush(
+        factory,
+        "Generation decision trace",
+        context,
+        context.decisions,
+        LLMUsageRepository.record_decision,
+    )
+
+
+async def _flush(factory, label: str, context: LLMUsageContext, rows: list, write) -> None:
+    if not rows:
+        return
     try:
         async with factory() as session:
             repository = LLMUsageRepository(session)
-            for event in context.pending:
-                await repository.record(context, event)
+            for row in rows:
+                await write(repository, context, row)
             await session.commit()
     except Exception as exc:  # telemetry must never break gameplay
-        logger.warning("LLM usage telemetry write failed: %s", exc, exc_info=True)
+        logger.warning("%s write failed: %s", label, exc, exc_info=True)
+
+
+def record_decision(
+    step: str,
+    outcome: str,
+    payload: dict[str, Any] | None = None,
+    *,
+    role: str | None = None,
+) -> None:
+    """Buffer one pipeline decision of the current generation run (no-op outside a turn)."""
+    context = current_usage_context()
+    if context is None or context.bind is None:
+        return
+    context.decisions.append(
+        {
+            "step": step,
+            "role": role,
+            "outcome": str(outcome),
+            "payload": payload or {},
+            "created_at": datetime.utcnow(),
+        }
+    )
 
 
 def current_usage_context() -> LLMUsageContext | None:

@@ -171,6 +171,24 @@ class TurnAuthority(BaseModel):
 
         return authorized_physical_cast_names(self)
 
+    def trace_summary(self) -> dict:
+        """Failure-diagnosis view of the frozen authority, recorded once per run; no prompt text."""
+        steps = (self.action_sequence or {}).get("steps")
+        return {
+            "resolution": self.resolution,
+            "scene_disposition": self.scene_disposition,
+            "present_characters": self.present_character_names,
+            "acting_character": self.acting_character_name,
+            "addressed_response_obligation": self.addressed_response_obligation,
+            "action_steps": [
+                {"type": step.get("action_type"), "status": step.get("status")}
+                for step in (steps if isinstance(steps, list) else [])
+                if isinstance(step, dict)
+            ],
+            "established_subjects": self.established_subjects,
+            "observable_consequence_count": len(self.observable_consequences),
+        }
+
     def validator_payload(self) -> dict:
         """Compact authority for continuity judging, without competing prompt prose."""
         payload = {

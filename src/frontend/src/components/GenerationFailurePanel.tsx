@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { GenerationRun } from '../api/turnRuntime'
+import type { GenerationRun, GenerationTrace, GenerationTraceEntry } from '../api/turnRuntime'
 import { Icons } from './Icons'
 
 function failureSummary(generation: GenerationRun): string {
@@ -44,8 +44,42 @@ function failureSummary(generation: GenerationRun): string {
   return 'Игровой pipeline не смог завершить этот ход. Ход сохранён как необработанный и не считается выполненным.'
 }
 
-export function GenerationFailurePanel({ generation }: { generation: GenerationRun }) {
+type Decision = Extract<GenerationTraceEntry, { kind: 'decision' }>
+
+const CHECK_LABELS: Record<string, string> = {
+  narration_validator: 'валидатор',
+  evaluator: 'арбитр',
+}
+
+/** Latest saga attempt of the run: a resumed run keeps its id, so start after the previous final. */
+function failureTrace(trace: GenerationTrace | null) {
+  const decisions = (trace?.timeline ?? []).filter(
+    (entry): entry is Decision => entry.kind === 'decision',
+  )
+  const finals = decisions.flatMap((entry, index) => (entry.step === 'final' ? [index] : []))
+  const current = decisions.slice(finals.length > 1 ? finals[finals.length - 2] + 1 : 0)
+  const attempts: Decision[][] = []
+  for (const entry of current) {
+    if (entry.step === 'validate') attempts.push([])
+    if ((entry.step === 'validate' || entry.step === 'evaluate') && attempts.length) {
+      attempts[attempts.length - 1].push(entry)
+    }
+  }
+  return {
+    reason: current.find((entry) => entry.step === 'final')?.payload.reason ?? null,
+    attempts: attempts.filter((checks) => checks.some((check) => check.payload.violations?.length)),
+  }
+}
+
+export function GenerationFailurePanel({
+  generation,
+  trace = null,
+}: {
+  generation: GenerationRun
+  trace?: GenerationTrace | null
+}) {
   const [showTechnical, setShowTechnical] = useState(false)
+  const { reason, attempts } = failureTrace(trace)
 
   useEffect(() => {
     setShowTechnical(false)
@@ -64,6 +98,22 @@ export function GenerationFailurePanel({ generation }: { generation: GenerationR
   return <div className="generation-failure-panel" role="alert">
     <strong>{generation.status === 'cancelled' ? 'Обработка хода остановлена.' : 'Мастер не смог обработать ход.'}</strong>
     <span>{failureSummary(generation)}</span>
+    {reason && <span className="generation-failure-reason">Итог: {reason}</span>}
+    {attempts.length > 0 && <details className="generation-failure-checks">
+      <summary>Нарушения проверок · попыток: {attempts.length}</summary>
+      <ol>
+        {attempts.map((checks, attempt) => <li key={attempt}>
+          {checks.map((check, index) => <div key={index}>
+            <em>{CHECK_LABELS[check.role ?? ''] ?? check.role}: {check.outcome}</em>
+            <ul>
+              {(check.payload.violations ?? []).map((violation, item) => <li key={item}>
+                <code>{violation.code}</code> {violation.evidence}
+              </li>)}
+            </ul>
+          </div>)}
+        </li>)}
+      </ol>
+    </details>}
     <div className="generation-failure-tech">
       <button
         className="btn ghost"

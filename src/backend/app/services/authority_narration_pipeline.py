@@ -19,7 +19,7 @@ from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_repetition_guard import NarrationRepetitionGuard
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
-from app.services.llm_usage_tracker import record_provider_telemetry
+from app.services.llm_usage_tracker import record_decision, record_provider_telemetry
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
@@ -257,6 +257,7 @@ class AuthorityNarrationPipeline:
         reason: str,
         telemetry: dict,
     ) -> AuthorityNarrationResult:
+        record_decision("publish", "authority_projection", {"reason": reason[:500]})
         published, publication = NarrationPublicationGuard.publish(
             authority,
             candidate,
@@ -314,6 +315,11 @@ class AuthorityNarrationPipeline:
         candidate, surgery = NarrationPublicationGuard.surgical_repair_candidate(
             draft,
             initial_result,
+        )
+        record_decision(
+            "repair",
+            str(surgery.get("status") or surgery.get("strategy")),
+            {**surgery, "attempt_index": attempt_index},
         )
         if candidate is None:
             return None, None, surgery, False
@@ -537,6 +543,12 @@ class AuthorityNarrationPipeline:
                     validation_status=gate.status,
                 )
 
+            record_decision(
+                "repair",
+                "requested",
+                {"strategy": "preserve_first_model_edit"},
+                role=ModelRole.NARRATOR.value,
+            )
             repair_messages = [
                 *narrator_messages,
                 ChatMessage(

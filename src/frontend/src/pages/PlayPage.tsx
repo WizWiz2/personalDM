@@ -2,8 +2,10 @@
 import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import {
+  getGenerationTrace,
   getTurnUsage,
   submitDetachedTurn,
+  type GenerationTrace,
   type TurnUsageSummary,
 } from '../api/turnRuntime'
 import type { GameMasterPersona, SceneState, Turn } from '../api/types'
@@ -113,6 +115,7 @@ export function PlayPage() {
   const [stickToBottom, setStickToBottom] = useState(true)
   const [showJumpLatest, setShowJumpLatest] = useState(false)
   const [turnUsage, setTurnUsage] = useState<TurnUsageSummary | null>(null)
+  const [failureTrace, setFailureTrace] = useState<GenerationTrace | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLFormElement>(null)
   const [jumpBottom, setJumpBottom] = useState(96)
@@ -306,6 +309,30 @@ export function PlayPage() {
       if (timer !== undefined) window.clearTimeout(timer)
     }
   }, [campaign.id, generation?.status, generation?.user_turn_id])
+
+  useEffect(() => {
+    setFailureTrace(null)
+    if (!failedGeneration) return
+    let active = true
+    let timer: number | undefined
+    const fetchTrace = async (attempt: number) => {
+      try {
+        const trace = await getGenerationTrace(campaign.id, failedGeneration.id)
+        if (!active) return
+        setFailureTrace(trace)
+        // Decisions are flushed just after the run is marked failed; fetch once more if early.
+        const flushed = trace.timeline.some((entry) => entry.kind === 'decision' && entry.step === 'final')
+        if (!flushed && attempt < 3) timer = window.setTimeout(() => { void fetchTrace(attempt + 1) }, 800)
+      } catch {
+        // The trace is diagnostic. The failure banner stands on generation.error alone.
+      }
+    }
+    void fetchTrace(0)
+    return () => {
+      active = false
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [campaign.id, failedGeneration?.id, failedGeneration?.status])
 
   const visibleTurns = useMemo(() => turns.filter((turn) => turn.role !== 'system'), [turns])
   const latestMasterTurnId = useMemo(
@@ -510,7 +537,7 @@ export function PlayPage() {
 
           {failedGeneration && (
             <div className="generation-failure-stack" role="alert">
-              <GenerationFailurePanel generation={failedGeneration} />
+              <GenerationFailurePanel generation={failedGeneration} trace={failureTrace} />
               <div className="generation-failure-actions">
                 <button className="btn primary" type="button" disabled={busy} onClick={() => void retryFailedTurn()}>
                   Повторить ход

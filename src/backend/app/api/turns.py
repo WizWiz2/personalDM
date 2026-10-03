@@ -114,6 +114,26 @@ async def get_latest_generation(
     return await DetachedTurnDispatcher.latest_generation(campaign_id, session)
 
 
+@router.get("/generation/{run_id}/trace")
+async def get_generation_trace(
+    campaign_id: UUID,
+    run_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """Ordered LLM calls and pipeline decisions of one run, including failed and cancelled ones."""
+    generation = await GenerationRunRepository(session).get(run_id)
+    if generation is None or generation.campaign_id != campaign_id:
+        raise HTTPException(status_code=404, detail="Generation run not found")
+    return {
+        "generation_run_id": generation.id,
+        "user_turn_id": generation.user_turn_id,
+        "status": generation.status,
+        "phase": generation.phase,
+        "error": generation.error,
+        "timeline": await LLMUsageRepository(session).trace_for_run(campaign_id, run_id),
+    }
+
+
 @router.get("/usage/{user_turn_id}")
 async def get_turn_usage(
     campaign_id: UUID,

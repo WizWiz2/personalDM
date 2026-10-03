@@ -6,6 +6,7 @@ from app import config
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
+from app.services.llm_usage_tracker import record_decision
 from app.services.role_model_router import ModelRole, RoleModelSelection
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
@@ -190,7 +191,14 @@ async def _semantic_review_failed_narration(
     # Only formal, machine-provable post-checks remain deterministic.
     reviewed = validator.apply_deterministic_authority(reviewed, authority)
     reviewed = validator.apply_deterministic_language(reviewed, authority, candidate_text)
-    return validator.apply_deterministic_surface_quality(reviewed, candidate_text)
+    reviewed = validator.apply_deterministic_surface_quality(reviewed, candidate_text)
+    record_decision(
+        "evaluate",
+        reviewed.verdict,
+        reviewed.trace(candidate_text),
+        role=ModelRole.EVALUATOR.value,
+    )
+    return reviewed
 
 
 def install() -> None:
@@ -256,9 +264,15 @@ def install() -> None:
                 candidate_text,
                 result,
             )
-        except (LLMProviderError, ValueError, TypeError):
+        except (LLMProviderError, ValueError, TypeError) as exc:
             # A failed reviewer must not silently bless prose. Preserve the first semantic verdict;
             # existing preserve-first repair/fallback remains the containment boundary.
+            record_decision(
+                "evaluate",
+                "error",
+                {"error": f"{type(exc).__name__}: {exc}"[:500]},
+                role=ModelRole.EVALUATOR.value,
+            )
             return result
 
     TurnAuthorityValidator.validate = semantically_adjudicated_validate

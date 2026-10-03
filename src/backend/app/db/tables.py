@@ -213,6 +213,26 @@ class LLMUsageEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class GenerationDecision(Base):
+    """Why a generation run went the way it did; flushed with its LLM usage events."""
+
+    __tablename__ = "generation_decisions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    user_turn_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("turns.id", ondelete="SET NULL"), nullable=True
+    )
+    generation_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    step: Mapped[str] = mapped_column(String(64), nullable=False)
+    role: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class Scene(Base):
     __tablename__ = "scenes"
 

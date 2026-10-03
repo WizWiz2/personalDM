@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -8,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.base import BaseRepository
-from app.db.tables import LLMUsageEvent
+from app.db.tables import GenerationDecision, LLMUsageEvent
 
 if TYPE_CHECKING:
     from app.services.llm_usage_tracker import LLMUsageContext
@@ -49,6 +50,66 @@ class LLMUsageRepository(BaseRepository):
             row.created_at = event["created_at"]  # call time, not buffered-write time
         self._session.add(row)
         await self._session.flush()
+
+    async def record_decision(self, context: "LLMUsageContext", decision: dict[str, Any]) -> None:
+        row = GenerationDecision(
+            campaign_id=str(context.campaign_id),
+            user_turn_id=str(context.user_turn_id),
+            generation_run_id=(
+                str(context.generation_run_id)
+                if context.generation_run_id is not None
+                else None
+            ),
+            step=str(decision["step"]),
+            role=decision.get("role"),
+            outcome=str(decision["outcome"]),
+            payload_json=json.dumps(decision.get("payload") or {}, ensure_ascii=False, default=str),
+        )
+        if decision.get("created_at"):
+            row.created_at = decision["created_at"]
+        self._session.add(row)
+        await self._session.flush()
+
+    async def trace_for_run(self, campaign_id: UUID, generation_run_id: UUID) -> list[dict[str, Any]]:
+        """LLM calls and pipeline decisions of one run, in the order they happened."""
+        calls = await self._session.execute(
+            select(LLMUsageEvent).where(
+                LLMUsageEvent.campaign_id == str(campaign_id),
+                LLMUsageEvent.generation_run_id == str(generation_run_id),
+            )
+            .order_by(LLMUsageEvent.created_at.asc())
+        )
+        decisions = await self._session.execute(
+            select(GenerationDecision).where(
+                GenerationDecision.campaign_id == str(campaign_id),
+                GenerationDecision.generation_run_id == str(generation_run_id),
+            )
+            .order_by(GenerationDecision.created_at.asc())
+        )
+        timeline = [
+            {
+                "kind": "call",
+                "at": row.created_at,
+                "role": row.model_role,
+                "model": row.model_name,
+                "status": row.status,
+                "duration_ms": row.duration_ms,
+                "total_tokens": int(row.total_tokens or 0),
+            }
+            for row in calls.scalars()
+        ] + [
+            {
+                "kind": "decision",
+                "at": row.created_at,
+                "step": row.step,
+                "role": row.role,
+                "outcome": row.outcome,
+                "payload": json.loads(row.payload_json or "{}"),
+            }
+            for row in decisions.scalars()
+        ]
+        # A decision about a call is buffered right after that call's usage event.
+        return sorted(timeline, key=lambda item: (item["at"], item["kind"] == "decision"))
 
     async def list_for_turn(
         self,
