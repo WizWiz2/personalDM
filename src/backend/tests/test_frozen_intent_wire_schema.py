@@ -275,6 +275,23 @@ def test_unfilled_resident_slot_is_introduced_through_npc_introductions() -> Non
     assert parsed.npc_introductions[0].resident_slot == "inn"
 
 
+def test_addressee_can_summon_a_newcomer_only_through_a_frozen_action() -> None:
+    wire = _outcome_wire_model(1, bound_response_speaker="Хозяин")
+    servant = {
+        "canonical_name": "Половой", "role": "половой", "reason": "Хозяин позвал его из подсобки.",
+        "description": "Молодой парень в косоворотке, ведёт книгу постояльцев.",
+        "appearance": "Вихрастый, с карандашом за ухом и полотенцем на плече.",
+    }
+    base = {
+        "action_outcomes": [{"action_index": 0, "resolution": "auto_success"}],
+        "response_speaker_name": "Хозяин",
+    }
+    with pytest.raises(ValidationError):
+        wire.model_validate({**base, "npc_introductions": [servant]})
+    parsed = wire.model_validate({**base, "npc_introductions": [{**servant, "after_action_index": 0}]})
+    assert parsed.npc_introductions[0].after_action_index == 0
+
+
 def _revealed_response(*, evidence: str):
     return {
         "action_outcomes": [], "npc_introductions": [],

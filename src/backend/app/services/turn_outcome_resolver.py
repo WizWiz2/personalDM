@@ -336,6 +336,14 @@ def _outcome_wire_model(
         after_action_index: prerequisite_type = None
         resident_slot: slot_type = None
 
+    if bound_response_speaker and action_count:
+        # The addressee is already here: a newcomer is only someone a frozen action brings in.
+        IndexedNpcIntroductionDraft = create_model(
+            "ArrivingNpcIntroductionDraft", __base__=IndexedNpcIntroductionDraft,
+            after_action_index=(Literal[tuple(range(action_count))], Field(
+                description="Frozen action whose result brings this person here.")),
+        )
+
     if required_slot:
         # An unfilled resident slot of this place: its keeper is introduced now.
         IndexedNpcIntroductionDraft = create_model(
@@ -831,7 +839,7 @@ class TurnOutcomeResolver:
                     for index, action in enumerate(contract.actions)
                     if action.action_type == "observation"
                 },
-                allow_introductions=not existing_addressee,
+                allow_introductions=not existing_addressee or bool(contract.actions),
                 allow_name_revelation=contract.identity_reveal_requested or not existing_addressee,
                 bound_response_speaker=(
                     contract.addressed_character_name if existing_addressee else None
