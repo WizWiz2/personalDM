@@ -436,6 +436,260 @@ class LLMProvider:
         assert last_response is not None
         return last_response, candidate
 
+    @staticmethod
+    def _responses_input(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """Translate chat-style history to stateless Responses API input.
+
+        Token-sharing preview rejects explicit system items, while developer messages
+        are supported. PersonalDM already owns conversation state, so every request
+        carries the complete compiled context instead of relying on stored responses.
+        """
+        result: list[dict[str, str]] = []
+        for message in messages:
+            role = "developer" if message.get("role") == "system" else message.get("role", "user")
+            result.append({"role": role, "content": message.get("content", "")})
+        return result
+
+    @staticmethod
+    def _responses_usage(data: dict[str, Any]) -> dict[str, int]:
+        response = data.get("response")
+        if not isinstance(response, dict):
+            return {}
+        usage = response.get("usage")
+        if not isinstance(usage, dict):
+            return {}
+        return {
+            key: int(value)
+            for key, value in usage.items()
+            if isinstance(value, (int, float))
+        }
+
+    @staticmethod
+    def _responses_error(data: dict[str, Any]) -> str | None:
+        event_type = str(data.get("type") or "")
+        if event_type not in {"error", "response.failed", "response.incomplete"}:
+            return None
+        candidate = data.get("error")
+        if candidate is None and isinstance(data.get("response"), dict):
+            candidate = data["response"].get("error")
+        if isinstance(candidate, dict):
+            code = candidate.get("code")
+            message = candidate.get("message") or candidate.get("type") or candidate
+            return f"{code}: {message}" if code else str(message)
+        return str(candidate or event_type)
+
+    async def _collect_chatgpt_response(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> tuple[str, dict[str, int], int]:
+        parts: list[str] = []
+        usage: dict[str, int] = {}
+        frames = 0
+        completed = False
+        async for data in self._stream_once(client, url, headers, payload):
+            if data.get("_malformed"):
+                continue
+            frames += 1
+            error = self._responses_error(data)
+            if error:
+                raise LLMProviderError(f"ChatGPT plan response failed: {error}")
+            event_type = str(data.get("type") or "")
+            if event_type == "response.output_text.delta":
+                delta = data.get("delta")
+                if isinstance(delta, str):
+                    parts.append(delta)
+            elif event_type == "response.completed":
+                completed = True
+                usage = self._responses_usage(data) or usage
+        if not completed:
+            raise LLMProviderError("ChatGPT plan stream ended before response.completed")
+        return "".join(parts), usage, frames
+
+    async def _generate_json_chatgpt(
+        self,
+        messages: list[ChatMessage],
+        config: ProviderConfigRead,
+        api_key: str | None,
+        *,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        response_model: type[BaseModel] | None = None,
+    ) -> dict[str, Any]:
+        if not api_key:
+            raise LLMProviderError("ChatGPT plan OAuth token is missing")
+        url = f"{config.base_url.rstrip('/')}/responses"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        base_messages = self._messages_payload(messages)
+        original_schema = response_model.model_json_schema() if response_model else None
+        response_schema = self._compact_schema(original_schema) if original_schema else None
+        if original_schema:
+            compact_text = json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))
+            for message in base_messages:
+                for ascii_only in (False, True):
+                    message["content"] = message["content"].replace(
+                        json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
+                    )
+
+        started = time.monotonic()
+        last_error: Exception | None = None
+        last_raw_text = ""
+        attempts: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(
+            trust_env=False,
+            timeout=httpx.Timeout(240.0, connect=10.0),
+        ) as client:
+            for attempt in range(1, 4):
+                request_messages = list(base_messages)
+                if attempt > 1:
+                    request_messages.append(self._repair_instruction(last_error, last_raw_text))
+                payload: dict[str, Any] = {
+                    "model": config.model_name,
+                    "input": self._responses_input(request_messages),
+                    "stream": True,
+                    "store": False,
+                }
+                attempt_started = time.monotonic()
+                try:
+                    raw_text, usage, frames = await self._collect_chatgpt_response(
+                        client, url, headers, payload
+                    )
+                    if not raw_text.strip():
+                        raise LLMProviderError("ChatGPT plan returned no structured text")
+                    last_raw_text = raw_text
+                    parsed = self._parse_json_object(raw_text)
+                    if response_model is not None:
+                        try:
+                            try:
+                                parsed = response_model.model_validate(parsed).model_dump(mode="json")
+                            except ValidationError:
+                                sanitized = self._sanitize_partial_planner_inventory(
+                                    parsed, response_model
+                                )
+                                if sanitized is parsed:
+                                    raise
+                                parsed = response_model.model_validate(sanitized).model_dump(mode="json")
+                        except ValidationError as exc:
+                            raise LLMProviderError(
+                                f"structured response failed {response_model.__name__} validation: {exc}"
+                            ) from exc
+                    metric = {
+                        "attempt": attempt,
+                        "status": "completed",
+                        "usage": usage,
+                        "parsed_frames": frames,
+                        "response_characters": len(raw_text),
+                        "duration_ms": round((time.monotonic() - attempt_started) * 1000),
+                    }
+                    attempts.append(metric)
+                    self.last_telemetry = {
+                        "model": config.model_name,
+                        "url": url,
+                        "status": "completed",
+                        "control_plane": True,
+                        "transport": "chatgpt_responses",
+                        "attempt": attempt,
+                        "attempts": attempts,
+                        "usage": usage,
+                        "response_characters": len(raw_text),
+                        "requested_max_tokens": max_tokens,
+                        "duration_ms": round((time.monotonic() - started) * 1000),
+                    }
+                    return parsed
+                except (httpx.RequestError, LLMProviderError, json.JSONDecodeError) as exc:
+                    last_error = exc
+                    attempts.append(
+                        {
+                            "attempt": attempt,
+                            "status": "error",
+                            "error": str(exc),
+                            "duration_ms": round((time.monotonic() - attempt_started) * 1000),
+                        }
+                    )
+                    lowered = str(exc).casefold()
+                    if "usage_limit" in lowered or "rate_limit" in lowered or "429" in lowered:
+                        break
+
+        self.last_telemetry = {
+            "model": config.model_name,
+            "url": url,
+            "status": "structured_error",
+            "transport": "chatgpt_responses",
+            "error": str(last_error or "unknown structured response error"),
+            "attempts": attempts,
+            "duration_ms": round((time.monotonic() - started) * 1000),
+        }
+        raise LLMProviderError(f"Failed to obtain valid JSON: {last_error}")
+
+    async def _generate_stream_chatgpt(
+        self,
+        messages: list[ChatMessage],
+        config: ProviderConfigRead,
+        api_key: str | None,
+    ) -> AsyncIterator[str]:
+        if not api_key:
+            raise LLMProviderError("ChatGPT plan OAuth token is missing")
+        url = f"{config.base_url.rstrip('/')}/responses"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        payload = {
+            "model": config.model_name,
+            "input": self._responses_input(self._messages_payload(messages)),
+            "stream": True,
+            "store": False,
+        }
+        started = time.monotonic()
+        parts: list[str] = []
+        usage: dict[str, int] = {}
+        frames = 0
+        completed = False
+        try:
+            async with httpx.AsyncClient(
+                trust_env=False,
+                timeout=httpx.Timeout(240.0, connect=10.0),
+            ) as client:
+                async for data in self._stream_once(client, url, headers, payload):
+                    if data.get("_malformed"):
+                        continue
+                    frames += 1
+                    error = self._responses_error(data)
+                    if error:
+                        raise LLMProviderError(f"ChatGPT plan response failed: {error}")
+                    event_type = str(data.get("type") or "")
+                    if event_type == "response.output_text.delta":
+                        delta = data.get("delta")
+                        if isinstance(delta, str):
+                            parts.append(delta)
+                            yield delta
+                    elif event_type == "response.completed":
+                        completed = True
+                        usage = self._responses_usage(data) or usage
+        except httpx.RequestError as exc:
+            raise LLMProviderError(f"Failed to reach ChatGPT plan endpoint: {exc}") from exc
+        finally:
+            output = "".join(parts)
+            self.last_telemetry = {
+                "model": config.model_name,
+                "url": url,
+                "status": "completed" if completed else "provider_error",
+                "transport": "chatgpt_responses",
+                "usage": usage,
+                "parsed_frames": frames,
+                "response_characters": len(output),
+                "duration_ms": round((time.monotonic() - started) * 1000),
+            }
+        if not completed:
+            raise LLMProviderError("ChatGPT plan stream ended before response.completed")
+        if not parts:
+            raise LLMProviderError("ChatGPT plan completed without usable text")
+
     async def generate_json(
         self,
         messages: list[ChatMessage],
@@ -447,6 +701,15 @@ class LLMProvider:
         response_model: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
         """Return one schema-validated JSON object with adaptive budget and repair."""
+        if getattr(config, "provider_kind", "openai_compatible") == "chatgpt":
+            return await self._generate_json_chatgpt(
+                messages,
+                config,
+                api_key,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_model=response_model,
+            )
         is_ollama = self._is_ollama(config.base_url)
         url = (
             self._ollama_native_url(config.base_url)
@@ -773,6 +1036,20 @@ class LLMProvider:
         temperature: float | None = None,
         disable_thinking: bool = True,
     ) -> AsyncIterator[str]:
+        if getattr(config, "provider_kind", "openai_compatible") == "chatgpt":
+            if self._expects_json(messages):
+                payload = await self._generate_json_chatgpt(
+                    messages,
+                    config,
+                    api_key,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                yield json.dumps(payload, ensure_ascii=False)
+                return
+            async for chunk in self._generate_stream_chatgpt(messages, config, api_key):
+                yield chunk
+            return
         if self._expects_json(messages):
             payload = await self.generate_json(
                 messages,
@@ -963,7 +1240,29 @@ class LLMProvider:
         base_url: str,
         model_name: str,
         api_key: str | None = None,
+        provider_kind: str = "openai_compatible",
     ) -> bool:
+        if provider_kind == "chatgpt":
+            if not api_key:
+                return False
+            config = ProviderConfigRead.model_construct(
+                id=None,
+                campaign_id=None,
+                base_url=base_url,
+                model_name=model_name,
+                has_api_key=True,
+                context_window=128000,
+                provider_kind="chatgpt",
+                created_at=None,
+            )
+            try:
+                async for _ in self._generate_stream_chatgpt(
+                    [ChatMessage(role="user", content="Reply with OK.")], config, api_key
+                ):
+                    pass
+                return True
+            except Exception:
+                return False
         is_ollama = self._is_ollama(base_url)
         url = (
             self._ollama_native_url(base_url)

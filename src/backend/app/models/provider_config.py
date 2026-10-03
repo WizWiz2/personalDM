@@ -7,6 +7,7 @@ class ProviderConfigCreate(BaseModel):
     model_name: str = Field(..., examples=["gemma2:27b"])
     api_key: str | None = None
     context_window: int = 8192
+    provider_kind: str = "openai_compatible"
 
 class ProviderConfigRead(BaseModel):
     id: UUID
@@ -15,6 +16,7 @@ class ProviderConfigRead(BaseModel):
     model_name: str
     has_api_key: bool
     context_window: int
+    provider_kind: str = "openai_compatible"
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
@@ -24,3 +26,4 @@ class ProviderConfigUpdate(BaseModel):
     model_name: str | None = None
     api_key: str | None = None
     context_window: int | None = None
+    provider_kind: str | None = None

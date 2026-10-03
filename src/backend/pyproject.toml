@@ -12,6 +12,7 @@ dependencies = [
     "alembic>=1.14",
     "httpx>=0.27",
     "cryptography>=43",
+    "PyJWT[crypto]>=2.10",
     "questionary>=2.0,<3",
     "spacy>=3.8,<4",
     "ru-core-news-sm @ https://github.com/explosion/spacy-models/releases/download/ru_core_news_sm-3.8.0/ru_core_news_sm-3.8.0-py3-none-any.whl",

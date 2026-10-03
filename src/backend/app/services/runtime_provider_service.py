@@ -13,6 +13,7 @@ import httpx
 
 from app.config import settings
 from app.runtime_paths import backend_dir, env_file, install_dir, tools_dir
+from app.services.chatgpt_auth_service import ChatGPTAuthError, ChatGPTAuthService
 
 
 class RuntimeProviderError(RuntimeError):
@@ -141,7 +142,7 @@ class RuntimeProviderService:
     def text_mode(self) -> str:
         env = self.read_env()
         explicit = env.get("PDM_TEXT_PROVIDER")
-        if explicit in {"local", "cloud"}:
+        if explicit in {"local", "cloud", "chatgpt"}:
             return explicit
         return "cloud" if env.get("PDM_LLM_API_KEY") else "local"
 
@@ -163,13 +164,22 @@ class RuntimeProviderService:
         api_key: str | None = None,
         context_window: int | None = None,
     ) -> dict:
-        if mode not in {"local", "cloud"}:
-            raise ValueError("Text provider must be local or cloud")
+        if mode not in {"local", "cloud", "chatgpt"}:
+            raise ValueError("Text provider must be local, cloud or chatgpt")
         if mode == "local":
             base_url = self.TEXT_LOCAL_BASE_URL
             model = model or self.TEXT_LOCAL_MODEL
             api_key = ""
             context_window = context_window or 4096
+        elif mode == "chatgpt":
+            auth = ChatGPTAuthService().connection_summary()
+            if not auth["connected"] or not auth["plan_usage_enabled"]:
+                raise ValueError("Сначала войдите через ChatGPT и разрешите использование плана")
+            if not model:
+                raise ValueError("Выберите модель, доступную в вашем ChatGPT плане")
+            base_url = "https://api.openai.com/v1"
+            api_key = ""
+            context_window = context_window or 128000
         else:
             base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
             model = model or "gpt-5.6-luna"
@@ -231,6 +241,7 @@ class RuntimeProviderService:
                 "model": env.get("PDM_LLM_MODEL", self.TEXT_LOCAL_MODEL),
                 "context_window": int(env.get("PDM_LLM_CONTEXT_WINDOW", "4096") or 4096),
                 "has_api_key": bool(env.get("PDM_LLM_API_KEY")),
+                "chatgpt": ChatGPTAuthService().connection_summary(),
                 "status": self.check_text(),
             },
             "image": {
@@ -259,6 +270,22 @@ class RuntimeProviderService:
             if not base_url or not key:
                 return self._status(False, "configuration_missing", "Нужны Base URL и API key")
             return self._cloud_health(base_url, key)
+        if mode == "chatgpt":
+            try:
+                models = ChatGPTAuthService().list_models()
+                if not models:
+                    return self._status(False, "no_models", "ChatGPT подключён, но доступных моделей нет")
+                model = env.get("PDM_LLM_MODEL", "")
+                slugs = {item["slug"] for item in models}
+                if model and model not in slugs:
+                    return self._status(
+                        False,
+                        "model_unavailable",
+                        f"Модель {model} недоступна в подключённом ChatGPT плане",
+                    )
+                return self._status(True, "ready", "ChatGPT plan подключён")
+            except ChatGPTAuthError as exc:
+                return self._status(False, "chatgpt_auth_error", str(exc))
 
         ollama = self.find_ollama()
         if not ollama:

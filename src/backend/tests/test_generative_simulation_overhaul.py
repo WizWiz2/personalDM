@@ -240,7 +240,7 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
 def test_simulation_database_runs_real_alembic_chain(tmp_path):
     path = tmp_path / "simulation.db"
     revision = upgrade_simulation_database(path)
-    assert revision == "a8c9d0e1f2a3"
+    assert revision == "b9c0d1e2f3a4"
     assert current_revision(path) == revision
     with sqlite3.connect(path) as connection:
         columns = {
@@ -254,6 +254,13 @@ def test_simulation_database_runs_real_alembic_chain(tmp_path):
             ).fetchall()
         }
         assert {"scene_id", "location_id"} <= link_columns
+        provider_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(provider_configs)"
+            ).fetchall()
+        }
+        assert "provider_kind" in provider_columns
         transition_columns = {
             row[1]
             for row in connection.execute(

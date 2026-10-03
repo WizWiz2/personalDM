@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react'
 import type { UUID } from '../api/types'
 import {
+  type ChatGPTModel,
   type RuntimeProviderProfile,
   runtimeProviderApi,
 } from '../api/runtimeProviders'
@@ -19,11 +20,12 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
   const [busy, setBusy] = useState('')
   const [loadFailed, setLoadFailed] = useState(false)
 
-  const [textMode, setTextMode] = useState<'local' | 'cloud'>('local')
+  const [textMode, setTextMode] = useState<'local' | 'cloud' | 'chatgpt'>('local')
   const [textBaseUrl, setTextBaseUrl] = useState('')
   const [textModel, setTextModel] = useState('')
   const [textContext, setTextContext] = useState(4096)
   const [textKey, setTextKey] = useState('')
+  const [chatGPTModels, setChatGPTModels] = useState<ChatGPTModel[]>([])
 
   const [imageMode, setImageMode] = useState<'local' | 'cloud' | 'off'>('off')
   const [imageBaseUrl, setImageBaseUrl] = useState('')
@@ -32,7 +34,13 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
 
   const applyProfile = (next: RuntimeProviderProfile) => {
     setProfile(next)
-    setTextMode(next.text.mode)
+    const returningFromChatGPT = window.sessionStorage.getItem('pdm-chatgpt-connect-return') === '1'
+    if (returningFromChatGPT && next.text.chatgpt.connected) {
+      setTextMode('chatgpt')
+      window.sessionStorage.removeItem('pdm-chatgpt-connect-return')
+    } else {
+      setTextMode(next.text.mode)
+    }
     setTextBaseUrl(next.text.base_url)
     setTextModel(next.text.model)
     setTextContext(next.text.context_window)
@@ -53,16 +61,39 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
 
   useEffect(() => { void load() }, [campaignId])
 
-  const changeTextMode = (mode: 'local' | 'cloud') => {
+  useEffect(() => {
+    if (textMode !== 'chatgpt' || !profile?.text.chatgpt.connected) {
+      setChatGPTModels([])
+      return
+    }
+    void runtimeProviderApi.chatGPTModels()
+      .then(({ models }) => {
+        setChatGPTModels(models)
+        if (models.length && !models.some((item) => item.slug === textModel)) {
+          setTextModel(models[0].slug)
+        }
+      })
+      .catch((error) => onError(
+        error instanceof Error ? error.message : 'Не удалось получить модели ChatGPT',
+      ))
+  }, [textMode, profile?.text.chatgpt.connected])
+
+  const changeTextMode = (mode: 'local' | 'cloud' | 'chatgpt') => {
     setTextMode(mode)
     if (mode === 'local') {
       setTextBaseUrl('http://127.0.0.1:11434/v1')
       setTextModel('gemma4:e4b')
       setTextContext(4096)
-    } else {
+    } else if (mode === 'cloud') {
       setTextBaseUrl('https://api.openai.com/v1')
       setTextModel('gpt-4.1-mini')
       setTextContext(128000)
+    } else {
+      setTextBaseUrl('https://api.openai.com/v1')
+      setTextContext(128000)
+      if (chatGPTModels.length && !chatGPTModels.some((item) => item.slug === textModel)) {
+        setTextModel(chatGPTModels[0].slug)
+      }
     }
   }
 
@@ -98,9 +129,37 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
       await load()
       onMessage(textMode === 'local'
         ? 'Локальная текстовая модель выбрана. Проверь или установи runtime.'
-        : 'Облачная текстовая модель сохранена.')
+        : textMode === 'chatgpt'
+          ? 'ChatGPT plan выбран для текстовых запросов.'
+          : 'Облачная текстовая модель сохранена.')
     } catch (error) {
       onError(error instanceof Error ? error.message : 'Не удалось сохранить текстовую модель')
+    } finally { setBusy('') }
+  }
+
+  const connectChatGPT = async () => {
+    setBusy('chatgpt-connect'); onError(''); onMessage('')
+    try {
+      window.sessionStorage.setItem('pdm-chatgpt-connect-return', '1')
+      const { authorization_url } = await runtimeProviderApi.startChatGPTSignIn(window.location.href)
+      window.location.assign(authorization_url)
+    } catch (error) {
+      window.sessionStorage.removeItem('pdm-chatgpt-connect-return')
+      onError(error instanceof Error ? error.message : 'Не удалось начать вход через ChatGPT')
+      setBusy('')
+    }
+  }
+
+  const disconnectChatGPT = async () => {
+    setBusy('chatgpt-disconnect'); onError(''); onMessage('')
+    try {
+      const result = await runtimeProviderApi.disconnectChatGPT()
+      await load()
+      onMessage(result.revocation_confirmed
+        ? 'ChatGPT отключён, renewable session отозвана.'
+        : 'Локальная сессия отключена. Не удалось подтвердить удалённый revoke — при необходимости отключите PersonalDM в ChatGPT Settings → Security and login.')
+    } catch (error) {
+      onError(error instanceof Error ? error.message : 'Не удалось отключить ChatGPT')
     } finally { setBusy('') }
   }
 
@@ -211,18 +270,63 @@ export function RuntimeProviderSettings({ campaignId, onMessage, onError }: Prop
       <span className="eyebrow">Текст</span>
       <h2>Модель мастера</h2>
       <label>Режим
-        <select value={textMode} onChange={(event) => changeTextMode(event.target.value as 'local' | 'cloud')}>
+        <select value={textMode} onChange={(event) => changeTextMode(event.target.value as 'local' | 'cloud' | 'chatgpt')}>
           <option value="local">Локально — Ollama</option>
+          <option value="chatgpt">ChatGPT plan — без API key</option>
           <option value="cloud">Облачно — OpenAI-compatible API</option>
         </select>
       </label>
       {textMode === 'cloud' && <label>Base URL<input value={textBaseUrl} onChange={(e) => setTextBaseUrl(e.target.value)} /></label>}
-      <label>Модель<input value={textModel} onChange={(e) => setTextModel(e.target.value)} placeholder={textMode === 'local' ? 'gemma4:e4b' : 'gpt-4.1-mini'} /></label>
+      {textMode === 'chatgpt' ? (
+        <label>Модель
+          <select value={textModel} onChange={(e) => setTextModel(e.target.value)} disabled={!chatGPTModels.length}>
+            {!chatGPTModels.length && <option value="">Сначала подключите ChatGPT</option>}
+            {chatGPTModels.map((item) => <option key={item.slug} value={item.slug}>{item.display_name}</option>)}
+          </select>
+        </label>
+      ) : (
+        <label>Модель<input value={textModel} onChange={(e) => setTextModel(e.target.value)} placeholder={textMode === 'local' ? 'gemma4:e4b' : 'gpt-4.1-mini'} /></label>
+      )}
       <label>Контекст<input type="number" min={1024} step={1024} value={textContext} onChange={(e) => setTextContext(Number(e.target.value))} /></label>
       {textMode === 'cloud' && <label>API key<input type="password" value={textKey} onChange={(e) => setTextKey(e.target.value)} placeholder={profile.text.has_api_key ? '•••••••• (пусто — оставить текущий)' : 'обязательно'} /></label>}
-      {status(profile.text.status.ready, profile.text.status.message)}
+      {textMode === 'chatgpt' && (
+        <div className="models-runtime-warning">
+          {profile.text.chatgpt.connected ? (
+            <>
+              <p>
+                Подключён ChatGPT{profile.text.chatgpt.email ? ` — ${profile.text.chatgpt.email}` : ''}.
+                Запросы используют allowance вашего плана, API key не нужен.
+              </p>
+              <div className="settings-actions">
+                <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => void connectChatGPT()}>
+                  {busy === 'chatgpt-connect' ? 'Открываем…' : 'Переподключить'}
+                </button>
+                <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => void disconnectChatGPT()}>
+                  {busy === 'chatgpt-disconnect' ? 'Отключаем…' : 'Отключить'}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p>Войдите в ChatGPT один раз. PersonalDM сохранит OAuth-сессию локально и не будет просить API key.</p>
+              <button className="btn primary" type="button" disabled={Boolean(busy)} onClick={() => void connectChatGPT()}>
+                {busy === 'chatgpt-connect' ? 'Открываем ChatGPT…' : 'Продолжить с ChatGPT'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {status(
+        textMode === 'chatgpt' ? profile.text.chatgpt.connected : profile.text.status.ready,
+        textMode === 'chatgpt'
+          ? (profile.text.chatgpt.connected ? 'ChatGPT подключён' : 'ChatGPT не подключён')
+          : profile.text.status.message,
+      )}
       <div className="settings-actions">
-        <button className="btn primary" disabled={Boolean(busy)}>Сохранить</button>
+        <button
+          className="btn primary"
+          disabled={Boolean(busy) || (textMode === 'chatgpt' && (!profile.text.chatgpt.connected || !textModel))}
+        >Сохранить</button>
         {textMode === 'local' && !profile.text.status.ready && <button className="btn" type="button" disabled={Boolean(busy)} onClick={() => void install('text')}><Icons.download />{busy === 'text-install' ? 'Устанавливаем…' : 'Установить / починить'}</button>}
       </div>
     </form>

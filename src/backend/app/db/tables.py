@@ -93,6 +93,9 @@ class ProviderConfig(Base):
     model_name: Mapped[str] = mapped_column(String(255), nullable=False)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     context_window: Mapped[int] = mapped_column(Integer, default=8192)
+    provider_kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="openai_compatible"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     campaign = relationship("Campaign", back_populates="provider_config")

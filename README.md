@@ -43,6 +43,20 @@ Control-plane роли не должны молча переключаться �
 
 Подробности: [`docs/model-role-routing.md`](docs/model-role-routing.md).
 
+### ChatGPT plan без API key
+
+В GUI можно выбрать **ChatGPT plan — без API key** как текстовый provider:
+
+1. Открой глобальные настройки моделей и выбери `ChatGPT plan — без API key`.
+2. Нажми **Продолжить с ChatGPT** и подтверди доступ в системном браузере.
+3. После возврата выбери одну из моделей, доступных подключённому аккаунту, и сохрани настройки.
+
+Для eligible ChatGPT Plus/Pro аккаунтов запросы идут через Responses API с allowance/credits ChatGPT plan; отдельный OpenAI API key и API billing не нужны. PersonalDM хранит OAuth credentials только локально в зашифрованном виде, не кладёт токены в browser storage или campaign DB и при отключении пытается отозвать renewable session.
+
+Этот режим использует stateless Responses API (`store:false`, `stream:true`): память, история и канон по-прежнему принадлежат PersonalDM. Подключение ChatGPT само по себе не даёт приложению доступ к истории разговоров ChatGPT.
+
+Официальная документация: [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source).
+
 ## Запуск
 
 На Windows рекомендуемый вход — один файл:
