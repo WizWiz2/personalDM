@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.base import BaseRepository
 from app.db.tables import LLMUsageEvent
-from app.services.llm_usage_tracker import LLMUsageContext
+
+if TYPE_CHECKING:
+    from app.services.llm_usage_tracker import LLMUsageContext
 
 
 class LLMUsageRepository(BaseRepository):
-    async def record(self, context: LLMUsageContext, event: dict[str, Any]) -> None:
+    async def record(self, context: "LLMUsageContext", event: dict[str, Any]) -> None:
         row = LLMUsageEvent(
             campaign_id=str(context.campaign_id),
             user_turn_id=str(context.user_turn_id),
