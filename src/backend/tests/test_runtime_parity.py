@@ -103,11 +103,9 @@ def test_cold_cli_and_fastapi_install_identical_runtime() -> None:
         "build_turn_authority",
         "materialize_structured_outcome",
         "compile_narrator_context",
-        "plan_scene_development_from_prepared_world",
         "render_narration",
         "validate_four_bans",
         "publish_assistant_turn",
-        "record_scene_development_events",
         "enqueue_post_turn",
     ]
     assert cli_manifest["generation_phases"] == [

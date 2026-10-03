@@ -5,7 +5,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.scene_development import SceneDevelopment
 from app.models.addressed_response import AddressedResponse
 
 
@@ -89,7 +88,6 @@ class TurnAuthority(BaseModel):
     allow_new_complication: bool = False
     complication_source: str | None = None
     action_sequence: dict | None = None
-    scene_development: SceneDevelopment | None = None
 
     @staticmethod
     def _public_blocked_outcome(step: dict) -> str:

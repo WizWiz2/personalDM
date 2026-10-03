@@ -30,7 +30,6 @@ from app.services.master_director import (
     narrator_persona_block,
     pick_moves,
     sampling_seed,
-    scene_development_disposition_bias,
     select_director_moves,
     subordinate_quiet_guidance_to_substance,
 )
@@ -244,8 +243,6 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
     )
     asserted = apply_moves_to_outcome_decision(base, initiative)
     assert any("npc_initiative" in item for item in asserted.canon_constraints)
-    assert scene_development_disposition_bias(initiative) == "act"
-    assert scene_development_disposition_bias(quiet) == "quiet"
 
 
 def test_narrator_persona_block_is_style_only() -> None:
@@ -572,8 +569,6 @@ def test_soft_keeper_quiet_cannot_soft_stall_committed_travel() -> None:
     assert any("quiet" in item for item in decided.canon_constraints)
     # Outcomes must remain typed success — quiet must not rewrite travel.
     assert decided.action_outcomes[0].resolution == "auto_success"
-    assert scene_development_disposition_bias(quiet, committed_travel=True) is None
-    assert scene_development_disposition_bias(quiet, committed_travel=False) == "quiet"
 
 
 def test_honor_travel_also_stamps_without_quiet_moves() -> None:

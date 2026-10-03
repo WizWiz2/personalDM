@@ -39,7 +39,6 @@ from app.services.turn_outcome_materializer import (
     TurnOutcomeMaterializer,
 )
 from app.services.turn_planner import TurnPlanningError
-from app.services.scene_development import SceneDevelopmentService
 from app.services.turn_world_frame import TurnWorldFrame
 
 active_tasks: dict[str, asyncio.Task] = {}
@@ -499,49 +498,6 @@ class TurnSaga:
                 max_budget_override=max_budget_override,
             )
 
-            # World agency is decided against the actual destination and prepared participants.
-            # Route-graph fast paths and blocked sequences share this phase with all other turns.
-            development_service = SceneDevelopmentService(self._session)
-            disposition_bias = None
-            gm_meta = (planner_metadata.get("telemetry") or {}).get("game_master")
-            if not isinstance(gm_meta, dict):
-                gm_meta = planner_metadata.get("game_master")
-            if isinstance(gm_meta, dict):
-                from app.models.game_master import DirectorMoveSelection
-                from app.services.master_director import scene_development_disposition_bias
-
-                moves = gm_meta.get("moves") or []
-                if moves:
-                    disposition_bias = scene_development_disposition_bias(
-                        DirectorMoveSelection(
-                            moves=moves[:2],
-                            obligations=[],
-                            forced_introduce_contact=bool(gm_meta.get("forced_introduce_contact")),
-                            master_id=str(gm_meta.get("id") or "unknown"),
-                            master_display_name=str(gm_meta.get("display_name") or "unknown"),
-                        ),
-                        committed_travel=bool(gm_meta.get("committed_travel")),
-                    )
-            # Direct address to a present cast member outranks Soft Keeper quiet bias:
-            # atmosphere-only quiet must not erase an obligated addressee.
-            if (
-                getattr(authority, "addressed_response_obligation", None)
-                and disposition_bias == "quiet"
-            ):
-                disposition_bias = None
-            # Committed travel outranks Soft Keeper quiet bias: do not soft-stall arrival.
-            if disposition_bias == "quiet":
-                travel_flag = isinstance(gm_meta, dict) and bool(gm_meta.get("committed_travel"))
-                source_path = list(getattr(authority, "source_location_path", None) or [])
-                target_path = list(getattr(authority, "target_location_path", None) or [])
-                if travel_flag or (target_path and target_path != source_path):
-                    disposition_bias = None
-            development, development_metadata = await development_service.plan(
-                authority,
-                role_router,
-                disposition_bias=disposition_bias,
-            )
-            authority = authority.model_copy(update={"scene_development": development})
             narrator_messages = self._inject_authority(narrator_messages, authority)
             context_metadata = dict(context_metadata)
             lifecycle = await self._generation_lifecycle.get(generation_run.id)
@@ -555,7 +511,6 @@ class TurnSaga:
                     "scene_transition": transition_metadata,
                     "turn_authority": authority.model_dump(mode="json"),
                     "world_frame": world_frame.model_dump(mode="json") if world_frame else None,
-                    "scene_development": development_metadata,
                     "turn_materialization": {
                         "identity_updates": [
                             update.snapshot() for update in materialized_outcome.identity_updates
@@ -593,25 +548,6 @@ class TurnSaga:
             publication = (narration.telemetry.get("narration_validation") or {}).get(
                 "publication_guard", {}
             )
-            if development.actions and (
-                narration.validation_status == "safe_fallback"
-                or publication.get("validated_surface") is False
-            ):
-                # Player outcome already resolved; omit unpublished NPC acts instead of
-                # compensating the whole prepared turn saga.
-                omitted = len(development.actions)
-                development = SceneDevelopmentService.quiet_without_acts(
-                    "NPC initiative omitted: narration lacked a validated surface for those acts."
-                )
-                authority = authority.model_copy(update={"scene_development": development})
-                development_metadata = {
-                    **development_metadata,
-                    "status": "degraded_unpublished_acts",
-                    "omitted_act_count": omitted,
-                    "sanitize_status": "degraded_quiet",
-                }
-                context_metadata["turn_authority"] = authority.model_dump(mode="json")
-                context_metadata["scene_development"] = development_metadata
             await self._set_phase(generation_run.id, GenerationPhase.NARRATED)
 
             context_metadata["provider_telemetry"] = narration.telemetry
@@ -643,10 +579,6 @@ class TurnSaga:
                     token_count=token_count,
                 ),
             )
-
-            # The action becomes durable only together with the validated published answer.
-            # It records behavior, never promotes the content of an NPC claim into objective canon.
-            await development_service.publish(authority, saved_assistant.id)
 
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(
