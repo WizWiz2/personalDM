@@ -96,7 +96,7 @@ export const runtimeProviderApi = {
   chatGPTModels: () => request<{ models: ChatGPTModel[] }>(
     '/api/runtime/providers/chatgpt/models',
   ),
-  disconnectChatGPT: () => request<{ connected: boolean }>(
+  disconnectChatGPT: () => request<{ connected: boolean; revocation_confirmed: boolean }>(
     '/api/runtime/providers/chatgpt',
     { method: 'DELETE' },
   ),
