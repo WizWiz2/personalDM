@@ -127,8 +127,9 @@ class InitialWorldStateService:
             )
         ).scalars().all()
         for row in characters:
-            state = character_state.get(row.entity_id, {})
-            row.current_location_id = state.get("current_location_id")
+            # Someone introduced after the checkpoint has no baseline: keep where they were placed.
+            if row.entity_id in character_state:
+                row.current_location_id = character_state[row.entity_id].get("current_location_id")
 
         items = (
             await self._session.execute(
