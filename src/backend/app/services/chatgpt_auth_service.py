@@ -48,6 +48,7 @@ class ChatGPTAuthService:
     AUTHORIZE_URL = f"{ISSUER}/api/accounts/authorize"
     TOKEN_URL = f"{ISSUER}/api/accounts/oauth/token"
     JWKS_URL = f"{ISSUER}/.well-known/jwks.json"
+    DISCOVERY_URL = f"{ISSUER}/.well-known/openid-configuration"
     RESOURCE = "https://api.openai.com/v1"
     MODELS_URL = f"{RESOURCE}/models"
     DYNAMIC_CLIENT_ID = "dynamic_agent_client"
@@ -353,18 +354,77 @@ class ChatGPTAuthService:
                 "plan_usage_enabled": False,
             }
         scopes = set(profile.get("scopes") or [])
+        connected = bool(profile.get("access_token") and profile.get("refresh_token"))
         return {
-            "connected": True,
+            "connected": connected,
             "email": profile.get("email"),
             "name": profile.get("name"),
-            "plan_usage_enabled": self.REQUIRED_SCOPE in scopes,
+            "plan_usage_enabled": connected and self.REQUIRED_SCOPE in scopes,
         }
 
-    def disconnect(self) -> None:
-        try:
-            self.profile_file.unlink()
-        except FileNotFoundError:
-            pass
+    def disconnect(self) -> bool:
+        """End the renewable session, then retain only the local registration mapping.
+
+        OpenAI recommends revoking the refresh token before local sign-out. The issued
+        client ID and verified account mapping are intentionally kept so a later sign-in
+        can reuse the registration instead of creating a fresh dynamic client.
+        """
+        profile = self._load_profile()
+        if not profile:
+            return True
+
+        refresh_token = str(profile.get("refresh_token") or "")
+        client_id = str(profile.get("client_id") or "")
+        revocation_confirmed = not refresh_token
+        if refresh_token and client_id:
+            try:
+                discovery = httpx.get(
+                    self.DISCOVERY_URL,
+                    timeout=10.0,
+                    follow_redirects=True,
+                    trust_env=False,
+                )
+                discovery.raise_for_status()
+                revocation_endpoint = str(
+                    discovery.json().get("revocation_endpoint") or ""
+                )
+                if revocation_endpoint:
+                    response = httpx.post(
+                        revocation_endpoint,
+                        data={
+                            "token": refresh_token,
+                            "token_type_hint": "refresh_token",
+                            "client_id": client_id,
+                        },
+                        headers={"Accept": "application/json"},
+                        timeout=10.0,
+                        follow_redirects=True,
+                        trust_env=False,
+                    )
+                    revocation_confirmed = response.status_code == 200
+            except (httpx.HTTPError, ValueError, TypeError):
+                revocation_confirmed = False
+
+        retained = {
+            key: profile.get(key)
+            for key in (
+                "email",
+                "name",
+                "issuer",
+                "subject",
+                "client_id",
+                "ext_agent_host_id",
+            )
+            if profile.get(key) is not None
+        }
+        if retained.get("client_id") and retained.get("subject"):
+            self._save_profile(retained)
+        else:
+            try:
+                self.profile_file.unlink()
+            except FileNotFoundError:
+                pass
+        return revocation_confirmed
 
     @staticmethod
     def _expires_at(profile: dict) -> float:
@@ -468,7 +528,7 @@ class ChatGPTAuthService:
         for item in raw_models:
             if not isinstance(item, dict):
                 continue
-            if item.get("visibility") not in {None, "list"}:
+            if item.get("visibility") != "list":
                 continue
             slug = str(item.get("slug") or item.get("id") or "").strip()
             if not slug:
