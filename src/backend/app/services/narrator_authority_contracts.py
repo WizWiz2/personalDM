@@ -1,7 +1,6 @@
-"""Typed cast helpers for the narrator: who may physically appear this turn.
+"""Typed addressee resolution and intro identity helpers.
 
-Speaker allowlists come from the typed cast and typed introductions. Prose is
-never scanned here; the single four-bans validator judges the narration.
+Prose is never scanned here; the single four-bans validator judges the narration.
 """
 
 from __future__ import annotations
@@ -16,55 +15,9 @@ from app.services.name_identity_contract import (
     repair_persisted_character_identity,
 )
 
+
 def _compact(value: object) -> str:
     return " ".join(str(value or "").split())
-
-
-def allowed_speakers_from_authority(authority) -> list[str]:
-    """Non-player present cast plus typed introductions/arrivals — never the player character."""
-    player_key = (
-        identity_key(authority.player_character_name)
-        if getattr(authority, "player_character_name", None)
-        else None
-    )
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for name in [
-        *list(getattr(authority, "present_character_names", None) or []),
-        *list(getattr(authority, "allowed_new_npc_names", None) or []),
-        *list(getattr(authority, "allowed_existing_npc_arrival_names", None) or []),
-    ]:
-        text = _compact(name)
-        if not text:
-            continue
-        key = identity_key(text)
-        if not key or key in seen:
-            continue
-        if player_key and key == player_key:
-            continue
-        seen.add(key)
-        ordered.append(text)
-    return ordered
-
-
-def authorized_physical_cast_names(authority) -> list[str]:
-    """Unique authorized physical people for this turn (player included when named)."""
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for name in [
-        *list(getattr(authority, "present_character_names", None) or []),
-        *list(getattr(authority, "allowed_new_npc_names", None) or []),
-        *list(getattr(authority, "allowed_existing_npc_arrival_names", None) or []),
-    ]:
-        text = _compact(name)
-        if not text:
-            continue
-        key = identity_key(text)
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        ordered.append(text)
-    return ordered
 
 
 def _identity_token_soft_match(left: str, right: str) -> bool:
@@ -233,8 +186,6 @@ def should_assign_addressed_response_obligation(
 
 
 __all__ = [
-    "allowed_speakers_from_authority",
-    "authorized_physical_cast_names",
     "description_used_as_identity_name",
     "extract_leading_short_designation",
     "identity_display_label",

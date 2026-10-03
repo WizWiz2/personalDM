@@ -156,19 +156,6 @@ class TurnAuthority(BaseModel):
     def allowed_existing_npc_arrival_names(self) -> list[str]:
         return [item.canonical_name for item in self.allowed_existing_npc_arrivals]
 
-    @property
-    def allowed_speakers(self) -> list[str]:
-        """Non-player present cast + typed intros/arrivals. Never the player character."""
-        from app.services.narrator_authority_contracts import allowed_speakers_from_authority
-
-        return allowed_speakers_from_authority(self)
-
-    @property
-    def authorized_physical_cast_names(self) -> list[str]:
-        from app.services.narrator_authority_contracts import authorized_physical_cast_names
-
-        return authorized_physical_cast_names(self)
-
     def trace_summary(self) -> dict:
         """Failure-diagnosis view of the frozen authority, recorded once per run; no prompt text."""
         steps = (self.action_sequence or {}).get("steps")
