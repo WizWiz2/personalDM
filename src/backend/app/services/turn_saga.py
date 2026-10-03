@@ -41,7 +41,6 @@ from app.services.turn_outcome_materializer import (
 from app.services.turn_planner import TurnPlanningError
 from app.services.scene_development import SceneDevelopmentService
 from app.services.turn_world_frame import TurnWorldFrame
-from app.services.response_memory import ResponseMemoryService
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -648,7 +647,6 @@ class TurnSaga:
             # The action becomes durable only together with the validated published answer.
             # It records behavior, never promotes the content of an NPC claim into objective canon.
             await development_service.publish(authority, saved_assistant.id)
-            await ResponseMemoryService(self._session).publish(authority, saved_assistant.id)
 
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(

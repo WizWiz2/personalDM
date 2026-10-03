@@ -9,7 +9,7 @@ from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Character
-from app.models.addressed_response import AddressedResponse, QuestionResponse
+from app.models.addressed_response import AddressedResponse
 from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
@@ -45,12 +45,8 @@ async def world(session):
     return campaign_id, player, location, scene
 
 
-def response(name="Продавец", words="Номер дела 123456789, дата 15.03.2023.", after=None):
-    return AddressedResponse(
-        speaker_name=name, after_action_index=after,
-        questions=["Какой номер дела и точная дата?"],
-        answers=[QuestionResponse(question_index=0, disposition="answer", words=words)],
-    )
+def response(name="Продавец", after=None):
+    return AddressedResponse(speaker_name=name, after_action_index=after)
 
 
 async def build(session, campaign_id, scene, plan, trigger_id=None):
@@ -144,15 +140,18 @@ async def test_publication_refuses_world_drift(db_session):
         await frame.assert_unchanged(db_session, campaign_id)
 
 
-def test_repeating_question_cannot_satisfy_answer_schema():
-    wire = _outcome_wire_model(0, question_count=1, questions=["Кто пришёл?"])
-    with pytest.raises(ValidationError, match="repeated question"):
+def test_action_free_outcome_needs_an_external_result_but_no_npc_lines():
+    wire = _outcome_wire_model(0)
+    schema = wire.model_json_schema()
+    assert "direct_response" not in schema["properties"]
+    assert "question_responses" not in schema["properties"]
+    with pytest.raises(ValidationError):
         wire.model_validate({
-            "action_outcomes": [], "npc_introductions": [], "observable_consequences": ["Шаги."],
-            "question_responses": [{
-                "question_index": 0, "disposition": "unknown", "words": "Кто пришёл?",
-            }],
+            "action_outcomes": [], "npc_introductions": [], "observable_consequences": [],
         })
+    assert wire.model_validate({
+        "action_outcomes": [], "npc_introductions": [], "observable_consequences": ["Шаги."],
+    }).observable_consequences == ["Шаги."]
 
 
 @pytest.mark.asyncio
@@ -168,10 +167,7 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
     user = await turns.create(campaign_id, TurnCreate(role="user", content="Как тебя зовут?"))
     reply = AddressedResponse(
         speaker_name="Посетитель", revealed_name="Александр Ковалёв",
-        name_evidence="Меня зовут Александр Ковалёв.", questions=["Как тебя зовут?"],
-        answers=[QuestionResponse(
-            question_index=0, disposition="answer", words="Меня зовут Александр Ковалёв.",
-        )],
+        name_evidence="Меня зовут Александр Ковалёв.",
     )
     authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
         player_intent="Спрашиваю имя.", resolution="conversation", identity_reveal_requested=True,
@@ -202,6 +198,6 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
 def test_unproved_name_revelation_is_rejected():
     with pytest.raises(ValidationError, match="self-identification"):
         AddressedResponse(
-            speaker_name="Посетитель", direct_response="Я видел Александра Ковалёва вчера.",
-            revealed_name="Александр Ковалёв", name_evidence="Меня зовут Александр Ковалёв.",
+            speaker_name="Посетитель",
+            revealed_name="Александр Ковалёв", name_evidence="Я видел его вчера.",
         )

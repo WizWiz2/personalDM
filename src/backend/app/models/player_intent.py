@@ -90,7 +90,6 @@ class PlayerIntentContract(BaseModel):
     addressed_character_name: str | None = Field(default=None, max_length=120)
     identity_reveal_requested: bool = False
     world_state_question: bool = False
-    questions: list[str] = Field(default_factory=list, max_length=8)
 
     # Player-agency boundaries that remain unresolved after this input.
     pending_player_choice: str | None = Field(default=None, max_length=1000)

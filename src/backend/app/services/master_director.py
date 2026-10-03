@@ -240,7 +240,7 @@ def has_substance_stamp(
         return True
     for item in list(canon_constraints or []):
         text = " ".join(str(item or "").split())
-        if "honor_travel" in text or "[ADDRESSED RESPONSE OBLIGATION]" in text:
+        if "honor_travel" in text:
             return True
     return False
 

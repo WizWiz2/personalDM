@@ -242,7 +242,16 @@ class TurnAuthority(BaseModel):
                 }
                 for item in self.allowed_new_npcs
             ],
-            "player_addressed": self.addressed_response_obligation,
+            "player_addressed": self.addressed_response_obligation
+            or (self.addressed_response.speaker_name if self.addressed_response else None),
+            "name_revealed": (
+                {
+                    "character": self.addressed_response.speaker_name,
+                    "new_name": self.addressed_response.revealed_name,
+                }
+                if self.addressed_response and self.addressed_response.revealed_name
+                else None
+            ),
             "objects_here": self.object_names,
             "resolution": self.resolution,
             "observable_consequences": self.observable_consequences,

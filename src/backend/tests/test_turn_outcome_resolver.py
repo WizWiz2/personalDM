@@ -7,7 +7,6 @@ from app.services.turn_outcome_resolver import (
     TurnOutcomeDecisionDraft,
     _outcome_wire_model,
     normalize_outcome_draft,
-    stamp_world_state_answer,
 )
 from app.services.turn_planner import TurnPlanningError
 
@@ -283,24 +282,17 @@ def test_long_source_anchor_survives_provider_resolver_roundtrip() -> None:
     assert wire.model_validate(first).action_outcomes[0].resolution == "blocked"
 
 
-def test_addressed_question_requires_actual_reply_not_waiting_gesture():
-    wire = _outcome_wire_model(
-        0, allow_choice=False, allow_introductions=False, requires_response=True,
-    )
-    with pytest.raises(ValueError, match="direct_response"):
-        wire.model_validate({
-            "action_outcomes": [], "npc_introductions": [],
-            "observable_consequences": ["Контактное лицо кивает и готовится ответить."],
-        })
+def test_addressed_question_needs_an_external_result_and_leaves_words_to_the_narrator():
+    wire = _outcome_wire_model(0, allow_choice=False, allow_introductions=False)
+    assert "direct_response" not in wire.model_json_schema()["properties"]
     contract = PlayerIntentContract(summary="Спрашиваю, откуда он знает моё имя.",
                                     addressed_response_requested=True)
     draft = wire.model_validate({
         "action_outcomes": [], "npc_introductions": [],
-        "direct_response": "Контактное лицо отвечает: «Я не знаю вашего имени»." ,
-        "observable_consequences": ["Собеседник опускает руку."],
+        "observable_consequences": ["Контактное лицо кивает и опускает руку."],
     })
     result = normalize_outcome_draft(draft, contract)
-    assert result.observable_consequences[0] == draft.direct_response
+    assert result.observable_consequences == ["Контактное лицо кивает и опускает руку."]
     assert result.npc_introductions == []
 
 
@@ -351,25 +343,3 @@ def test_observation_can_report_newly_discovered_negative_result_without_context
     assert parsed.action_outcomes[0].blocking_evidence_quote is None
 
 
-def test_world_state_question_stamps_direct_answer_obligation() -> None:
-    contract = PlayerIntentContract.model_validate(
-        {
-            "summary": "Во что сейчас одета Мария?",
-            "actions": [],
-            "world_state_question": True,
-        }
-    )
-    decision = normalize_outcome_draft(
-        TurnOutcomeDecisionDraft.model_validate(
-            {
-                "action_outcomes": [],
-                "observable_consequences": ["Мария сейчас полностью обнажена."],
-            }
-        ),
-        contract,
-    )
-
-    stamped = stamp_world_state_answer(decision, contract)
-
-    assert any("WORLD STATE ANSWER" in item for item in stamped.canon_constraints)
-    assert any("direct answer" in item for item in stamped.narration_guidance)

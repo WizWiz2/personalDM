@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.addressed_response import AddressedResponse, QuestionResponse
+from app.models.addressed_response import AddressedResponse
 from app.models.player_intent import (
     ActionOutcomeDecision,
     DestinationProfilePatch,
@@ -49,7 +49,7 @@ blocked needs a concrete blocking_reason AND blocking_evidence_ref: select the E
 line establishing that obstacle or NPC refusal motive. Do not copy/paraphrase a quote or invent one.
 An observation may newly find evidence absent/inaccessible; describe that finding without a source ID.
 Ordinary inspection succeeds as inspection even when it discovers nothing. Lack of information is
-not inability to ask a question. Dialogue replies/refusals belong in observable_consequences, not acts.
+not inability to ask a question. What characters say belongs to the narrator, not to acts.
 Never infer a moral/consent boundary from an explicit request alone; established campaign/NPC boundaries
 still apply. Consensual adult material is ordinary content in Mature/18+ campaigns.
 
@@ -69,29 +69,18 @@ Travel/inventory/wait without contact normally introduce nobody. Contact-seeking
 response; if the physical cast is player-only and a responder is needed, introduce a grounded local
 person, not an absent known character. No atmosphere-only filler or untyped new people.
 
-For actions=[] supply a concrete external reply/beat. Answer every addressed question directly with
-available knowledge; express ignorance or a grounded refusal when appropriate. Do not invent secrets.
-When response_requested=true, direct_response must contain the addressee's actual words answering the
-questions now, not a nod, anticipation, atmospheric description or promise to answer later. If the
-information is unknown, say so directly. Never fill this field with the protagonist's reaction.
-response_speaker_name identifies the existing contextual designation or a typed introduction that
-owns those words. It is not the personal name mentioned inside an answer. Narrator observations
-have a null speaker. Every newly encountered responder must also be in npc_introductions.
-response_after_action_index is the prerequisite action index if an answer requires completing a
-move/inspection first, otherwise null. Introductions likewise carry after_action_index for the
-hop that reaches them. A failed prerequisite must not produce destination answers or people.
-If the temporary responder explicitly introduces themself, response_revealed_name carries their
-personal name and response_name_evidence is the exact self-identification from their approved
-words. Keep response_speaker_name as the CURRENT designation so identity binds to the same entity.
-With indexed questions, question_responses[].words are the authoritative approved speech.
-The revealed name must occur verbatim in those words; an aggregate direct_response cannot
-reveal a different name. Evidence is bound to that actual answer, not a separately paraphrased quote.
-Do not reveal or change an already established personal name. Otherwise both revelation fields null.
-When the frozen contract contains questions, return question_responses with exactly one entry for
-each question_index. Choose answer/unknown/refuse/deflect and actual spoken words. Ignorance and
-refusal must be explicit; a deflection must be a deliberate in-world response, not postponed prose.
-These are attributed character claims, never objective facts merely because somebody said them.
-For world_state_question answer existing state in observable_consequences without performing it again.
+For actions=[] supply at least one short concrete external result in observable_consequences.
+Never write NPC lines or answers: what present characters say is left to the narrator.
+response_speaker_name is the existing contextual designation or typed introduction the player
+addresses (null when nobody is addressed). Every newly encountered person must be in
+npc_introductions. response_after_action_index is the prerequisite action index if reaching the
+addressee requires completing a move first, otherwise null. Introductions likewise carry
+after_action_index for the hop that reaches them. A failed prerequisite must not produce
+destination people. If a temporary responder introduces themself now, response_revealed_name is
+their personal name and response_name_evidence a short self-identification containing it; keep
+response_speaker_name as the CURRENT designation so identity binds to the same entity. Do not
+reveal or change an already established personal name. Otherwise both revelation fields null.
+For world_state_question state the existing state in observable_consequences without performing it.
 No complication without a grounded complication_source. destination_profile only enriches an explicitly
 new destination with stable public physical traits; it cannot change the route or introduce people.
 """
@@ -291,12 +280,10 @@ class TurnOutcomeDecisionDraft(BaseModel):
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
     resolution: str = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
-    direct_response: str | None = Field(default=None, max_length=1000)
     response_speaker_name: str | None = Field(default=None, max_length=120)
     response_after_action_index: int | None = Field(default=None, ge=0, le=7)
     response_revealed_name: str | None = Field(default=None, max_length=120)
     response_name_evidence: str | None = Field(default=None, max_length=500)
-    question_responses: list[QuestionResponse] = Field(default_factory=list, max_length=8)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
@@ -331,11 +318,8 @@ def _outcome_wire_model(
     ordinary_movement_destinations: dict[int, str] | None = None,
     observation_indices: set[int] | None = None,
     allow_introductions: bool = True,
-    requires_response: bool = False,
-    question_count: int = 0,
     present_names: list[str] | None = None,
     movement_indices: set[int] | None = None,
-    questions: list[str] | None = None,
     allow_name_revelation: bool = True,
     bound_response_speaker: str | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
@@ -413,9 +397,6 @@ def _outcome_wire_model(
         response_after_action_index: prerequisite_type = None
         response_revealed_name: revealed_name_type = None
         response_name_evidence: revealed_name_type = None
-        question_responses: list[QuestionResponse] = Field(
-            default_factory=list, max_length=question_count
-        )
         action_outcomes: list[action_model if action_count else dict[str, Any]] = Field(
             min_length=action_count,
             max_length=action_count,
@@ -475,31 +456,7 @@ def _outcome_wire_model(
         @model_validator(mode="after")
         def validate_action_indices(self):
             if self.response_revealed_name:
-                speech = [answer.words for answer in self.question_responses] or (
-                    [self.direct_response] if self.direct_response else []
-                )
-                # Evidence is a reference into approved speech, not an independently generated
-                # assertion. Bind a malformed/paraphrased quote to the actual containing reply.
-                # A name absent from that reply still fails the strict AddressedResponse boundary.
-                if not self.response_name_evidence or not any(
-                    self.response_name_evidence in fragment
-                    and self.response_revealed_name in self.response_name_evidence
-                    for fragment in speech
-                ):
-                    containing_reply = next(
-                        (fragment for fragment in speech if self.response_revealed_name in fragment),
-                        None,
-                    )
-                    if containing_reply:
-                        start = max(0, containing_reply.index(self.response_revealed_name) - 100)
-                        self.response_name_evidence = (
-                            containing_reply if len(containing_reply) <= 500
-                            else containing_reply[start:start + 500]
-                        )
                 AddressedResponse(
-                    direct_response=self.direct_response,
-                    questions=questions or [""] * question_count,
-                    answers=self.question_responses,
                     revealed_name=self.response_revealed_name,
                     name_evidence=self.response_name_evidence,
                 )
@@ -509,15 +466,6 @@ def _outcome_wire_model(
             ]
             if any(index is not None and index >= action_count for index in dependencies):
                 raise ValueError("outcome prerequisite refers to a nonexistent frozen action")
-            repaired_answers = []
-            for answer in self.question_responses:
-                if questions and answer.question_index < len(questions) and (
-                    _compact(answer.words).casefold()
-                    == _compact(questions[answer.question_index]).casefold()
-                ):
-                    raise ValueError("a repeated question is not an answer or expressed ignorance")
-                repaired_answers.append(answer)
-            self.question_responses = repaired_answers
             if sorted(item.action_index for item in self.action_outcomes) != list(
                 range(action_count)
             ):
@@ -544,43 +492,13 @@ def _outcome_wire_model(
             return self
 
     result_model = ExactTurnOutcomeDecisionDraft
-    if requires_response:
-
-        class RespondingTurnOutcomeDecisionDraft(ExactTurnOutcomeDecisionDraft):
-            model_config = ConfigDict(json_schema_extra={"required": [
-                "action_outcomes", "npc_introductions", "direct_response", "response_speaker_name",
-                "response_after_action_index",
-                "response_revealed_name", "response_name_evidence",
-            ]})
-            direct_response: str = Field(min_length=2, max_length=1000)
-            response_speaker_name: speaker_type = Field(
-                default=None,
-                description="Existing cast designation or typed new NPC owning this response."
-            )
-
-        result_model = RespondingTurnOutcomeDecisionDraft
-    if action_count == 0 and not requires_response:
-        # No executable action is valid for dialogue/acknowledgement. It still needs an external
-        # response or observable beat, otherwise the downstream authority receives a vacuous plan.
+    if action_count == 0:
+        # No executable action still needs one external result; NPC words are the narrator's.
         class ResponsiveTurnOutcomeDecisionDraft(ExactTurnOutcomeDecisionDraft):
             observable_consequences: list[str] = Field(min_length=1, max_length=4)
 
-        ResponsiveTurnOutcomeDecisionDraft.__name__ = "TurnOutcomeDecisionDraft"
         result_model = ResponsiveTurnOutcomeDecisionDraft
-
     result_model.__name__ = "TurnOutcomeDecisionDraft"
-    if question_count:
-
-        class IndexedQuestionResponse(QuestionResponse):
-            question_index: Literal[tuple(range(question_count))]
-
-        class QuestionCoveredTurnOutcomeDecisionDraft(result_model):
-            question_responses: list[IndexedQuestionResponse] = Field(
-                min_length=question_count,
-                max_length=question_count,
-            )
-
-        return QuestionCoveredTurnOutcomeDecisionDraft
     return result_model
 
 
@@ -642,12 +560,6 @@ def normalize_outcome_draft(
     """Turn permissive model output into strict world-facing semantics deterministically."""
 
     expected = set(range(len(contract.actions)))
-    question_indices = [item.question_index for item in draft.question_responses]
-    if contract.questions and (
-        len(question_indices) != len(set(question_indices))
-        or set(question_indices) != set(range(len(contract.questions)))
-    ):
-        raise TurnPlanningError("outcome resolver did not preserve frozen question coverage")
     got = [item.action_index for item in draft.action_outcomes]
     if len(got) != len(set(got)) or set(got) != expected:
         raise TurnPlanningError(
@@ -755,24 +667,16 @@ def normalize_outcome_draft(
             "resolution": resolution,
             "addressed_response": AddressedResponse(
                 speaker_name=response_speaker,
-                direct_response=_compact(draft.direct_response) or None,
                 after_action_index=draft.response_after_action_index,
                 revealed_name=draft.response_revealed_name,
                 name_evidence=draft.response_name_evidence,
-                questions=contract.questions,
-                answers=sorted(draft.question_responses, key=lambda item: item.question_index),
             ).model_dump()
-            if draft.direct_response or draft.question_responses
+            if response_speaker or draft.response_revealed_name
             else None,
             "observable_consequences": _bounded_strings(
                 list(
                     dict.fromkeys(
                         [
-                            *(
-                                [draft.direct_response]
-                                if draft.direct_response and not draft.question_responses
-                                else []
-                            ),
                             *draft.observable_consequences,
                             *[
                                 item["observable_outcome"]
@@ -796,36 +700,6 @@ def normalize_outcome_draft(
             "dramatic_mode": dramatic_mode,
             "allow_new_complication": allow_complication,
             "complication_source": complication_source if allow_complication else None,
-        }
-    )
-
-
-def stamp_world_state_answer(
-    decision: TurnOutcomeDecision,
-    contract: PlayerIntentContract,
-) -> TurnOutcomeDecision:
-    """Make a state-query answer an explicit publication obligation."""
-
-    if not contract.world_state_question:
-        return decision
-    constraints = list(decision.canon_constraints)
-    guidance = list(decision.narration_guidance)
-    constraint = (
-        "[WORLD STATE ANSWER] Answer the latest state question directly and factually from the "
-        "addressed_response answers or observable consequences; do not perform or advance the queried event."
-    )
-    instruction = (
-        "Begin with the direct answer (including yes/no when applicable), then add at most brief "
-        "grounded description. Do not evade the question with atmosphere."
-    )
-    if constraint not in constraints:
-        constraints.append(constraint)
-    if instruction not in guidance:
-        guidance.append(instruction)
-    return decision.model_copy(
-        update={
-            "canon_constraints": constraints[:8],
-            "narration_guidance": guidance[:6],
         }
     )
 
@@ -1004,9 +878,6 @@ class TurnOutcomeResolver:
                 bound_response_speaker=(
                     contract.addressed_character_name if existing_addressee else None
                 ),
-                requires_response=contract.addressed_response_requested,
-                question_count=len(contract.questions),
-                questions=contract.questions,
                 present_names=present_character_names(context_messages),
                 movement_indices={
                     index
@@ -1056,7 +927,7 @@ class TurnOutcomeResolver:
                             + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
                             + json.dumps(response_contract, ensure_ascii=False)
                             + empty_cast_guidance
-                            + "\nResolve the requested exchange now; answer the actual questions."
+                            + "\nResolve the external result now."
                         ),
                     ),
                 ],
@@ -1066,7 +937,6 @@ class TurnOutcomeResolver:
             )
             draft = response_model.model_validate(data)
             decision = normalize_outcome_draft(draft, contract)
-            decision = stamp_world_state_answer(decision, contract)
             self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
             if self._requires_contact_introduction(
@@ -1114,7 +984,6 @@ class TurnOutcomeResolver:
                 )
                 draft = response_model.model_validate(data)
                 decision = normalize_outcome_draft(draft, contract)
-                decision = stamp_world_state_answer(decision, contract)
                 self._validate_coverage(contract, decision)
                 decision = self._normalize_temporary_identities(decision)
                 if self._requires_contact_introduction(
@@ -1219,5 +1088,4 @@ __all__ = [
     "TurnOutcomeDecisionDraft",
     "TurnOutcomeResolver",
     "normalize_outcome_draft",
-    "stamp_world_state_answer",
 ]

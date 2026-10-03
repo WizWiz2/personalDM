@@ -5,8 +5,6 @@ from uuid import uuid4
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.narrator_authority_contracts import (
-    addressed_response_obligation_addressee,
-    addressed_response_obligation_constraint,
     description_used_as_identity_name,
     is_usable_short_designation,
     repair_introduction_identity,
@@ -179,27 +177,5 @@ def test_explicit_personal_name_beats_role_token_soft_overlap():
         hinted_name="Управляющая домом",
         addressed_response_requested=True,
     ) == "Лира"
-
-def test_addressee_parse_one_path_bare_or_marker_field():
-    """Field may store bare name or marker constraint text — one parse path yields bare name."""
-    bare = _authority(
-        present_character_names=["Эйдан", "Лира"],
-        addressed_response_obligation="Лира",
-    )
-    assert addressed_response_obligation_addressee(bare) == "Лира"
-
-    marker = addressed_response_obligation_constraint("Лира")
-    from_field = _authority(
-        present_character_names=["Эйдан", "Лира"],
-        addressed_response_obligation=marker,
-    )
-    assert addressed_response_obligation_addressee(from_field) == "Лира"
-
-    from_constraint_only = _authority(
-        present_character_names=["Эйдан", "Лира"],
-        addressed_response_obligation=None,
-        canon_constraints=[marker],
-    )
-    assert addressed_response_obligation_addressee(from_constraint_only) == "Лира"
 
 

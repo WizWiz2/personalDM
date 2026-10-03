@@ -30,8 +30,6 @@ Speech is NOT an executable action, even in imperative form: "назовись",
 меня", "ответь на вопрос" request information. For dialogue-only input use actions=[],
 information_request_only=true, addressed_response_requested=true and the current addressee's
 designation (or null for unspecified people). A name question also sets identity_reveal_requested.
-questions contains each distinct information request in order, including implicit imperatives;
-preserve its meaning without adding questions. Extract these semantically, not by punctuation.
 Do not invent service/interaction/observation actions for asking, speaking or listening to a reply.
 Questions to the narrator about existing state use actions=[], information_request_only=true,
 world_state_question=true, addressed_response_requested=false; they do not execute the queried event.
@@ -120,7 +118,6 @@ class PlayerIntentContractDraft(BaseModel):
     identity_reveal_requested: bool = False
     information_request_only: bool = False
     world_state_question: bool = False
-    questions: list[str] = Field(default_factory=list, max_length=8)
     pending_player_choice: str | None = None
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
 
@@ -175,7 +172,7 @@ class _IntentWire(PlayerIntentContractDraft):
         json_schema_extra={
             "additionalProperties": False,
             "required": [
-                "summary", "actions", "questions", "protected_player_decisions",
+                "summary", "actions", "protected_player_decisions",
                 "addressed_response_requested", "addressed_character_name",
                 "identity_reveal_requested", "information_request_only", "world_state_question",
             ],
@@ -635,7 +632,6 @@ def normalize_intent_draft(
             "addressed_character_name": _compact(draft.addressed_character_name) or None,
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
             "world_state_question": bool(draft.world_state_question),
-            "questions": [value for raw in draft.questions if (value := _compact(raw))],
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
             "protected_player_decisions": [
                 value for raw in draft.protected_player_decisions if (value := _compact(raw))

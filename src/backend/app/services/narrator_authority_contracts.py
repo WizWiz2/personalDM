@@ -67,23 +67,6 @@ def authorized_physical_cast_names(authority) -> list[str]:
     return ordered
 
 
-def authorized_nonplayer_count(authority) -> int:
-    return len(allowed_speakers_from_authority(authority))
-
-
-def presence_vs_solitude_constraint(authority) -> str | None:
-    """Hard canon line when typed intros/arrivals/non-player cast make solitude false."""
-    speakers = allowed_speakers_from_authority(authority)
-    if not speakers:
-        return None
-    named = ", ".join(speakers)
-    return (
-        "[PRESENCE CANON] Authorized people are physically present this turn: "
-        f"{named}. Claiming the place is empty of people, that nobody is here, or "
-        "'only us'/solitude against that cast is forbidden."
-    )
-
-
 def _identity_token_soft_match(left: str, right: str) -> bool:
     """True when tokens share a stem under light Russian inflection (≤2-char tail)."""
     if left == right:
@@ -98,8 +81,6 @@ def _identity_token_soft_match(left: str, right: str) -> bool:
     return shared >= 3 and shared >= min(len(left), len(right)) - 2
 
 
-
-_ADDRESSED_OBLIGATION_MARKER = "[ADDRESSED RESPONSE OBLIGATION]"
 
 def _cast_mention_strength(player_input: str, cast_name: str) -> int:
     """How strongly player_input names cast_name.
@@ -251,69 +232,13 @@ def should_assign_addressed_response_obligation(
     return None
 
 
-def addressed_response_obligation_constraint(addressee: str) -> str:
-    name = _compact(addressee)
-    return (
-        f"{_ADDRESSED_OBLIGATION_MARKER} {name} is directly addressed and present. "
-        "This turn must land their response beat: speech, refusal, deflection, or "
-        "gesture-with-answer. Atmosphere may season the voice but cannot satisfy the turn alone "
-        "— naming them in sensory filler without a response beat is banned. Do not claim they "
-        "are out of view / unreachable / unanswered. If a truthful reply would require an "
-        "unauthorized person, refuse or deflect without inventing or naming that person."
-    )
-
-
-def addressed_response_obligation_guidance(addressee: str) -> str:
-    name = _compact(addressee)
-    return (
-        f"Игрок прямо обращается к присутствующему персонажу «{name}»: сначала должен "
-        "приземлиться их ответный такт — реплика, отказ, уклонение или жест с содержанием ответа. "
-        "Атмосфера может быть голосом сцены, но сама по себе ход не закрывает: нельзя оставить "
-        "только сенсорный фон с именем адресата без ответного такта. Не утверждай, что его нет "
-        "в поле зрения или что ответа не будет. Если правдивый ответ потребовал бы "
-        "неавторизованного человека, пусть адресат откажется или уклонится, не изобретая и не "
-        "называя такого человека."
-    )
-
-
-def _parse_obligation_addressee(value: object) -> str | None:
-    """Single addressee extraction: bare name or marker-prefixed constraint text."""
-    text = _compact(value)
-    if not text:
-        return None
-    if text.startswith(_ADDRESSED_OBLIGATION_MARKER):
-        remainder = text[len(_ADDRESSED_OBLIGATION_MARKER):].strip()
-        name = remainder.split(" is directly addressed", 1)[0].strip()
-        return name or None
-    return text
-
-
-def addressed_response_obligation_addressee(authority) -> str | None:
-    """Bare obligated cast name from field or marker constraint — one parse path."""
-    parsed = _parse_obligation_addressee(
-        getattr(authority, "addressed_response_obligation", None)
-    )
-    if parsed:
-        return parsed
-    for item in list(getattr(authority, "canon_constraints", None) or []):
-        text = _compact(item)
-        if text.startswith(_ADDRESSED_OBLIGATION_MARKER):
-            return _parse_obligation_addressee(text)
-    return None
-
-
 __all__ = [
-    "addressed_response_obligation_addressee",
-    "addressed_response_obligation_constraint",
-    "addressed_response_obligation_guidance",
     "allowed_speakers_from_authority",
-    "authorized_nonplayer_count",
     "authorized_physical_cast_names",
     "description_used_as_identity_name",
     "extract_leading_short_designation",
     "identity_display_label",
     "is_usable_short_designation",
-    "presence_vs_solitude_constraint",
     "repair_introduction_identity",
     "repair_persisted_character_identity",
     "resolve_addressed_present_npc",

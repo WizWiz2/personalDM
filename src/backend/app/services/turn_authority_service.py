@@ -9,9 +9,6 @@ from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
 from app.services.entity_identity import exact_identity_matches, identity_key
 from app.services.narrator_authority_contracts import (
-    addressed_response_obligation_constraint,
-    addressed_response_obligation_guidance,
-    presence_vs_solitude_constraint,
     resolve_addressed_present_npc,
     should_assign_addressed_response_obligation,
 )
@@ -334,14 +331,6 @@ class TurnAuthorityService:
             action_sequence=executed_sequence,
         )
 
-        if authority.identity_reveal_requested:
-            authority.narration_guidance.append(
-                "Игрок спросил имя присутствующего персонажа: явно передай разрешённый ответ, "
-                "незнание или мотивированный отказ. Не придумывай новое имя ради заполнения ответа. "
-                "Только проверенное самоназывание может стабилизировать личность персонажа; "
-                "сам вопрос не разрешает переименование или создание дубля."
-            )
-
         addressee = should_assign_addressed_response_obligation(
             player_input,
             authority.present_character_names,
@@ -353,43 +342,9 @@ class TurnAuthorityService:
             ),
         )
         if addressee:
-            from app.services.master_director import subordinate_quiet_guidance_to_substance
-
-            guidance = list(authority.narration_guidance)
-            tip = addressed_response_obligation_guidance(addressee)
-            if tip not in guidance:
-                guidance.append(tip)
-            # Soft Keeper quiet may keep atmospheric voice, but not before the response beat.
-            guidance = subordinate_quiet_guidance_to_substance(
-                guidance,
-                substance_active=True,
-            )
-            constraints = list(authority.canon_constraints)
-            constraint = addressed_response_obligation_constraint(addressee)
-            if constraint not in constraints:
-                constraints.append(constraint)
-            beats = list(authority.character_beats)
-            beat = (
-                f"{addressee} получает прямое обращение и даёт ответ, отказывает, "
-                f"уклоняется или жестом сообщает ответ."
-            )
-            if beat not in beats:
-                beats.append(beat)
-            authority = authority.model_copy(
-                update={
-                    "addressed_response_obligation": addressee,
-                    "narration_guidance": guidance,
-                    "canon_constraints": constraints,
-                    "character_beats": beats,
-                }
-            )
-
-        presence_constraint = presence_vs_solitude_constraint(authority)
-        if presence_constraint:
-            constraints = list(authority.canon_constraints)
-            if presence_constraint not in constraints:
-                constraints.append(presence_constraint)
-            authority = authority.model_copy(update={"canon_constraints": constraints})
+            # Typed addressee only: context for the narrator and acting-character binding,
+            # never an obligation the narration is checked against.
+            authority = authority.model_copy(update={"addressed_response_obligation": addressee})
 
         # Response ownership follows THIS turn's obligated addressee. Sticky `/talk` is only
         # input provenance: it must not keep a prior listener (and their dialogue history) when

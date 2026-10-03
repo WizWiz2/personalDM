@@ -3,14 +3,13 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.models.addressed_response import AddressedResponse, QuestionResponse
+from app.models.addressed_response import AddressedResponse
 from app.models.player_intent import PlayerIntentContract
 from app.services.turn_outcome_resolver import (
     TurnOutcomeDecisionDraft,
     _outcome_wire_model,
     normalize_outcome_draft,
 )
-from app.services.turn_planner import TurnPlanningError
 from app.services.turn_authority_service import TurnAuthorityService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.db.repositories.campaign_repo import CampaignRepository
@@ -31,47 +30,20 @@ def contract():
         summary="Прошу назвать имя и происхождение сведений.",
         addressed_response_requested=True,
         addressed_character_name="Марта",
-        questions=["Как тебя зовут?", "Откуда знаешь о грузе?"],
     )
 
 
-def answers():
-    return [
-        QuestionResponse(question_index=1, disposition="unknown", words="О грузе я не знаю."),
-        QuestionResponse(question_index=0, disposition="answer", words="Меня зовут Марта."),
-    ]
-
-
-def test_question_coverage_is_indexed_not_lexical():
+def test_addressee_is_typed_but_no_answer_is_prewritten():
     draft = TurnOutcomeDecisionDraft(
-        action_outcomes=[], direct_response="Марта отвечает.", question_responses=answers()
+        action_outcomes=[], observable_consequences=["Марта поднимает взгляд от сетей."],
     )
     decision = normalize_outcome_draft(draft, contract())
     response = decision.addressed_response
     assert response.speaker_name == "Марта"
-    assert [a.question_index for a in response.answers] == [0, 1]
-    assert "Марта отвечает." not in decision.observable_consequences
-
-
-@pytest.mark.parametrize("indices", [[0], [0, 0], [0, 2]])
-def test_missing_duplicate_or_foreign_question_is_rejected(indices):
-    draft = TurnOutcomeDecisionDraft(
-        action_outcomes=[],
-        question_responses=[
-            QuestionResponse(question_index=index, disposition="refuse", words="Не скажу.")
-            for index in indices
-        ],
-    )
-    with pytest.raises(TurnPlanningError, match="question coverage"):
-        normalize_outcome_draft(draft, contract())
-
-
-def test_native_schema_requires_question_count():
-    wire = _outcome_wire_model(0, requires_response=True, question_count=2)
-    with pytest.raises(ValidationError):
-        wire.model_validate(
-            {"action_outcomes": [], "npc_introductions": [], "direct_response": "Марта кивает."}
-        )
+    assert set(response.model_dump()) == {
+        "speaker_name", "speaker_id", "after_action_index", "revealed_name", "name_evidence",
+    }
+    assert decision.observable_consequences == ["Марта поднимает взгляд от сетей."]
 
 
 def test_native_schema_does_not_offer_companions_to_nonmovement():
@@ -123,9 +95,7 @@ async def test_response_binds_to_present_stable_id(db_session):
         player_intent="Спрашиваю Марту.",
         resolution="conversation",
         addressed_response_requested=True,
-        addressed_response=AddressedResponse(
-            speaker_name="Марта", questions=contract().questions, answers=answers()
-        ),
+        addressed_response=AddressedResponse(speaker_name="Марта"),
     )
     authority = await TurnAuthorityService(db_session).build(
         campaign_id=campaign_id,
