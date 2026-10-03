@@ -86,11 +86,11 @@ def test_intent_wire_schema_cannot_accept_empty_json_object() -> None:
         PlayerIntentContractDraft.model_validate({})
 
 
-def test_destination_bindings_cannot_select_another_actions_candidate():
-    refs = {"room": "Комната", "garden": "Сад"}
-    wire = _destination_binding_wire([0, 1], refs, {0: {"room": "Комната"}, 1: {"garden": "Сад"}})
+def test_destination_bindings_select_only_catalogued_ids_or_new():
+    wire = _destination_binding_wire([0, 1], {"room": "Комната", "garden": "Сад"})
+    assert wire.model_validate({"action_0": "garden", "action_1": "new"})
     with pytest.raises(ValidationError):
-        wire.model_validate({"action_0": "garden", "action_1": "garden"})
+        wire.model_validate({"action_0": "Сад", "action_1": "garden"})
     with pytest.raises(ValidationError):
         wire.model_validate({"action_0": "room", "action_1": "garden", "actions": []})
 
@@ -329,6 +329,8 @@ def test_profile_wire_schema_enforces_requested_patch_cardinality() -> None:
             "patches": [
                 {
                     "action_index": 0,
+                    "name": "Прачечная",
+                    "within_current": False,
                     "profile": (
                         "Круглосуточная прачечная занимает светлое помещение первого этажа; "
                         "вдоль стен стоят ряды машин, столы для белья и обычная зона ожидания."

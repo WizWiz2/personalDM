@@ -185,7 +185,10 @@ class SceneTransitionExecutor:
         )
         target_location_id = source_location_id
         destination_created = False
-        if plan.transition_type == "location_transition":
+        if plan.transition_type == "location_transition" and plan.destination_location_id:
+            # The compiler already proved identity and an open route; nothing is re-matched by name.
+            target_location_id = plan.destination_location_id
+        elif plan.transition_type == "location_transition":
             destination = plan.destination_location or ""
             authorization = None
             if trigger_turn_id:

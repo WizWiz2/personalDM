@@ -14,7 +14,6 @@ from app.models.player_intent import (
     TurnOutcomeDecision,
 )
 from app.models.turn_authority import PlannedNpcIntroduction
-from app.services.location_identity import display_location_name, same_location_reference
 from app.services.scene_state_service import SceneStateService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_planner import (
@@ -30,6 +29,7 @@ from app.services.turn_planner import (
 class MissingDestinationProfile:
     action_index: int
     destination: str
+    origin: str | None = None
 
 
 class ActionPlanCompiler:
@@ -46,46 +46,52 @@ class ActionPlanCompiler:
         self._state = SceneStateService(session)
 
     @staticmethod
-    def _location_matches(destination: str, location) -> bool:
-        needles = (destination, display_location_name(destination))
-        candidates = (
-            location.canonical_name,
-            display_location_name(location.canonical_name),
-            *location.aliases,
-        )
-        return any(
-            same_location_reference(needle, candidate)
-            for needle in needles
-            for candidate in candidates
-            if needle and candidate
+    def _blocked(action: PlayerActionIntent, reason: str, public: str) -> ActionStepPlan:
+        return ActionStepPlan(
+            action_type="movement",
+            intent=action.intent,
+            resolution="blocked",
+            safe_mundane=False,
+            blocking_reason=reason,
+            public_blocking_reason=public,
         )
 
-    @classmethod
-    def _matching_locations(cls, destination: str, locations) -> list:
-        return [item for item in locations if cls._location_matches(destination, item)]
+    async def _route_blocker(
+        self, campaign_id: UUID, source_id: UUID, target_id: UUID
+    ) -> tuple[str, str] | None:
+        """None when a discovered open path joins the places; otherwise (internal, public) reason.
 
-    @classmethod
-    def _matching_exits(cls, destination: str, exits, by_id: dict[UUID, object]) -> list:
-        result = []
-        for exit_row in exits:
-            target = by_id.get(exit_row.to_location_id)
-            candidates = [exit_row.to_location_name, exit_row.label]
-            if target is not None:
-                candidates.extend(
-                    [
-                        target.canonical_name,
-                        display_location_name(target.canonical_name),
-                        *target.aliases,
-                    ]
-                )
-            if any(
-                same_location_reference(needle, candidate)
-                for needle in (destination, display_location_name(destination))
-                for candidate in candidates
-                if needle and candidate
-            ):
-                result.append((exit_row, target))
-        return result
+        A known place reachable over known open routes is one ordinary trip, however many edges.
+        """
+        if source_id == target_id:
+            return None
+        exits = await self._state.list_exits(campaign_id, source_id, include_hidden=True)
+        direct = next((item for item in exits if item.to_location_id == target_id), None)
+        if direct is not None and not direct.active:
+            return (
+                "Destination route is currently inactive",
+                direct.access_rule or "Путь туда сейчас недоступен.",
+            )
+        if direct is not None and not direct.discovered:
+            return "Destination exit has not been discovered.", "Путь туда пока не обнаружен."
+        if direct is not None:
+            return None
+        seen, frontier = {source_id}, [source_id]
+        while frontier:
+            following = []
+            for location_id in frontier:
+                for item in await self._state.list_exits(campaign_id, location_id):
+                    if item.access_rule or item.to_location_id in seen:
+                        continue
+                    if item.to_location_id == target_id:
+                        return None
+                    seen.add(item.to_location_id)
+                    following.append(item.to_location_id)
+            frontier = following
+        return (
+            "Destination is not reachable over known open routes.",
+            "Из текущего места туда нет доступного прохода.",
+        )
 
     async def _world(self, campaign_id: UUID):
         campaign = await self._session.get(Campaign, str(campaign_id))
@@ -127,6 +133,7 @@ class ActionPlanCompiler:
             or contract.addressed_response_requested
             or contract.pending_player_choice
             or any(action.action_type != "movement" for action in contract.actions)
+            or any(action.destination_location_id is None for action in contract.actions)
             or any(action.movement_method != "ordinary" for action in contract.actions)
             or any(action.requested_companions for action in contract.actions)
         ):
@@ -135,51 +142,39 @@ class ActionPlanCompiler:
         if not state.location_id or getattr(state, "active_conflict", None):
             return None
         by_id = {item.id: item for item in locations}
-        current_id = state.location_id
+        cursor = (state.location_id, None)
         outcomes = []
-        stopped = False
         for index, action in enumerate(contract.actions):
-            if stopped:
-                outcomes.append(
-                    ActionOutcomeDecision(
-                        action_index=index,
-                        resolution="blocked",
-                        blocking_reason="Предыдущий переход не выполнен.",
-                    )
-                )
+            if outcomes and outcomes[-1].resolution != "auto_success":
+                outcomes.append(ActionOutcomeDecision(
+                    action_index=index,
+                    resolution="blocked",
+                    blocking_reason="Предыдущий переход не выполнен.",
+                ))
                 continue
-            destination = action.destination_location or ""
-            exits = await self._state.list_exits(campaign_id, current_id, include_hidden=True)
-            matches = self._matching_exits(destination, exits, by_id)
-            if not matches and not self._matching_locations(destination, locations):
-                return None
-            if any(exit_row.access_rule for exit_row, _ in matches):
+            exits = await self._state.list_exits(campaign_id, cursor[0], include_hidden=True)
+            if any(
+                item.access_rule and item.to_location_id == action.destination_location_id
+                for item in exits
+            ):
                 return None
             candidate = ActionOutcomeDecision(
                 action_index=index,
                 resolution="auto_success",
                 safe_mundane=True,
-                observable_outcome=f"Переход в место «{destination}» завершён.",
+                observable_outcome=f"Переход в место «{action.destination_location}» завершён.",
             )
-            step, current_id, _ = await self._compile_movement(
-                campaign_id=campaign_id,
+            step, cursor, _ = await self._compile_movement(
+                campaign_id=campaign_id, action=action, outcome=candidate,
+                cursor=cursor, by_id=by_id,
+            )
+            outcomes.append(ActionOutcomeDecision(
                 action_index=index,
-                action=action,
-                outcome=candidate,
-                current_location_id=current_id,
-                locations=locations,
-                by_id=by_id,
-            )
-            stopped = step.resolution != "auto_success"
-            outcomes.append(
-                ActionOutcomeDecision(
-                    action_index=index,
-                    resolution=step.resolution,
-                    safe_mundane=step.safe_mundane,
-                    observable_outcome=step.observable_outcome,
-                    blocking_reason=step.blocking_reason,
-                )
-            )
+                resolution=step.resolution,
+                safe_mundane=step.safe_mundane,
+                observable_outcome=step.observable_outcome,
+                blocking_reason=step.blocking_reason,
+            ))
         return TurnOutcomeDecision(action_outcomes=outcomes, resolution="sequence")
 
     async def missing_destination_profiles(
@@ -188,36 +183,35 @@ class ActionPlanCompiler:
         contract: PlayerIntentContract,
         decision: TurnOutcomeDecision,
     ) -> list[MissingDestinationProfile]:
-        """Profiles enrich successful explicit destinations unknown to the campaign graph."""
-        _scene_id, _state, locations = await self._world(campaign_id)
+        """Every successful trip to a place not yet catalogued gets a generated name and profile."""
+        _scene_id, state, locations = await self._world(campaign_id)
+        names = {item.id: item.canonical_name for item in locations}
         outcome_by_index = self._outcome_map(contract, decision)
+        origin = names.get(state.location_id)
         missing: list[MissingDestinationProfile] = []
         for index, action in enumerate(contract.actions):
             if action.action_type != "movement":
                 continue
             outcome = outcome_by_index[index]
-            if outcome.resolution != "auto_success":
-                continue
-            destination = " ".join(str(action.destination_location or "").split())
-            if not destination or self._matching_locations(destination, locations):
-                continue
-            profile = " ".join(str(outcome.destination_profile or "").split())
-            if len(profile) < 80:
-                missing.append(MissingDestinationProfile(index, destination))
+            if (
+                outcome.resolution == "auto_success"
+                and action.destination_location_id is None
+                and not outcome.destination_name
+            ):
+                missing.append(MissingDestinationProfile(index, action.destination_location, origin))
+            origin = names.get(action.destination_location_id, action.destination_location)
         return missing
 
     async def _compile_movement(
         self,
         *,
         campaign_id: UUID,
-        action_index: int,
         action: PlayerActionIntent,
         outcome,
-        current_location_id: UUID | None,
-        locations,
+        cursor: tuple[UUID | None, tuple[str, str | None] | None],
         by_id: dict[UUID, object],
-    ) -> tuple[ActionStepPlan, UUID | None, bool]:
-        destination = " ".join(str(action.destination_location or "").split())
+    ) -> tuple[ActionStepPlan, tuple, bool]:
+        """Compile one hop from the virtual cursor (known place, pending new place this turn)."""
         if outcome.resolution != "auto_success":
             return (
                 ActionStepPlan(
@@ -229,102 +223,46 @@ class ActionPlanCompiler:
                     blocking_reason=outcome.blocking_reason,
                     public_blocking_reason=outcome.blocking_reason,
                 ),
-                current_location_id,
+                cursor,
                 False,
             )
-        if current_location_id is None:
+        location_id, pending = cursor
+        current = by_id.get(location_id)
+        if current is None:
             return (
-                ActionStepPlan(
-                    action_type="movement",
-                    intent=action.intent,
-                    resolution="blocked",
-                    safe_mundane=False,
-                    blocking_reason="Current physical location is unavailable for route compilation.",
-                    public_blocking_reason="Не удалось определить исходное место; нужно уточнить, откуда идти.",
+                self._blocked(
+                    action,
+                    "Current physical location is unavailable for route compilation.",
+                    "Не удалось определить исходное место; нужно уточнить, откуда идти.",
                 ),
-                current_location_id,
+                cursor,
                 False,
             )
-
-        current = by_id.get(current_location_id)
-        if current is not None and self._location_matches(destination, current):
-            return (
-                ActionStepPlan(
-                    action_type="interaction",
-                    intent=action.intent,
-                    resolution="auto_success",
-                    safe_mundane=True,
-                    observable_outcome=f"Ты уже находишься здесь: {current.canonical_name}.",
-                ),
-                current_location_id,
-                False,
-            )
-
-        exits = await self._state.list_exits(
-            campaign_id,
-            current_location_id,
-            include_hidden=True,
-        )
-        matched_exits = self._matching_exits(destination, exits, by_id)
-        if len(matched_exits) > 1:
-            return (
-                ActionStepPlan(
-                    action_type="movement",
-                    intent=action.intent,
-                    resolution="blocked",
-                    safe_mundane=False,
-                    blocking_reason="Destination matches multiple existing routes from the current location.",
-                    public_blocking_reason="Туда ведёт несколько путей; нужно выбрать направление.",
-                ),
-                current_location_id,
-                False,
-            )
-        if len(matched_exits) == 1:
-            exit_row, target = matched_exits[0]
-            if target is None:
-                raise TurnPlanningError("route points to a missing target location")
-            if not exit_row.active:
-                detail = f" ({exit_row.access_rule})" if exit_row.access_rule else ""
+        target = by_id.get(action.destination_location_id)
+        if target is not None:
+            if target.id == location_id and pending is None:
                 return (
                     ActionStepPlan(
-                        action_type="movement",
+                        action_type="interaction",
                         intent=action.intent,
-                        resolution="blocked",
-                        safe_mundane=False,
-                        blocking_reason="Destination route is currently inactive" + detail,
-                        public_blocking_reason=exit_row.access_rule or "Путь туда сейчас недоступен.",
+                        resolution="auto_success",
+                        safe_mundane=True,
+                        observable_outcome=f"Ты уже находишься здесь: {current.canonical_name}.",
                     ),
-                    current_location_id,
+                    cursor,
                     False,
                 )
-            if not exit_row.discovered:
-                return (
-                    ActionStepPlan(
-                        action_type="movement",
-                        intent=action.intent,
-                        resolution="blocked",
-                        safe_mundane=False,
-                        blocking_reason="Destination exit has not been discovered.",
-                        public_blocking_reason="Путь туда пока не обнаружен.",
-                    ),
-                    current_location_id,
-                    False,
-                )
+            # A place created earlier this turn is joined only to its origin, the cursor.
+            blocker = await self._route_blocker(campaign_id, location_id, target.id)
+            if blocker is not None:
+                return self._blocked(action, *blocker), cursor, False
             transition = SceneTransitionPlan(
                 required=True,
                 transition_type="location_transition",
                 destination_location=target.canonical_name,
+                destination_location_id=target.id,
                 reason=action.intent,
-                bridge_summary=(
-                    (
-                        "DESTINATION PROFILE: "
-                        + " ".join(str(outcome.destination_profile or "").split())
-                        + "\nTRANSITION: "
-                        + (outcome.observable_outcome or action.intent)
-                    )
-                    if outcome.destination_profile
-                    else outcome.observable_outcome or action.intent
-                ),
+                bridge_summary=outcome.observable_outcome or action.intent,
             )
             return (
                 ActionStepPlan(
@@ -335,55 +273,25 @@ class ActionPlanCompiler:
                     observable_outcome=outcome.observable_outcome,
                     transition=transition,
                 ),
-                target.id,
+                (target.id, None),
                 False,
             )
 
-        global_matches = self._matching_locations(destination, locations)
-        if len(global_matches) > 1:
-            return (
-                ActionStepPlan(
-                    action_type="movement",
-                    intent=action.intent,
-                    resolution="blocked",
-                    safe_mundane=False,
-                    blocking_reason="Destination matches multiple known campaign locations.",
-                    public_blocking_reason="Этому описанию соответствуют несколько мест; нужно уточнить цель.",
-                ),
-                current_location_id,
-                False,
-            )
-        if len(global_matches) == 1:
-            # A known place with no edge from the virtual current location is a graph blocker. The
-            # compiler never invents a shortcut merely because the player named a known location.
-            return (
-                ActionStepPlan(
-                    action_type="movement",
-                    intent=action.intent,
-                    resolution="blocked",
-                    safe_mundane=False,
-                    blocking_reason="Destination is not an available exit from the current location.",
-                    public_blocking_reason="Из текущего места туда нет доступного прохода.",
-                ),
-                current_location_id,
-                False,
-            )
-
-        # An unknown endpoint may become a new route only because two independent conditions are
-        # already true: frozen human intent selected this endpoint and the outcome resolver permitted
-        # the action to auto-succeed. Execution performs one final raw-input provenance check before
-        # materializing new topology.
+        # A new place: frozen intent selected it, the resolver let it auto-succeed, and its name and
+        # containment come from the generated profile, never from the player's inflected wording.
         profile = " ".join(str(outcome.destination_profile or "").split())
-        if len(profile) < 80:
-            raise TurnPlanningError(
-                f"new destination for action {action_index} lacks a durable profile"
-            )
-        canonical_destination = display_location_name(destination) or destination
+        if len(profile) < 80 or not outcome.destination_name:
+            raise TurnPlanningError("new destination lacks a generated name and durable profile")
+        origin, origin_parent = pending or (
+            current.canonical_name,
+            getattr(by_id.get(current.parent_location_id), "canonical_name", None),
+        )
+        parent = origin if outcome.destination_within_current else origin_parent
         transition = SceneTransitionPlan(
             required=True,
             transition_type="location_transition",
-            destination_location=canonical_destination,
-            destination_parent_location=None,
+            destination_location=outcome.destination_name,
+            destination_parent_location=parent,
             reason=action.intent,
             bridge_summary=(
                 "DESTINATION PROFILE: "
@@ -392,9 +300,6 @@ class ActionPlanCompiler:
                 + (outcome.observable_outcome or action.intent)
             ),
         )
-        # The location does not have an ID until the executor creates it. A later movement in the
-        # same turn therefore cannot be safely compiled against its exits; virtual topology becomes
-        # unknown until execution materializes the new place.
         return (
             ActionStepPlan(
                 action_type="movement",
@@ -404,7 +309,7 @@ class ActionPlanCompiler:
                 observable_outcome=outcome.observable_outcome,
                 transition=transition,
             ),
-            None,
+            (location_id, (outcome.destination_name, parent)),
             True,
         )
 
@@ -447,20 +352,18 @@ class ActionPlanCompiler:
         _scene_id, state, locations = await self._world(campaign_id)
         by_id = {item.id: item for item in locations}
         outcome_by_index = self._outcome_map(contract, decision)
-        current_location_id = state.location_id
+        cursor = (state.location_id, None)
         steps: list[ActionStepPlan] = []
         discovery_steps: list[int] = []
 
         for index, action in enumerate(contract.actions):
             outcome = outcome_by_index[index]
             if action.action_type == "movement":
-                step, next_location_id, discovery = await self._compile_movement(
+                step, next_cursor, discovery = await self._compile_movement(
                     campaign_id=campaign_id,
-                    action_index=index,
                     action=action,
                     outcome=outcome,
-                    current_location_id=current_location_id,
-                    locations=locations,
+                    cursor=cursor,
                     by_id=by_id,
                 )
                 # Only a successful compiled hop advances virtual topology. A blocked hop leaves the
@@ -468,7 +371,7 @@ class ActionPlanCompiler:
                 # the executor will later record it as skipped.
                 if step.resolution == "auto_success":
                     step.transition.carry_participants = list(outcome.carry_participants)
-                    current_location_id = next_location_id
+                    cursor = next_cursor
                 if discovery and step.resolution == "auto_success":
                     discovery_steps.append(index)
             else:

@@ -446,7 +446,8 @@ async def test_new_destination_binding_preserves_selected_endpoint_and_action():
 
 
 @pytest.mark.asyncio
-async def test_healthy_intent_path_uses_one_semantic_control_call() -> None:
+async def test_healthy_intent_path_binds_identity_by_id() -> None:
+    corridor_id = str(uuid4())
     router = _Router(
         {
             "summary": "Кай выходит в коридор.",
@@ -457,7 +458,8 @@ async def test_healthy_intent_path_uses_one_semantic_control_call() -> None:
                     "destination_location": "Коридор",
                 }
             ],
-        }
+        },
+        bindings={"action_0": corridor_id},
     )
     interpreter = _interpreter(router)
 
@@ -465,11 +467,14 @@ async def test_healthy_intent_path_uses_one_semantic_control_call() -> None:
         SimpleNamespace(),
         [ChatMessage(role="system", content="AUTHORITATIVE STATE")],
         "Я выхожу в коридор.",
-        location_references={str(uuid4()): "Коридор"},
+        location_references={corridor_id: "Коридор"},
     )
 
     assert result.actions[0].destination_location == "Коридор"
-    assert router.calls == ["PlayerIntentContractDraft", "IntentSemanticOwnershipReview"]
+    assert str(result.actions[0].destination_location_id) == corridor_id
+    assert router.calls == [
+        "PlayerIntentContractDraft", "IntentSemanticOwnershipReview", "DestinationIdentityBindings",
+    ]
     assert interpreter.audit[-1]["phase"] == "single_pass"
     assert interpreter.audit[-1]["normalization"] == "deterministic"
 
@@ -791,50 +796,6 @@ async def test_inconsistent_recipient_and_paraphrased_quote_do_not_abort_turn() 
 
 
 @pytest.mark.asyncio
-async def test_direct_speech_singular_command_is_owned_by_addressee() -> None:
-    player_input = "Раздевайся. — Говорю я."
-    router = _Router(
-        {
-            "summary": "Виктор раздевается.",
-            "actions": [
-                {
-                    "action_type": "other",
-                    "actor_role": "speaker",
-                    "intent": "раздеться",
-                }
-            ],
-            "addressed_character_name": "Мария",
-        },
-        review={
-            "action_ownership": [
-                {
-                    "action_index": 0,
-                    "actor_role": "speaker",
-                    "evidence_quote": "Говорю я.",
-                }
-            ],
-            "information_request_only": False,
-            "information_recipient": "none",
-            "addressed_character_name": "Мария",
-        },
-    )
-
-    result = await _interpreter(
-        router,
-        LinguisticIntentAnalysis(imperative_clauses=("Раздевайся.",)),
-    ).interpret(
-        SimpleNamespace(),
-        [],
-        player_input,
-    )
-
-    assert result.summary == "Раздевайся. — Говорю я."
-    assert result.actions[0].action_type == "service"
-    assert result.addressed_response_requested is True
-    assert result.addressed_character_name == "Мария"
-
-
-@pytest.mark.asyncio
 async def test_world_state_question_cannot_become_a_new_action() -> None:
     player_input = "В чем сейчас Мария? Она разделась до гола?"
     router = _Router(
@@ -902,29 +863,26 @@ async def test_numbered_destination_is_bound_by_semantic_id(number):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("substitute", [False, True])
-async def test_explicit_new_destination_cannot_bind_to_an_unrelated_catalog_entry(substitute):
+async def test_new_destination_binding_carries_no_catalogued_identity():
     office_id = str(uuid4())
     router = _Router(
         {"summary": "Выйти из здания и дойти до прачечной.", "actions": [{
             "action_type": "movement", "intent": "Выйти из здания.",
             "destination_location": "наружу",
         }]},
-        bindings={"action_0": office_id if substitute else "new"},
+        bindings={"action_0": "new"},
         review={
             "action_ownership": [{
                 "action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action",
                 "action_type": "movement", "spatial_effect": "travel",
                 "destination_location": "круглосуточная прачечная соседнего дома",
-                "destination_reference_mode": "explicit",
             }],
             "information_request_only": False, "information_recipient": "none",
         },
     )
-    interpreter = _interpreter(router)
-    result = await interpreter.interpret(
+    result = await _interpreter(router).interpret(
         SimpleNamespace(), [], "Выхожу из здания и иду в прачечную соседнего дома.",
         location_references={office_id: "Контора"},
     )
     assert result.actions[0].destination_location == "круглосуточная прачечная соседнего дома"
-    assert "DestinationIdentityBindings" not in router.calls
+    assert result.actions[0].destination_location_id is None

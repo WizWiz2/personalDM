@@ -33,6 +33,8 @@ class SceneTransitionPlan(BaseModel):
         "focus_transition",
     ] = "none"
     destination_location: str | None = Field(default=None, max_length=255)
+    # Compiled identity of a known destination; the executor never re-matches it by name.
+    destination_location_id: UUID | None = None
     destination_parent_location: str | None = Field(default=None, max_length=255)
     scene_title: str | None = Field(default=None, max_length=255)
     elapsed_time: str | None = Field(default=None, max_length=255)

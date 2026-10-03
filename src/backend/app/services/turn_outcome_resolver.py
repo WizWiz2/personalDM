@@ -87,16 +87,14 @@ their personal name and response_name_evidence a short self-identification conta
 response_speaker_name as the CURRENT designation so identity binds to the same entity. Do not
 reveal or change an already established personal name. Otherwise both revelation fields null.
 For world_state_question state the existing state in observable_consequences without performing it.
-No complication without a grounded complication_source. destination_profile only enriches an explicitly
-new destination with stable public physical traits; it cannot change the route or introduce people.
+No complication without a grounded complication_source.
 """
 
 _PROFILE_PROMPT = """[NEW DESTINATION PROFILE ENRICHMENT]
-Return exactly DestinationProfilePatchSet. You receive frozen action indices and destinations that
-the deterministic compiler already identified as explicit new route-discovered places. Supply only a
-stable public physical profile for each listed index: 2-4 Russian sentences, at least 80 characters,
-ordinary purpose/appearance only. Do not change routes, actions, outcomes, NPCs or destination names.
-The patches field is required and must contain exactly one patch per requested action index.
+Return exactly DestinationProfilePatchSet, one patch per requested action index. Each request is a
+new place the player travels to from the place named in "from". Give its own nominative name, whether
+it lies inside "from", and a stable public physical profile: 2-4 Russian sentences, at least 80
+characters, ordinary purpose/appearance only. Do not change routes, actions, outcomes or NPCs.
 """
 
 _TRAVEL_PROMPT = """[ОБЫЧНОЕ ПУТЕШЕСТВИЕ: ПРОВЕРКА ФИЗИЧЕСКИХ ПРЕПЯТСТВИЙ]
@@ -218,7 +216,6 @@ class ActionOutcomeDraft(BaseModel):
     blocking_reason: str | None = None
     blocking_evidence_quote: str | None = None
     blocking_evidence_ref: str | None = None
-    destination_profile: str | None = None
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
 
 
@@ -575,7 +572,6 @@ def normalize_outcome_draft(
                 "observable_outcome": _compact(item.observable_outcome) or None,
                 "reaction": _compact(item.reaction) or None,
                 "blocking_reason": blocking_reason if resolution == "blocked" else None,
-                "destination_profile": _compact(item.destination_profile) or None,
                 # Only a real trip can carry people (ban 4); elsewhere the roster is dropped.
                 "carry_participants": list(dict.fromkeys(item.carry_participants)) if moving else [],
             }
@@ -910,7 +906,8 @@ class TurnOutcomeResolver:
         if not missing:
             return decision
         requests = [
-            {"action_index": item.action_index, "destination": item.destination} for item in missing
+            {"action_index": item.action_index, "destination": item.destination, "from": item.origin}
+            for item in missing
         ]
         try:
             response_model = _profile_wire_model(
@@ -946,18 +943,21 @@ class TurnOutcomeResolver:
             raise TurnPlanningError(f"destination profile enrichment failed: {exc}") from exc
 
         expected = {item.action_index for item in missing}
-        by_index = {item.action_index: item.profile.strip() for item in patches.patches}
+        by_index = {item.action_index: item for item in patches.patches}
         if set(by_index) != expected:
             raise TurnPlanningError(
                 "destination profile enrichment did not cover exactly the requested actions"
             )
         enriched = decision.model_copy(deep=True)
         outcomes = {item.action_index: item for item in enriched.action_outcomes}
-        for index, profile in by_index.items():
-            outcomes[index].destination_profile = profile
-        self.audit.append(
-            {"phase": "destination_profiles", "requests": requests, "patches": by_index}
-        )
+        for index, patch in by_index.items():
+            outcomes[index].destination_profile = patch.profile.strip()
+            outcomes[index].destination_name = " ".join(patch.name.split())
+            outcomes[index].destination_within_current = patch.within_current
+        self.audit.append({
+            "phase": "destination_profiles", "requests": requests,
+            "patches": {index: patch.model_dump() for index, patch in by_index.items()},
+        })
         return enriched
 
 

@@ -13,7 +13,7 @@ from app.db.tables import Campaign, Character, Entity, Item, Scene
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
-from app.services.scene_transition_executor import SceneTransitionExecutor
+from app.services.scene_transition_executor import SceneTransitionExecutor, _destination_profile
 from app.services.turn_planner import ActionSequencePlan
 
 
@@ -130,7 +130,13 @@ class ActionSequenceExecutor:
                 allow_route_discovery = False
                 require_existing_route = False
                 transition_plan = step.transition
-                if step.transition.transition_type == "location_transition":
+                compiled = step.transition.destination_location_id or _destination_profile(
+                    step.transition.bridge_summary
+                )
+                if step.transition.transition_type == "location_transition" and compiled:
+                    # Compiled identity or a profiled new place: the compiler is the route authority.
+                    allow_route_discovery = True
+                elif step.transition.transition_type == "location_transition":
                     authorization = await self._transitions.authorize_destination(
                         route_discovery_turn_id,
                         step.transition.destination_location,

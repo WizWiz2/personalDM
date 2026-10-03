@@ -34,6 +34,8 @@ class PlayerActionIntent(BaseModel):
 
     # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
+    # Bound identity of a known place; None means the player selected a new place.
+    destination_location_id: UUID | None = None
     movement_method: Literal["ordinary", "special"] = "ordinary"
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
 
@@ -52,7 +54,7 @@ class PlayerActionIntent(BaseModel):
         if self.action_type == "movement":
             if not self.destination_location:
                 raise ValueError("movement intent requires destination_location")
-        elif self.destination_location is not None:
+        elif self.destination_location is not None or self.destination_location_id is not None:
             raise ValueError("only movement intent may carry destination authority")
         if self.requested_companions and self.action_type != "movement":
             raise ValueError("only movement intent may request companions")
@@ -141,6 +143,9 @@ class ActionOutcomeDecision(BaseModel):
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
     destination_profile: str | None = Field(default=None, max_length=1200)
+    # A new place's own name and containment come from its generated profile, never player text.
+    destination_name: str | None = Field(default=None, max_length=120)
+    destination_within_current: bool = False
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
@@ -212,6 +217,8 @@ class DestinationProfilePatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action_index: int = Field(ge=0, le=7)
+    name: str = Field(min_length=2, max_length=120, description="The place's own nominative name.")
+    within_current: bool = Field(description="True if it lies inside the place the hop starts from.")
     profile: str = Field(min_length=80, max_length=1000)
 
 
