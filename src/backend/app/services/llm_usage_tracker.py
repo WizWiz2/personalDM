@@ -100,17 +100,23 @@ def _usage_parts(usage: dict[str, Any]) -> dict[str, int]:
     }
 
 
-def _aggregate_usage(telemetry: dict[str, Any]) -> tuple[dict[str, int], int]:
+def _usage_samples(telemetry: dict[str, Any]) -> list[dict[str, Any]]:
     attempts = telemetry.get("attempts")
     attempt_usages: list[dict[str, Any]] = []
     if isinstance(attempts, list):
         for attempt in attempts:
             if isinstance(attempt, dict) and isinstance(attempt.get("usage"), dict):
                 attempt_usages.append(attempt["usage"])
+    if attempt_usages:
+        return attempt_usages
+    if isinstance(telemetry.get("usage"), dict):
+        return [telemetry["usage"]]
+    return []
 
-    usages = attempt_usages or (
-        [telemetry["usage"]] if isinstance(telemetry.get("usage"), dict) else []
-    )
+
+def _aggregate_usage(telemetry: dict[str, Any]) -> tuple[dict[str, int], int]:
+    attempts = telemetry.get("attempts")
+    usages = _usage_samples(telemetry)
     totals = {
         "input_tokens": 0,
         "cached_input_tokens": 0,
@@ -162,13 +168,25 @@ async def record_provider_telemetry(telemetry: dict[str, Any] | None) -> None:
     estimated_cost_usd = None
     pricing_basis = None
     if provider_kind in {"chatgpt", "openai"}:
-        estimated_cost_usd, pricing_basis = estimate_openai_text_cost_usd(
-            model_name=model_name,
-            input_tokens=usage["input_tokens"],
-            cached_input_tokens=usage["cached_input_tokens"],
-            cache_write_tokens=usage["cache_write_tokens"],
-            output_tokens=usage["output_tokens"],
-        )
+        priced_samples: list[float] = []
+        pricing_bases: set[str] = set()
+        for sample in _usage_samples(telemetry):
+            parts = _usage_parts(sample)
+            sample_cost, sample_basis = estimate_openai_text_cost_usd(
+                model_name=model_name,
+                input_tokens=parts["input_tokens"],
+                cached_input_tokens=parts["cached_input_tokens"],
+                cache_write_tokens=parts["cache_write_tokens"],
+                output_tokens=parts["output_tokens"],
+            )
+            if sample_cost is not None:
+                priced_samples.append(sample_cost)
+            if sample_basis:
+                pricing_bases.add(sample_basis)
+        if priced_samples:
+            estimated_cost_usd = round(sum(priced_samples), 8)
+        if pricing_bases:
+            pricing_basis = ",".join(sorted(pricing_bases))
 
     event = {
         **usage,
