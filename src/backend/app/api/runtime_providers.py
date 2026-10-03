@@ -6,25 +6,31 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import get_session
 from app.models.provider_config import ProviderConfigCreate
 from app.services.campaign_service import CampaignService
+from app.services.chatgpt_auth_service import ChatGPTAuthError, ChatGPTAuthService
 from app.services.runtime_provider_service import RuntimeProviderError, RuntimeProviderService
 
 router = APIRouter(prefix="/api/runtime/providers", tags=["runtime-providers"])
 
 
 class TextProviderUpdate(BaseModel):
-    mode: str = Field(pattern="^(local|cloud)$")
+    mode: str = Field(pattern="^(local|cloud|chatgpt)$")
     base_url: str | None = None
     model: str | None = None
     api_key: str | None = None
     context_window: int | None = Field(default=None, ge=1024)
     campaign_id: UUID | None = None
+
+
+class ChatGPTSignInStart(BaseModel):
+    return_url: str | None = None
 
 
 class ImageProviderUpdate(BaseModel):
@@ -112,11 +118,74 @@ async def update_text_provider(
                         else None
                     ),
                     context_window=profile["context_window"],
+                    provider_kind=(
+                        "chatgpt" if data.mode == "chatgpt"
+                        else "openai_compatible"
+                    ),
                 ),
             )
         return service.profile()["text"]
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/chatgpt/sign-in")
+async def start_chatgpt_sign_in(data: ChatGPTSignInStart, request: Request):
+    port = request.url.port
+    if not port:
+        raise HTTPException(status_code=400, detail="Не удалось определить локальный OAuth port")
+    redirect_uri = f"http://127.0.0.1:{port}{ChatGPTAuthService.CALLBACK_PATH}"
+    try:
+        authorization_url = await asyncio.to_thread(
+            ChatGPTAuthService().start_sign_in,
+            redirect_uri=redirect_uri,
+            return_url=data.return_url,
+        )
+        return {"authorization_url": authorization_url}
+    except ChatGPTAuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/chatgpt/callback")
+async def chatgpt_callback(
+    state: str,
+    code: str | None = None,
+    client_id: str | None = None,
+    error: str | None = None,
+):
+    try:
+        return_url = await asyncio.to_thread(
+            ChatGPTAuthService().complete_sign_in,
+            state=state,
+            code=code,
+            issued_client_id=client_id,
+            error=error,
+        )
+        return RedirectResponse(return_url, status_code=303)
+    except ChatGPTAuthError as exc:
+        message = str(exc).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        return HTMLResponse(
+            "<!doctype html><meta charset='utf-8'><title>PersonalDM</title>"
+            "<body style='font-family:system-ui;padding:32px;max-width:720px'>"
+            "<h1>Не удалось подключить ChatGPT</h1>"
+            f"<p>{message}</p><p>Вернитесь в PersonalDM и попробуйте ещё раз.</p></body>",
+            status_code=400,
+        )
+
+
+@router.get("/chatgpt/models")
+async def list_chatgpt_models():
+    try:
+        models = await asyncio.to_thread(ChatGPTAuthService().list_models)
+        return {"models": models}
+    except ChatGPTAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+@router.delete("/chatgpt")
+async def disconnect_chatgpt():
+    await asyncio.to_thread(ChatGPTAuthService().disconnect)
+    return {"connected": False}
 
 
 @router.put("/image")
