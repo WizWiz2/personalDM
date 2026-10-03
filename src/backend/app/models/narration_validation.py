@@ -59,18 +59,18 @@ class GrantedBeat(BaseModel):
     evidence: str = Field(min_length=1, max_length=500)
 
     def failure(self, owner_id: object, prose: str) -> str | None:
-        """Structural check: owner ID, exact fragment, and speech inside a dialogue or quote span."""
+        """Structural check: owner ID, exact fragment, and speech overlapping a dialogue line or quote span."""
         if self.cast_id != str(owner_id):
             return f"beat cast_id {self.cast_id} is not the grant owner {owner_id}"
         evidence = self.evidence.strip()
         start = prose.find(evidence)
         if not evidence or start < 0:
             return "beat evidence is not an exact fragment of the prose"
-        middle = start + len(evidence) // 2
-        line = prose[prose.rfind("\n", 0, middle) + 1:].lstrip()
-        before = prose[:middle]
+        lines = prose[prose.rfind("\n", 0, start) + 1:start + len(evidence)].split("\n")
+        before = prose[:start]
         spoken = (
-            line.startswith(("—", "–"))
+            any(line.lstrip().startswith(("—", "–")) for line in lines)
+            or any(mark in evidence for mark in "«„\"")
             or before.count("«") > before.count("»")
             or before.count("„") > before.count("“")
             or before.count('"') % 2 == 1
