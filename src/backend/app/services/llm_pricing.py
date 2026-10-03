@@ -30,7 +30,6 @@ _OPENAI_STANDARD_RATES: dict[str, TextTokenRates] = {
     "gpt-5.6": TextTokenRates(4.0, 0.4, 5.0, 20.0, 8.0, 0.8, 10.0, 30.0),
     "gpt-5.6-terra": TextTokenRates(2.0, 0.2, 2.5, 12.0, 4.0, 0.4, 5.0, 18.0),
     "gpt-5.6-luna": TextTokenRates(0.2, 0.02, 0.25, 1.2, 0.4, 0.04, 0.5, 1.8),
-    "chat-latest": TextTokenRates(5.0, 0.5, 6.25, 30.0, 10.0, 1.0, 12.5, 45.0),
 }
 
 
