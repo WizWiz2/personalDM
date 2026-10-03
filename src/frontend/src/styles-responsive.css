@@ -11,3 +11,7 @@
   .campaign-sidebar.mobile-open{position:fixed;left:0;top:0;bottom:0;z-index:50;width:228px}
 }
 
+
+@media(max-width:960px){.quick-provider-model{display:none}.quick-provider-select{max-width:112px}.text-provider-switch{padding-left:5px;padding-right:5px}}
+@media(max-width:720px){.text-provider-switch{min-height:38px}.quick-provider-select{max-width:104px;font-size:11px}.provider-status-dot{display:none}.topbar-actions{gap:5px}}
+@media(max-width:480px){.quick-provider-select{max-width:92px}.text-provider-switch{padding-left:2px;padding-right:2px}}
