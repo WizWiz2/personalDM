@@ -701,7 +701,7 @@ class LLMProvider:
         response_model: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
         """Return one schema-validated JSON object with adaptive budget and repair."""
-        if config.provider_kind == "chatgpt":
+        if getattr(config, "provider_kind", "openai_compatible") == "chatgpt":
             return await self._generate_json_chatgpt(
                 messages,
                 config,
@@ -1036,7 +1036,7 @@ class LLMProvider:
         temperature: float | None = None,
         disable_thinking: bool = True,
     ) -> AsyncIterator[str]:
-        if config.provider_kind == "chatgpt":
+        if getattr(config, "provider_kind", "openai_compatible") == "chatgpt":
             if self._expects_json(messages):
                 payload = await self._generate_json_chatgpt(
                     messages,
