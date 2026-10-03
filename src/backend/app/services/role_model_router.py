@@ -13,6 +13,7 @@ from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
+from app.services.chatgpt_auth_service import ChatGPTAuthService
 
 
 class ModelRole(str, Enum):
@@ -137,7 +138,10 @@ class RoleModelRouter:
         )
         if primary is None:
             return None
-        primary_key = await self._config_repo.get_decrypted_key(campaign_id)
+        if primary.provider_kind == "chatgpt":
+            primary_key = await asyncio.to_thread(ChatGPTAuthService().get_access_token)
+        else:
+            primary_key = await self._config_repo.get_decrypted_key(campaign_id)
 
         explicit_model = self._model_override(role)
         if role in {
@@ -170,9 +174,15 @@ class RoleModelRouter:
         context_window = (
             settings.CONTROL_LLM_CONTEXT_WINDOW or primary.context_window
         )
+        same_endpoint = base_url.rstrip("/") == primary.base_url.rstrip("/")
+        use_chatgpt_plan = (
+            primary.provider_kind == "chatgpt"
+            and same_endpoint
+            and settings.CONTROL_LLM_API_KEY is None
+        )
         if settings.CONTROL_LLM_API_KEY is not None:
             api_key = settings.CONTROL_LLM_API_KEY
-        elif base_url.rstrip("/") == primary.base_url.rstrip("/"):
+        elif same_endpoint:
             api_key = primary_key
         else:
             api_key = None
@@ -183,6 +193,9 @@ class RoleModelRouter:
                 "model_name": model_name,
                 "context_window": context_window,
                 "has_api_key": bool(api_key),
+                "provider_kind": (
+                    "chatgpt" if use_chatgpt_plan else "openai_compatible"
+                ),
             }
         )
         strict_control = role in CONTROL_ROLES
