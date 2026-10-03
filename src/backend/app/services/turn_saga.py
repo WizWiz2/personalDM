@@ -131,7 +131,7 @@ class TurnSaga:
             + "\n\nWhat is not forbidden is allowed. Only four bans:\n"
             "1. Do not put a person physically into the scene unless they are in present_characters, "
             "allowed_new_npcs or allowed_existing_npc_arrivals. Mentioning anyone else is fine.\n"
-            "2. Do not contradict established_state or executed_steps.\n"
+            "2. Do not contradict established_state, scene_time or executed_steps.\n"
             "3. Do not write the player character's speech, decisions, thoughts, feelings or "
             "voluntary actions beyond player_input.\n"
             "4. Do not move anyone to another place without a typed trip "

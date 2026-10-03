@@ -297,6 +297,7 @@ class TurnAuthorityService:
             transition_type=transition_type,
             source_location_path=(list(source_state.location_path) if source_state else []),
             target_location_path=(list(target_state.location_path) if target_state else []),
+            scene_time=getattr(target_state, "world_time_label", None),
             present_character_names=present_names,
             known_absent_character_names=absent_names,
             allowed_new_npcs=npc_resolution.new_introductions,

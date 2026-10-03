@@ -50,7 +50,7 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    touched or seen here) but is not in present_characters, allowed_new_npcs or
    allowed_existing_npc_arrivals. MENTIONING someone who is not here is allowed: names in
    dialogue, memories, rumours, people somewhere else.
-2. canon_conflict: prose denies or overwrites an established_state entry or the result of an
+2. canon_conflict: prose denies or overwrites an established_state entry, scene_time or the result of an
    executed step (a completed step happened, a blocked step did not).
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or
    voluntary actions beyond player_input. Rendering player_input itself, its result, and what the

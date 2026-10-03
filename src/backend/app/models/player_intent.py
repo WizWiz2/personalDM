@@ -96,6 +96,8 @@ class PlayerIntentContract(BaseModel):
     # Player-agency boundaries that remain unresolved after this input.
     pending_player_choice: str | None = Field(default=None, max_length=1000)
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
+    # The moment the player skips to before acting; the compiler moves the scene clock to it.
+    time_advance: str | None = Field(default=None, max_length=80)
 
     @model_validator(mode="after")
     def validate_response_target(self):

@@ -63,6 +63,7 @@ class TurnAuthority(BaseModel):
     transition_type: str = "none"
     source_location_path: list[str] = Field(default_factory=list)
     target_location_path: list[str] = Field(default_factory=list)
+    scene_time: str | None = None
 
     present_character_names: list[str] = Field(default_factory=list)
     known_absent_character_names: list[str] = Field(default_factory=list)
@@ -211,6 +212,7 @@ class TurnAuthority(BaseModel):
             "allowed_existing_npc_arrivals": self.allowed_existing_npc_arrival_names,
             "known_absent_characters": self.known_absent_character_names,
             "established_state": self.established_state,
+            "scene_time": self.scene_time,
             "executed_steps": self.executed_steps(),
             "scene_disposition": self.scene_disposition,
             "transition_type": self.transition_type,

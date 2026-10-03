@@ -256,3 +256,23 @@ async def test_unknown_explicit_destination_becomes_one_route_discovery_step() -
     # A hop after a place created this turn compiles from it instead of losing the origin.
     assert back.resolution == "auto_success"
     assert back.transition.destination_location_id == ROOM
+
+
+@pytest.mark.asyncio
+async def test_typed_time_advance_moves_the_scene_clock_with_the_first_act() -> None:
+    compiler = _Compiler(
+        [_location(ROOM, "Комната"), _location(CORRIDOR, "Коридор")],
+        {ROOM: [_exit(ROOM, CORRIDOR, "Коридор")]},
+    )
+    trip = PlayerIntentContract(
+        summary="Утром выхожу в коридор.", actions=[_move("Коридор", CORRIDOR)], time_advance="утром",
+    )
+    plan = await compiler.compile(CAMPAIGN, trip, TurnOutcomeDecision(action_outcomes=[_success(0)]))
+    assert plan.action_sequence.steps[0].transition.time_after == "утром"
+    look = PlayerIntentContract(
+        summary="Утром осматриваю стол.", time_advance="утром",
+        actions=[PlayerActionIntent(action_type="observation", intent="Осмотреть стол.")],
+    )
+    plan = await compiler.compile(CAMPAIGN, look, TurnOutcomeDecision(action_outcomes=[_success(0)]))
+    transition = plan.action_sequence.steps[0].transition
+    assert (transition.transition_type, transition.time_after) == ("time_transition", "утром")

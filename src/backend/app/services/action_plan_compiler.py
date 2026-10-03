@@ -397,6 +397,19 @@ class ActionPlanCompiler:
                 step = self._compile_nonmovement(action, outcome)
             steps.append(step)
 
+        first = next((step for step in steps if step.resolution == "auto_success"), None)
+        if contract.time_advance and first is not None and not any(
+            step.transition.elapsed_time or step.transition.time_after for step in steps
+        ):
+            # A typed skip ahead moves the scene clock with the first act that happens.
+            if first.transition.required:
+                first.transition.time_after = contract.time_advance
+            else:
+                first.transition = SceneTransitionPlan(
+                    required=True, transition_type="time_transition",
+                    time_after=contract.time_advance, reason=first.intent,
+                )
+
         introductions = [
             PlannedNpcIntroduction(
                 canonical_name=item.canonical_name,

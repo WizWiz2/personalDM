@@ -118,6 +118,10 @@ class PlayerIntentContractDraft(BaseModel):
     world_state_question: bool = False
     pending_player_choice: str | None = None
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
+    time_advance: str | None = Field(
+        default=None, max_length=80,
+        description="The later moment the player skips to before acting (утром, до утра), else null.",
+    )
 
 
 class _ActionWire(BaseModel):
@@ -173,6 +177,7 @@ class _IntentWire(PlayerIntentContractDraft):
                 "summary", "actions", "protected_player_decisions",
                 "addressed_response_requested", "addressed_character_name",
                 "identity_reveal_requested", "information_request_only", "world_state_question",
+                "time_advance",
             ],
         },
     )
@@ -614,6 +619,7 @@ def normalize_intent_draft(
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
             "world_state_question": bool(draft.world_state_question),
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
+            "time_advance": _compact(draft.time_advance) or None,
             "protected_player_decisions": [
                 value for raw in draft.protected_player_decisions if (value := _compact(raw))
             ],
