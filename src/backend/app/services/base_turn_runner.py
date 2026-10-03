@@ -17,11 +17,6 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.initial_world_state import InitialWorldStateService
-from app.services.llm_usage_tracker import (
-    record_provider_telemetry,
-    reset_usage_context,
-    set_usage_context,
-)
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.scene_transition_executor import (
     AppliedSceneTransition,
@@ -187,7 +182,6 @@ class TurnRunner:
         turn_create: TurnCreate,
         existing_user_turn_id: UUID | None = None,
     ) -> AsyncIterator[str]:
-        usage_context_token = None
         owns_user_turn = existing_user_turn_id is None
         if existing_user_turn_id:
             user_turn = await self._turn_repo.get_by_id(existing_user_turn_id)
@@ -240,12 +234,6 @@ class TurnRunner:
             return
         config = narrator_selection.config
         api_key = narrator_selection.api_key
-        usage_context_token = set_usage_context(
-            campaign_id=campaign_id,
-            user_turn_id=user_turn.id,
-            generation_run_id=generation_run.id,
-            bind=self._session.bind,
-        )
 
         from app.services.context_compiler import ContextCompiler
 
@@ -456,7 +444,6 @@ class TurnRunner:
                         attempt_text,
                     )
                     self._annotate_model_role(narrator_selection)
-                    await record_provider_telemetry(self._llm_provider.last_telemetry)
                     attempt_telemetry.append(
                         dict(self._llm_provider.last_telemetry or {})
                     )
@@ -469,7 +456,6 @@ class TurnRunner:
                         partial,
                     )
                     self._annotate_model_role(narrator_selection)
-                    await record_provider_telemetry(self._llm_provider.last_telemetry)
                     attempt_telemetry.append(
                         dict(self._llm_provider.last_telemetry or {})
                     )
@@ -496,7 +482,6 @@ class TurnRunner:
                         continue
                 except LLMProviderError as exc:
                     self._annotate_model_role(narrator_selection)
-                    await record_provider_telemetry(self._llm_provider.last_telemetry)
                     attempt_telemetry.append(
                         dict(self._llm_provider.last_telemetry or {})
                     )
@@ -647,8 +632,6 @@ class TurnRunner:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
-            if usage_context_token is not None:
-                reset_usage_context(usage_context_token)
             if (
                 campaign_key in active_tasks
                 and active_tasks[campaign_key] == current_task
