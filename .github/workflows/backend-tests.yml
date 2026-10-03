@@ -81,9 +81,9 @@ jobs:
         working-directory: src/backend
         run: pytest -q tests/test_provider_and_scribe.py --tb=short
 
-      - name: Test provider resilience
+      - name: Test provider resilience and usage accounting
         working-directory: src/backend
-        run: pytest -q tests/test_llm_provider_resilience.py tests/test_chatgpt_plan_provider.py --tb=short
+        run: pytest -q tests/test_llm_provider_resilience.py tests/test_chatgpt_plan_provider.py tests/test_llm_usage_tracking.py --tb=short
 
       - name: Test Scribe alias resolution
         working-directory: src/backend
