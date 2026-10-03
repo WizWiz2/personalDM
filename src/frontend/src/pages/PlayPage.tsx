@@ -53,7 +53,7 @@ function usageBreakdownTitle(usage: TurnUsageSummary): string {
       const cost = item.estimated_cost_usd == null
         ? ''
         : ` · ≈${formatUsageCost(item.estimated_cost_usd)}`
-      return `${item.role}: ${formatTokenCount(item.total_tokens)} токенов · ${item.calls} выз.\${cost}`
+      return `${item.role}: ${formatTokenCount(item.total_tokens)} токенов · ${item.calls} выз.${cost}`
     })
   const cache = usage.cached_input_tokens
     ? `Cached input: ${formatTokenCount(usage.cached_input_tokens)} токенов.`
