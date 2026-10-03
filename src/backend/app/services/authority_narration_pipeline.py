@@ -177,6 +177,12 @@ class AuthorityNarrationPipeline:
                     "continuation_characters": len(continuation),
                 },
             }
+        except LLMProviderError:
+            await self._record_narrator_usage(
+                selection,
+                dict(self._provider.last_telemetry or {}),
+            )
+            raise
 
         text = "".join(chunks).strip()
         if not text:
