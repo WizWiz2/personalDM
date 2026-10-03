@@ -58,8 +58,9 @@ class GrantedBeat(BaseModel):
     kind: Literal["speech", "refusal", "leave", "act"]
     evidence: str = Field(min_length=1)
 
-    def failure(self, owner_id: object, prose: str) -> str | None:
-        """Structural check: owner ID, exact fragment, and speech overlapping a dialogue line or quote span."""
+    def failure(self, owner_id: object, owner_name: str, prose: str) -> str | None:
+        """Structural check: owner ID, exact fragment; speech overlaps a dialogue line or quote span,
+        an act or leave has the owner as grammatical subject (a refusal may be either)."""
         if self.cast_id != str(owner_id):
             return f"beat cast_id {self.cast_id} is not the grant owner {owner_id}"
         evidence = self.evidence.strip()
@@ -75,8 +76,12 @@ class GrantedBeat(BaseModel):
             or before.count("„") > before.count("“")
             or before.count('"') % 2 == 1
         )
-        if self.kind in {"speech", "refusal"} and not spoken:
-            return f"{self.kind} evidence is outside any dialogue line or quote"
+        if self.kind == "speech" or (spoken and self.kind == "refusal"):
+            return None if spoken else "speech evidence is outside any dialogue line or quote"
+        from app.services.linguistic_intent_analyzer import LinguisticIntentAnalyzer
+
+        if not LinguisticIntentAnalyzer().subject_is(prose, evidence, owner_name):
+            return f"{self.kind} evidence does not have {owner_name} as its grammatical subject"
         return None
 
 

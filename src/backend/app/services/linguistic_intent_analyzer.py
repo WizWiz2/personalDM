@@ -98,6 +98,36 @@ class LinguisticIntentAnalyzer:
         # This is syntax punctuation supplied by the user, not a vocabulary heuristic.
         return any(token.is_punct and token.text == "?" for token in sentence)
 
+    @staticmethod
+    def _name_lemmas(token: Any) -> set[str]:
+        return {token.lemma_} | {
+            child.lemma_ for child in token.children if child.dep_ in {"flat", "flat:name", "appos"}
+        }
+
+    def subject_is(self, prose: str, evidence: str, name: str) -> bool:
+        """Whether a predicate inside ``evidence`` has the named person as its grammatical subject.
+
+        A pronoun subject, or a predicate with no expressed subject, takes the last nominal
+        subject seen from the sentence before the span onward.
+        """
+        doc = self.pipeline(prose)
+        start = prose.find(evidence)
+        span = doc.char_span(start, start + len(evidence), alignment_mode="expand")
+        if start < 0 or span is None:
+            return False
+        owner = self._name_lemmas(next(iter(self.pipeline(name).sents)).root)
+        first = span[0].sent.start
+        subject: set[str] = set()
+        for token in doc[doc[first - 1].sent.start if first else first : span.end]:
+            if token.pos_ not in {"VERB", "AUX"} or token.dep_ not in {"ROOT", "conj"}:
+                continue
+            nominal = next((c for c in token.children if c.dep_.startswith("nsubj")), None)
+            if nominal is not None and nominal.pos_ != "PRON":
+                subject = self._name_lemmas(nominal)
+            if token.i >= span.start and subject & owner:
+                return True
+        return False
+
     def analyze(
         self,
         player_input: str,

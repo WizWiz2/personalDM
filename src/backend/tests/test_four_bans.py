@@ -120,16 +120,22 @@ def test_beat_grant_is_checked_structurally_against_owner_and_dialogue_span():
     assert authority.narrator_payload()["beat_owner"] == {"id": str(owner), "name": "Дежурный"}
     prose = "Дежурный встаёт из-за стола.\n" + DIALOGUE
 
-    def beat(kind, evidence, cast_id=str(owner)):
-        return GrantedBeat(cast_id=cast_id, kind=kind, evidence=evidence).failure(owner, prose)
+    def beat(kind, evidence, cast_id=str(owner), text=prose, name="Дежурный"):
+        return GrantedBeat(cast_id=cast_id, kind=kind, evidence=evidence).failure(owner, name, text)
 
     assert beat("speech", "Ступай") is None
     assert beat("refusal", "Не знаю я никакого Шептуна") is None
-    assert beat("act", "Дежурный встаёт из-за стола") is None
     assert "outside" in beat("speech", "Дежурный встаёт из-за стола")
     assert beat("speech", prose) is None  # a multi-paragraph fragment that overlaps a dialogue line
     assert "exact fragment" in beat("act", "уходит прочь")
     assert "grant owner" in beat("speech", "Ступай", cast_id=str(uuid4()))
+    # An act or leave needs the owner as grammatical subject (dependency parse, not words).
+    coin = "Серебряный полтинник ложится на стойку перед Фёдором Андреевичем."
+    host = "Фёдор Андреевич Климов"
+    assert "subject" in beat("act", coin, text=coin, name=host)
+    assert beat("act", "Фёдор Андреевич убирает монету.", text="Фёдор Андреевич убирает монету.", name=host) is None
+    told = "Климов выслушал. Затем кивнул и вышел за дверь."
+    assert beat("leave", "Затем кивнул и вышел за дверь.", text=told, name=host) is None
     assert "Бит принадлежит Дежурный" in TurnAuthorityValidator.repair_prompt(
         authority, prose, None, "no beat returned"
     )

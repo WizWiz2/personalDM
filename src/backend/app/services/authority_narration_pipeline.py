@@ -215,7 +215,7 @@ class AuthorityNarrationPipeline:
     def _beat_failure(authority: TurnAuthority, prose: str, beat: GrantedBeat | None) -> str | None:
         if authority.beat_owner_id is None:
             return None
-        failure = beat.failure(authority.beat_owner_id, prose) if beat else "no beat returned"
+        failure = beat.failure(authority.beat_owner_id, authority.beat_owner_name, prose) if beat else "no beat returned"
         record_decision("beat", "unhonored" if failure else "honored", {
             "owner": authority.beat_owner_name, "owner_id": str(authority.beat_owner_id),
             **(beat.model_dump() if beat else {}), "failure": failure,
