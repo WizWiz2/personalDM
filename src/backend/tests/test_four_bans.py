@@ -73,7 +73,7 @@ class _Router:
         return SimpleNamespace(config=SimpleNamespace(model_name="control"), source="test")
 
     async def generate_json(self, _provider, _selection, messages, **kwargs):
-        assert kwargs["response_model"] is NarrationValidationResult
+        assert issubclass(kwargs["response_model"], NarrationValidationResult)
         self.calls.append(messages)
         return self.verdicts.pop(0)
 
@@ -112,6 +112,26 @@ async def test_one_validator_call_per_narration():
     assert result.verdict == "pass"
     assert len(router.calls) == 1
     assert DIALOGUE in router.calls[0][-1].content
+
+
+@pytest.mark.asyncio
+async def test_beat_grant_is_honored_only_by_an_exact_owner_fragment():
+    owner = uuid4()
+    authority = _authority(beat_owner_id=owner, beat_owner_name="Дежурный")
+    assert authority.narrator_payload()["beat_owner"] == {"id": str(owner), "name": "Дежурный"}
+    honored = {**_verdict(), "beat_owner_turn": {"form": "dialogue", "evidence": "Ступай"}}
+    invented = {**_verdict(), "beat_owner_turn": {"form": "action", "evidence": "уходит прочь"}}
+    silent = {**_verdict(), "beat_owner_turn": {"form": "none", "evidence": ""}}
+    router = _Router(honored, invented, silent)
+    validator = TurnAuthorityValidator(router)
+    selection = SimpleNamespace(config=SimpleNamespace(model_name="control"))
+    results = [await validator.validate(selection, authority, DIALOGUE) for _ in range(3)]
+    assert [validator.beat_unhonored(authority, item, DIALOGUE) for item in results] == [
+        False, True, True,
+    ]
+    assert "[BEAT OWNER] Дежурный" in router.calls[0][-1].content
+    assert "Этот бит принадлежит Дежурный" in validator.repair_prompt(authority, DIALOGUE, results[2])
+    assert not validator.beat_unhonored(_authority(), results[2], DIALOGUE)
 
 
 def test_validated_dialogue_with_dashes_is_published_verbatim():

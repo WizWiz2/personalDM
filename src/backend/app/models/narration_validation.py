@@ -49,12 +49,22 @@ class NarrationViolation(BaseModel):
         }
 
 
+class BeatOwnerTurn(BaseModel):
+    """How the granted cast member took the beat, with the exact candidate fragment."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    form: Literal["dialogue", "action", "none"]
+    evidence: str = Field(default="", max_length=500)
+
+
 class NarrationValidationResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     verdict: Literal["pass", "repair_required"]
     summary: str = Field(default="", max_length=1500)
     violations: list[NarrationViolation] = Field(default_factory=list, max_length=12)
+    beat_owner_turn: BeatOwnerTurn | None = None
 
     def trace(self, candidate: str) -> dict:
         """Compact decision payload: the verdict, every violation and a short candidate head."""

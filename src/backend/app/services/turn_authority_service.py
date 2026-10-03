@@ -505,6 +505,22 @@ class TurnAuthorityService:
                 if speaker:
                     authority.addressed_response_obligation = speaker
 
+        if plan and plan.addressed_response_requested:
+            # The addressed beat belongs to the bound listener (/talk or obligation), else to the
+            # sole present NPC. Typed cast identity only; the narration check verifies it acted.
+            present_npcs = [
+                entity for entity in all_characters
+                if identity_key(entity.canonical_name) in present_keys
+                and entity.id != authority.player_character_id
+            ]
+            owner = next(
+                (entity for entity in present_npcs if entity.id == authority.acting_character_id),
+                present_npcs[0] if len(present_npcs) == 1 else None,
+            )
+            if owner is not None:
+                authority.beat_owner_id = owner.id
+                authority.beat_owner_name = owner.canonical_name
+
         lines = await established_state_lines(
             self._session,
             campaign_id,

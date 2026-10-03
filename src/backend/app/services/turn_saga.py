@@ -137,8 +137,8 @@ class TurnSaga:
             "4. Do not move anyone to another place without a typed trip "
             "(scene_disposition/transition_type). Moving inside the current place is fine.\n"
             "Present characters may speak, answer, refuse, stay silent or act; none of it is "
-            "required. player_addressed only says whom the player spoke to. Everything else in the "
-            "facts is optional context.\n\n"
+            "required, except that beat_owner, when set, takes this beat itself: it may speak, "
+            "refuse, leave or act. Everything else in the facts is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose, usually 2-3 paragraphs, "
             "and stop before the player's next choice."
         )

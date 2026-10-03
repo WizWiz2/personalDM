@@ -354,7 +354,7 @@ class AuthorityNarrationPipeline:
         }
         try:
             result = await self._check(**check, candidate=draft, attempt_index=0)
-            if result.verdict == "pass":
+            if result.verdict == "pass" and not validator.beat_unhonored(authority, result, draft):
                 return await accepted(draft, "passed", 0)
 
             record_decision(

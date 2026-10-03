@@ -75,6 +75,9 @@ class TurnAuthority(BaseModel):
     # Present-cast NPC that must receive a speak/refuse/deflect/gesture opportunity.
     addressed_response_obligation: str | None = None
     addressed_response: AddressedResponse | None = None
+    # Typed grant: the addressed present cast member owns this beat (speak, refuse, leave or act).
+    beat_owner_id: UUID | None = None
+    beat_owner_name: str | None = None
     dramatic_mode: str = "calm"
     observable_consequences: list[str] = Field(default_factory=list)
     character_beats: list[str] = Field(default_factory=list)
@@ -229,6 +232,10 @@ class TurnAuthority(BaseModel):
             ],
             "player_addressed": self.addressed_response_obligation
             or (self.addressed_response.speaker_name if self.addressed_response else None),
+            "beat_owner": (
+                {"id": str(self.beat_owner_id), "name": self.beat_owner_name}
+                if self.beat_owner_id else None
+            ),
             "name_revealed": (
                 {
                     "character": self.addressed_response.speaker_name,
