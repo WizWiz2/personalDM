@@ -343,3 +343,56 @@ def test_observation_can_report_newly_discovered_negative_result_without_context
     assert parsed.action_outcomes[0].blocking_evidence_quote is None
 
 
+
+
+@pytest.mark.asyncio
+async def test_contact_seeking_without_introduction_resolves_with_nobody_appearing() -> None:
+    """Regression (B playtest turn 4): alone in a new place, asking for Степан, the planner
+    introduces nobody. The turn must resolve (nobody appears), not fail closed."""
+    from types import SimpleNamespace
+
+    from app.models.turn import ChatMessage
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    class _Router:
+        def __init__(self):
+            self.calls = []
+
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            del provider, selection, kwargs
+            self.calls.append(messages[-1].content)
+            return {
+                "action_outcomes": [{
+                    "action_index": 0,
+                    "resolution": "auto_success",
+                    "observable_outcome": "Кай приходит в слободу и спрашивает о Степане.",
+                }],
+                "npc_introductions": [],
+                "response_speaker_name": "Степан",
+                "observable_consequences": ["Степана поблизости не видно."],
+            }
+
+    contract = PlayerIntentContract.model_validate({
+        "summary": "Иду в трактирную слободу и ищу Степана, чтобы поговорить.",
+        "actions": [{
+            "action_type": "movement",
+            "intent": "Пойти в трактирную слободу.",
+            "destination_location": "Трактирная слобода",
+        }],
+        "addressed_response_requested": True,
+        "addressed_character_name": "Степан",
+    })
+    context = [ChatMessage(role="system", content="Physically present characters: Кай")]
+    router = _Router()
+
+    decision = await TurnOutcomeResolver(router).resolve(
+        SimpleNamespace(), context, "Иду в слободу, хочу поговорить со Степаном.", contract,
+        force_introduce_contact=True,
+    )
+
+    assert decision.npc_introductions == []
+    assert decision.action_outcomes[0].resolution == "auto_success"
+    assert "Степана поблизости не видно." in decision.observable_consequences
+    # Guidance is optional and offered once; there is no forced re-ask.
+    assert len(router.calls) == 1
+    assert "CONTACT-SEEKING" in router.calls[0]

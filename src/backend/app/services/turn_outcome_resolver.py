@@ -36,7 +36,10 @@ from app.services.planning_context import outcome_reference_context
 from app.services.player_intent_contract import contains_cjk
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
-from app.services.turn_authority_resolvers import NpcIntroductionResolver
+from app.services.turn_authority_resolvers import (
+    AuthorityResolutionError,
+    NpcIntroductionResolver,
+)
 from app.services.turn_planner import TurnPlanningError
 
 _OUTCOME_PROMPT = """[FROZEN INTENT OUTCOME RESOLVER]
@@ -65,9 +68,9 @@ Only physically present people may respond. Existing identities must never be re
 or moved from another scene. A question about a present person's name creates no NPC. A genuinely new
 encounter needs a typed npc_introductions entry before anyone speaks/appears: short grounded role,
 concrete description/appearance, temporary_name=true; stable names require personal_name_evidence.
-Travel/inventory/wait without contact normally introduce nobody. Contact-seeking needs a concrete
-response; if the physical cast is player-only and a responder is needed, introduce a grounded local
-person, not an absent known character. No atmosphere-only filler or untyped new people.
+Travel/inventory/wait without contact normally introduce nobody. For contact-seeking with a
+player-only cast you may introduce a grounded local person (never an absent known character); finding
+nobody is also a valid result. Anyone who appears must be typed in npc_introductions.
 
 For actions=[] supply at least one short concrete external result in observable_consequences.
 Never write NPC lines or answers: what present characters say is left to the narrator.
@@ -133,12 +136,11 @@ def _travel_wire_model(action_count: int, *, evidence: str = ""):
                     f"travel obstacles must cover exactly indices {list(range(action_count))}"
                 )
             for item in self.obstacles:
-                if (item.blocking_reason or "").strip():
-                    quote = (item.evidence_quote or "").strip()
-                    if not quote or quote not in evidence:
-                        raise ValueError(
-                            "travel blocker lacks a verbatim world/input evidence quote"
-                        )
+                quote = (item.evidence_quote or "").strip()
+                if (item.blocking_reason or "").strip() and (not quote or quote not in evidence):
+                    # An ungrounded blocker has no authority: the trip simply proceeds.
+                    item.blocking_reason = None
+                    item.evidence_quote = None
             return self
 
     return OrdinaryTravelObstacles
@@ -569,11 +571,7 @@ def normalize_outcome_draft(
 
     action_outcomes: list[dict[str, Any]] = []
     for item in draft.action_outcomes:
-        if (
-            item.carry_participants
-            and contract.actions[item.action_index].action_type != "movement"
-        ):
-            raise TurnPlanningError("only movement outcomes may carry participants")
+        moving = contract.actions[item.action_index].action_type == "movement"
         resolution = _compact(item.resolution).casefold()
         if resolution not in _ACTION_RESOLUTIONS:
             raise TurnPlanningError(
@@ -593,25 +591,23 @@ def normalize_outcome_draft(
                 "reaction": _compact(item.reaction) or None,
                 "blocking_reason": blocking_reason if resolution == "blocked" else None,
                 "destination_profile": _compact(item.destination_profile) or None,
-                "carry_participants": list(dict.fromkeys(item.carry_participants)),
+                # Only a real trip can carry people (ban 4); elsewhere the roster is dropped.
+                "carry_participants": list(dict.fromkeys(item.carry_participants)) if moving else [],
             }
         )
 
     introductions: list[dict[str, Any]] = []
-    for index, npc in enumerate(draft.npc_introductions):
+    for npc in draft.npc_introductions:
         canonical_name = _compact(npc.canonical_name)
         role = _compact(npc.role)
         description = _compact(npc.description)
         appearance = _compact(npc.appearance)
         reason = _compact(npc.reason)
-        if not canonical_name or not role:
-            raise TurnPlanningError(f"NPC introduction {index} is missing designation or role")
+        # An incomplete introduction is dropped: nobody appears (ban 1), the turn proceeds.
+        if not canonical_name or not role or not reason:
+            continue
         if len(description) < 32 or len(appearance) < 32:
-            raise TurnPlanningError(
-                f"NPC introduction {index} lacks a concrete description/appearance"
-            )
-        if not reason:
-            raise TurnPlanningError(f"NPC introduction {index} is missing appearance reason")
+            continue
         evidence = _compact(npc.personal_name_evidence) or None
         # Missing evidence cannot promote a personal identity. Downgrading to a temporary role is
         # conservative and preserves the person without inventing stable canon.
@@ -620,9 +616,7 @@ def normalize_outcome_draft(
             canonical_name, role=role, description=description
         ) or not is_usable_short_designation(canonical_name):
             if not is_usable_short_designation(role):
-                raise TurnPlanningError(
-                    f"NPC introduction {index} uses description-as-name without a short role"
-                )
+                continue
             canonical_name = role[0].upper() + role[1:]
             temporary_name = True
             evidence = None
@@ -747,16 +741,9 @@ class TurnOutcomeResolver:
         )
         draft = wire.model_validate(data)
         outcomes = []
-        evidence = context + "\n" + player_input
+        # The wire already dropped ungrounded blockers and pinned exact action coverage.
         for obstacle in draft.obstacles:
             reason = (obstacle.blocking_reason or "").strip()
-            quote = (obstacle.evidence_quote or "").strip()
-            if reason and (not quote or quote not in evidence):
-                raise TurnPlanningError(
-                    "travel blocker lacks a verbatim world/input evidence quote"
-                )
-            if obstacle.action_index >= len(contract.actions):
-                raise TurnPlanningError("travel obstacle refers to an unknown action")
             action = contract.actions[obstacle.action_index]
             outcomes.append(
                 ActionOutcomeDecision(
@@ -770,7 +757,6 @@ class TurnOutcomeResolver:
                 )
             )
         decision = TurnOutcomeDecision(action_outcomes=outcomes, resolution="sequence")
-        self._validate_coverage(contract, decision)
         self.audit.append(
             {
                 "phase": "ordinary_travel",
@@ -781,19 +767,6 @@ class TurnOutcomeResolver:
         return decision
 
     @staticmethod
-    def _validate_coverage(
-        contract: PlayerIntentContract,
-        decision: TurnOutcomeDecision,
-    ) -> None:
-        expected = set(range(len(contract.actions)))
-        got = [item.action_index for item in decision.action_outcomes]
-        if len(got) != len(set(got)) or set(got) != expected:
-            raise TurnPlanningError(
-                "outcome resolver did not preserve frozen action coverage; "
-                f"expected={sorted(expected)} got={sorted(got)}"
-            )
-
-    @staticmethod
     def _normalize_temporary_identities(decision: TurnOutcomeDecision) -> TurnOutcomeDecision:
         """A temporary role cannot smuggle an unsupported personal label into entity identity."""
         normalized = decision.model_copy(deep=True)
@@ -801,29 +774,18 @@ class TurnOutcomeResolver:
             introduction.identity_reference = (
                 introduction.identity_reference or introduction.canonical_name
             )
-        normalized.npc_introductions = NpcIntroductionResolver.sanitize_introductions(
-            normalized.npc_introductions
-        )
+        kept, used = [], set()
+        for introduction in normalized.npc_introductions:
+            try:
+                [clean] = NpcIntroductionResolver.sanitize_introductions(
+                    [introduction], occupied_canonical_keys=used
+                )
+            except AuthorityResolutionError:
+                continue  # unusable identity: this person does not appear (ban 1)
+            used.add(identity_key(clean.canonical_name))
+            kept.append(clean)
+        normalized.npc_introductions = kept
         return normalized
-
-    @staticmethod
-    def _requires_contact_introduction(
-        contract: PlayerIntentContract,
-        context_messages: list[ChatMessage],
-        decision: TurnOutcomeDecision,
-        *,
-        force_introduce_contact: bool = False,
-    ) -> bool:
-        """Contact-seeking with a player-only allowlist must type a new local person.
-
-        Director ``force_introduce_contact`` (seek + empty companion cast) uses the same
-        recovery path even when addressed_response_requested was not frozen.
-        """
-        if decision.npc_introductions:
-            return False
-        if not (force_introduce_contact or contract.addressed_response_requested):
-            return False
-        return len(present_character_names(context_messages)) <= 1
 
     async def resolve(
         self,
@@ -893,17 +855,15 @@ class TurnOutcomeResolver:
             }
             empty_cast_guidance = ""
             if (solo_cast and seeks_contact_or_presence(contract)) or force_introduce_contact:
+                # Optional guidance only: a search that finds nobody is a valid outcome.
                 empty_cast_guidance = (
-                    "\n[EMPTY CAST / CONTACT-SEEKING]\n"
+                    "\n[EMPTY CAST / CONTACT-SEEKING — guidance]\n"
                     "The authoritative scene currently has no other physically present people. "
-                    "Do not resolve this as atmosphere-only filler. Prefer either (1) a complete "
-                    "grounded npc_introductions entry for a newly encountered local person with a "
-                    "role (temporary_name=true unless the human already supplied a personal name), "
-                    "or (2) a concrete observable consequence / character beat / complication such "
-                    "as an explicit no-contact result, a discovered obstacle, or another plot beat. "
-                    "Inventing people only in prose is banned; typed introductions are required for "
-                    "anyone who answers or appears. «Ничего не происходит» is not an acceptable "
-                    "control outcome here."
+                    "The human seeks contact: you may add one complete grounded npc_introductions "
+                    "entry for a local person who is found now (short role, temporary_name=true "
+                    "unless the human supplied a personal name). If nobody is found, resolve the "
+                    "search with nobody appearing and say so in observable_consequences. Anyone "
+                    "who answers or appears must be typed in npc_introductions."
                 )
             data = await self._router.generate_json(
                 self._provider,
@@ -937,64 +897,7 @@ class TurnOutcomeResolver:
             )
             draft = response_model.model_validate(data)
             decision = normalize_outcome_draft(draft, contract)
-            self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
-            if self._requires_contact_introduction(
-                contract,
-                context_messages,
-                decision,
-                force_introduce_contact=force_introduce_contact,
-            ):
-                # One forced re-resolve: models often choose empty-room for seeking turns.
-                force = (
-                    "\n\n[CONTACT COMMITMENT]\n"
-                    "The human seeks or addresses local people and the physical presence "
-                    "allowlist is player-only. Empty npc_introductions is invalid. Return at "
-                    "least one complete npc_introductions entry for a grounded local person "
-                    "who becomes present now, with role/description/appearance/reason."
-                )
-                data = await self._router.generate_json(
-                    self._provider,
-                    selection,
-                    [
-                        ChatMessage(
-                            role="system",
-                            content=_OUTCOME_PROMPT
-                            + "\n\n[OUTPUT JSON SCHEMA]\n"
-                            + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
-                        ),
-                        ChatMessage(
-                            role="user",
-                            content=(
-                                "[AUTHORITATIVE CONTEXT]\n"
-                                + _indexed_evidence(authoritative_context)
-                                + "\n\n[LATEST HUMAN INPUT — evidence only, actions are frozen below]\n"
-                                + player_input
-                                + "\n\n[PLAYER INTENT CONTRACT — immutable]\n"
-                                + contract.model_dump_json()
-                                + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
-                                + json.dumps(response_contract, ensure_ascii=False)
-                                + force
-                            ),
-                        ),
-                    ],
-                    max_tokens=1200,
-                    temperature=0.0,
-                    response_model=response_model,
-                )
-                draft = response_model.model_validate(data)
-                decision = normalize_outcome_draft(draft, contract)
-                self._validate_coverage(contract, decision)
-                decision = self._normalize_temporary_identities(decision)
-                if self._requires_contact_introduction(
-                    contract,
-                    context_messages,
-                    decision,
-                    force_introduce_contact=force_introduce_contact,
-                ):
-                    raise TurnPlanningError(
-                        "contact-seeking with player-only presence requires npc_introductions"
-                    )
             self.audit.append(
                 {
                     "phase": "outcome",

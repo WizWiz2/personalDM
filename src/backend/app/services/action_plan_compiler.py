@@ -423,14 +423,7 @@ class ActionPlanCompiler:
                 time_after=action.time_after,
                 reason=action.intent,
             )
-        if (
-            outcome.resolution == "auto_success"
-            and not transition.required
-            and not outcome.observable_outcome
-        ):
-            raise TurnPlanningError(
-                "auto-success non-movement outcome needs a concrete observable result"
-            )
+        # A success without a written result still happened; the narrator describes it.
         return ActionStepPlan(
             action_type=action.action_type,
             intent=action.intent,

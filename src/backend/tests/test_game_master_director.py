@@ -282,38 +282,6 @@ def test_move_policy_rejects_negative_weights() -> None:
         pass
 
 
-def test_requires_contact_introduction_honors_director_force() -> None:
-    from app.models.player_intent import PlayerIntentContract
-    from app.models.turn import ChatMessage
-    from app.services.turn_outcome_resolver import TurnOutcomeResolver
-
-    contract = PlayerIntentContract.model_validate(
-        {
-            "summary": "look around for people",
-            "actions": [{"action_type": "observation", "intent": "seek attendants"}],
-            "addressed_response_requested": False,
-        }
-    )
-    context = [ChatMessage(role="system", content="Physically present characters: Эйдан")]
-    empty = TurnOutcomeDecision.model_validate(
-        {
-            "action_outcomes": [
-                {
-                    "action_index": 0,
-                    "resolution": "auto_success",
-                    "observable_outcome": "Тишина.",
-                }
-            ],
-            "npc_introductions": [],
-            "resolution": "observation",
-        }
-    )
-    assert not TurnOutcomeResolver._requires_contact_introduction(contract, context, empty)
-    assert TurnOutcomeResolver._requires_contact_introduction(
-        contract, context, empty, force_introduce_contact=True
-    )
-
-
 @pytest.mark.asyncio
 async def test_select_moves_does_not_advance_rhythm_by_default(monkeypatch) -> None:
     from app.services import master_service as ms

@@ -64,8 +64,10 @@ async def test_ambiguous_direction_cannot_create_a_pronoun_location():
             "action_type": "movement", "intent": "Иду наружу.", "destination_location": "наружу",
         }],
     }, bindings={"action_0": "unresolved"})
-    with pytest.raises(TurnPlanningError, match="needs clarification"):
-        await _interpreter(router).interpret(SimpleNamespace(), [], "Иду наружу.")
+    result = await _interpreter(router).interpret(SimpleNamespace(), [], "Иду наружу.")
+    # No location named after a direction, and no trip: the attempt stays a local act.
+    assert result.actions[0].action_type == "interaction"
+    assert result.actions[0].destination_location is None
 
 
 class _Router:
@@ -544,7 +546,7 @@ def test_typed_give_operation_is_preserved() -> None:
     assert action.inventory_target_id == target_id
 
 
-def test_true_movement_without_destination_still_fails_closed() -> None:
+def test_movement_without_destination_becomes_a_local_act_not_a_failure() -> None:
     draft = PlayerIntentContractDraft.model_validate(
         {
             "summary": "Кай куда-то идёт.",
@@ -552,8 +554,9 @@ def test_true_movement_without_destination_still_fails_closed() -> None:
         }
     )
 
-    with pytest.raises(TurnPlanningError, match="missing the player-selected destination"):
-        normalize_intent_draft(draft, "Иду дальше.")
+    action = normalize_intent_draft(draft, "Иду дальше.").actions[0]
+    assert action.action_type == "interaction"
+    assert action.destination_location is None
 
 
 @pytest.mark.asyncio

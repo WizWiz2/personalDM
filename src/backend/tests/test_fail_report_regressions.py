@@ -74,7 +74,7 @@ async def test_changed_role_cannot_clone_referenced_existing_npc(db_session, tem
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "case", ["travel_index", "travel_evidence", "profile", "long_role", "long_name", "identity"]
+    "case", ["travel_index", "profile", "long_role", "long_name", "identity"]
 )
 async def test_invalid_semantics_are_repaired_at_provider_boundary(monkeypatch, case):
     if case.startswith("travel"):
@@ -85,11 +85,7 @@ async def test_invalid_semantics_are_repaired_at_provider_boundary(monkeypatch, 
             ]
         }
         bad = json.loads(json.dumps(good))
-        bad["obstacles"][0].update(
-            {"action_index": 1}
-            if case == "travel_index"
-            else {"evidence_quote": "Охрана не пускает."}
-        )
+        bad["obstacles"][0].update({"action_index": 1})
     elif case == "profile":
         wire = _profile_wire_model(1, action_indices=[2])
         good = {"patches": [{"action_index": 2, "profile": PROFILE}]}
@@ -134,7 +130,7 @@ async def test_invalid_semantics_are_repaired_at_provider_boundary(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_unrepairable_blocker_still_fails_closed(monkeypatch):
+async def test_ungrounded_travel_blocker_is_dropped_and_the_trip_proceeds(monkeypatch):
     calls = []
 
     def respond(request):
@@ -164,15 +160,17 @@ async def test_unrepairable_blocker_still_fails_closed(monkeypatch):
         "AsyncClient",
         lambda **kwargs: client(transport=httpx.MockTransport(respond), **kwargs),
     )
-    with pytest.raises(LLMProviderError, match="verbatim"):
-        await LLMProvider().generate_json(
-            [],
-            SimpleNamespace(
-                base_url="http://localhost:11434/v1", model_name="test", context_window=4096
-            ),
-            response_model=_travel_wire_model(1),
-        )
-    assert len(calls) == 3
+    wire = _travel_wire_model(1)
+    result = await LLMProvider().generate_json(
+        [],
+        SimpleNamespace(
+            base_url="http://localhost:11434/v1", model_name="test", context_window=4096
+        ),
+        response_model=wire,
+    )
+    # "Invented guard" has no evidence: not a ban, so no retry loop and no failure.
+    assert wire.model_validate(result).obstacles[0].blocking_reason is None
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio

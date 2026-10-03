@@ -56,7 +56,7 @@ class TurnIntentPlanningPipeline:
             },
         )
         # Director moves are selected before outcome resolution so force_introduce_contact
-        # can drive the existing contact-seeking recovery path. Rhythm is NOT persisted here.
+        # can add optional contact guidance to the resolver. Rhythm is NOT persisted here.
         seek_contact = seeks_contact_or_presence(contract)
         empty_cast = solo_physical_presence(context_messages)
         master_service = MasterService(self._session)
@@ -78,8 +78,8 @@ class TurnIntentPlanningPipeline:
                 force_introduce_contact=director.forced_introduce_contact,
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
-            # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver
-            # so forced contact-seeking still requires typed introductions.
+            # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so
+            # forced contact-seeking gets its (optional) chance at a typed introduction.
             decision = await self._outcomes.resolve(
                 selection,
                 context_messages,

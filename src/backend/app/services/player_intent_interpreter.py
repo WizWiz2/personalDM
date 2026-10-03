@@ -534,7 +534,7 @@ def _normalized_action(
 ) -> dict[str, Any]:
     action_type = _compact(action.action_type).casefold()
     if action_type not in _ACTION_TYPES:
-        raise TurnPlanningError(f"unknown action type: {action_type!r}")
+        action_type = "other"
 
     operation = _inventory_operation(action)
     item_id = _compact(action.item_id) or None
@@ -559,22 +559,24 @@ def _normalized_action(
         "time_after": None,
     }
 
+    destination = _compact(action.destination_location)
+    if action_type == "movement" and not destination:
+        # No selected place, no trip (ban 4): a local step, not a failed turn.
+        action_type = "interaction"
+    if action_type == "inventory" and not (
+        item_id and operation and (operation != "give" or inventory_target_id)
+    ):
+        # Without a catalogued item/operation/recipient nothing changes hands; the act stays local.
+        action_type = "interaction"
+    payload["action_type"] = action_type
+
     if action_type == "movement":
-        destination = _compact(action.destination_location)
-        if not destination:
-            raise TurnPlanningError("movement intent is missing the player-selected destination")
         payload["destination_location"] = destination
         payload["requested_companions"] = list(dict.fromkeys(action.requested_companions))
         payload["movement_method"] = (
             "ordinary" if action.movement_method == "ordinary" else "special"
         )
     elif action_type == "inventory":
-        if not item_id:
-            raise TurnPlanningError("inventory intent is missing an authoritative item id")
-        if not operation:
-            raise TurnPlanningError("inventory intent is missing take/drop/give/place operation")
-        if operation == "give" and not inventory_target_id:
-            raise TurnPlanningError("give intent is missing an authoritative recipient id")
         payload.update(
             {
                 "item_id": item_id,
@@ -975,11 +977,18 @@ class PlayerIntentInterpreter:
                 draft.actions[index].destination_reference = bindings[f"action_{index}"]
         for action in draft.actions:
             reference = action.destination_reference
-            if reference == "unresolved":
-                raise TurnPlanningError("movement endpoint needs clarification before creating topology")
+            if action.action_type == "movement" and (
+                reference == "unresolved"
+                or (reference and reference != "new" and reference not in references)
+            ):
+                # An unclear endpoint creates no topology and moves nobody (ban 4); the attempt
+                # stays a local act for the narrator instead of failing the turn.
+                action.action_type = "interaction"
+                action.destination_location = None
+                action.destination_reference = None
+                action.requested_companions = []
+                continue
             if action.action_type == "movement" and reference and reference != "new":
-                if reference not in references:
-                    raise TurnPlanningError("movement refers to an unknown location identity")
                 action.destination_location = references[reference]
 
     async def interpret(
