@@ -72,9 +72,11 @@ class _ResponsesClient:
             {"method": method, "url": url, "headers": headers, "json": json}
         )
         lines = [
+            "event: response.output_text.delta",
             "data: " + __import__("json").dumps(
                 {"type": "response.output_text.delta", "delta": self.response_text}
             ),
+            "event: response.completed",
             "data: " + __import__("json").dumps(
                 {
                     "type": "response.completed",
