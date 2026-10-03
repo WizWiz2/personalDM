@@ -131,7 +131,8 @@ async def update_text_provider(
 
 @router.post("/chatgpt/sign-in")
 async def start_chatgpt_sign_in(data: ChatGPTSignInStart, request: Request):
-    port = request.url.port
+    server = request.scope.get("server")
+    port = int(server[1]) if server and len(server) > 1 and server[1] else None
     if not port:
         raise HTTPException(status_code=400, detail="Не удалось определить локальный OAuth port")
     redirect_uri = f"http://127.0.0.1:{port}{ChatGPTAuthService.CALLBACK_PATH}"
@@ -184,8 +185,11 @@ async def list_chatgpt_models():
 
 @router.delete("/chatgpt")
 async def disconnect_chatgpt():
-    await asyncio.to_thread(ChatGPTAuthService().disconnect)
-    return {"connected": False}
+    revocation_confirmed = await asyncio.to_thread(ChatGPTAuthService().disconnect)
+    return {
+        "connected": False,
+        "revocation_confirmed": revocation_confirmed,
+    }
 
 
 @router.put("/image")
