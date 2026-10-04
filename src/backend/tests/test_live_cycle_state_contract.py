@@ -302,3 +302,18 @@ async def test_with_two_npcs_present_the_typed_addressee_owns_the_beat(db_sessio
 
     assert (by_alias.beat_owner_id, by_alias.beat_owner_name) == (host.id, "Фёдор Матвеевич")
     assert unknown.beat_owner_id is None
+
+
+@pytest.mark.asyncio
+async def test_destination_binding_sees_which_known_place_is_current(db_session):
+    """B8 T5: «к мужчине у причального столба» at the crossing was bound to the town's pier scene."""
+    from unittest.mock import MagicMock
+
+    from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
+
+    campaign_id, _, location, _scene = await world(db_session)
+    await LocationRepository(db_session).create(campaign_id, LocationCreate(canonical_name="Пристань"))
+
+    _names, catalog = await TurnIntentPlanningPipeline(db_session, MagicMock())._location_catalog(campaign_id)
+
+    assert {entry["name"]: entry["current"] for entry in catalog.values()} == {"Мастерская": True, "Пристань": False}

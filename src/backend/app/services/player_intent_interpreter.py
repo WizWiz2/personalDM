@@ -877,7 +877,7 @@ class PlayerIntentInterpreter:
                             "description and the opening of the scene held there, so a spot where an earlier "
                             "scene took place belongs to that location's ID). Compare meanings, not spelling. "
                             "Stepping to someone or something within sight and earshot of those present "
-                            "keeps the current location's ID. Select new_inside for an uncatalogued separate "
+                            "keeps the current location's ID (current=true). Select new_inside for an uncatalogued separate "
                             "place inside the current location that one leaves their earshot to reach, new "
                             "for one elsewhere, unresolved when the endpoint is unclear. Do not judge "
                             "feasibility. "

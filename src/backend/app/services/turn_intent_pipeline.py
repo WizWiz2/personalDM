@@ -62,14 +62,8 @@ class TurnIntentPlanningPipeline:
             cast.setdefault(names.get(location_id, location_id), []).append(name)
         return cast
 
-    async def plan(
-        self,
-        *,
-        campaign_id: UUID,
-        user_input: str,
-        context_messages,
-        selection,
-    ) -> tuple[CoordinatedTurnPlan, dict]:
+    async def _location_catalog(self, campaign_id) -> tuple[dict[str, str], dict[str, dict]]:
+        """Known places for destination binding; current marks where the player is now."""
         locations = [
             place for place in await LocationRepository(self._session).list_by_campaign(campaign_id)
             if place.status != "inactive"
@@ -81,21 +75,37 @@ class TurnIntentPlanningPipeline:
             .where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant")
             .order_by(Turn.created_at.desc())
         )).all())
+        try:
+            here = str((await self._compiler._world(campaign_id))[1].location_id)
+        except TurnPlanningError:
+            here = None
+        return names, {
+            key: {
+                "name": location.canonical_name,
+                "parent": names.get(str(location.parent_location_id)),
+                "description": (location.description or "")[:240],
+                "scene_opening": (openings.get(key) or "")[:240],
+                "current": key == here,
+            }
+            for location in locations
+            for key in [str(location.id)]
+        }
+
+    async def plan(
+        self,
+        *,
+        campaign_id: UUID,
+        user_input: str,
+        context_messages,
+        selection,
+    ) -> tuple[CoordinatedTurnPlan, dict]:
+        names, catalog = await self._location_catalog(campaign_id)
         contract = await self._intent.interpret(
             selection,
             context_messages,
             user_input,
             location_references=names,
-            location_catalog={
-                key: {
-                    "name": name,
-                    "parent": names.get(str(location.parent_location_id)),
-                    "description": (location.description or "")[:240],
-                    "scene_opening": (openings.get(key) or "")[:240],
-                }
-                for location in locations
-                for key, name in [(str(location.id), location.canonical_name)]
-            },
+            location_catalog=catalog,
         )
         # Director moves are selected before outcome resolution so force_introduce_contact
         # can add optional contact guidance to the resolver. Rhythm is NOT persisted here.
