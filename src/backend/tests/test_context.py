@@ -302,7 +302,7 @@ async def test_an_npc_card_lists_only_what_that_npc_witnessed(db_session: AsyncS
 
     seen = "\n".join(takewhile(lambda line: line.startswith("- "), section.split("\n")))
 
-    assert "Прохор ночует у вдовы Марьи. [witnesses: Егор, Илья]" in context
+    assert "Прохор ночует у вдовы Марьи." in context and "[witnesses:" not in context
     assert "полтинник лежит на стойке" in seen and "вдовы Марьи" not in seen
 
 

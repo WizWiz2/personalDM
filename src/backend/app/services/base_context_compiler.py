@@ -524,11 +524,6 @@ class ContextCompiler:
             said: dict = {}
             memories = [*(facts or []), *(belief for beliefs in held.values() for belief in beliefs)]
             witnessed = await witnesses_of(self._session, [memory.id for memory in memories])
-            names = {UUID(entity_id): name for entity_id, name in (await self._session.execute(
-                select(Entity.id, Entity.canonical_name).where(Entity.id.in_(
-                    [str(w) for ws in witnessed.values() for w in ws]
-                ))
-            )).all()}
             player_id = campaign.player_character_id if campaign else None
             for belief in (belief for beliefs in held.values() for belief in beliefs):
                 if belief.source_character_id in held:
@@ -577,9 +572,7 @@ class ContextCompiler:
                             line = getattr(belief, "proposition", None) or (
                                 f"{belief.subject} {belief.predicate} {belief.object_value or ''}"
                             )
-                            present = sorted(names.get(w, "?") for w in witnessed.get(str(belief.id), ()))
-                            known_to = f" [witnesses: {', '.join(present)}]" if present else ""
-                            participant_package += f"- {heard}{line}{known_to}\n"
+                            participant_package += f"- {heard}{line}\n"
                             if hasattr(belief, "proposition"):
                                 participant_belief_ids.append(str(belief.id))
 
