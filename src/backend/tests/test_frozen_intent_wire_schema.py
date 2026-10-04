@@ -329,6 +329,18 @@ def test_revealed_name_cannot_replace_the_existing_response_owner():
     assert schema["anyOf"][0]["const"] == "Дежурный у стойки"
 
 
+def test_unbound_response_speaker_is_a_present_designation_or_this_turns_introduction():
+    wire = _outcome_wire_model(0, present_names=["Илья", "Трактирщик", "Егор"])
+    payload = _revealed_response(evidence="Зовут меня Семёном.")
+    payload["response_revealed_name"] = "Семён"
+    payload["response_name_evidence"] = "Зовут меня Семён."
+    payload["response_speaker_name"] = "Семён"
+    with pytest.raises(ValidationError, match="current designation"):
+        wire.model_validate(payload)
+    payload["response_speaker_name"] = "Трактирщик"
+    assert wire.model_validate(payload).response_revealed_name == "Семён"
+
+
 def test_npc_wire_cannot_omit_encounter_evidence_and_profile() -> None:
     with pytest.raises(ValidationError):
         OutcomeNpcIntroductionDraft.model_validate({"canonical_name": "Мартин Вэнс"})

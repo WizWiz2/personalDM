@@ -482,6 +482,18 @@ def _outcome_wire_model(
                     revealed_name=self.response_revealed_name,
                     name_evidence=self.response_name_evidence,
                 )
+            # With other people physically here, the response owner is one of them or a newcomer.
+            cast = {
+                *(present_names or ()), bound_response_speaker or "",
+                *(npc.canonical_name for npc in self.npc_introductions),
+            }
+            if len(present_names or ()) > 1 and self.response_speaker_name and identity_key(
+                self.response_speaker_name
+            ) not in {identity_key(name) for name in cast}:
+                raise ValueError(
+                    "response_speaker_name must be a present person's current designation "
+                    "or one of this turn's npc_introductions"
+                )
             dependencies = [
                 self.response_after_action_index,
                 *(npc.after_action_index for npc in self.npc_introductions),
