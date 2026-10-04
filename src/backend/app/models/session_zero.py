@@ -1,10 +1,16 @@
 from datetime import datetime
 from uuid import UUID
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from app.models.character_card import CharacterCardRead
 from app.models.scene import SceneRead
+
+
+# Typed campaign setting, stored as campaign_setups.custom_fields["narrative_person"].
+NarrativePerson = Literal["second_singular", "second_plural", "third"]
 
 
 class SessionZeroUpdate(BaseModel):

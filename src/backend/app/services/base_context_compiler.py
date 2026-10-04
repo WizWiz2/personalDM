@@ -1,12 +1,14 @@
 import json
 from uuid import UUID
 
+from pydantic import TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
@@ -14,7 +16,11 @@ from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import CharacterGoal, Entity, Item, ProposedChange, Turn
+from app.models.session_zero import NarrativePerson
 from app.models.turn import ChatMessage, TurnRead
+
+_PERSON = {"second_singular": "second person singular («ты»)",
+           "second_plural": "second person plural («вы»)", "third": "third person, by name"}
 
 try:
     import tiktoken
@@ -307,6 +313,12 @@ class ContextCompiler:
             if campaign and campaign.narrative_style
             else ""
         )
+        if not actor_mode:
+            setup = await CampaignSetupRepository(self._session).get(campaign_id)
+            person = TypeAdapter(NarrativePerson).validate_python(CampaignSetupRepository.decode_dict(
+                setup.custom_fields if setup else None).get("narrative_person", "second_singular"))
+            style += (f"\nNarrative person: narrate the protagonist in {_PERSON[person]} throughout, "
+                      "also where the typed turn facts name them in third person.")
         from app.services.planning_context import NARRATOR_EXECUTION_BOUNDARY
 
         boundary = (

@@ -220,3 +220,25 @@ async def test_narrator_card_carries_what_a_present_npc_already_said(db_session:
     assert host_card.index("Already said") < host_card.index("Смотрителя сейчас нет.")
     assert context.count("Смотрителя сейчас нет.") == 1
     assert "Огни видели с парохода." in context
+
+
+@pytest.mark.asyncio
+async def test_narrator_gets_the_typed_campaign_narrative_person(db_session: AsyncSession):
+    """Replay 4 drifted between «Илья…» and «вы»; the person is one typed campaign setting."""
+    from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Person"))
+    compiler = ContextCompiler(db_session)
+    default, _ = await compiler.compile_context(campaign_id)
+    assert "Narrative person: narrate the protagonist in second person singular («ты»)" in default[0].content
+
+    setups = CampaignSetupRepository(db_session)
+    row = await setups.create_draft(campaign_id, campaign_name="Person")
+    await setups.update(row, {"custom_fields": {"narrative_person": "second_plural"}})
+    plural, _ = await compiler.compile_context(campaign_id)
+    assert "second person plural («вы»)" in plural[0].content
+
+    await setups.update(row, {"custom_fields": {"narrative_person": "вы"}})
+    with pytest.raises(ValueError):
+        await compiler.compile_context(campaign_id)
