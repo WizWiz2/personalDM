@@ -15,7 +15,6 @@ from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_authority_resolvers import (
     ActorResolver,
     AuthorityResolutionError,
-    NpcIntroductionResolution,
     NpcIntroductionResolver,
 )
 
@@ -109,25 +108,18 @@ class TurnAuthorityService:
         planned_response = plan.addressed_response if plan else None
         if planned_response and not prerequisite_completed(planned_response):
             planned_response = None
-        if introductions:
-            npc_resolver = getattr(self, "_npc_introductions", None) or NpcIntroductionResolver(
-                self._session
-            )
-            try:
-                npc_resolution = await npc_resolver.resolve(
-                    campaign_id=campaign_id,
-                    introductions=introductions,
-                    present_names=present_names,
-                    target_location_id=(target_state.location_id if target_state else None),
-                )
-            except AuthorityResolutionError as exc:
-                raise TurnAuthorityError(str(exc)) from exc
-        else:
-            npc_resolution = NpcIntroductionResolution(
-                new_introductions=[],
-                existing_arrivals=[],
+        # Always resolved: an unfilled resident slot authorizes its keeper even when the plan
+        # introduces nobody (B9 T4: the post office's clerk spoke as an absent character).
+        npc_resolver = getattr(self, "_npc_introductions", None) or NpcIntroductionResolver(self._session)
+        try:
+            npc_resolution = await npc_resolver.resolve(
+                campaign_id=campaign_id,
+                introductions=introductions,
                 present_names=present_names,
+                target_location_id=(target_state.location_id if target_state else None),
             )
+        except AuthorityResolutionError as exc:
+            raise TurnAuthorityError(str(exc)) from exc
 
         present_names = list(npc_resolution.present_names)
         present_keys = {identity_key(value) for value in present_names}
