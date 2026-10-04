@@ -558,8 +558,8 @@ class ContextCompiler:
                         ("Private knowledge", [
                             b for b in held[character.id] if b.source_character_id not in held
                         ]),
-                        ("Already said by this character (established: stay consistent with it, "
-                         "never repeat it word for word)", list(said.get(character.id, {}).values())),
+                        (("Already said by this character (established: stay consistent with it, "
+                          "never repeat it word for word)"), list(said.get(character.id, {}).values())),
                         ("Witnessed (was present when it was published)", seen),
                     ):
                         participant_package += f"{header}:\n" if group else ""

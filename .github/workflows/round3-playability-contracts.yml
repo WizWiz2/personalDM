@@ -33,7 +33,6 @@ on:
       - "src/backend/tests/test_round10_navigation_truth.py"
       - "src/backend/tests/test_round11_destination_authorization.py"
       - "src/backend/tests/test_golden_playthrough.py"
-      - "src/backend/tests/test_actor_agency_failclosed.py"
       - "src/backend/tests/test_planner_intent_contract.py"
       - "src/backend/tests/test_planner_intent_repair.py"
       - "src/backend/tests/test_planner_control_plane_simplification.py"
@@ -92,7 +91,6 @@ jobs:
             tests/test_round10_navigation_truth.py \
             tests/test_round11_destination_authorization.py \
             tests/test_golden_playthrough.py \
-            tests/test_actor_agency_failclosed.py \
             tests/test_planner_intent_contract.py \
             tests/test_planner_intent_repair.py \
             tests/test_planner_control_plane_simplification.py \

@@ -16,7 +16,6 @@ on:
       - "src/backend/app/services/context_pipeline.py"
       - "src/backend/app/services/turn_runner.py"
       - "src/backend/app/services/base_turn_runner.py"
-      - "src/backend/app/services/narration_pipeline.py"
       - "src/backend/tests/test_runtime_parity.py"
       - "src/backend/tests/test_context_pipeline.py"
       - ".github/workflows/runtime-parity.yml"
@@ -32,7 +31,6 @@ on:
       - "src/backend/app/services/context_pipeline.py"
       - "src/backend/app/services/turn_runner.py"
       - "src/backend/app/services/base_turn_runner.py"
-      - "src/backend/app/services/narration_pipeline.py"
       - "src/backend/tests/test_runtime_parity.py"
       - "src/backend/tests/test_context_pipeline.py"
       - ".github/workflows/runtime-parity.yml"
@@ -62,7 +60,6 @@ jobs:
           src/backend/app/services/context_pipeline.py
           src/backend/app/services/turn_runner.py
           src/backend/app/services/base_turn_runner.py
-          src/backend/app/services/narration_pipeline.py
           src/backend/tests/test_runtime_parity.py
           src/backend/tests/test_context_pipeline.py
 
@@ -87,6 +84,6 @@ jobs:
           ruff check app/runtime.py app/application app/main.py tests/test_runtime_parity.py
           ruff check app/services/context_compiler.py app/services/base_context_compiler.py
           ruff check app/services/context_pipeline.py tests/test_context_pipeline.py
-          ruff check app/services/turn_runner.py app/services/narration_pipeline.py
+          ruff check app/services/turn_runner.py
           ruff check --extend-ignore SIM102,BLE001 app/services/base_turn_runner.py
           ruff check --extend-ignore B008 app/api/turns.py
