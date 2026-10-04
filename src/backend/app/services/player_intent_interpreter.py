@@ -9,7 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from app.config import settings
-from app.models.player_intent import IntentActionType, PlayerIntentContract
+from app.models.player_intent import DayPart, IntentActionType, PlayerIntentContract
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.linguistic_intent_analyzer import (
@@ -96,7 +96,7 @@ class PlayerActionIntentDraft(BaseModel):
     inventory_operation: str | None = None
     inventory_target_id: str | None = None
     elapsed_time: str | None = None
-    time_after: str | None = None
+    time_after: DayPart | None = None
 
 
 class PlayerIntentContractDraft(BaseModel):
@@ -118,9 +118,8 @@ class PlayerIntentContractDraft(BaseModel):
     world_state_question: bool = False
     pending_player_choice: str | None = None
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
-    time_advance: str | None = Field(
-        default=None, max_length=80,
-        description="The later moment the player skips to before acting (утром, до утра), else null.",
+    time_advance: DayPart | None = Field(
+        default=None, description="The later part of day the player skips to before acting, else null.",
     )
 
 
@@ -161,7 +160,7 @@ class _GiveWire(_ActionWire):
 class _TimeWire(_ActionWire):
     action_type: Literal["rest", "wait"]
     elapsed_time: str | None = None
-    time_after: str | None = None
+    time_after: DayPart | None = None
 
 
 class _LocalActionWire(_ActionWire):
@@ -245,7 +244,7 @@ class ActionOwnershipDecision(BaseModel):
     inventory_operation: Literal["take", "drop", "place", "give"] | None = None
     inventory_target_id: UUID | None = None
     elapsed_time: str | None = None
-    time_after: str | None = None
+    time_after: DayPart | None = None
     contribution_kind: Literal["world_action", "speech"] = "world_action"
     spatial_effect: Literal["local", "travel", "none"] | None = Field(
         default=None, description="Intended spatial effect, never whether the attempt succeeds."

@@ -265,7 +265,6 @@ class SceneTransitionExecutor:
         await self._state.inherit_transition_state(
             source_scene_id,
             target_scene.id,
-            elapsed_time=plan.elapsed_time,
             time_after=plan.time_after,
         )
 

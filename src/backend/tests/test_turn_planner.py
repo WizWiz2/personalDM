@@ -65,7 +65,7 @@ def test_disabled_transition_is_normalized_to_none():
     plan = SceneTransitionPlan(
         required=False,
         transition_type="time_transition",
-        time_after="утро",
+        time_after="morning",
     )
     assert plan.transition_type == "none"
 

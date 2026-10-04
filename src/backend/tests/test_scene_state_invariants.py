@@ -273,14 +273,26 @@ async def test_time_transition_inherits_and_advances_world_time(
             required=True,
             transition_type="time_transition",
             elapsed_time="8 часов",
-            time_after="утро",
+            time_after="morning",
             scene_title="Утро в комнате",
             reason="Игрок спит до утра.",
         ),
     )
     assert transition is not None
     target = await state.get(campaign_id, transition.target_scene_id)
-    assert target.world_time_label == "утро"
+    assert target.world_time_label == "morning"
     assert target.world_time_order == 8
     assert target.location_id == room.id
     assert target.participant_ids == [hero.id]
+
+
+def test_scene_clock_is_a_typed_part_of_day_not_player_wording():
+    """B5 stored «утром, едва рассветёт» and «… + до темноты» as the scene clock."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.models.player_intent import PlayerIntentContract
+
+    assert PlayerIntentContract(summary="Жду утра.", time_advance="dawn").time_advance == "dawn"
+    with pytest.raises(ValidationError):
+        PlayerIntentContract(summary="Жду утра.", time_advance="утром, едва рассветёт")

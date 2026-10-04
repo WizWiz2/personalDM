@@ -80,7 +80,7 @@ def _rest_plan(*, structured_time):
             required=True,
             transition_type="time_transition",
             elapsed_time="8 часов",
-            time_after="Утро",
+            time_after="morning",
         )
         if structured_time
         else SceneTransitionPlan()
@@ -208,7 +208,7 @@ def test_rest_without_time_transition_is_repaired_before_semantic_review():
 
     transition = result.action_sequence.steps[0].transition
     assert transition.transition_type == "time_transition"
-    assert transition.time_after == "Утро"
+    assert transition.time_after == "morning"
     assert len(calls) == 2
     assert "[DETERMINISTIC TIME CONTRACT REJECTION]" in calls[1][-1].content
 

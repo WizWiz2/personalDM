@@ -280,14 +280,14 @@ async def test_typed_time_advance_moves_the_scene_clock_with_the_first_act() -> 
         {ROOM: [_exit(ROOM, CORRIDOR, "Коридор")]},
     )
     trip = PlayerIntentContract(
-        summary="Утром выхожу в коридор.", actions=[_move("Коридор", CORRIDOR)], time_advance="утром",
+        summary="Утром выхожу в коридор.", actions=[_move("Коридор", CORRIDOR)], time_advance="morning",
     )
     plan = await compiler.compile(CAMPAIGN, trip, TurnOutcomeDecision(action_outcomes=[_success(0)]))
-    assert plan.action_sequence.steps[0].transition.time_after == "утром"
+    assert plan.action_sequence.steps[0].transition.time_after == "morning"
     look = PlayerIntentContract(
-        summary="Утром осматриваю стол.", time_advance="утром",
+        summary="Утром осматриваю стол.", time_advance="morning",
         actions=[PlayerActionIntent(action_type="observation", intent="Осмотреть стол.")],
     )
     plan = await compiler.compile(CAMPAIGN, look, TurnOutcomeDecision(action_outcomes=[_success(0)]))
     transition = plan.action_sequence.steps[0].transition
-    assert (transition.transition_type, transition.time_after) == ("time_transition", "утром")
+    assert (transition.transition_type, transition.time_after) == ("time_transition", "morning")

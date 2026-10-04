@@ -177,7 +177,7 @@ async def test_disputed_inventory_act_is_reconsidered_before_being_erased():
 async def test_semantic_effect_review_recovers_durable_operation_from_generic_extraction(effect):
     item_id = str(uuid4())
     fields = ({"item_id": item_id, "inventory_operation": "place"} if effect == "inventory"
-              else {"elapsed_time": "восемь часов", "time_after": "утро"})
+              else {"elapsed_time": "восемь часов", "time_after": "morning"})
     text = "Кладу ключ на стол." if effect == "inventory" else "Сплю восемь часов до утра."
     router = _Router(
         {"summary": text, "actions": [{"action_type": "other", "intent": text}]},

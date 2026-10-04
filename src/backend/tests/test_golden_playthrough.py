@@ -158,7 +158,7 @@ def _compound_plan() -> CoordinatedTurnPlan:
                         required=True,
                         transition_type="time_transition",
                         elapsed_time="8 часов",
-                        time_after="утро",
+                        time_after="morning",
                         scene_title="Утро в гостевой комнате",
                         reason="Безопасный сон до утра.",
                         bridge_summary="Ночь прошла спокойно.",
@@ -583,7 +583,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     final_state = client.get(
         f"/api/campaigns/{campaign_id}/scenes/{final_snapshot['active_scene']['id']}/state"
     ).json()
-    assert final_state["world_time_label"] == "утро"
+    assert final_state["world_time_label"] == "morning"
     assert final_state["participant_names"] == ["Эйдан"]
 
     sequence = (

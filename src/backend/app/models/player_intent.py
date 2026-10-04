@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.models.addressed_response import AddressedResponse
 
 
+# Scene clock authority: a typed part of day, never a phrase copied from the player.
+DayPart = Literal["dawn", "morning", "day", "evening", "night"]
+
 IntentActionType = Literal[
     "service",
     "movement",
@@ -49,7 +52,7 @@ class PlayerActionIntent(BaseModel):
     # Time authority. These fields describe what the player committed to waiting/resting through;
     # the compiler later turns them into a time transition when the outcome permits it.
     elapsed_time: str | None = Field(default=None, max_length=255)
-    time_after: str | None = Field(default=None, max_length=255)
+    time_after: DayPart | None = None
 
     @model_validator(mode="after")
     def validate_domain_fields(self):
@@ -99,7 +102,7 @@ class PlayerIntentContract(BaseModel):
     pending_player_choice: str | None = Field(default=None, max_length=1000)
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
     # The moment the player skips to before acting; the compiler moves the scene clock to it.
-    time_advance: str | None = Field(default=None, max_length=80)
+    time_advance: DayPart | None = None
 
     @model_validator(mode="after")
     def validate_response_target(self):

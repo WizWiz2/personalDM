@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import settings
 from app.models.action_sequence import ActionSequenceExecution
-from app.models.player_intent import ActionResolution, DramaticMode, TurnResolution
+from app.models.player_intent import ActionResolution, DayPart, DramaticMode, TurnResolution
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
@@ -39,7 +39,7 @@ class SceneTransitionPlan(BaseModel):
     destination_resident_role: str | None = Field(default=None, max_length=60)
     scene_title: str | None = Field(default=None, max_length=255)
     elapsed_time: str | None = Field(default=None, max_length=255)
-    time_after: str | None = Field(default=None, max_length=255)
+    time_after: DayPart | None = None
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
     reason: str | None = Field(default=None, max_length=500)
     bridge_summary: str | None = Field(default=None, max_length=1200)
@@ -311,7 +311,7 @@ Return only this schema:
           "destination_parent_location": null,
           "scene_title": null,
           "elapsed_time": null,
-          "time_after": null,
+          "time_after": "dawn|morning|day|evening|night|null",
           "carry_participants": [],
           "reason": null,
           "bridge_summary": null,
@@ -328,7 +328,7 @@ Return only this schema:
     "destination_parent_location": null,
     "scene_title": null,
     "elapsed_time": null,
-    "time_after": null,
+    "time_after": "dawn|morning|day|evening|night|null",
     "carry_participants": [],
     "reason": null,
     "bridge_summary": null,
