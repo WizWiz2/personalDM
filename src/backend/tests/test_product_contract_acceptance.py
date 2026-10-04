@@ -54,7 +54,6 @@ def _location_plan(*, with_profile: bool) -> CoordinatedTurnPlan:
             bridge_summary=bridge_summary,
         ),
         observable_consequences=["Кай добирается до своего укрытия."],
-        canon_constraints=["Не придумывать попутчиков или угрозы без отдельного основания."],
         narration_guidance=["Коротко показать завершённое возвращение."],
         ending_hook="Кай снова в укрытии.",
     )
@@ -67,9 +66,6 @@ def _investigation_plan() -> CoordinatedTurnPlan:
         observable_consequences=[
             "В системных журналах обнаружены три неудачные попытки входа в административный контур.",
             "Все три попытки пришли с одного внешнего адреса в течение семи минут.",
-        ],
-        canon_constraints=[
-            "Не объявлять личность атакующего установленной без отдельного подтверждения."
         ],
         narration_guidance=[
             "Сообщить найденные технические следы и отделить наблюдаемую зацепку от вывода о виновнике."

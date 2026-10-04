@@ -195,7 +195,6 @@ class TurnAuthorityService:
                 if planned_response
                 else None
             ),
-            canon_constraints=(list(plan.canon_constraints) if plan else []),
             narration_guidance=(list(plan.narration_guidance) if plan else []),
             protected_player_decisions=(
                 list(plan.narration_policy.protected_player_decisions) if plan else []

@@ -455,7 +455,6 @@ class ActionPlanCompiler:
             observable_consequences=decision.observable_consequences,
             character_beats=decision.character_beats,
             addressed_response=decision.addressed_response,
-            canon_constraints=decision.canon_constraints,
             new_fact_candidates=[],
             narration_guidance=decision.narration_guidance,
         )

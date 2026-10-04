@@ -65,13 +65,7 @@ def test_scene_disposition_defaults_to_stay_without_structured_boundary():
 
 def test_conservative_fallback_is_player_facing_russian():
     fallback = CoordinatedTurnPlan.conservative_fallback("Осматриваюсь.")
-    rendered = " ".join(
-        [
-            *fallback.canon_constraints,
-            *fallback.narration_guidance,
-        ]
-    )
+    rendered = " ".join(fallback.narration_guidance)
 
     assert "Planner authority is unavailable" not in rendered
     assert "The attempted action remains unresolved" not in rendered
-    assert "Планировщик недоступен" in rendered

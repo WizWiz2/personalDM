@@ -147,15 +147,10 @@ class TurnIntentPlanningPipeline:
             )
 
         # Primary: structural authority levers. Secondary: narration_guidance seasoning.
-        # Pure ordinary travel stamps honor_travel so Soft Keeper quiet cannot soft-stall.
         committed_travel = is_pure_ordinary_travel(contract) or any(
             action.action_type == "movement" for action in contract.actions
         )
-        decision = apply_moves_to_outcome_decision(
-            decision,
-            director,
-            committed_travel=committed_travel,
-        )
+        decision = apply_moves_to_outcome_decision(decision, director)
         guidance = apply_moves_to_narration_guidance(
             list(decision.narration_guidance),
             director,

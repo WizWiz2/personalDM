@@ -276,7 +276,6 @@ class TurnOutcomeDecisionDraft(BaseModel):
     response_revealed_name: str | None = Field(default=None, max_length=120)
     response_name_evidence: str | None = Field(default=None, max_length=500)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
-    canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
     dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False
@@ -455,7 +454,6 @@ def _outcome_wire_model(
                 "resolution": "success",
                 "observable_consequences": [outcome],
                 "character_beats": [],
-                "canon_constraints": [],
                 "narration_guidance": [],
                 "allow_new_complication": False,
                 "complication_source": None,
@@ -684,7 +682,6 @@ def normalize_outcome_draft(
                 else draft.character_beats,
                 6,
             ),
-            "canon_constraints": _bounded_strings(draft.canon_constraints, 8),
             "narration_guidance": _bounded_strings(draft.narration_guidance, 6),
             "dramatic_mode": draft.dramatic_mode,
             "allow_new_complication": allow_complication,

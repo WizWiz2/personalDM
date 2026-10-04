@@ -96,7 +96,6 @@ def _compound_plan() -> TurnPlan:
             ],
         ),
         observable_consequences=["Вечер и ночь проходят без происшествий."],
-        canon_constraints=["Бармен остаётся в общем зале."],
         narration_guidance=["Кратко связать выполненные шаги."],
         ending_hook="Герой стоит у входа Купцов утром.",
     )

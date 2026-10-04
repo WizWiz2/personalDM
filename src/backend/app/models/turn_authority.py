@@ -84,7 +84,6 @@ class TurnAuthority(BaseModel):
     dramatic_mode: str = "calm"
     observable_consequences: list[str] = Field(default_factory=list)
     character_beats: list[str] = Field(default_factory=list)
-    canon_constraints: list[str] = Field(default_factory=list)
     established_state: list[str] = Field(default_factory=list)
     established_subjects: list[str] = Field(default_factory=list)
     narration_guidance: list[str] = Field(default_factory=list)
@@ -130,7 +129,6 @@ class TurnAuthority(BaseModel):
 
         if blocked:
             self.character_beats = []
-            self.canon_constraints = []
             self.allow_new_complication = False
             self.complication_source = None
             self.narration_guidance = [
@@ -141,7 +139,6 @@ class TurnAuthority(BaseModel):
 
         if not executed and self.acting_character_id is None:
             self.character_beats = []
-            self.canon_constraints = []
             self.allow_new_complication = False
             self.complication_source = None
             self.narration_guidance = [
@@ -247,7 +244,6 @@ class TurnAuthority(BaseModel):
             "resolution": self.resolution,
             "observable_consequences": self.observable_consequences,
             "character_beats": self.character_beats,
-            "canon_constraints": self.canon_constraints,
             "narration_guidance": self.narration_guidance,
             "narrative_person": NARRATIVE_PERSON[self.narrative_person],
             "dramatic_mode": self.dramatic_mode,

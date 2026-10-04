@@ -33,7 +33,6 @@ def test_narrator_receives_one_typed_authority_without_legacy_plan_contract():
         ],
         resolution="conversation",
         observable_consequences=["Дежурный фабрики открывает дверь."],
-        canon_constraints=["Шептун отсутствует и не может появиться."],
         narration_guidance=["Ответить коротко и конкретно."],
         ending_hook="Дежурный ждёт вопроса.",
     )

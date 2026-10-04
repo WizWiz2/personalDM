@@ -188,7 +188,6 @@ class TurnPlan(BaseModel):
     narration_policy: NarrationPolicy = Field(default_factory=NarrationPolicy)
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
-    canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     new_fact_candidates: list[str] = Field(default_factory=list, max_length=4)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
 
@@ -343,7 +342,6 @@ Return only this schema:
   },
   "observable_consequences": ["1-4 concrete current physical/informational/social consequences"],
   "character_beats": ["present NPC reaction functions, not finished prose"],
-  "canon_constraints": ["specific facts/limits Narrator must obey"],
   "new_fact_candidates": ["only genuinely new durable facts implied by this turn"],
   "narration_guidance": ["pacing/focus/sensory guidance, no finished prose"]
 }

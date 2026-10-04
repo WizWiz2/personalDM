@@ -216,7 +216,6 @@ class TurnOutcomeDecision(BaseModel):
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     addressed_response: AddressedResponse | None = None
-    canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
     dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False

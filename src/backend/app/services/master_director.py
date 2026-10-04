@@ -278,31 +278,18 @@ def _cap_dramatic(current: str, ceiling: str) -> str:
     return _RANK_TO_DRAMATIC[min(_DRAMATIC_RANK.get(current, 0), _DRAMATIC_RANK.get(ceiling, 3))]
 
 
-def _append_constraint(constraints: list[str], text: str, *, limit: int = 8) -> list[str]:
-    if text not in constraints:
-        constraints.append(text)
-    return constraints[:limit]
-
-
 def apply_moves_to_outcome_decision(
     decision: TurnOutcomeDecision,
     selected: DirectorMoveSelection,
-    *,
-    committed_travel: bool = False,
 ) -> TurnOutcomeDecision:
-    """Map closed director moves onto existing TurnOutcomeDecision authority levers.
+    """Map closed director moves onto the typed levers: dramatic_mode and complication policy.
 
-    Narration guidance remains secondary seasoning; dramatic_mode, complication policy,
-    and canon_constraints are the primary structural effects.
-
-    When ``committed_travel`` is true, Soft Keeper quiet/soften may keep a calm beat but
-    cannot soft-refuse or atmosphere-stall the typed move — travel must land or hard-block.
+    Narration guidance remains secondary seasoning.
     """
     moves = set(selected.moves)
     dramatic = decision.dramatic_mode
     allow_complication = decision.allow_new_complication
     complication_source = decision.complication_source
-    constraints = list(decision.canon_constraints)
 
     pressureish = moves & {
         "advance_conflict",
@@ -314,93 +301,22 @@ def apply_moves_to_outcome_decision(
 
     if "escalate_chaos" in moves:
         dramatic = _raise_dramatic(dramatic, "dangerous")
-        constraints = _append_constraint(
-            constraints,
-            "[DIRECTOR STRUCTURAL: escalate_chaos] High-variance beat allowed only from "
-            "already-established tension/sources; keep the turn answerable.",
-        )
-    if "harden_consequence" in moves:
+    if moves & {"harden_consequence", "advance_conflict", "intrigue_reveal"}:
         dramatic = _raise_dramatic(dramatic, "tense")
-        constraints = _append_constraint(
-            constraints,
-            "[DIRECTOR STRUCTURAL: harden_consequence] Softeners are banned this turn; "
-            "failure and cost land without sentimental cushioning.",
-        )
-    if "advance_conflict" in moves:
-        dramatic = _raise_dramatic(dramatic, "tense")
-        constraints = _append_constraint(
-            constraints,
-            "[DIRECTOR STRUCTURAL: advance_conflict] Advance an existing tension; do not "
-            "dissolve established stakes into atmosphere-only filler.",
-        )
-    if "intrigue_reveal" in moves:
-        dramatic = _raise_dramatic(dramatic, "tense")
-        constraints = _append_constraint(
-            constraints,
-            "[DIRECTOR STRUCTURAL: intrigue_reveal] Surface a secret, faction pressure, or "
-            "offscreen agenda already implied by established state — no exposition dump.",
-        )
-
-    if "introduce_contact" in moves or selected.forced_introduce_contact:
-        constraints = _append_constraint(
-            constraints,
-            "[DIRECTOR STRUCTURAL: introduce_contact] A typed npc_introductions entry is "
-            "required when the companion cast is empty and contact is sought.",
-        )
-
-    if "npc_initiative" in moves:
-        constraints = _append_constraint(
-            constraints,
-            "[DIRECTOR STRUCTURAL: npc_initiative] A present NPC may act on their own agenda "
-            "this turn; quiet only with a concrete reason.",
-        )
 
     if quietish and not pressureish:
         dramatic = _cap_dramatic(dramatic, "calm" if "quiet" in moves else "routine")
         allow_complication = False
         complication_source = None
-        if "soften_blow" in moves:
-            constraints = _append_constraint(
-                constraints,
-                "[DIRECTOR STRUCTURAL: soften_blow] Do not stack new harsh costs this turn; "
-                "cushion consequence landing while preserving established facts.",
-            )
-        if "quiet" in moves:
-            if committed_travel:
-                constraints = _append_constraint(
-                    constraints,
-                    "[DIRECTOR STRUCTURAL: quiet] Low plot push after honor_travel lands; "
-                    "do not invent a new major conflict, and do not replace arrival/block "
-                    "with atmosphere-only lingering.",
-                )
-            else:
-                constraints = _append_constraint(
-                    constraints,
-                    "[DIRECTOR STRUCTURAL: quiet] Low plot push; do not invent a new major "
-                    "conflict or complication this turn.",
-                )
     elif "soften_blow" in moves and "harden_consequence" not in moves:
         # Softener loses to harden when both somehow appear; otherwise dampen escalation.
         dramatic = _cap_dramatic(dramatic, "routine")
-        constraints = _append_constraint(
-            constraints,
-            "[DIRECTOR STRUCTURAL: soften_blow] Prefer cushioned consequence landing.",
-        )
-
-    if committed_travel and not any("honor_travel" in item for item in constraints):
-        constraints = _append_constraint(
-            constraints,
-            "[DIRECTOR STRUCTURAL: honor_travel] Committed player travel must complete as "
-            "typed auto_success or hard-blocked with concrete evidence; soft refusal, "
-            "lingering, or atmosphere-only stall that leaves the player unmoved is banned.",
-        )
 
     return decision.model_copy(
         update={
             "dramatic_mode": dramatic,
             "allow_new_complication": allow_complication,
             "complication_source": complication_source if allow_complication else None,
-            "canon_constraints": constraints,
         }
     )
 

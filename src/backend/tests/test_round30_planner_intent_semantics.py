@@ -35,7 +35,6 @@ def test_valid_structured_movement_plan_remains_machine_valid() -> None:
             },
             "observable_consequences": [],
             "character_beats": [],
-            "canon_constraints": [],
             "new_fact_candidates": [],
             "narration_guidance": [],
             "ending_hook": "",

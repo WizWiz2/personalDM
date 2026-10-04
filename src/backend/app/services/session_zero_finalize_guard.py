@@ -109,11 +109,6 @@ def _opening_authority(campaign_id, state, completion) -> TurnAuthority:
         present_character_names=present,
         resolution="opening_scene",
         observable_consequences=[situation] if situation else [],
-        canon_constraints=[
-            "Это opening до первой заявки игрока: герой не совершает новых добровольных действий.",
-            "Физически присутствуют только player character и подтверждённые starter NPC.",
-            "Нельзя добавлять новую угрозу, фигуру, существо, маршрут или значимый объект как факт.",
-        ],
         narration_guidance=[
             "Описывать внешний мир, обстановку и подтверждённую starting situation.",
             "Не приписывать герою мысли, эмоции, решения, телесные реакции или обязанности.",

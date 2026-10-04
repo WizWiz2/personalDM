@@ -16,7 +16,6 @@ def sample_plan() -> TurnPlan:
         resolution="conversation",
         observable_consequences=["The guard answers cautiously."],
         character_beats=["The guard protects their superior."],
-        canon_constraints=["The player has not accepted the offer."],
         new_fact_candidates=["The eastern gate closes at dusk."],
         narration_guidance=["Keep the exchange compact."],
         ending_hook="The guard waits for a response.",

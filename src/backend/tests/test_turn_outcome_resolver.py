@@ -321,12 +321,10 @@ def test_unsupported_ordinary_travel_block_resolves_without_invented_obstacle() 
             "blocking_reason": "Путь закрыт.",
             "blocking_evidence_quote": "Запертая дверь",
         }],
-        "canon_constraints": ["Не пускать игрока в прачечную."],
     })
 
     assert parsed.action_outcomes[0].resolution == "auto_success"
     assert parsed.action_outcomes[0].blocking_reason is None
-    assert parsed.canon_constraints == []
     assert parsed.observable_consequences == [
         "Переход в место «Прачечная соседнего дома» завершён."
     ]

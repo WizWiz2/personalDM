@@ -69,7 +69,6 @@ def mock_turn_planner(request):
         resolution="observation",
         observable_consequences=["The action produces one visible consequence."],
         character_beats=[],
-        canon_constraints=["Do not invent abilities, items, movement, or knowledge."],
         new_fact_candidates=[],
         narration_guidance=["Keep the response grounded and concise."],
         ending_hook="Return a meaningful situation to the player.",
