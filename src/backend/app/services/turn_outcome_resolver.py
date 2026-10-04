@@ -794,6 +794,7 @@ class TurnOutcomeResolver:
         *,
         force_introduce_contact: bool = False,
         resident_slots: list[tuple[str, str, bool]] | None = None,
+        destination_cast: dict[str, list[str]] | None = None,
     ) -> TurnOutcomeDecision:
         try:
             solo_cast = solo_physical_presence(context_messages)
@@ -817,6 +818,7 @@ class TurnOutcomeResolver:
             existing_addressee = bool(contract.addressed_character_name) and any(
                 identity_key(name) == identity_key(contract.addressed_character_name)
                 for name in present_character_names(context_messages)
+                .union(*(destination_cast or {}).values())
             )
             slots = resident_slots or []
             required_slot = next(
@@ -899,6 +901,12 @@ class TurnOutcomeResolver:
                             + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
                             + json.dumps(response_contract, ensure_ascii=False)
                             + empty_cast_guidance
+                            + "".join(
+                                f"\n[DESTINATION CAST — typed] Physically at «{place}» when the "
+                                f"human arrives: {', '.join(cast)}. They are there; never resolve "
+                                "them as absent or not found."
+                                for place, cast in (destination_cast or {}).items()
+                            )
                             + "\nResolve the external result now."
                         ),
                     ),

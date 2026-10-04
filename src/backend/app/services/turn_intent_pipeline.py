@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.scene_location_table import SceneLocationLink
-from app.db.tables import Turn
+from app.db.tables import Campaign, Character, Entity, Turn
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -41,6 +41,26 @@ class TurnIntentPlanningPipeline:
         self._intent = PlayerIntentInterpreter(router)
         self._outcomes = TurnOutcomeResolver(router)
         self._compiler = ActionPlanCompiler(session)
+
+    async def _destination_cast(self, campaign_id, contract, names) -> dict[str, list[str]]:
+        """Typed occupants of every known place the frozen actions travel to."""
+        targets = {str(a.destination_location_id) for a in contract.actions if a.destination_location_id}
+        if not targets:
+            return {}
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        rows = await self._session.execute(
+            select(Character.current_location_id, Entity.canonical_name)
+            .join(Entity, Entity.id == Character.entity_id)
+            .where(
+                Entity.campaign_id == str(campaign_id),
+                Character.current_location_id.in_(targets),
+                Entity.id != (campaign.player_character_id if campaign else ""),
+            )
+        )
+        cast: dict[str, list[str]] = {}
+        for location_id, name in rows.all():
+            cast.setdefault(names.get(location_id, location_id), []).append(name)
+        return cast
 
     async def plan(
         self,
@@ -100,6 +120,7 @@ class TurnIntentPlanningPipeline:
                 contract,
                 force_introduce_contact=director.forced_introduce_contact,
                 resident_slots=resident_slots,
+                destination_cast=await self._destination_cast(campaign_id, contract, names),
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
             # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so

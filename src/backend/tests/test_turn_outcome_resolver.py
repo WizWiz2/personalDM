@@ -405,3 +405,42 @@ async def test_contact_seeking_without_introduction_resolves_with_nobody_appeari
     # Guidance is optional and offered once; there is no forced re-ask.
     assert len(router.calls) == 1
     assert "CONTACT-SEEKING" in router.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_travel_shows_the_destinations_typed_cast_and_binds_its_addressee() -> None:
+    """Regression (B5 T10): returning to the inn, the resolver never saw the host standing there
+    and resolved «Савелий не обнаружен». The destination's typed occupants are now authority."""
+    from types import SimpleNamespace
+
+    from app.models.turn import ChatMessage
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    class _Router:
+        def __init__(self):
+            self.calls, self.schemas = [], []
+
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            self.calls.append(messages[-1].content)
+            self.schemas.append(response_model.model_json_schema())
+            return {
+                "action_outcomes": [{"action_index": 0, "resolution": "auto_success",
+                                     "observable_outcome": "Кай входит в трактир."}],
+                "npc_introductions": [], "response_speaker_name": "Савелий",
+            }
+
+    contract = PlayerIntentContract.model_validate({
+        "summary": "Иду в трактир и спрашиваю хозяина.",
+        "actions": [{"action_type": "movement", "intent": "Вернуться в трактир.",
+                     "destination_location": "Трактир"}],
+        "addressed_response_requested": True, "addressed_character_name": "Савелий",
+    })
+    router = _Router()
+    decision = await TurnOutcomeResolver(router).resolve(
+        SimpleNamespace(), [ChatMessage(role="system", content="Physically present characters: Рыбак")],
+        "Иду в трактир, спрошу Савелия.", contract, destination_cast={"Трактир": ["Савелий"]},
+    )
+
+    assert "«Трактир» when the human arrives: Савелий" in router.calls[0]
+    assert router.schemas[0]["properties"]["response_speaker_name"]["anyOf"][0]["const"] == "Савелий"
+    assert decision.npc_introductions == []
