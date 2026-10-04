@@ -317,3 +317,20 @@ async def test_destination_binding_sees_which_known_place_is_current(db_session)
     _names, catalog = await TurnIntentPlanningPipeline(db_session, MagicMock())._location_catalog(campaign_id)
 
     assert {entry["name"]: entry["current"] for entry in catalog.values()} == {"Мастерская": True, "Пристань": False}
+
+
+@pytest.mark.asyncio
+async def test_an_addressee_introduced_this_turn_owns_the_beat_beside_another_npc(db_session):
+    """B9 T8: «Трактирщик» was addressed while being introduced; nobody got the beat."""
+    campaign_id, _, location, scene = await world(db_session)
+    boy = await EntityRepository(db_session).create_character(campaign_id, CharacterCreate(
+        canonical_name="Половой", current_location_id=location.id))
+    await SceneRepository(db_session).add_participant(scene.id, boy.id)
+
+    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
+        player_intent="Спрашиваю продавца.", resolution="conversation",
+        addressed_response_requested=True, addressed_response=response(),
+        npc_introductions=[introduction()],
+    ))
+
+    assert authority.beat_owner_name == "Продавец"

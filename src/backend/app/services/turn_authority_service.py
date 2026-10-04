@@ -201,17 +201,17 @@ class TurnAuthorityService:
 
         # The beat grant is the single source of NPC response: the /talk listener, else, when the
         # plan marks the player's line as addressed, the planner's typed addressee among present
-        # NPCs (by name or alias), else the sole present NPC. A new introduction receives its ID
-        # when it is materialized.
+        # NPCs (by name or alias, this turn's introductions included), else the sole present NPC.
+        # A new introduction receives its ID when it is materialized.
         npcs = [
             name for name in present_names
             if identity_key(name) != identity_key(authority.player_character_name or "")
         ]
         addressee = identity_key((planned_response.speaker_name if planned_response else None) or "")
+        aliases = {entity.canonical_name: entity.aliases for entity in all_characters}
         named = [
-            entity.canonical_name for entity in all_characters
-            if entity.canonical_name in npcs and addressee
-            and addressee in {identity_key(name) for name in (entity.canonical_name, *entity.aliases)}
+            name for name in npcs
+            if addressee and addressee in {identity_key(value) for value in (name, *aliases.get(name, ()))}
         ]
         addressed = bool(plan and plan.addressed_response_requested)
         owner_name = actor.canonical_name if actor else (
