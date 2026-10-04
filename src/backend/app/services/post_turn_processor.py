@@ -16,7 +16,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.proposed_change import ChangeType, ProposalAction
-from app.services.actor_turn_authority_guard import extract_actor_segment_proposals
+from app.services.actor_turn_authority_guard import extract_actor_segment_proposals, speech_spans
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
@@ -416,10 +416,24 @@ class PostTurnProcessor:
                         and campaign is not None
                         and campaign.player_character_id is not None
                     ):
-                        # Explicit epistemic branch: words spoken by a selected NPC can create only
-                        # sourced character claims. They do not pass through generic Scribe and
-                        # therefore cannot become objective FACT/EVENT/MOVEMENT canon by accident.
-                        proposals = await extract_actor_segment_proposals(
+                        # Explicit epistemic branch: words spoken by a selected NPC create only
+                        # sourced character claims. Generic Scribe reads the narration with the
+                        # speech cut out, so a claim can never become objective canon while the
+                        # clues, objects and acts the narration shows are still recorded.
+                        narration = assistant.content
+                        for span in speech_spans(narration):
+                            narration = narration.replace(span, "…")
+                        observed = [
+                            proposal for proposal in await scribe.extract_proposals(
+                                campaign_id=campaign_id,
+                                scene_id=assistant.scene_id,
+                                user_content=user_turn.content,
+                                assistant_content=narration,
+                                player_character_id=campaign.player_character_id,
+                            )
+                            if proposal.change_type != ChangeType.KNOWLEDGE
+                        ]
+                        proposals = observed + await extract_actor_segment_proposals(
                             scribe,
                             campaign_id=campaign_id,
                             assistant_content=assistant.content,
@@ -430,8 +444,8 @@ class PostTurnProcessor:
                         audit.update(
                             {
                                 "actor_knowledge_mode": "indexed_segments",
-                                "actor_generic_scribe_skipped": True,
-                                "actor_evidence_knowledge_created": len(proposals),
+                                "actor_generic_scribe_skipped": False,
+                                "actor_evidence_knowledge_created": len(proposals) - len(observed),
                             }
                         )
                         scribe.last_audit = audit
