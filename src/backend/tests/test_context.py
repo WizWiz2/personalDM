@@ -223,6 +223,27 @@ async def test_narrator_card_carries_what_a_present_npc_already_said(db_session:
 
 
 @pytest.mark.asyncio
+async def test_a_line_heard_from_an_absent_npc_keeps_its_speaker(db_session: AsyncSession):
+    """Live B5 T4: the host took the absent fisherman's «— Степаном меня зовут.» as his own."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Heard"))
+    entities, scenes = EntityRepository(db_session), SceneRepository(db_session)
+    hero = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Илья"))
+    fisher = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Рыбак"))
+    scene = await scenes.create(campaign_id, SceneCreate(title="Трактир"))
+    await scenes.add_participant(scene.id, hero.id)
+    await BeliefRepository(db_session).create(BeliefCreate(
+        character_id=hero.id, proposition="— Степаном меня зовут.", source_character_id=fisher.id,
+        status="known", visibility="character_only",
+    ))
+    await db_session.commit()
+
+    messages, _ = await ContextCompiler(db_session).compile_context(campaign_id, scene_id=scene.id)
+
+    assert "- heard from Рыбак: — Степаном меня зовут." in messages[0].content
+
+
+@pytest.mark.asyncio
 async def test_narrator_gets_the_typed_campaign_narrative_person(db_session: AsyncSession):
     """Replay 4 drifted between «Илья…» and «вы»; the person is one typed campaign setting."""
     from app.db.repositories.campaign_setup_repo import CampaignSetupRepository

@@ -563,7 +563,11 @@ class ContextCompiler:
                     ):
                         participant_package += f"{header}:\n" if group else ""
                         for belief in group:
-                            participant_package += f"- {belief.proposition}\n"
+                            # A line heard from someone absent stays theirs, never the next speaker's.
+                            source = (belief.source_character_id not in held and belief.source_character_id
+                                      and await self._entity_repo.get_by_id(belief.source_character_id))
+                            heard = f"heard from {source.canonical_name}: " if source else ""
+                            participant_package += f"- {heard}{belief.proposition}\n"
                             participant_belief_ids.append(str(belief.id))
 
             participant_tokens = count_tokens(participant_package)
