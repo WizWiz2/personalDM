@@ -69,11 +69,9 @@ def test_conservative_fallback_is_player_facing_russian():
         [
             *fallback.canon_constraints,
             *fallback.narration_guidance,
-            fallback.ending_hook,
         ]
     )
 
     assert "Planner authority is unavailable" not in rendered
     assert "The attempted action remains unresolved" not in rendered
     assert "Планировщик недоступен" in rendered
-    assert "Попытка пока не приводит" in rendered

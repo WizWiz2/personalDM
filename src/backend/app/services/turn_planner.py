@@ -191,7 +191,6 @@ class TurnPlan(BaseModel):
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     new_fact_candidates: list[str] = Field(default_factory=list, max_length=4)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
-    ending_hook: str = Field(default="", max_length=500)
 
     @model_validator(mode="after")
     def enforce_structured_boundaries(self):
@@ -346,8 +345,7 @@ Return only this schema:
   "character_beats": ["present NPC reaction functions, not finished prose"],
   "canon_constraints": ["specific facts/limits Narrator must obey"],
   "new_fact_candidates": ["only genuinely new durable facts implied by this turn"],
-  "narration_guidance": ["pacing/focus/sensory guidance, no finished prose"],
-  "ending_hook": "current unresolved situation returned to player"
+  "narration_guidance": ["pacing/focus/sensory guidance, no finished prose"]
 }
 """
 

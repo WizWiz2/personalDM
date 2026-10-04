@@ -179,7 +179,6 @@ def test_sequence_without_structured_outcome_cannot_authorize_remote_findings():
     )
 
     assert authority.observable_consequences == []
-    assert authority.ending_hook == ""
     assert authority.canon_constraints == []
     assert any("текущей физической локации" in value for value in authority.narration_guidance)
 

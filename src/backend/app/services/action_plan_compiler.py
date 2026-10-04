@@ -458,7 +458,6 @@ class ActionPlanCompiler:
             canon_constraints=decision.canon_constraints,
             new_fact_candidates=[],
             narration_guidance=decision.narration_guidance,
-            ending_hook=decision.ending_hook,
         )
         if plan.scene_transition.sequence_payload is not None:
             payload = dict(plan.scene_transition.sequence_payload)

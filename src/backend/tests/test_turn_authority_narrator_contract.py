@@ -49,7 +49,7 @@ def test_narrator_receives_one_typed_authority_without_legacy_plan_contract():
     assert "[APPROVED TURN PLAN]" not in system
     assert '"canonical_name": "Дежурный фабрики"' in system
     assert "Ответить коротко и конкретно" in system
-    assert "Дежурный ждёт вопроса" in system
+    assert "Дежурный ждёт вопроса" not in system
     assert "What is not forbidden is allowed" in system
     assert "Mentioning anyone else is fine" in system
     assert "established_state" in system

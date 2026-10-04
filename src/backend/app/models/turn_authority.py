@@ -88,7 +88,6 @@ class TurnAuthority(BaseModel):
     established_state: list[str] = Field(default_factory=list)
     established_subjects: list[str] = Field(default_factory=list)
     narration_guidance: list[str] = Field(default_factory=list)
-    ending_hook: str = ""
     protected_player_decisions: list[str] = Field(default_factory=list)
     pending_player_choice: str | None = None
     allow_new_complication: bool = False
@@ -132,7 +131,6 @@ class TurnAuthority(BaseModel):
         if blocked:
             self.character_beats = []
             self.canon_constraints = []
-            self.ending_hook = ""
             self.allow_new_complication = False
             self.complication_source = None
             self.narration_guidance = [
@@ -144,7 +142,6 @@ class TurnAuthority(BaseModel):
         if not executed and self.acting_character_id is None:
             self.character_beats = []
             self.canon_constraints = []
-            self.ending_hook = ""
             self.allow_new_complication = False
             self.complication_source = None
             self.narration_guidance = [
@@ -252,7 +249,6 @@ class TurnAuthority(BaseModel):
             "character_beats": self.character_beats,
             "canon_constraints": self.canon_constraints,
             "narration_guidance": self.narration_guidance,
-            "ending_hook": self.ending_hook,
             "narrative_person": NARRATIVE_PERSON[self.narrative_person],
             "dramatic_mode": self.dramatic_mode,
             "pending_player_choice": self.pending_player_choice,

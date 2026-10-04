@@ -278,7 +278,6 @@ class TurnOutcomeDecisionDraft(BaseModel):
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
-    ending_hook: str = ""
     dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = None
@@ -458,7 +457,6 @@ def _outcome_wire_model(
                 "character_beats": [],
                 "canon_constraints": [],
                 "narration_guidance": [],
-                "ending_hook": "",
                 "allow_new_complication": False,
                 "complication_source": None,
             }
@@ -688,7 +686,6 @@ def normalize_outcome_draft(
             ),
             "canon_constraints": _bounded_strings(draft.canon_constraints, 8),
             "narration_guidance": _bounded_strings(draft.narration_guidance, 6),
-            "ending_hook": _compact(draft.ending_hook),
             "dramatic_mode": draft.dramatic_mode,
             "allow_new_complication": allow_complication,
             "complication_source": complication_source if allow_complication else None,

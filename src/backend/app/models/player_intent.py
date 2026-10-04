@@ -218,7 +218,6 @@ class TurnOutcomeDecision(BaseModel):
     addressed_response: AddressedResponse | None = None
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
-    ending_hook: str = Field(default="", max_length=500)
     dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = Field(default=None, max_length=1000)

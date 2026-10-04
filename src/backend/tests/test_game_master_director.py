@@ -185,7 +185,6 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
             "allow_new_complication": False,
             "canon_constraints": [],
             "narration_guidance": ["prose only"],
-            "ending_hook": "",
         }
     )
     harden = DirectorMoveSelection(
@@ -199,7 +198,6 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
     assert any("harden_consequence" in item for item in hardened.canon_constraints)
     assert any("advance_conflict" in item for item in hardened.canon_constraints)
     # Pressure adjusts direction, not a fictional event: no ungrounded generic cliffhanger.
-    assert hardened.ending_hook == ""
     assert hardened.narration_guidance == ["prose only"]  # guidance applied separately
 
     quiet = DirectorMoveSelection(
@@ -521,7 +519,6 @@ def test_soft_keeper_quiet_cannot_soft_stall_committed_travel() -> None:
             "allow_new_complication": False,
             "canon_constraints": [],
             "narration_guidance": [],
-            "ending_hook": "",
         }
     )
     quiet = DirectorMoveSelection(
@@ -553,7 +550,6 @@ def test_honor_travel_also_stamps_without_quiet_moves() -> None:
             "allow_new_complication": False,
             "canon_constraints": [],
             "narration_guidance": [],
-            "ending_hook": "",
         }
     )
     pressure = DirectorMoveSelection(

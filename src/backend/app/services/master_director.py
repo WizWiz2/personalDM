@@ -303,7 +303,6 @@ def apply_moves_to_outcome_decision(
     allow_complication = decision.allow_new_complication
     complication_source = decision.complication_source
     constraints = list(decision.canon_constraints)
-    ending_hook = decision.ending_hook
 
     pressureish = moves & {
         "advance_conflict",
@@ -402,7 +401,6 @@ def apply_moves_to_outcome_decision(
             "allow_new_complication": allow_complication,
             "complication_source": complication_source if allow_complication else None,
             "canon_constraints": constraints,
-            "ending_hook": ending_hook,
         }
     )
 
