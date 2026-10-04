@@ -490,8 +490,9 @@ def _destination_binding_wire(indices: list[int], references: dict[str, str]):
         **{
             f"action_{index}": (
                 Literal[tuple(references) + ("new_inside", "new", "unresolved")],
-                Field(description="Same-place ID (a spot within a place is that place); new_inside for "
-                      "a new enclosed space inside it; new for one elsewhere; unresolved for ambiguity."),
+                Field(description="Same-place ID (also a spot within earshot of those present); "
+                      "new_inside for a new separate place inside it; new for one elsewhere; "
+                      "unresolved for ambiguity."),
             )
             for index in indices
         },
@@ -876,9 +877,11 @@ class PlayerIntentInterpreter:
                             "of the SAME known place in LOCATION REFERENCES (each has name, parent, "
                             "description and the opening of the scene held there, so a spot where an earlier "
                             "scene took place belongs to that location's ID). Compare meanings, not spelling. "
-                            "A spot within the location the player is in now is that location's ID. Select "
-                            "new_inside for an uncatalogued enclosed space one enters from it, new for one "
-                            "elsewhere, unresolved when the endpoint is unclear. Do not judge feasibility. "
+                            "Stepping to someone or something within sight and earshot of those present "
+                            "keeps the current location's ID. Select new_inside for an uncatalogued separate "
+                            "place inside the current location that one leaves their earshot to reach, new "
+                            "for one elsewhere, unresolved when the endpoint is unclear. Do not judge "
+                            "feasibility. "
                             "Return DestinationIdentityBindings.\n\n[OUTPUT JSON SCHEMA]\n"
                             + json.dumps(wire.model_json_schema(), ensure_ascii=False)
                         ),
