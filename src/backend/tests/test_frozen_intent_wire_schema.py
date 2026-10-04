@@ -339,6 +339,10 @@ def test_unbound_response_speaker_is_a_present_designation_or_this_turns_introdu
         wire.model_validate(payload)
     payload["response_speaker_name"] = "Трактирщик"
     assert wire.model_validate(payload).response_revealed_name == "Семён"
+    requested = _outcome_wire_model(0, present_names=["Илья", "Трактирщик"], response_requested=True)
+    payload["response_speaker_name"] = None
+    with pytest.raises(ValidationError, match="current designation"):
+        requested.model_validate(payload)
 
 
 def test_npc_wire_cannot_omit_encounter_evidence_and_profile() -> None:
