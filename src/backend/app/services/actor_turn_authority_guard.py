@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -66,60 +67,43 @@ def segment_actor_response(assistant_content: str, *, max_segments: int = 20) ->
         seen.add(key)
         candidates.append(segment)
 
-    for match in _QUOTE_RE.finditer(text):
-        quoted = next((group for group in match.groups() if group is not None), "")
-        for part in _split_candidate_text(quoted):
+    for span in speech_spans(text):
+        for part in _split_candidate_text(span):
             add(part)
             if len(candidates) >= max_segments:
                 return candidates
-
-    for part in _split_candidate_text(text):
-        add(part)
-        if len(candidates) >= max_segments:
-            break
     return candidates
 
 
-def _deduplicate_selected_segments(
-    segments: list[str],
-    selected_segment_ids: list[int],
-) -> list[int]:
-    """Collapse nested immutable evidence spans while preserving distinct selected claims.
+def speech_spans(text: str) -> list[str]:
+    """Direct speech by typography alone: quoted spans, and dialogue lines opened by a dash in which
+    a spaced dash after a punctuation mark switches between the speaker and the author's remark."""
+    spans = [next(g for g in match.groups() if g is not None) for match in _QUOTE_RE.finditer(text)]
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or unicodedata.category(line[0]) != "Pd":
+            continue
+        parts, start = [], 1
+        for index in range(2, len(line) - 1):
+            if (unicodedata.category(line[index]) == "Pd" and line[index - 1].isspace()
+                    and line[index + 1].isspace() and unicodedata.category(line[index - 2])[0] == "P"):
+                parts.append(line[start:index])
+                start = index + 1
+        spans += [part.strip() for part in [*parts, line[start:]][::2] if part.strip()]
+    return spans
 
-    Quote extraction intentionally produces both the exact quoted claim and, later, the enclosing
-    sentence. If the semantic selector chooses both, persisting both creates duplicate beliefs such
-    as `Это мой груз` and `«Это мой груз», — говорит он...`. This function does not decide meaning:
-    it only notices that one already-published selected span is textually contained in another and
-    keeps the more precise (shorter) evidence span.
-    """
+
+def _valid_segment_ids(segments: list[str], selected_segment_ids: list[int]) -> list[int]:
+    """Selected IDs that exist, once each; candidates are already unique speech spans."""
     valid: list[int] = []
-    seen: set[int] = set()
     for raw_id in selected_segment_ids[:8]:
         try:
             segment_id = int(raw_id)
         except (TypeError, ValueError):
             continue
-        if segment_id in seen or not (1 <= segment_id <= len(segments)):
-            continue
-        seen.add(segment_id)
-        valid.append(segment_id)
-
-    keep = set(valid)
-    for left in valid:
-        left_text = _word_key(segments[left - 1])
-        if not left_text:
-            continue
-        for right in valid:
-            if left == right:
-                continue
-            right_text = _word_key(segments[right - 1])
-            if not right_text or left_text == right_text:
-                if left_text == right_text and left > right:
-                    keep.discard(left)
-                continue
-            if left_text in right_text and len(left_text) < len(right_text):
-                keep.discard(right)
-    return [segment_id for segment_id in valid if segment_id in keep]
+        if 1 <= segment_id <= len(segments) and segment_id not in valid:
+            valid.append(segment_id)
+    return valid
 
 
 def build_actor_segment_proposals(
@@ -130,7 +114,7 @@ def build_actor_segment_proposals(
     player_character_id: UUID,
 ) -> list[ProposedChangeCreate]:
     proposals: list[ProposedChangeCreate] = []
-    for segment_id in _deduplicate_selected_segments(segments, selected_segment_ids):
+    for segment_id in _valid_segment_ids(segments, selected_segment_ids):
         evidence = segments[segment_id - 1]
         proposals.append(
             ProposedChangeCreate(
@@ -232,4 +216,5 @@ __all__ = [
     "build_actor_segment_proposals",
     "extract_actor_segment_proposals",
     "segment_actor_response",
+    "speech_spans",
 ]

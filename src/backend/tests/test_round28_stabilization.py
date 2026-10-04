@@ -124,7 +124,8 @@ async def test_actor_selector_retries_empty_selection_without_rewriting_evidence
         _llm_provider=object(),
         last_audit={},
     )
-    published = "Я видел красную машину возле старого дома около полуночи."
+    claim = "Я видел красную машину возле старого дома около полуночи."
+    published = f"— {claim}"
 
     proposals = await extract_actor_segment_proposals_with_audit(
         scribe,
@@ -136,7 +137,7 @@ async def test_actor_selector_retries_empty_selection_without_rewriting_evidence
 
     assert len(proposals) == 1
     assert scribe._model_router.generate_json.await_count == 2
-    assert proposals[0].payload["_canon"]["evidence"] == published
+    assert proposals[0].payload["_canon"]["evidence"] == claim
     assert proposals[0].payload["_canon"]["segment_id"] == 1
     assert scribe.last_audit["selector_attempts"] == 2
     assert scribe.last_audit["selector_status"] == "selected"

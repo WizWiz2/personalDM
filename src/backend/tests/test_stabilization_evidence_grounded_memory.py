@@ -157,7 +157,7 @@ async def test_extractor_failure_does_not_create_or_invent_memory():
 
 
 @pytest.mark.asyncio
-async def test_silence_is_semantically_rejected_as_knowledge():
+async def test_narration_without_speech_is_never_actor_knowledge():
     actor_id = uuid4()
     player_id = uuid4()
     router = FakeRouter(segment_ids=[])
@@ -171,7 +171,4 @@ async def test_silence_is_semantically_rejected_as_knowledge():
     )
 
     assert result == []
-    assert router.calls == 1
-    prompt = "\n".join(message.content for message in router.last_messages)
-    assert "Не выбирай жесты, эмоции" in prompt
-    assert "Если фактических утверждений нет" in prompt
+    assert router.calls == 0
