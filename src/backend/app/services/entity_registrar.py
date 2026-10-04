@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+import unicodedata
 from typing import Literal
 from uuid import UUID
 
@@ -43,6 +44,7 @@ class CharacterMention(BaseModel):
     temporary_name: bool = False
     personal_name_evidence: str | None = Field(default=None, max_length=500)
     persistent: bool = True
+    name_surface: str | None = Field(default=None, max_length=120)
 
 
 class EntityRegistrationEnvelope(BaseModel):
@@ -204,7 +206,8 @@ class EntityRegistrar:
 
 ПРАВИЛА:
 - Возвращай персонажа, если он физически появился, заговорил, напрямую взаимодействовал или повлиял на исход хода.
-- Не создавай сущности для толпы, группы, местоимения, безымянного фонового прохожего или человека, которого только упомянули в разговоре.
+- Не создавай сущности для толпы, группы, местоимения или безымянного фонового прохожего.
+- Человека, которого только упомянули и назвали личным именем, верни с presence=mentioned_only, temporary_name=false, canonical_name в именительном падеже и name_surface — имя точно как в тексте: он станет сущностью вне сцены. Безымянных упомянутых не возвращай.
 - Уже известного персонажа можно вернуть, чтобы отметить его присутствие или уход; используй его точное известное имя.
 - Персонаж со status=dead/destroyed не может снова физически появиться только из-за текста Narrator. Для исторического упоминания используй mentioned_only.
 - Не возвращай персонажа игрока, если он уже есть среди известных сущностей.
@@ -298,7 +301,9 @@ class EntityRegistrar:
                 # New identities and named reveals must be grounded in the published prose itself.
                 # Evidence support alone is insufficient because the registrar model can quote a
                 # real sentence while inventing a canonical_name in another JSON field.
-                if not self._name_supported_by_text(name, assistant_content):
+                if not self._name_supported_by_text(
+                    name, assistant_content
+                ) and not self._inflected_name_supported(name, mention, assistant_content):
                     continue
                 contextual = resolve_character_candidates(
                     character_entities,
@@ -437,10 +442,11 @@ class EntityRegistrar:
                 await self._enrich_existing(character, mention, source_turn_id, scene_id)
                 character_id = entity.id
             else:
-                if promotion_only:
-                    # This mode is used after TurnAuthority has already materialized all
-                    # authorized first appearances. It may reconcile a published name with an
-                    # existing temporary identity, but it is never allowed to create a new one.
+                if promotion_only and (
+                    mention.presence != "mentioned_only" or mention.temporary_name
+                ):
+                    # TurnAuthority owns physical first appearances. A personally named
+                    # person who is only mentioned is an off-scene entity, not an appearance.
                     continue
                 character = await self._entities.create_character(
                     campaign_id,
@@ -463,6 +469,7 @@ class EntityRegistrar:
                             "role": mention.role,
                             "importance": mention.importance,
                             "temporary_name": mention.temporary_name,
+                            "presence": mention.presence,
                         },
                     ),
                 )
@@ -817,6 +824,18 @@ class EntityRegistrar:
         if not name_key or not text_key:
             return False
         return f" {name_key} " in f" {text_key} "
+
+    @classmethod
+    def _inflected_name_supported(cls, name: str, mention, assistant_content: str) -> bool:
+        """An off-scene name may be quoted in another grammatical case: its verbatim
+        surface must be in the text, word-aligned with the name, every word capitalized."""
+        surface = (mention.name_surface or "").split()
+        return (
+            mention.presence == "mentioned_only"
+            and len(surface) == len(name.split())
+            and all(unicodedata.category(word[0]) == "Lu" for word in surface)
+            and cls._name_supported_by_text(" ".join(surface), assistant_content)
+        )
 
     @staticmethod
     def _clean_name(value: str) -> str | None:
