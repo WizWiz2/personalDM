@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
+from pydantic import create_model
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -205,10 +207,14 @@ class AuthorityNarrationPipeline:
         if authority.beat_owner_id is None:
             text, telemetry = await self._generate_text(messages, selection, temperature=temperature)
             return text, None, telemetry
+        # The schema admits only the owner's ID: strict decoding cannot mistype it (live B5 T4).
+        owner = create_model("GrantedBeat", __base__=GrantedBeat,
+                             cast_id=(Literal[str(authority.beat_owner_id)], ...))
+        wire = create_model("GrantedNarration", __base__=GrantedNarration, beat=(owner, ...))
         try:
-            narration = GrantedNarration.model_validate(await self._router.generate_json(
+            narration = wire.model_validate(await self._router.generate_json(
                 self._provider, selection, messages,
-                temperature=temperature, response_model=GrantedNarration,
+                temperature=temperature, response_model=wire,
             ))
         except (ValueError, TypeError) as exc:
             raise LLMProviderError(f"granted narration is malformed: {exc}") from exc

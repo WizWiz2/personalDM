@@ -204,3 +204,22 @@ async def test_unhonored_beat_gets_one_repair_then_the_typed_fallback(db_session
     ]
     assert result.text == "Дверь оказывается открыта."
     assert result.validation_status == "safe_fallback"
+
+
+@pytest.mark.asyncio
+async def test_granted_narration_schema_admits_only_the_owner_id(db_session):
+    """Live B5 T4: the repair returned the owner's UUID with a typo and the turn fell back."""
+    host, schemas = uuid4(), []
+
+    class FakeRouter:
+        async def generate_json(self, provider, selection, messages, **kwargs):
+            schemas.append(kwargs["response_model"].model_json_schema())
+            return {"prose": "— Да.", "beat": {"cast_id": str(host), "kind": "speech", "evidence": "— Да."}}
+
+    authority = _authority().model_copy(update={"beat_owner_id": host, "beat_owner_name": "Хозяин"})
+    prose, beat, _ = await AuthorityNarrationPipeline(db_session, FakeRouter())._narrate(
+        [], SimpleNamespace(), authority, temperature=0.5)
+
+    cast = next(iter(schemas[0]["$defs"].values()))["properties"]["cast_id"]
+    assert cast.get("const", (cast.get("enum") or [None])[0]) == str(host)
+    assert beat.cast_id == str(host) and prose == "— Да."
