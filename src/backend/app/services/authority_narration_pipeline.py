@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.db.tables import Belief, Entity
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.narration_validation import GrantedBeat, GrantedNarration, NarrationValidationResult
 from app.models.turn import ChatMessage
@@ -15,6 +17,7 @@ from app.providers.llm_provider import (
     LLMProviderError,
     LLMProviderTruncatedError,
 )
+from app.services.actor_turn_authority_guard import _word_key, segment_actor_response
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
@@ -222,6 +225,18 @@ class AuthorityNarrationPipeline:
         })
         return failure
 
+    async def _repeats(self, campaign_id: UUID, prose: str) -> list[str]:
+        """Sentences equal (up to case/punctuation) to a line an NPC already said: its scribe ledger."""
+        said = {_word_key(line) for line in (await self._session.execute(
+            select(Belief.proposition).join(Entity, Entity.id == Belief.source_character_id)
+            .where(Entity.campaign_id == str(campaign_id), Belief.is_current.is_(True))
+        )).scalars()}
+        repeats = [line for line in segment_actor_response(prose, max_segments=80)
+                   if _word_key(line) in said]
+        if repeats:
+            record_decision("repeat", "rejected", {"sentences": repeats})
+        return repeats
+
     async def _check(
         self,
         *,
@@ -387,7 +402,8 @@ class AuthorityNarrationPipeline:
         }
         try:
             beat_failure = self._beat_failure(authority, draft, beat)
-            result = None if beat_failure else await self._check(
+            repeats = await self._repeats(campaign_id, draft)
+            result = None if beat_failure or repeats else await self._check(
                 **check, candidate=draft, attempt_index=0
             )
             if result and result.verdict == "pass":
@@ -401,7 +417,7 @@ class AuthorityNarrationPipeline:
                 *narrator_messages,
                 ChatMessage(
                     role="user",
-                    content=validator.repair_prompt(authority, draft, result, beat_failure),
+                    content=validator.repair_prompt(authority, draft, result, beat_failure, repeats),
                 ),
             ]
             try:
@@ -422,7 +438,8 @@ class AuthorityNarrationPipeline:
                 )
             telemetry = {**telemetry, "repair_generation": repair_telemetry}
             repaired_failure = self._beat_failure(authority, repaired, repaired_beat)
-            repaired_result = None if repaired_failure else await self._check(
+            repeats = await self._repeats(campaign_id, repaired)
+            repaired_result = None if repaired_failure or repeats else await self._check(
                 **check, candidate=repaired, attempt_index=1
             )
             if repaired_result and repaired_result.verdict == "pass":
@@ -434,6 +451,7 @@ class AuthorityNarrationPipeline:
                 reason=(
                     f"beat grant not honored after one repair: {repaired_failure}"
                     if repaired_failure
+                    else f"verbatim repeat after one repair: {repeats[0]}" if repeats
                     else repaired_result.summary or "narration still breaks a ban after one repair"
                 ),
                 repair_attempts=1,
