@@ -22,6 +22,7 @@ from app.providers.llm_provider import (
 from app.services.actor_turn_authority_guard import _word_key, segment_actor_response
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
+from app.services.script_consistency import consistent_script
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.llm_usage_tracker import record_decision, record_provider_telemetry
 from app.services.turn_authority_validator import TurnAuthorityValidator
@@ -279,6 +280,7 @@ class AuthorityNarrationPipeline:
         reason: str | None = None,
         beat: GrantedBeat | None = None,
     ) -> AuthorityNarrationResult:
+        text = consistent_script(text, authority.present_character_names)
         gate = await audit.finalize(
             run,
             status="repaired" if status == "safe_fallback" else status,
