@@ -6,12 +6,13 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Campaign, Entity
+from app.db.tables import Campaign, Entity, Turn
 from app.models.character import CharacterCreate, CharacterUpdate
 from app.models.entity import EntityUpdate
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
@@ -149,6 +150,10 @@ class EntityRegistrar:
         campaign = await self._session.get(Campaign, str(campaign_id))
         if not scene or not campaign:
             return result
+        # Everything the player has read: a designation becomes an alias only if it was shown.
+        self._published = " ".join([assistant_content, *(await self._session.execute(
+            select(Turn.content).where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant",
+                                       Turn.status == "active"))).scalars()]).casefold()
 
         entities = await self._entities.list_by_campaign(campaign_id)
         character_entities = [
@@ -715,10 +720,9 @@ class EntityRegistrar:
         if given_name_collides(new_name, occupied_canonical_keys(others, exclude_entity_id=entity.id)):
             return None  # A near-twin of another cast name keeps its unique designation.
         old_name = entity.canonical_name
-        aliases = self._clean_aliases(
-            [old_name, *entity.aliases, *mention.aliases],
-            new_name,
-        )
+        # A planner's working label the prose never used («Хозяин или служащий трактира») is no alias.
+        shown = [old_name] if old_name.casefold() in getattr(self, "_published", "") else []
+        aliases = self._clean_aliases([*shown, *entity.aliases, *mention.aliases], new_name)
         custom_fields = dict(entity.custom_fields or {})
         custom_fields["temporary_name"] = False
         custom_fields.setdefault("identity_promoted_from", old_name)
