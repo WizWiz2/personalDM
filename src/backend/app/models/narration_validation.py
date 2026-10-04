@@ -51,6 +51,16 @@ class NarrationViolation(BaseModel):
         }
 
 
+class NewcomerBeat(BaseModel):
+    """A person the beat owner brings in who takes a line or an act of their own in the prose."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=2, max_length=120)
+    kind: Literal["speech", "act"]
+    evidence: str = Field(min_length=1)
+
+
 class GrantedBeat(BaseModel):
     """The narrator's typed claim of how the beat owner took the beat, with exact prose evidence."""
 
@@ -61,6 +71,7 @@ class GrantedBeat(BaseModel):
     evidence: str = Field(min_length=1)
     # The personal name the owner gives for themself in this beat (nominative), else null.
     revealed_name: str | None = Field(default=None, max_length=120)
+    newcomer: NewcomerBeat | None = None
 
     def failure(self, owner_id: object, owner_name: str, prose: str) -> str | None:
         """Structural check: owner ID, exact fragment; speech overlaps a dialogue line or quote span,

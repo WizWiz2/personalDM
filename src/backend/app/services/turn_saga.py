@@ -130,7 +130,8 @@ class TurnSaga:
             + json.dumps(authority.narrator_payload(), ensure_ascii=False)
             + "\n\nWhat is not forbidden is allowed. Only four bans:\n"
             "1. Do not put a person physically into the scene unless they are in present_characters, "
-            "allowed_new_npcs or allowed_existing_npc_arrivals. Mentioning anyone else is fine.\n"
+            "allowed_new_npcs, allowed_existing_npc_arrivals, or one person beat_owner brings in "
+            "through executed_steps. Mentioning anyone else is fine.\n"
             "2. Do not contradict established_state, scene_time or executed_steps.\n"
             "3. Do not write the player character's speech, decisions, thoughts, feelings or "
             "voluntary actions beyond player_input.\n"
@@ -141,7 +142,9 @@ class TurnSaga:
             "refuse, leave or act, and you return the prose with beat = {cast_id: beat_owner.id, "
             "kind, evidence: the exact prose fragment of that beat, for act/leave a sentence whose "
             "subject is beat_owner, revealed_name: the personal name beat_owner gives for themself "
-            "in that beat, nominative, else null}. Everything else in the facts "
+            "in that beat, nominative, else null, newcomer: the person beat_owner brought in, if they "
+            "speak or act here, as {name as in the prose, kind: speech|act, evidence}, else null}. "
+            "Everything else in the facts "
             "is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose in narrative_person, also "
             "where the facts name the protagonist in third person; usually 2-3 paragraphs, "
@@ -574,6 +577,12 @@ class TurnSaga:
             materialized_outcome = await materializer.reveal_published_name(
                 authority, narration.beat, materialized_outcome, user_turn.id
             )
+            materialized_outcome = await materializer.introduce_published_newcomer(
+                authority, narration.beat, narration.text, materialized_outcome, user_turn.id
+            )
+            context_metadata["turn_materialization"]["introduced_character_ids"] = [
+                str(value) for value in materialized_outcome.introduced_character_ids
+            ]
             context_metadata["turn_authority"] = authority.model_dump(mode="json")
             context_metadata["turn_materialization"]["identity_updates"] = [
                 update.snapshot() for update in materialized_outcome.identity_updates

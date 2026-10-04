@@ -12,9 +12,11 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Entity, SceneParticipant, Turn
 from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
-from app.models.turn_authority import TurnAuthority
+from app.models.narration_validation import GrantedBeat
+from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.entity_identity import identity_key
 from app.services.name_identity_contract import given_name_collides
+from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
 
 
 @dataclass(frozen=True)
@@ -109,36 +111,12 @@ class TurnOutcomeMaterializer:
                     "Cannot materialize planned new NPC because that identity already exists: "
                     f"{introduction.canonical_name}"
                 )
-            character = await self._entities.create_character(
-                authority.campaign_id,
-                CharacterCreate(
-                    canonical_name=introduction.canonical_name,
-                    description=introduction.description or introduction.role,
-                    appearance=introduction.appearance,
-                    voice=introduction.voice,
-                    custom_fields={
-                        "introduced_by": "turn_authority",
-                        "introduction_turn_id": str(source_turn_id),
-                        "introduction_trigger_turn_id": str(authority.trigger_turn_id),
-                        "introduction_reason": introduction.reason,
-                        "role": introduction.role,
-                        "temporary_name": introduction.temporary_name,
-                        **({"slot_id": introduction.resident_slot} if introduction.resident_slot else {}),
-                    },
-                ),
-            )
-            await self._scenes.add_participant(
-                authority.target_scene_id,
-                character.id,
-                allow_movement=True,
-            )
+            character = await self._create(authority, introduction, source_turn_id)
             created_ids.append(character.id)
             if authority.beat_owner_id is None and identity_key(authority.beat_owner_name or "") == key:
                 authority.beat_owner_id = authority.acting_character_id = character.id
                 if authority.addressed_response:
                     authority.addressed_response.speaker_id = character.id
-            if character.canonical_name not in authority.present_character_names:
-                authority.present_character_names.append(character.canonical_name)
             known_names.add(key)
 
         await self._session.flush()
@@ -148,6 +126,61 @@ class TurnOutcomeMaterializer:
             arrived_existing_participants=tuple(arrived_existing),
             identity_updates=(identity_update,) if identity_update else (),
         )
+
+    async def _create(self, authority: TurnAuthority, introduction, source_turn_id: UUID):
+        character = await self._entities.create_character(
+            authority.campaign_id,
+            CharacterCreate(
+                canonical_name=introduction.canonical_name,
+                description=introduction.description or introduction.role,
+                appearance=introduction.appearance,
+                voice=introduction.voice,
+                custom_fields={
+                    "introduced_by": "turn_authority",
+                    "introduction_turn_id": str(source_turn_id),
+                    "introduction_trigger_turn_id": str(authority.trigger_turn_id),
+                    "introduction_reason": introduction.reason,
+                    "role": introduction.role,
+                    "temporary_name": introduction.temporary_name,
+                    **({"slot_id": introduction.resident_slot} if introduction.resident_slot else {}),
+                },
+            ),
+        )
+        await self._scenes.add_participant(
+            authority.target_scene_id,
+            character.id,
+            allow_movement=True,
+        )
+        if character.canonical_name not in authority.present_character_names:
+            authority.present_character_names.append(character.canonical_name)
+        return character
+
+    async def introduce_published_newcomer(self, authority: TurnAuthority, beat, prose, outcome, source_turn_id):
+        """A person a present beat owner brings in through an executed step, who then speaks or acts
+        in the published prose, joins the scene by the planned-introduction path (7b T7 «речник»)."""
+        newcomer = beat.newcomer if beat else None
+        if not (newcomer and authority.beat_owner_id and authority.target_scene_id) or not any(
+            step["status"] == "completed" for step in authority.executed_steps()
+        ):
+            return outcome
+        claim = GrantedBeat(cast_id=newcomer.name, kind=newcomer.kind, evidence=newcomer.evidence)
+        if claim.failure(newcomer.name, newcomer.name, prose):
+            return outcome
+        known = await self._entities.list_by_campaign(authority.campaign_id, entity_type="character")
+        occupied = {identity_key(name) for entity in known for name in (entity.canonical_name, *entity.aliases)}
+        try:
+            [introduction] = NpcIntroductionResolver.sanitize_introductions(
+                [PlannedNpcIntroduction(canonical_name=newcomer.name, role=newcomer.name, temporary_name=True,
+                                        reason=f"Приведён: {authority.beat_owner_name}")],
+                occupied_canonical_keys=occupied, locale_text=authority.player_input,
+            )
+        except (AuthorityResolutionError, ValueError):
+            return outcome
+        if identity_key(introduction.canonical_name) in occupied:
+            return outcome
+        character = await self._create(authority, introduction, source_turn_id)
+        await self._session.flush()
+        return replace(outcome, introduced_character_ids=(*outcome.introduced_character_ids, character.id))
 
     async def reveal_published_name(self, authority: TurnAuthority, beat, outcome, source_turn_id):
         """The narrator voices the beat owner, so a name it types in the owner's own published beat is

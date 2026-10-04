@@ -253,3 +253,30 @@ async def test_an_unshown_planner_designation_is_not_kept_as_alias(db_session):
     renamed = await entities.get_character(npc.id)
     assert renamed.canonical_name == "Кузьма Андреевич"
     assert renamed.aliases == []
+
+
+@pytest.mark.asyncio
+async def test_a_person_the_owner_brings_in_who_speaks_in_prose_joins_the_scene(db_session):
+    campaign_id, _, location, scene = await world(db_session)
+    entities = EntityRepository(db_session)
+    host = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Степан Лукич", current_location_id=location.id))
+    await SceneRepository(db_session).add_participant(scene.id, host.id)
+    user = await TurnRepository(db_session).create(campaign_id, TurnCreate(role="user", content="Сведите с речником."))
+    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
+        player_intent="Прошу свести с речником.", resolution="conversation",
+    ), user.id)
+    authority.beat_owner_id, authority.beat_owner_name = host.id, "Степан Лукич"
+    prose = "Степан Лукич подзывает речника. Речник садится напротив. «Белова знаю», — говорит речник."
+    beat = GrantedBeat(cast_id=str(host.id), kind="act", evidence="Степан Лукич подзывает речника.",
+                       newcomer={"name": "Речник", "kind": "speech", "evidence": "«Белова знаю»"})
+    materializer = TurnOutcomeMaterializer(db_session)
+
+    idle = await materializer.introduce_published_newcomer(authority, beat, prose, MaterializedTurnOutcome(), user.id)
+    authority.action_sequence = {"steps": [{"action_type": "service", "status": "completed"}]}
+    outcome = await materializer.introduce_published_newcomer(authority, beat, prose, MaterializedTurnOutcome(), user.id)
+
+    assert not idle.introduced_character_ids
+    [new_id] = outcome.introduced_character_ids
+    assert new_id in await SceneRepository(db_session).get_participants(scene.id)
+    assert "Речник" in authority.present_character_names
