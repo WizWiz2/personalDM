@@ -386,6 +386,13 @@ async def enrich_narrator_memory(
         claim_segments,
     )
 
+    # Character knowledge comes only from attributed immutable speech segments: the generic
+    # Scribe's free-text knowledge would store attribution tags and narration with the claim.
+    filtered_base = [
+        proposal
+        for proposal in filtered_base
+        if _change_type_value(proposal) != ChangeType.KNOWLEDGE.value
+    ]
     objective_merged = _dedupe_proposals([*filtered_base, *recovered])
     merged = _append_epistemic_claims(objective_merged, claim_proposals)
     scribe.last_audit = {
