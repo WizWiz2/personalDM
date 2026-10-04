@@ -294,6 +294,12 @@ def test_addressee_can_summon_a_newcomer_only_through_a_frozen_action() -> None:
         wire.model_validate({**base, "npc_introductions": [servant]})
     parsed = wire.model_validate({**base, "npc_introductions": [{**servant, "after_action_index": 0}]})
     assert parsed.npc_introductions[0].after_action_index == 0
+    # Live B6 T11: the arrival is typed on the action result that brings the person in.
+    arriving = {**base, "npc_introductions": [],
+                "action_outcomes": [{**base["action_outcomes"][0], "arriving_person": servant}]}
+    lifted = wire.model_validate(arriving)
+    assert [(i.canonical_name, i.after_action_index) for i in lifted.npc_introductions] == [("Половой", 0)]
+    assert wire.model_validate(lifted.model_dump(mode="json")).npc_introductions[0].canonical_name == "Половой"
 
 
 def _revealed_response(*, evidence: str):
