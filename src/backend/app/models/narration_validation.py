@@ -28,6 +28,7 @@ class NarrationViolation(BaseModel):
     severity: Literal["warning", "error"] = "error"
     evidence: str = Field(min_length=1, max_length=1000)
     correction: str = Field(min_length=1, max_length=1000)
+    known_absent_name: str | None = None
 
     def trace(self, candidate: str) -> dict:
         """Compact record of this violation and the exact candidate span it rejected."""

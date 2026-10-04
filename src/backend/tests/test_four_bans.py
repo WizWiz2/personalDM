@@ -289,3 +289,20 @@ async def test_a_verbatim_npc_repeat_gets_one_repair_before_the_validator(db_ses
     assert "дословный повтор" in prompts[1] and "спрашивать надо у пристани" in prompts[1]
     assert len(router.calls) == 1
     assert result.validation_status == "repaired" and "втором этаже" in result.text
+
+
+def test_background_crowd_is_allowed_but_a_quoted_stranger_or_known_absentee_is_not():
+    """B6 T3: patrons «За длинными столами теснились приезжие» failed the whole arrival."""
+    prose = ("За длинными столами теснились приезжие. Один из речников бросил: «Опять туман», — "
+             "и вышел. Шептун стоит у двери.")
+
+    def judged(evidence, known=None):
+        item = {"violation_type": "absent_character", "severity": "error", "evidence": evidence,
+                "correction": "убрать", "known_absent_name": known}
+        result = NarrationValidationResult.model_validate(
+            {"verdict": "repair_required", "summary": "x", "violations": [item]})
+        return four_bans_only(result, _authority(), prose).verdict
+
+    assert judged("За длинными столами теснились приезжие") == "pass"
+    assert judged("Один из речников бросил") == "repair_required"
+    assert judged("Шептун стоит у двери", known="Шептун") == "repair_required"
