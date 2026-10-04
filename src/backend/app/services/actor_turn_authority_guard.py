@@ -7,9 +7,6 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
-from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProviderError
-from app.services.role_model_router import ModelRole
 
 
 
@@ -140,81 +137,9 @@ def build_actor_segment_proposals(
     return proposals
 
 
-async def extract_actor_segment_proposals(
-    scribe,
-    *,
-    campaign_id: UUID,
-    assistant_content: str,
-    acting_character_id: UUID,
-    player_character_id: UUID,
-) -> list[ProposedChangeCreate]:
-    """Ask the Scribe which immutable published segments are factual actor claims."""
-    clean = " ".join((assistant_content or "").split()).strip()
-    if not clean:
-        return []
-
-    actor = await scribe._entity_repo.get_character(acting_character_id)
-    player = await scribe._entity_repo.get_character(player_character_id)
-    if not actor or not player:
-        return []
-    segments = segment_actor_response(assistant_content)
-    if not segments:
-        return []
-
-    selection = await scribe._model_router.resolve(campaign_id, ModelRole.SCRIBE)
-    if selection is None:
-        return []
-
-    segment_block = "\n".join(
-        f"S{index}: {segment}" for index, segment in enumerate(segments, start=1)
-    )
-    try:
-        data = await scribe._model_router.generate_json(
-            scribe._llm_provider,
-            selection,
-            [
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "[ACTOR CLAIM SEGMENT SELECTOR]\n"
-                        "Тебе даны неизменяемые фрагменты ОПУБЛИКОВАННОГО ответа NPC. "
-                        "Не пиши и не исправляй текст. Семантически выбери только номера S-сегментов, "
-                        "где именно выбранный NPC сообщает персонажу игрока конкретное фактическое "
-                        "сведение о человеке, месте, предмете, событии, времени, доступе, внешности "
-                        "или наблюдении. Не выбирай жесты, эмоции, атмосферу, описание Narrator, "
-                        "в том числе третьелицевые предложения о том, где NPC находится или что он "
-                        "делает; само упоминание говорящего не превращает авторское описание в его "
-                        "реплику. "
-                        "вопросы, приветствия, намерения или предположения рассказчика. Не решай, "
-                        "прав ли NPC: это character_claim. Если фактических утверждений нет, верни "
-                        "пустой список. Определяй говорящего и смысл по контексту, не по словам-маркерам.\n"
-                        f"Говорящий NPC: {actor.canonical_name}.\n"
-                        f"Слушатель: {player.canonical_name}.\n"
-                        "Формат: {\"segment_ids\":[1,2]}"
-                    ),
-                ),
-                ChatMessage(role="user", content=segment_block),
-            ],
-            max_tokens=220,
-            temperature=0.0,
-            response_model=ActorSegmentSelection,
-        )
-        envelope = ActorSegmentSelection.model_validate(data)
-    except (LLMProviderError, ValueError, TypeError):
-        return []
-
-    return build_actor_segment_proposals(
-        segments,
-        envelope.segment_ids,
-        acting_character_id=acting_character_id,
-        player_character_id=player_character_id,
-    )
-
-
 __all__ = [
     "ActorSegmentSelection",
     "build_actor_segment_proposals",
-    "extract_actor_segment_proposals",
     "segment_actor_response",
     "speech_spans",
 ]

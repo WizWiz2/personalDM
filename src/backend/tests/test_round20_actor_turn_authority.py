@@ -1,3 +1,4 @@
+from app.services.actor_memory_observability_guard import extract_actor_segment_proposals_with_audit
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -8,7 +9,6 @@ from app.models.proposed_change import ChangeType
 from app.models.turn_authority import TurnAuthority
 from app.services.actor_turn_authority_guard import (
     build_actor_segment_proposals,
-    extract_actor_segment_proposals,
     segment_actor_response,
 )
 
@@ -116,7 +116,7 @@ async def test_empty_general_scribe_can_recover_actor_claims():
         _llm_provider=SimpleNamespace(),
     )
 
-    proposals = await extract_actor_segment_proposals(
+    proposals = await extract_actor_segment_proposals_with_audit(
         scribe,
         campaign_id=uuid4(),
         assistant_content=text,

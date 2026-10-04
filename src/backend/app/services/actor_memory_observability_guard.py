@@ -346,15 +346,10 @@ def install() -> None:
     if _INSTALLED:
         return
 
-    import app.services.post_turn_processor as post_turn_module
     from app.services.post_turn_processor import PostTurnProcessor
 
     original_process_job = PostTurnProcessor.process_job
     original_trace = PlaytestTraceService._trace_from_snapshot
-
-    post_turn_module.extract_actor_segment_proposals = (
-        extract_actor_segment_proposals_with_audit
-    )
 
     async def audited_process_job(self, job_id, *, already_claimed=False):
         token = _ACTOR_AUDIT.set(None)

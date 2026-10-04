@@ -16,7 +16,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.proposed_change import ChangeType, ProposalAction
-from app.services.actor_turn_authority_guard import extract_actor_segment_proposals, speech_spans
+from app.services.actor_turn_authority_guard import speech_spans
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
@@ -433,7 +433,11 @@ class PostTurnProcessor:
                             )
                             if proposal.change_type != ChangeType.KNOWLEDGE
                         ]
-                        proposals = observed + await extract_actor_segment_proposals(
+                        from app.services.actor_memory_observability_guard import (
+                            extract_actor_segment_proposals_with_audit,
+                        )
+
+                        proposals = observed + await extract_actor_segment_proposals_with_audit(
                             scribe,
                             campaign_id=campaign_id,
                             assistant_content=assistant.content,
