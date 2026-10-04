@@ -326,6 +326,10 @@ async def test_a_later_telling_supersedes_by_holder_and_subject(db_session: Asyn
         character_id=holder.id, subject_id=subject.id, source_turn_id=second_turn,
         proposition="Фёдор теперь у причала.",
     ))
+    other = await beliefs.apply_change(BeliefCreate(
+        character_id=holder.id, subject_id=subject.id, source_turn_id=uuid4(),
+        source_character_id=subject.id, proposition="Я у причала не бываю.",
+    ))
     current = {belief.id for belief in await beliefs.get_for_character(holder.id)}
-    assert current == {new.id}
+    assert current == {new.id, other.id}
     assert old.id != same_turn.id

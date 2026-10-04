@@ -128,13 +128,14 @@ class BeliefRepository(BaseRepository):
             return exact[0]
 
         created = await self.create(data)
-        # Typed (holder, subject) key: a later telling about the same subject supersedes
-        # the holder's earlier-turn beliefs about it; claims of one turn coexist.
+        # Typed (holder, source, subject) key: a later telling by the same speaker about the
+        # same subject supersedes that speaker's earlier-turn claims; one turn's claims coexist.
         targets: list[BeliefRead] = [
             belief
             for belief in current
             if data.subject_id
             and belief.subject_id == data.subject_id
+            and belief.source_character_id == data.source_character_id
             and belief.source_turn_id != data.source_turn_id
         ]
         if operation in {"revise", "contradict"}:
