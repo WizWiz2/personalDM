@@ -327,7 +327,6 @@ def _outcome_wire_model(
     bound_response_speaker: str | None = None,
     resident_slots: list[str] | None = None,
     required_slot: str | None = None,
-    response_requested: bool = False,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -485,18 +484,16 @@ def _outcome_wire_model(
                 )
             # With other people physically here, the response owner is one of them or a newcomer.
             cast = {
-                identity_key(name) for name in (
-                    *(present_names or ()), *([bound_response_speaker] if bound_response_speaker else ()),
-                    *(npc.canonical_name for npc in self.npc_introductions),
-                )
+                *(present_names or ()), bound_response_speaker or "",
+                *(npc.canonical_name for npc in self.npc_introductions),
             }
-            owner = self.response_speaker_name or bound_response_speaker
-            if len(present_names or ()) > 1 and (owner or response_requested) and identity_key(
-                owner or ""
-            ) not in cast:
+            if len(present_names or ()) > 1 and self.response_speaker_name and identity_key(
+                self.response_speaker_name
+            ) not in {identity_key(name) for name in cast}:
                 raise ValueError(
                     "response_speaker_name must be a present person's current designation "
-                    "or one of this turn's npc_introductions"
+                    "or one of this turn's npc_introductions: type a person who answers but is not "
+                    "yet in the cast in npc_introductions, or leave response_speaker_name null"
                 )
             dependencies = [
                 self.response_after_action_index,
@@ -884,7 +881,6 @@ class TurnOutcomeResolver:
                 present_names=present_character_names(context_messages),
                 resident_slots=[slot_id for slot_id, _role, _filled in slots],
                 required_slot=required_slot,
-                response_requested=contract.addressed_response_requested,
                 movement_indices={
                     index
                     for index, action in enumerate(contract.actions)
