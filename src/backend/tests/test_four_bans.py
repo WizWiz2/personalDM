@@ -134,6 +134,8 @@ def test_beat_grant_is_checked_structurally_against_owner_and_dialogue_span():
     host = "Фёдор Андреевич Климов"
     assert "subject" in beat("act", coin, text=coin, name=host)
     assert beat("act", "Фёдор Андреевич убирает монету.", text="Фёдор Андреевич убирает монету.", name=host) is None
+    stays = "Фёдор Андреевич остаётся за стойкой, не вмешиваясь: теперь разговор пойдёт."
+    assert beat("act", "Фёдор Андреевич остаётся за стойкой, не вмешиваясь.", text=stays, name=host) is None
     told = "Климов выслушал. Затем кивнул и вышел за дверь."
     assert beat("leave", "Затем кивнул и вышел за дверь.", text=told, name=host) is None
     assert "Бит принадлежит Дежурный" in TurnAuthorityValidator.repair_prompt(

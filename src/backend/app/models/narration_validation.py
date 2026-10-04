@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -64,6 +65,9 @@ class GrantedBeat(BaseModel):
         if self.cast_id != str(owner_id):
             return f"beat cast_id {self.cast_id} is not the grant owner {owner_id}"
         evidence = self.evidence.strip()
+        # A sentence end the model added where the prose continues («заметили.» vs «заметили: …»).
+        while evidence not in prose and evidence and unicodedata.category(evidence[-1])[0] == "P":
+            evidence = evidence[:-1].rstrip()
         start = prose.find(evidence)
         if not evidence or start < 0:
             return "beat evidence is not an exact fragment of the prose"
