@@ -364,7 +364,6 @@ FACT SEMANTICS:
         rejected_actor_knowledge: set[str] = set()
         existing_gaps = set(audit.gap_outcome_ids)
 
-        self._known_display_names = list(known_entities.keys())
         for proposal in extracted:
             canon_meta = (
                 proposal.payload.get("_canon")
@@ -628,17 +627,6 @@ FACT SEMANTICS:
             resolved["cardinality"] = cardinality
             if operation != "retract" and not resolved.get("object_value"):
                 return None
-            known_names = list(getattr(self, "_known_display_names", []) or [])
-            if known_names:
-                from app.services.play_surface_contract import snap_near_names
-
-                if resolved.get("subject"):
-                    resolved["subject"] = snap_near_names(str(resolved["subject"]), known_names)
-                if resolved.get("object_value"):
-                    resolved["object_value"] = snap_near_names(
-                        str(resolved["object_value"]),
-                        known_names,
-                    )
             scope = str(resolved.get("scope") or "scene").casefold()
             if scope not in {"campaign", "scene"}:
                 scope = "scene"

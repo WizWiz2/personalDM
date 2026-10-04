@@ -7,8 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.repositories.fact_repo import FactRepository
-from app.db.tables import Entity, Turn
-from app.services.play_surface_contract import snap_near_names
+from app.db.tables import Turn
 
 
 async def completed_world_outcomes(
@@ -70,13 +69,6 @@ async def established_state_lines(
         campaign_id, scene_id=scene_id, visibility="public"
     )
     facts = sorted(facts, key=lambda item: item.updated_at)[-12:]
-    name_rows = await session.execute(
-        select(Entity.canonical_name).where(
-            Entity.campaign_id == str(campaign_id),
-            Entity.entity_type == "character",
-        )
-    )
-    known_names = [row[0] for row in name_rows if row[0]]
     lines: list[str] = []
     qualifying: dict[str, bool] = {}
     for fact in facts:
@@ -92,7 +84,7 @@ async def established_state_lines(
         if qualifying[key] and fact.truth_status == "true":
             # A receipt can own several facts. Replaying its entire prose when just one fact
             # remains active resurrects superseded positions/ownership of unrelated subjects.
-            subject = snap_near_names(str(fact.subject or ""), known_names)
+            subject = str(fact.subject or "")
             value = f": {fact.object_value}" if fact.object_value is not None else ""
             line = f"{subject} — {fact.predicate}{value}."
             if line not in lines:

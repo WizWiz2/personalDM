@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from app.models.turn_authority import TurnAuthority
 from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.play_surface_contract import snap_near_names
 
 
 def test_fallback_publishes_only_the_typed_outcome():
@@ -43,10 +42,6 @@ def _authority(**kwargs) -> TurnAuthority:
     )
     base.update(kwargs)
     return TurnAuthority(**base)
-
-
-def test_memory_name_snapping_repairs_a_near_miss_of_a_known_name():
-    assert snap_near_names("Леры Вереск", ["Лира Вереск"]) == "Лиры Вереск"
 
 
 def test_player_stream_hides_the_technical_cause():
