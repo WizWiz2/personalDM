@@ -94,21 +94,26 @@ def segment_actor_response(assistant_content: str, *, max_segments: int = 20) ->
 
 
 def speech_spans(text: str) -> list[str]:
-    """Direct speech by typography alone: quoted spans, and dialogue lines opened by a dash in which
-    a spaced dash after a punctuation mark switches between the speaker and the author's remark."""
-    spans = [next(g for g in match.groups() if g is not None) for match in _QUOTE_RE.finditer(text)]
+    """Direct speech by typography alone: quoted spans, and dialogue lines opened by a dash. Inside
+    either, a spaced dash after a punctuation mark switches between the speaker and the author."""
+    spans: list[str] = []
+    for match in _QUOTE_RE.finditer(text or ""):
+        spans += _speaker_parts(next(g for g in match.groups() if g is not None), 0)
     for line in (text or "").splitlines():
         line = line.strip()
-        if not line or unicodedata.category(line[0]) != "Pd":
-            continue
-        parts, start = [], 1
-        for index in range(2, len(line) - 1):
-            if (unicodedata.category(line[index]) == "Pd" and line[index - 1].isspace()
-                    and line[index + 1].isspace() and unicodedata.category(line[index - 2])[0] == "P"):
-                parts.append(line[start:index])
-                start = index + 1
-        spans += [part.strip() for part in [*parts, line[start:]][::2] if part.strip()]
+        if line and unicodedata.category(line[0]) == "Pd":
+            spans += _speaker_parts(line, 1)
     return spans
+
+
+def _speaker_parts(line: str, start: int) -> list[str]:
+    parts = []
+    for index in range(max(2, start + 1), len(line) - 1):
+        if (unicodedata.category(line[index]) == "Pd" and line[index - 1].isspace()
+                and line[index + 1].isspace() and unicodedata.category(line[index - 2])[0] == "P"):
+            parts.append(line[start:index])
+            start = index + 1
+    return [part.strip() for part in [*parts, line[start:]][::2] if part.strip()]
 
 
 def _valid_segment_ids(segments: list[str], selected_segment_ids: list[int]) -> list[int]:

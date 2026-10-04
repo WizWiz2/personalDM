@@ -131,3 +131,10 @@ def test_location_projection_does_not_try_to_inflect_canonical_name():
 
     assert rendered == "Вы приходите туда, куда направлялись: Старая Марина."
     assert "к Старая Марина" not in rendered
+
+
+def test_author_remark_inside_a_quote_is_not_speech() -> None:
+    from app.services.actor_turn_authority_guard import speech_spans
+
+    text = "«Не назову, — говорит он наконец. — Постой не по спискам ведётся». Он молчит."
+    assert speech_spans(text) == ["Не назову,", "Постой не по спискам ведётся"]
