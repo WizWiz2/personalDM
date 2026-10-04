@@ -108,9 +108,9 @@ async def extract_actor_segment_proposals_with_audit(
         "character_claim. Если фактических утверждений нет, верни пустой список.\n"
         f"Говорящий NPC: {actor.canonical_name}.\n"
         f"Слушатель: {player.canonical_name}.\n"
-        "Для каждого выбранного сегмента укажи в subjects точное имя ИЗВЕСТНОЙ СУЩНОСТИ, "
-        "о которой утверждение, если она есть: "
-        + ", ".join(entity.canonical_name for entity in entities) + ".\n"
+        "Для каждого выбранного сегмента укажи в subjects точное имя ИЗВЕСТНОГО ПЕРСОНАЖА, "
+        "о котором утверждение, если он есть: "
+        + ", ".join(e.canonical_name for e in entities if e.entity_type == "character") + ".\n"
         "Формат: {\"segment_ids\":[1,2],\"subjects\":{\"1\":\"Имя\"}}"
     )
 

@@ -16,17 +16,18 @@ class ActorSegmentSelection(BaseModel):
     segment_ids: list[int] = Field(default_factory=list, max_length=8)
     subjects: dict[int, str] = Field(
         default_factory=dict,
-        description="segment id -> exact KNOWN ENTITY name the claim is about",
+        description="segment id -> exact KNOWN CHARACTER name the claim is about",
     )
 
 
 def subject_ids_by_segment(subjects: dict[int, str], entities) -> dict[int, str]:
-    """Bind selector-named claim subjects to known entity ids; unknown names stay untyped."""
+    """Bind selector-named claim subjects to known characters; anything else stays untyped."""
     from app.services.entity_identity import identity_key
 
     ids = {
         identity_key(name): str(entity.id)
         for entity in entities
+        if entity.entity_type == "character"
         for name in (entity.canonical_name, *entity.aliases)
     }
     return {
