@@ -33,13 +33,13 @@ async def test_a_person_found_at_the_keepers_place_is_its_keeper_and_a_brought_o
     inn = await LocationRepository(db_session).create(campaign_id, LocationCreate(
         canonical_name="Трактир", custom_fields={"resident_role": "трактирщик"}))
     host = PlannedNpcIntroduction(canonical_name="Хозяин трактира", role="хозяин трактира",
-                                  temporary_name=True, reason="Стоит за стойкой.", after_action_index=0)
+                                  temporary_name=True, reason="Стоит за стойкой.", after_action_index=1)
     river = PlannedNpcIntroduction(canonical_name="Речник", role="речник", temporary_name=True,
-                                   reason="Хозяин послал за ним.", after_action_index=1)
+                                   reason="Хозяин послал за ним.", after_action_index=1, arrives=True)
 
     resolved = await NpcIntroductionResolver(db_session).resolve(
         campaign_id=campaign_id, introductions=[host, river], present_names=[],
-        target_location_id=inn.id, bringing_steps=frozenset({1}))
+        target_location_id=inn.id)
 
     assert [(item.canonical_name, item.resident_slot) for item in resolved.new_introductions] == [
         ("Хозяин трактира", str(inn.id)), ("Речник", None)]

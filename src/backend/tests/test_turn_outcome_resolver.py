@@ -465,4 +465,4 @@ def test_a_step_that_brings_someone_carries_their_typed_introduction() -> None:
     decision = normalize_outcome_draft(draft, wait)
 
     [arrival] = decision.npc_introductions
-    assert (arrival.canonical_name, arrival.after_action_index) == ("Речник", 0)
+    assert (arrival.canonical_name, arrival.after_action_index, arrival.arrives) == ("Речник", 0, True)

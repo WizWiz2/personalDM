@@ -202,7 +202,6 @@ class NpcIntroductionResolver:
         introductions: list,
         present_names: list[str],
         target_location_id: UUID | None,
-        bringing_steps: frozenset[int] = frozenset(),
     ) -> NpcIntroductionResolution:
         references = [
             getattr(item, "identity_reference", None) or item.canonical_name
@@ -221,8 +220,8 @@ class NpcIntroductionResolver:
         if role:
             # Someone found at a keeper's place (not brought by a step) is its keeper: they fill an
             # empty slot or are the keeper already there (B8 T6: «Хозяин…» beside «Трактирщик»).
-            found = [item for item in introductions if not getattr(item, "resident_slot", None)
-                     and getattr(item, "after_action_index", None) not in bringing_steps]
+            found = [item for item in introductions
+                     if not getattr(item, "resident_slot", None) and not getattr(item, "arrives", False)]
             keepers = found if filled else found[:1]
             introductions = [item.model_copy(update={"resident_slot": slot})
                              if any(item is keeper for keeper in keepers) else item for item in introductions]

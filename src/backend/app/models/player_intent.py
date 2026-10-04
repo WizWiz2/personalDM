@@ -195,6 +195,7 @@ class OutcomeNpcIntroduction(BaseModel):
     reason: str = Field(min_length=2, max_length=500)
     after_action_index: int | None = Field(default=None, ge=0, le=7)
     resident_slot: str | None = Field(default=None, max_length=64)
+    arrives: bool = False
 
     @model_validator(mode="after")
     def stable_name_requires_evidence(self):

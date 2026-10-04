@@ -427,6 +427,7 @@ class ActionPlanCompiler:
                 reason=item.reason,
                 after_action_index=item.after_action_index,
                 resident_slot=item.resident_slot,
+                arrives=item.arrives,
             )
             for item in decision.npc_introductions
         ]

@@ -617,7 +617,7 @@ def normalize_outcome_draft(
         item.arriving.model_copy(update={"after_action_index": item.action_index, "resident_slot": None})
         for item in draft.action_outcomes if getattr(item, "arriving", None)
     ]
-    for npc in [*arrivals, *draft.npc_introductions]:
+    for arrives, npc in [*((True, item) for item in arrivals), *((False, item) for item in draft.npc_introductions)]:
         if any(identity_key(npc.canonical_name) == identity_key(known["identity_reference"])
                for known in introductions):
             continue
@@ -656,6 +656,7 @@ def normalize_outcome_draft(
                 "reason": reason,
                 "after_action_index": npc.after_action_index,
                 "resident_slot": npc.resident_slot,
+                "arrives": arrives,
             }
         )
 
