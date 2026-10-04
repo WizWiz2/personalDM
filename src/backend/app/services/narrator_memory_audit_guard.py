@@ -12,7 +12,6 @@ from app.providers.llm_provider import LLMProviderError
 from app.services.actor_turn_authority_guard import (
     build_actor_segment_proposals,
     segment_actor_response,
-    subject_ids_by_segment,
 )
 from app.services.canon_semantics import CanonEnvelope
 from app.services.role_model_router import ModelRole
@@ -29,10 +28,6 @@ class NarratorClaimSelection(BaseModel):
 
     segment_id: int
     speaker_name: str = Field(min_length=1, max_length=120)
-    subject_name: str | None = Field(
-        default=None, max_length=120,
-        description="exact KNOWN CHARACTER name the claim is about, if any",
-    )
 
 
 class NarratorMemoryAudit(BaseModel):
@@ -72,8 +67,7 @@ Hard boundaries:
   outcomes. Check coverage of their changed state before decorative narrative properties.
   A fact about color, atmosphere or an effect does not cover the object's changed operational
   state. Recover missing states with their actual state bearer, property and resulting value.
-- For claims, return only segment_id + speaker_name (+ subject_name: the exact known character the
-  claim is about, if any); never rewrite the claim text.
+- For claims, return only segment_id + speaker_name; never rewrite the claim text.
 - All human-readable recovery fields must be Russian.
 
 Return exactly NarratorMemoryAudit.
@@ -297,7 +291,6 @@ async def enrich_narrator_memory(
         player_character_id,
     )
 
-    entities = await scribe._entity_repo.list_by_campaign(campaign_id)
     selection = await scribe._model_router.resolve(campaign_id, ModelRole.SCRIBE)
     if selection is None:
         return base_proposals
@@ -315,8 +308,6 @@ async def enrich_narrator_memory(
                 content=(
                     "[PRESENT NPCS]\n"
                     + (", ".join(present_npc_names) or "- нет")
-                    + "\n\n[KNOWN CHARACTERS]\n"
-                    + ", ".join(e.canonical_name for e in entities if e.entity_type == "character")
                     + "\n\n[PUBLISHED RESPONSE SEGMENTS]\n"
                     + segment_block
                     + "\n\n[EXISTING SCRIBE PROPOSALS]\n"
@@ -351,10 +342,6 @@ async def enrich_narrator_memory(
             [claim.segment_id],
             acting_character_id=UUID(speaker_id),
             player_character_id=player_character_id,
-            subject_ids=subject_ids_by_segment(
-                {claim.segment_id: claim.subject_name} if claim.subject_name else {},
-                entities,
-            ),
         )
         if built:
             claim_proposals.extend(built)

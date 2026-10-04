@@ -41,9 +41,6 @@ class FakeRouter:
 
 
 class FakeEntities:
-    async def list_by_campaign(self, campaign_id):
-        return []
-
     async def get_character(self, entity_id):
         return SimpleNamespace(
             canonical_name="Бармен" if str(entity_id).endswith("1") else "Мария"

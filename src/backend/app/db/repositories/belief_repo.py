@@ -18,7 +18,6 @@ class BeliefRepository(BaseRepository):
             character_id=str(data.character_id),
             fact_id=str(data.fact_id) if data.fact_id else None,
             proposition=data.proposition,
-            subject_id=str(data.subject_id) if data.subject_id else None,
             status=data.status,
             confidence=data.confidence,
             source_turn_id=(str(data.source_turn_id) if data.source_turn_id else None),
@@ -128,25 +127,16 @@ class BeliefRepository(BaseRepository):
             return exact[0]
 
         created = await self.create(data)
-        # Typed (holder, source, subject) key: a later telling by the same speaker about the
-        # same subject supersedes that speaker's earlier-turn claims; one turn's claims coexist.
-        targets: list[BeliefRead] = [
-            belief
-            for belief in current
-            if data.subject_id
-            and belief.subject_id == data.subject_id
-            and belief.source_character_id == data.source_character_id
-            and belief.source_turn_id != data.source_turn_id
-        ]
+        targets: list[BeliefRead] = []
         if operation in {"revise", "contradict"}:
             if previous_key:
-                targets += [
+                targets = [
                     belief
                     for belief in current
                     if self.normalize(belief.proposition) == previous_key
                 ]
             elif data.fact_id:
-                targets += [belief for belief in current if belief.fact_id == data.fact_id]
+                targets = [belief for belief in current if belief.fact_id == data.fact_id]
 
         for belief in targets:
             if belief.id == created.id:

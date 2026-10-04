@@ -304,7 +304,6 @@ class CanonApplier:
                     character_id=UUID(payload["recipient_id"]),
                     fact_id=fact_id,
                     proposition=proposition,
-                    subject_id=_uuid_or_none(payload.get("subject_id")),
                     status=payload.get("status", "known"),
                     confidence=payload.get("confidence", 1.0),
                     source_turn_id=source_turn_id,
@@ -390,10 +389,3 @@ class CanonApplier:
             return
 
         raise ValueError(f"Unsupported canon change type: {change_type.value}")
-
-
-def _uuid_or_none(value) -> UUID | None:
-    try:
-        return UUID(str(value)) if value else None
-    except ValueError:
-        return None

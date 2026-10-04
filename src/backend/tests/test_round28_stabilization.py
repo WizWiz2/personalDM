@@ -105,7 +105,6 @@ async def test_actor_selector_retries_empty_selection_without_rewriting_evidence
     player_id = uuid4()
     scribe = SimpleNamespace(
         _entity_repo=SimpleNamespace(
-            list_by_campaign=AsyncMock(return_value=[]),
             get_character=AsyncMock(
                 side_effect=[
                     SimpleNamespace(canonical_name="Виктор"),

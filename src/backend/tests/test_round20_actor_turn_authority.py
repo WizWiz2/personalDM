@@ -102,7 +102,6 @@ async def test_empty_general_scribe_can_recover_actor_claims():
     )
     scribe = SimpleNamespace(
         _entity_repo=SimpleNamespace(
-            list_by_campaign=AsyncMock(return_value=[]),
             get_character=AsyncMock(
                 side_effect=[
                     SimpleNamespace(canonical_name="Грузчик"),
