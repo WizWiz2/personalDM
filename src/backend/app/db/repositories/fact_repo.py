@@ -220,6 +220,14 @@ class FactRepository(BaseRepository):
             scene_id=data.scene_id,
             memory_kind=data.memory_kind,
         )
+        if data.subject_entity_id and data.memory_kind == "scene_state" and cardinality == "single":
+            # An entity's scene state is one value under any wording: the newest supersedes by its
+            # typed subject (B5 kept «занят на кухне» while the attendant stood at the counter).
+            current += [
+                fact for fact in await self.list_active(campaign_id, scene_id=data.scene_id)
+                if fact.subject_entity_id == data.subject_entity_id
+                and fact.memory_kind == "scene_state" and fact not in current
+            ]
         object_key = self.normalize(data.object_value)
         truth_key = self.normalize(data.truth_status)
 

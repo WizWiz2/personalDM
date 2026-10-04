@@ -55,6 +55,34 @@ async def test_single_fact_revises_old_value_and_exact_assert_is_noop(
 
 
 @pytest.mark.asyncio
+async def test_a_known_entitys_new_scene_state_supersedes_the_old_whatever_its_predicate(
+    db_session: AsyncSession,
+):
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Scene state"))
+    attendant = await EntityRepository(db_session).create(
+        campaign_id, EntityCreate(entity_type=EntityType.CHARACTER, canonical_name="Служащий трактира")
+    )
+    repo, scene_id = FactRepository(db_session), uuid4()
+
+    async def state(subject, predicate, value, subject_id=None):
+        return await repo.apply_change(campaign_id, FactCreate(
+            subject=subject, predicate=predicate, object_value=value, memory_kind="scene_state",
+            scene_id=scene_id, subject_entity_id=subject_id,
+        ))
+
+    kitchen = await state("Служащий трактира", "занят на кухне", "переносит миски", attendant.id)
+    await state("служащий", "находится", "за стойкой", attendant.id)
+    await state("полтинник", "лежит", "на стойке")
+    await state("полтинник", "блестит", "в свете лампы")
+
+    assert (await repo.get_by_id(kitchen.id)).is_current is False
+    assert sorted(fact.predicate for fact in await repo.list_active(campaign_id)) == [
+        "блестит", "лежит", "находится",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_multi_fact_keeps_multiple_values_and_retracts_one(
     db_session: AsyncSession,
 ):
