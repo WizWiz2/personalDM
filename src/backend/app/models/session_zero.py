@@ -11,6 +11,8 @@ from app.models.scene import SceneRead
 
 # Typed campaign setting, stored as campaign_setups.custom_fields["narrative_person"].
 NarrativePerson = Literal["second_singular", "second_plural", "third"]
+NARRATIVE_PERSON = {"second_singular": "second person singular («ты»)",
+                    "second_plural": "second person plural («вы»)", "third": "third person, by name"}
 
 
 class SessionZeroUpdate(BaseModel):

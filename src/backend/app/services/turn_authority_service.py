@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
@@ -33,6 +34,7 @@ class TurnAuthorityService:
     def __init__(self, session: AsyncSession):
         self._session = session
         self._campaigns = CampaignRepository(session)
+        self._setups = CampaignSetupRepository(session)
         self._entities = EntityRepository(session)
         self._scene_state = SceneStateService(session)
         self._actors = ActorResolver(session)
@@ -168,6 +170,7 @@ class TurnAuthorityService:
             acting_character_id=effective_actor_id,
             acting_character_name=(actor.canonical_name if actor else None),
             player_input=player_input,
+            narrative_person=await self._setups.narrative_person(campaign_id),
             source_scene_id=source_scene_id,
             target_scene_id=effective_scene_id,
             scene_disposition=disposition,

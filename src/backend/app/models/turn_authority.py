@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.addressed_response import AddressedResponse
+from app.models.session_zero import NARRATIVE_PERSON, NarrativePerson
 
 
 class PlannedNpcIntroduction(BaseModel):
@@ -51,6 +52,7 @@ class TurnAuthority(BaseModel):
     acting_character_id: UUID | None = None
     acting_character_name: str | None = None
     player_input: str
+    narrative_person: NarrativePerson = "second_singular"
 
     source_scene_id: UUID | None = None
     target_scene_id: UUID | None = None
@@ -251,6 +253,7 @@ class TurnAuthority(BaseModel):
             "canon_constraints": self.canon_constraints,
             "narration_guidance": self.narration_guidance,
             "ending_hook": self.ending_hook,
+            "narrative_person": NARRATIVE_PERSON[self.narrative_person],
             "dramatic_mode": self.dramatic_mode,
             "pending_player_choice": self.pending_player_choice,
             "allow_new_complication": self.allow_new_complication,

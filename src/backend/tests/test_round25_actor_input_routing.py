@@ -160,6 +160,7 @@ async def _service_fixture(*, target_has_anna: bool, monkeypatch=None):
     service._campaigns = SimpleNamespace(
         get_by_id=AsyncMock(return_value=SimpleNamespace(player_character_id=hero_id))
     )
+    service._setups = SimpleNamespace(narrative_person=AsyncMock(return_value="second_singular"))
 
     hero = SimpleNamespace(
         id=hero_id,

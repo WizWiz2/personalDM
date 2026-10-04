@@ -142,7 +142,8 @@ class TurnSaga:
             "kind, evidence: the exact prose fragment of that beat, for act/leave a sentence whose "
             "subject is beat_owner}. Everything else in the facts "
             "is optional context.\n\n"
-            "Render the immediate result as natural Russian literary prose, usually 2-3 paragraphs, "
+            "Render the immediate result as natural Russian literary prose in narrative_person, also "
+            "where the facts name the protagonist in third person; usually 2-3 paragraphs, "
             "and stop before the player's next choice."
         )
         return [

@@ -244,22 +244,21 @@ async def test_a_line_heard_from_an_absent_npc_keeps_its_speaker(db_session: Asy
 
 
 @pytest.mark.asyncio
-async def test_narrator_gets_the_typed_campaign_narrative_person(db_session: AsyncSession):
+async def test_the_narrative_person_is_one_typed_campaign_setting(db_session: AsyncSession):
     """Replay 4 drifted between «Илья…» and «вы»; the person is one typed campaign setting."""
     from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
+    from app.models.turn_authority import TurnAuthority
 
     campaign_id = uuid4()
     await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Person"))
-    compiler = ContextCompiler(db_session)
-    default, _ = await compiler.compile_context(campaign_id)
-    assert "Narrative person: narrate the protagonist in second person singular («ты»)" in default[0].content
-
     setups = CampaignSetupRepository(db_session)
+    assert await setups.narrative_person(campaign_id) == "second_singular"
     row = await setups.create_draft(campaign_id, campaign_name="Person")
     await setups.update(row, {"custom_fields": {"narrative_person": "second_plural"}})
-    plural, _ = await compiler.compile_context(campaign_id)
-    assert "second person plural («вы»)" in plural[0].content
-
+    person = await setups.narrative_person(campaign_id)
+    payload = TurnAuthority(campaign_id=campaign_id, trigger_turn_id=uuid4(), player_input="x",
+                            narrative_person=person).narrator_payload()
+    assert payload["narrative_person"] == "second person plural («вы»)"
     await setups.update(row, {"custom_fields": {"narrative_person": "вы"}})
     with pytest.raises(ValueError):
-        await compiler.compile_context(campaign_id)
+        await setups.narrative_person(campaign_id)

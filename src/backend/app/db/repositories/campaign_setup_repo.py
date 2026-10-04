@@ -2,10 +2,12 @@ import json
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import TypeAdapter
 from sqlalchemy import select
 
 from app.db.campaign_setup_table import CampaignSetup
 from app.db.repositories.base import BaseRepository
+from app.models.session_zero import NarrativePerson
 
 
 class CampaignSetupRepository(BaseRepository):
@@ -18,6 +20,12 @@ class CampaignSetupRepository(BaseRepository):
             )
         )
         return result.scalar_one_or_none()
+
+    async def narrative_person(self, campaign_id: UUID) -> NarrativePerson:
+        """Typed campaign setting kept in custom_fields; «ты» unless the campaign sets another."""
+        row = await self.get(campaign_id)
+        return TypeAdapter(NarrativePerson).validate_python(self.decode_dict(
+            row.custom_fields if row else None).get("narrative_person", "second_singular"))
 
     async def create_draft(
         self,
