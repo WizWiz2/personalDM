@@ -13,7 +13,11 @@ from app.db.tables import Campaign, Character, Entity, Item, Scene
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
-from app.services.scene_transition_executor import SceneTransitionExecutor, _destination_profile
+from app.services.scene_transition_executor import (
+    SceneTransitionExecutor,
+    _destination_profile,
+    release_transition_target,
+)
 from app.services.turn_planner import ActionSequencePlan
 
 
@@ -428,9 +432,7 @@ class ActionSequenceExecutor:
                     if player:
                         player.current_location_id = None
 
-        target = await self._session.get(Scene, transition.target_scene_id)
-        if target:
-            target.status = "abandoned"
+        await release_transition_target(self._session, transition)
         transition.status = final_status
         transition.undone_at = datetime.utcnow()
         await self._bridges.mark_status(UUID(transition.id), final_status)

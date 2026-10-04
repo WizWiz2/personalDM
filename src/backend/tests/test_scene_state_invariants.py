@@ -284,6 +284,12 @@ async def test_time_transition_inherits_and_advances_world_time(
     assert target.world_time_order == 8
     assert target.location_id == room.id
     assert target.participant_ids == [hero.id]
+    # One scene per place: sleeping until morning keeps the room's scene; undo restores its clock.
+    assert transition.target_scene_id == source.id
+    executor = SceneTransitionExecutor(db_session)
+    assert await executor.rollback_transition(transition.transition_id)
+    restored = await state.get(campaign_id, source.id)
+    assert restored.world_time_label == "ночь" and restored.scene_status == "active"
 
 
 def test_scene_clock_is_a_typed_part_of_day_not_player_wording():

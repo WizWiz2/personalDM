@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.engine import Base
@@ -62,5 +62,10 @@ class SceneTransition(Base):
         default="turn_planner",
         nullable=False,
     )
+    # One scene per place: the target may be an existing scene, which undo must not abandon.
+    target_reused: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+    previous_time_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     undone_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
