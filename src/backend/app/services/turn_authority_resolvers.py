@@ -202,6 +202,7 @@ class NpcIntroductionResolver:
         introductions: list,
         present_names: list[str],
         target_location_id: UUID | None,
+        bringing_steps: frozenset[int] = frozenset(),
     ) -> NpcIntroductionResolution:
         references = [
             getattr(item, "identity_reference", None) or item.canonical_name
@@ -216,7 +217,16 @@ class NpcIntroductionResolver:
         place = await LocationRepository(self._session).get_by_id(target_location_id) if target_location_id else None
         role = ((place.custom_fields or {}).get("resident_role") if place else None) or ""
         slot = str(target_location_id)
-        if role and not any((entity.custom_fields or {}).get("slot_id") == slot for entity in all_characters) \
+        filled = any((entity.custom_fields or {}).get("slot_id") == slot for entity in all_characters)
+        if role:
+            # Someone found at a keeper's place (not brought by a step) is its keeper: they fill an
+            # empty slot or are the keeper already there (B8 T6: «Хозяин…» beside «Трактирщик»).
+            found = [item for item in introductions if not getattr(item, "resident_slot", None)
+                     and getattr(item, "after_action_index", None) not in bringing_steps]
+            keepers = found if filled else found[:1]
+            introductions = [item.model_copy(update={"resident_slot": slot})
+                             if any(item is keeper for keeper in keepers) else item for item in introductions]
+        if role and not filled \
                 and not any(getattr(item, "resident_slot", None) == slot for item in introductions):
             # The keeper of a typed resident slot is at their place: authorized the moment the
             # player is there (B6 T3: «трактирщик у стойки» on arrival was an absent character).

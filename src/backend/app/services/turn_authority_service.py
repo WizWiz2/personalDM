@@ -119,6 +119,10 @@ class TurnAuthorityService:
                     introductions=introductions,
                     present_names=present_names,
                     target_location_id=(target_state.location_id if target_state else None),
+                    bringing_steps=frozenset(
+                        step.get("step_index", index) for index, step in enumerate(executed_steps)
+                        if step.get("action_type") != "movement"
+                    ),
                 )
             except AuthorityResolutionError as exc:
                 raise TurnAuthorityError(str(exc)) from exc
