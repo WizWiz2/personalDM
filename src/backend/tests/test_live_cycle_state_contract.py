@@ -280,3 +280,25 @@ async def test_a_person_the_owner_brings_in_who_speaks_in_prose_joins_the_scene(
     [new_id] = outcome.introduced_character_ids
     assert new_id in await SceneRepository(db_session).get_participants(scene.id)
     assert "Речник" in authority.present_character_names
+
+
+@pytest.mark.asyncio
+async def test_with_two_npcs_present_the_typed_addressee_owns_the_beat(db_session):
+    campaign_id, _, location, scene = await world(db_session)
+    entities = EntityRepository(db_session)
+    host = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Фёдор Матвеевич", aliases=["Хозяин трактира"], current_location_id=location.id))
+    boy = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Половой", current_location_id=location.id))
+    for npc in (host, boy):
+        await SceneRepository(db_session).add_participant(scene.id, npc.id)
+
+    def plan(name):
+        return CoordinatedTurnPlan(player_intent="Спрашиваю хозяина.", resolution="conversation",
+                                   addressed_response_requested=True, addressed_response=response(name))
+
+    by_alias = await build(db_session, campaign_id, scene, plan("Хозяин трактира"))
+    unknown = await build(db_session, campaign_id, scene, plan("Кто-то ещё"))
+
+    assert (by_alias.beat_owner_id, by_alias.beat_owner_name) == (host.id, "Фёдор Матвеевич")
+    assert unknown.beat_owner_id is None
