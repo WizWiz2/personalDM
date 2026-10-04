@@ -192,3 +192,31 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
     assert narrator_meta["actor_scope_strict"] is False
     assert str(secret_fact.id) in narrator_meta["included_fact_ids"]
     assert str(private_thesis.id) in narrator_meta["included_thesis_ids"]
+
+
+@pytest.mark.asyncio
+async def test_narrator_card_carries_what_a_present_npc_already_said(db_session: AsyncSession):
+    """Replay 4: T5 «смотрителя сейчас нет» reached the narrator only as the hero's anonymous memory."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Memory"))
+    entities, scenes = EntityRepository(db_session), SceneRepository(db_session)
+    hero = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Илья"))
+    host = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Семён"))
+    scene = await scenes.create(campaign_id, SceneCreate(title="Трактир"))
+    for person in (hero, host):
+        await scenes.add_participant(scene.id, person.id)
+    for proposition, source in [("Смотрителя сейчас нет.", host.id), ("Огни видели с парохода.", None)]:
+        await BeliefRepository(db_session).create(BeliefCreate(
+            character_id=hero.id, proposition=proposition, source_character_id=source,
+            status="known", visibility="character_only",
+        ))
+    await db_session.commit()
+
+    messages, _ = await ContextCompiler(db_session).compile_context(campaign_id, scene_id=scene.id)
+    context = "\n".join(message.content for message in messages)
+
+    host_card = context[context.index("Семён"):]
+    assert "Already said by this character" in host_card
+    assert host_card.index("Already said") < host_card.index("Смотрителя сейчас нет.")
+    assert context.count("Смотрителя сейчас нет.") == 1
+    assert "Огни видели с парохода." in context

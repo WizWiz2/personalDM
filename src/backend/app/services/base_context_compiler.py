@@ -513,6 +513,17 @@ class ContextCompiler:
             participant_character_ids: list[str] = []
             participant_belief_ids: list[str] = []
             participant_item_ids: list[str] = []
+            held = {} if actor_mode else {
+                character.id: await self._belief_repo.get_for_character(character.id, active_only=True)
+                for character in scene_characters
+            }
+            # A present NPC's own published lines (scribe beliefs sourced from it) are its record.
+            said: dict = {}
+            for belief in (belief for beliefs in held.values() for belief in beliefs):
+                if belief.source_character_id in held:
+                    said.setdefault(belief.source_character_id, {})[
+                        self._belief_repo.normalize(belief.proposition)
+                    ] = belief
             for character in scene_characters:
                 if actor_mode and character.id == acting_character_id:
                     continue
@@ -531,13 +542,15 @@ class ContextCompiler:
                         include_private=True,
                         included_item_ids=participant_item_ids,
                     )
-                    beliefs = await self._belief_repo.get_for_character(
-                        character.id,
-                        active_only=True,
-                    )
-                    if beliefs:
-                        participant_package += "Private knowledge:\n"
-                        for belief in beliefs:
+                    for header, group in (
+                        ("Private knowledge", [
+                            b for b in held[character.id] if b.source_character_id not in held
+                        ]),
+                        ("Already said by this character (established: stay consistent with it, "
+                         "never repeat it word for word)", list(said.get(character.id, {}).values())),
+                    ):
+                        participant_package += f"{header}:\n" if group else ""
+                        for belief in group:
                             participant_package += f"- {belief.proposition}\n"
                             participant_belief_ids.append(str(belief.id))
 
