@@ -356,10 +356,6 @@ def _outcome_wire_model(
         action_index: Literal[tuple(range(action_count)) or tuple(range(8))]
         blocking_evidence_ref: reference_type = None
         carry_participants: list[participant_type] = Field(default_factory=list, max_length=8)
-        # Typed next to the result that brings them (B6 T11: «тот вскоре подходит к стойке» while
-        # npc_introductions stayed empty). Lifted into npc_introductions with this action's index.
-        arriving_person: (OutcomeNpcIntroductionDraft if allow_introductions else type(None)) | None = Field(
-            default=None, description="A person this action's result brings here now, typed; else null.")
 
     class SuccessfulActionOutcomeDraft(IndexedActionOutcomeDraft):
         resolution: Literal["auto_success"]
@@ -420,16 +416,6 @@ def _outcome_wire_model(
             min_length=1 if required_slot and allow_introductions else 0,
             max_length=(1 if required_slot else 4) if allow_introductions else 0,
         )
-
-        @model_validator(mode="after")
-        def lift_arriving_people(self):
-            for outcome in self.action_outcomes:
-                person = getattr(outcome, "arriving_person", None)
-                if person is not None:
-                    self.npc_introductions.append(
-                        person.model_copy(update={"after_action_index": outcome.action_index}))
-                    outcome.arriving_person = None
-            return self
 
         @model_validator(mode="before")
         @classmethod
