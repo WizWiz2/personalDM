@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,7 @@ from sqlalchemy import delete
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Entity, SceneParticipant
+from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
@@ -147,6 +148,20 @@ class TurnOutcomeMaterializer:
             arrived_existing_participants=tuple(arrived_existing),
             identity_updates=(identity_update,) if identity_update else (),
         )
+
+    async def reveal_published_name(self, authority: TurnAuthority, beat, outcome, source_turn_id):
+        """The narrator voices the beat owner, so a name it types in the owner's own published beat is
+        that owner's (B5 T1 «Степаном меня зовут» never left «Рыбак у пристани»)."""
+        if not (beat and beat.revealed_name and authority.beat_owner_id) or beat.revealed_name not in beat.evidence:
+            return outcome
+        authority.addressed_response = (authority.addressed_response or AddressedResponse()).model_copy(
+            update={"speaker_id": authority.beat_owner_id, "speaker_name": authority.beat_owner_name,
+                    "revealed_name": beat.revealed_name, "name_evidence": beat.evidence})
+        try:
+            update = await self._reveal_identity(authority, source_turn_id)
+        except ValueError:
+            return outcome  # An established personal name is never overwritten.
+        return replace(outcome, identity_updates=(*outcome.identity_updates, update)) if update else outcome
 
     async def _reveal_identity(self, authority, source_turn_id) -> IdentityUpdate | None:
         response = authority.addressed_response

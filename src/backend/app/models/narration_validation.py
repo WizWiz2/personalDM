@@ -58,6 +58,8 @@ class GrantedBeat(BaseModel):
     cast_id: str = Field(min_length=1, max_length=64)
     kind: Literal["speech", "refusal", "leave", "act"]
     evidence: str = Field(min_length=1)
+    # The personal name the owner gives for themself in this beat (nominative), else null.
+    revealed_name: str | None = Field(default=None, max_length=120)
 
     def failure(self, owner_id: object, owner_name: str, prose: str) -> str | None:
         """Structural check: owner ID, exact fragment; speech overlaps a dialogue line or quote span,

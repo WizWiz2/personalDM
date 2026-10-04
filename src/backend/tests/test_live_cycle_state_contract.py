@@ -13,6 +13,7 @@ from app.models.addressed_response import AddressedResponse
 from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
+from app.models.narration_validation import GrantedBeat
 from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.models.turn_authority import PlannedNpcIntroduction
@@ -20,7 +21,7 @@ from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_authority_service import TurnAuthorityService
-from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
+from app.services.turn_outcome_materializer import MaterializedTurnOutcome, TurnOutcomeMaterializer
 from app.services.turn_outcome_resolver import _outcome_wire_model
 from app.services.turn_undo_service import TurnUndoService
 from app.services.turn_world_frame import TurnWorldFrame
@@ -193,6 +194,33 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
     assert restored.canonical_name == "Посетитель"
     assert restored.custom_fields["temporary_name"] is True
     assert "Александр Ковалёв" not in restored.aliases
+
+
+@pytest.mark.asyncio
+async def test_a_name_the_owner_gives_in_its_published_beat_promotes_its_designation(db_session):
+    campaign_id, _, location, scene = await world(db_session)
+    entities = EntityRepository(db_session)
+    npc = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Рыбак у пристани", current_location_id=location.id,
+        custom_fields={"temporary_name": True, "role": "рыбак"},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, npc.id)
+    user = await TurnRepository(db_session).create(campaign_id, TurnCreate(role="user", content="Как тебя зовут?"))
+    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
+        player_intent="Спрашиваю имя.", resolution="conversation",
+    ), user.id)
+    authority.beat_owner_id, authority.beat_owner_name = npc.id, "Рыбак у пристани"
+    materializer = TurnOutcomeMaterializer(db_session)
+    beat = GrantedBeat(cast_id=str(npc.id), kind="speech", evidence="— Степаном меня зовут.")
+
+    unchanged = await materializer.reveal_published_name(
+        authority, beat.model_copy(update={"revealed_name": "Прохор"}), MaterializedTurnOutcome(), user.id)
+    outcome = await materializer.reveal_published_name(
+        authority, beat.model_copy(update={"revealed_name": "Степан"}), MaterializedTurnOutcome(), user.id)
+
+    assert not unchanged.identity_updates
+    assert (await entities.get_character(npc.id)).canonical_name == "Степан"
+    assert [update.previous_name for update in outcome.identity_updates] == ["Рыбак у пристани"]
 
 
 def test_unproved_name_revelation_is_rejected():

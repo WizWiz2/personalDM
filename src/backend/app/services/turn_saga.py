@@ -140,7 +140,8 @@ class TurnSaga:
             "required, except that beat_owner, when set, takes this beat itself: it may speak, "
             "refuse, leave or act, and you return the prose with beat = {cast_id: beat_owner.id, "
             "kind, evidence: the exact prose fragment of that beat, for act/leave a sentence whose "
-            "subject is beat_owner}. Everything else in the facts "
+            "subject is beat_owner, revealed_name: the personal name beat_owner gives for themself "
+            "in that beat, nominative, else null}. Everything else in the facts "
             "is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose in narrative_person, also "
             "where the facts name the protagonist in third person; usually 2-3 paragraphs, "
@@ -570,6 +571,13 @@ class TurnSaga:
             token_count = (narration.telemetry.get("usage") or {}).get("completion_tokens")
             if world_frame:
                 await world_frame.assert_unchanged(self._session, campaign_id)
+            materialized_outcome = await materializer.reveal_published_name(
+                authority, narration.beat, materialized_outcome, user_turn.id
+            )
+            context_metadata["turn_authority"] = authority.model_dump(mode="json")
+            context_metadata["turn_materialization"]["identity_updates"] = [
+                update.snapshot() for update in materialized_outcome.identity_updates
+            ]
             saved_assistant = await self._turn_repo.create(
                 campaign_id,
                 TurnCreate(
