@@ -204,7 +204,7 @@ PAYLOAD:
 - event: {{"event_type":"тип","description":"что произошло","location_id":"имя локации или null","participant_ids":["имена"]}}
 - movement: {{"character_id":"имя","location_id":"имя локации","description":"что переместилось"}}
 - relationship: {{"subject_id":"имя","object_id":"имя","relation_type":"стабильный тип","description":"новое состояние","reason":"подтверждённая причина","intensity":0.0}}
-- knowledge: {{"recipient_id":"имя слушателя","proposition":"что он узнал или услышал","source_character_id":"имя говорящего или null","confidence":0.8,"status":"known|believed|doubted","previous_proposition":"что исправляется или null"}}
+- knowledge: {{"recipient_id":"имя слушателя","proposition":"что он узнал или услышал","subject_id":"имя известной сущности, о которой сведение, или null","source_character_id":"имя говорящего или null","confidence":0.8,"status":"known|believed|doubted","previous_proposition":"что исправляется или null"}}
 - item_transfer: {{"item_id":"точное имя предмета","owner_id":"имя владельца или null","location_id":"имя локации или null","description":"передача"}}
 
 FACT SEMANTICS:

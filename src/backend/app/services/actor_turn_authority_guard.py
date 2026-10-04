@@ -14,6 +14,26 @@ class ActorSegmentSelection(BaseModel):
     """IDs of immutable published segments that contain factual NPC claims."""
 
     segment_ids: list[int] = Field(default_factory=list, max_length=8)
+    subjects: dict[int, str] = Field(
+        default_factory=dict,
+        description="segment id -> exact KNOWN ENTITY name the claim is about",
+    )
+
+
+def subject_ids_by_segment(subjects: dict[int, str], entities) -> dict[int, str]:
+    """Bind selector-named claim subjects to known entity ids; unknown names stay untyped."""
+    from app.services.entity_identity import identity_key
+
+    ids = {
+        identity_key(name): str(entity.id)
+        for entity in entities
+        for name in (entity.canonical_name, *entity.aliases)
+    }
+    return {
+        segment_id: ids[identity_key(name)]
+        for segment_id, name in subjects.items()
+        if identity_key(name) in ids
+    }
 
 
 # These regexes only segment already-published text into immutable spans. They do not decide who owns
@@ -109,6 +129,7 @@ def build_actor_segment_proposals(
     *,
     acting_character_id: UUID,
     player_character_id: UUID,
+    subject_ids: dict[int, str] | None = None,
 ) -> list[ProposedChangeCreate]:
     proposals: list[ProposedChangeCreate] = []
     for segment_id in _valid_segment_ids(segments, selected_segment_ids):
@@ -119,6 +140,7 @@ def build_actor_segment_proposals(
                 payload={
                     "recipient_id": str(player_character_id),
                     "proposition": evidence,
+                    "subject_id": (subject_ids or {}).get(segment_id),
                     "source_character_id": str(acting_character_id),
                     "confidence": 0.8,
                     "status": "known",

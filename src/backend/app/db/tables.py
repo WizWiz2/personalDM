@@ -571,6 +571,7 @@ class Belief(Base):
         String(36), ForeignKey("facts.id", ondelete="SET NULL"), nullable=True
     )
     proposition: Mapped[str] = mapped_column(Text, nullable=False)
+    subject_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="believed", nullable=False)
     confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     source_turn_id: Mapped[str | None] = mapped_column(

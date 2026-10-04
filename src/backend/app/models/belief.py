@@ -8,6 +8,7 @@ class BeliefCreate(BaseModel):
     character_id: UUID
     fact_id: UUID | None = None
     proposition: str
+    subject_id: UUID | None = None
     status: str = "believed"
     confidence: float = 1.0
     source_turn_id: UUID | None = None
@@ -20,6 +21,7 @@ class BeliefRead(BaseModel):
     character_id: UUID
     fact_id: UUID | None
     proposition: str
+    subject_id: UUID | None = None
     status: str
     confidence: float
     source_turn_id: UUID | None

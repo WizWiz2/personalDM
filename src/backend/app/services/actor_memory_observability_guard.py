@@ -10,6 +10,7 @@ from app.services.actor_turn_authority_guard import (
     ActorSegmentSelection,
     build_actor_segment_proposals,
     segment_actor_response,
+    subject_ids_by_segment,
 )
 from app.services.playtest_trace import PlaytestTraceService
 from app.services.role_model_router import ModelRole
@@ -90,6 +91,8 @@ async def extract_actor_segment_proposals_with_audit(
         _set_audit(scribe, base_audit)
         return []
 
+    entities = await scribe._entity_repo.list_by_campaign(campaign_id)  # noqa: SLF001
+    subjects: dict[int, str] = {}
     segment_block = "\n".join(
         f"S{index}: {segment}" for index, segment in enumerate(segments, start=1)
     )
@@ -105,7 +108,10 @@ async def extract_actor_segment_proposals_with_audit(
         "character_claim. Если фактических утверждений нет, верни пустой список.\n"
         f"Говорящий NPC: {actor.canonical_name}.\n"
         f"Слушатель: {player.canonical_name}.\n"
-        "Формат: {\"segment_ids\":[1,2]}"
+        "Для каждого выбранного сегмента укажи в subjects точное имя ИЗВЕСТНОЙ СУЩНОСТИ, "
+        "о которой утверждение, если она есть: "
+        + ", ".join(entity.canonical_name for entity in entities) + ".\n"
+        "Формат: {\"segment_ids\":[1,2],\"subjects\":{\"1\":\"Имя\"}}"
     )
 
     async def select_ids(extra_instruction: str | None = None) -> list[int]:
@@ -124,6 +130,8 @@ async def extract_actor_segment_proposals_with_audit(
             response_model=ActorSegmentSelection,
         )
         envelope = ActorSegmentSelection.model_validate(data)
+        subjects.clear()
+        subjects.update(envelope.subjects)
         return list(envelope.segment_ids)
 
     selected_ids: list[int] = []
@@ -162,6 +170,7 @@ async def extract_actor_segment_proposals_with_audit(
         selected_ids,
         acting_character_id=acting_character_id,
         player_character_id=player_character_id,
+        subject_ids=subject_ids_by_segment(subjects, entities),
     )
     accepted_ids = [
         int((proposal.payload.get("_canon") or {}).get("segment_id"))

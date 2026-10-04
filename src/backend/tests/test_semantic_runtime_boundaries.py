@@ -17,7 +17,7 @@ async def test_silence_word_cannot_hide_a_factual_claim():
         generate_json=AsyncMock(return_value={"segment_ids": [1]}),
     )
     scribe = SimpleNamespace(
-        _entity_repo=SimpleNamespace(get_character=AsyncMock(side_effect=[
+        _entity_repo=SimpleNamespace(list_by_campaign=AsyncMock(return_value=[]), get_character=AsyncMock(side_effect=[
             SimpleNamespace(canonical_name="Марта"), SimpleNamespace(canonical_name="Игрок"),
         ])),
         _model_router=router, _llm_provider=SimpleNamespace(), last_audit={},

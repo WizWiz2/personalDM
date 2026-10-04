@@ -304,3 +304,28 @@ async def test_an_npc_card_lists_only_what_that_npc_witnessed(db_session: AsyncS
 
     assert "Прохор ночует у вдовы Марьи. [witnesses: Егор, Илья]" in context
     assert "полтинник лежит на стойке" in seen and "вдовы Марьи" not in seen
+
+
+@pytest.mark.asyncio
+async def test_a_later_telling_supersedes_by_holder_and_subject(db_session: AsyncSession):
+    campaign = await CampaignRepository(db_session).create(uuid4(), CampaignCreate(name="Beliefs"))
+    entities = EntityRepository(db_session)
+    holder = await entities.create_character(campaign.id, CharacterCreate(canonical_name="Илья"))
+    subject = await entities.create_character(campaign.id, CharacterCreate(canonical_name="Фёдор"))
+    beliefs = BeliefRepository(db_session)
+    first_turn, second_turn = uuid4(), uuid4()
+    old = await beliefs.apply_change(BeliefCreate(
+        character_id=holder.id, subject_id=subject.id, source_turn_id=first_turn,
+        proposition="Фёдор живёт у кузницы.",
+    ))
+    same_turn = await beliefs.apply_change(BeliefCreate(
+        character_id=holder.id, subject_id=subject.id, source_turn_id=first_turn,
+        proposition="С Фёдором разговор не быстрый.",
+    ))
+    new = await beliefs.apply_change(BeliefCreate(
+        character_id=holder.id, subject_id=subject.id, source_turn_id=second_turn,
+        proposition="Фёдор теперь у причала.",
+    ))
+    current = {belief.id for belief in await beliefs.get_for_character(holder.id)}
+    assert current == {new.id}
+    assert old.id != same_turn.id
