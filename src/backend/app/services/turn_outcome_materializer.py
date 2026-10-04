@@ -5,11 +5,11 @@ from dataclasses import dataclass, replace
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Entity, SceneParticipant
+from app.db.tables import Entity, SceneParticipant, Turn
 from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
 from app.models.turn_authority import TurnAuthority
@@ -190,7 +190,13 @@ class TurnOutcomeMaterializer:
         )
         old_name = row.canonical_name
         aliases = json.loads(row.aliases or "[]")
-        if old_name not in aliases:
+        # A designation becomes an alias only if the player read it; a planner's role label
+        # («Хозяин или служащий трактира») never shown in prose is no name.
+        shown = " ".join([response.name_evidence or "", *(await self._session.execute(
+            select(Turn.content).where(Turn.campaign_id == str(authority.campaign_id),
+                                       Turn.role == "assistant", Turn.status == "active")
+        )).scalars()]).casefold()
+        if old_name not in aliases and old_name.casefold() in shown:
             aliases.append(old_name)
         row.canonical_name = response.revealed_name
         row.aliases = json.dumps(aliases, ensure_ascii=False)

@@ -168,7 +168,7 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
     user = await turns.create(campaign_id, TurnCreate(role="user", content="Как тебя зовут?"))
     reply = AddressedResponse(
         speaker_name="Посетитель", revealed_name="Александр Ковалёв",
-        name_evidence="Меня зовут Александр Ковалёв.",
+        name_evidence="Посетитель отвечает: «Меня зовут Александр Ковалёв.»",
     )
     authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
         player_intent="Спрашиваю имя.", resolution="conversation", identity_reveal_requested=True,
@@ -229,3 +229,27 @@ def test_unproved_name_revelation_is_rejected():
             speaker_name="Посетитель",
             revealed_name="Александр Ковалёв", name_evidence="Я видел его вчера.",
         )
+
+
+@pytest.mark.asyncio
+async def test_an_unshown_planner_designation_is_not_kept_as_alias(db_session):
+    campaign_id, _, location, scene = await world(db_session)
+    entities = EntityRepository(db_session)
+    npc = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Хозяин или служащий трактира", current_location_id=location.id,
+        custom_fields={"temporary_name": True, "role": "хозяин или служащий трактира"},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, npc.id)
+    user = await TurnRepository(db_session).create(campaign_id, TurnCreate(role="user", content="Имя?"))
+    reply = AddressedResponse(
+        speaker_name="Хозяин или служащий трактира", revealed_name="Кузьма Андреевич",
+        name_evidence="«Добрый вечер. Кузьма Андреевич», — отвечает он.",
+    )
+    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
+        player_intent="Спрашиваю имя.", resolution="conversation", identity_reveal_requested=True,
+        addressed_response_requested=True, addressed_response=reply,
+    ), user.id)
+    await TurnOutcomeMaterializer(db_session).materialize(authority, source_turn_id=user.id)
+    renamed = await entities.get_character(npc.id)
+    assert renamed.canonical_name == "Кузьма Андреевич"
+    assert renamed.aliases == []
