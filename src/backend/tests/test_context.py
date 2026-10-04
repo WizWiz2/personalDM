@@ -262,3 +262,45 @@ async def test_the_narrative_person_is_one_typed_campaign_setting(db_session: As
     await setups.update(row, {"custom_fields": {"narrative_person": "вы"}})
     with pytest.raises(ValueError):
         await setups.narrative_person(campaign_id)
+
+
+@pytest.mark.asyncio
+async def test_an_npc_card_lists_only_what_that_npc_witnessed(db_session: AsyncSession):
+    """Live B6 T7: the innkeeper repeated the fisherman's T2 words heard only at the pier."""
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.turn import TurnCreate
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Witness"))
+    entities, scenes, turns = EntityRepository(db_session), SceneRepository(db_session), TurnRepository(db_session)
+    hero = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Илья"))
+    fisher = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Егор"))
+    host = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Трактирщик"))
+    from app.models.campaign import CampaignUpdate
+
+    await CampaignRepository(db_session).update(campaign_id, CampaignUpdate(player_character_id=hero.id))
+    pier = await scenes.create(campaign_id, SceneCreate(title="Пристань"))
+    inn = await scenes.create(campaign_id, SceneCreate(title="Трактир"))
+    for scene, cast in ((pier, (hero, fisher)), (inn, (hero, host))):
+        for person in cast:
+            await scenes.add_participant(scene.id, person.id)
+    at_pier = await turns.create(campaign_id, TurnCreate(role="assistant", content="…", scene_id=pier.id))
+    at_inn = await turns.create(campaign_id, TurnCreate(role="assistant", content="…", scene_id=inn.id))
+    await BeliefRepository(db_session).create(BeliefCreate(
+        character_id=hero.id, proposition="Прохор ночует у вдовы Марьи.", source_character_id=fisher.id,
+        status="known", visibility="character_only", source_turn_id=at_pier.id,
+    ))
+    await FactRepository(db_session).create(campaign_id, FactCreate(
+        subject="полтинник", predicate="лежит", object_value="на стойке", source_turn_id=at_inn.id,
+    ))
+    await db_session.commit()
+
+    messages, _ = await ContextCompiler(db_session).compile_context(campaign_id, scene_id=inn.id)
+    context = "\n".join(message.content for message in messages)
+    [section] = context.split("Witnessed (was present when it was published):\n")[1:]  # host only
+    from itertools import takewhile
+
+    seen = "\n".join(takewhile(lambda line: line.startswith("- "), section.split("\n")))
+
+    assert "Прохор ночует у вдовы Марьи. [witnesses: Егор, Илья]" in context
+    assert "полтинник лежит на стойке" in seen and "вдовы Марьи" not in seen

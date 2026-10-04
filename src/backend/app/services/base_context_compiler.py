@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.db.memory_witness import witnesses_of
 from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
@@ -508,7 +509,9 @@ class ContextCompiler:
 
         if scene_characters:
             participant_package = (
-                "[Other Present NPCs]\n" if actor_mode else "[Present Character Cards]\n"
+                "[Other Present NPCs]\n" if actor_mode else
+                "[Present Character Cards]\nAn NPC knows only its own lines, its private knowledge and what "
+                "its card lists as witnessed; it never states anything else in this context.\n"
             )
             participant_character_ids: list[str] = []
             participant_belief_ids: list[str] = []
@@ -519,6 +522,14 @@ class ContextCompiler:
             }
             # A present NPC's own published lines (scribe beliefs sourced from it) are its record.
             said: dict = {}
+            memories = [*(facts or []), *(belief for beliefs in held.values() for belief in beliefs)]
+            witnessed = await witnesses_of(self._session, [memory.id for memory in memories])
+            names = {UUID(entity_id): name for entity_id, name in (await self._session.execute(
+                select(Entity.id, Entity.canonical_name).where(Entity.id.in_(
+                    [str(w) for ws in witnessed.values() for w in ws]
+                ))
+            )).all()}
+            player_id = campaign.player_character_id if campaign else None
             for belief in (belief for beliefs in held.values() for belief in beliefs):
                 if belief.source_character_id in held:
                     said.setdefault(belief.source_character_id, {})[
@@ -542,21 +553,35 @@ class ContextCompiler:
                         include_private=True,
                         included_item_ids=participant_item_ids,
                     )
+                    own = {belief.id for belief in said.get(character.id, {}).values()}
+                    seen = [] if character.id == player_id else [
+                        memory for memory in memories
+                        if character.id in witnessed.get(str(memory.id), ()) and memory.id not in own
+                        and getattr(memory, "character_id", None) != character.id
+                    ]
                     for header, group in (
                         ("Private knowledge", [
                             b for b in held[character.id] if b.source_character_id not in held
                         ]),
                         ("Already said by this character (established: stay consistent with it, "
                          "never repeat it word for word)", list(said.get(character.id, {}).values())),
+                        ("Witnessed (was present when it was published)", seen),
                     ):
                         participant_package += f"{header}:\n" if group else ""
                         for belief in group:
                             # A line heard from someone absent stays theirs, never the next speaker's.
-                            source = (belief.source_character_id not in held and belief.source_character_id
-                                      and await self._entity_repo.get_by_id(belief.source_character_id))
+                            speaker = getattr(belief, "source_character_id", None)
+                            source = (speaker not in held and speaker
+                                      and await self._entity_repo.get_by_id(speaker))
                             heard = f"heard from {source.canonical_name}: " if source else ""
-                            participant_package += f"- {heard}{belief.proposition}\n"
-                            participant_belief_ids.append(str(belief.id))
+                            line = getattr(belief, "proposition", None) or (
+                                f"{belief.subject} {belief.predicate} {belief.object_value or ''}"
+                            )
+                            present = sorted(names.get(w, "?") for w in witnessed.get(str(belief.id), ()))
+                            known_to = f" [witnesses: {', '.join(present)}]" if present else ""
+                            participant_package += f"- {heard}{line}{known_to}\n"
+                            if hasattr(belief, "proposition"):
+                                participant_belief_ids.append(str(belief.id))
 
             participant_tokens = count_tokens(participant_package)
             if current_budget_used + participant_tokens < content_budget:

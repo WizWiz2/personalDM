@@ -3,6 +3,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 
 from app.db.memory_taxonomy_table import FactMemoryProfile
+from app.db.memory_witness import record_witnesses
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Fact
 from app.models.fact import FactCreate, FactRead, FactUpdate
@@ -59,6 +60,7 @@ class FactRepository(BaseRepository):
         )
         self._session.add(profile)
         await self._session.flush()
+        await record_witnesses(self._session, db_fact.id, data.source_turn_id)
         return self._read(db_fact, profile)
 
     async def get_by_id(self, fact_id: UUID) -> FactRead | None:

@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from app.db.memory_witness import record_witnesses
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Belief
 from app.models.belief import BeliefCreate, BeliefRead, BeliefUpdate
@@ -28,6 +29,7 @@ class BeliefRepository(BaseRepository):
         )
         self._session.add(db_belief)
         await self._session.flush()
+        await record_witnesses(self._session, db_belief.id, data.source_turn_id)
         return BeliefRead.model_validate(db_belief)
 
     async def get_by_id(self, belief_id: UUID) -> BeliefRead | None:
