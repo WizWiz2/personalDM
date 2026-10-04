@@ -442,3 +442,27 @@ async def test_travel_shows_the_destinations_typed_cast_and_binds_its_addressee(
     assert "«Трактир» when the human arrives: Савелий" in router.calls[0]
     assert router.schemas[0]["properties"]["response_speaker_name"]["anyOf"][0]["const"] == "Савелий"
     assert decision.npc_introductions == []
+
+
+def test_a_step_that_brings_someone_carries_their_typed_introduction() -> None:
+    person = {
+        "canonical_name": "Речник", "role": "речник",
+        "description": "Речник, ходивший этой осенью на Ладогу, вернулся в город.",
+        "appearance": "Мужчина в промокшем дорожном кафтане и влажной шапке.",
+        "reason": "Хозяин послал за ним.",
+    }
+    wait = PlayerIntentContract.model_validate(
+        {"summary": "Илья ждёт речника.", "actions": [{"action_type": "wait", "intent": "Ждать речника."}]}
+    )
+    draft = TurnOutcomeDecisionDraft.model_validate({
+        "action_outcomes": [{
+            "action_index": 0, "resolution": "auto_success",
+            "observable_outcome": "В трактир входит речник.", "arriving": person,
+        }],
+        "npc_introductions": [person],
+    })
+
+    decision = normalize_outcome_draft(draft, wait)
+
+    [arrival] = decision.npc_introductions
+    assert (arrival.canonical_name, arrival.after_action_index) == ("Речник", 0)

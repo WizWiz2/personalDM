@@ -217,6 +217,17 @@ class ActionOutcomeDraft(BaseModel):
     blocking_evidence_quote: str | None = None
     blocking_evidence_ref: str | None = None
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
+    arriving: OutcomeNpcIntroductionDraft | None = Field(
+        default=None, description="A person not yet present whom this result brings here.")
+
+    @field_validator("arriving", mode="before")
+    @classmethod
+    def drop_invalid_arrival(cls, value):
+        """An ungrounded arrival is dropped like an invalid introduction: nobody arrives."""
+        try:
+            return None if value is None else OutcomeNpcIntroductionDraft.model_validate(value)
+        except (ValidationError, ValueError, TypeError):
+            return None
 
 
 class OutcomeNpcIntroductionDraft(BaseModel):
@@ -255,6 +266,9 @@ class OutcomeNpcIntroductionDraft(BaseModel):
             )
         NpcIntroductionResolver.sanitize_introductions([self])
         return self
+
+
+ActionOutcomeDraft.model_rebuild()
 
 
 class TurnOutcomeDecisionDraft(BaseModel):
@@ -329,6 +343,7 @@ def _outcome_wire_model(
     speaker_type = Literal[bound_response_speaker] | None if bound_response_speaker else str | None
 
     slot_type = Literal[tuple(resident_slots)] | None if resident_slots else type(None)
+    arrival_type = OutcomeNpcIntroductionDraft | None if allow_introductions else type(None)
 
     class IndexedNpcIntroductionDraft(OutcomeNpcIntroductionDraft):
         after_action_index: prerequisite_type = None
@@ -354,6 +369,7 @@ def _outcome_wire_model(
         action_index: Literal[tuple(range(action_count)) or tuple(range(8))]
         blocking_evidence_ref: reference_type = None
         carry_participants: list[participant_type] = Field(default_factory=list, max_length=8)
+        arriving: arrival_type = None
 
     class SuccessfulActionOutcomeDraft(IndexedActionOutcomeDraft):
         resolution: Literal["auto_success"]
@@ -596,7 +612,15 @@ def normalize_outcome_draft(
         )
 
     introductions: list[dict[str, Any]] = []
-    for npc in draft.npc_introductions:
+    # A step's arriving person is that step's typed introduction (7b T7, B8 T17 «речник»).
+    arrivals = [
+        item.arriving.model_copy(update={"after_action_index": item.action_index, "resident_slot": None})
+        for item in draft.action_outcomes if getattr(item, "arriving", None)
+    ]
+    for npc in [*arrivals, *draft.npc_introductions]:
+        if any(identity_key(npc.canonical_name) == identity_key(known["identity_reference"])
+               for known in introductions):
+            continue
         canonical_name = _compact(npc.canonical_name)
         role = _compact(npc.role)
         description = _compact(npc.description)
