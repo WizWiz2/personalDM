@@ -62,6 +62,8 @@ class NpcIntroductionResolution:
     new_introductions: list
     existing_arrivals: list[ExistingNpcArrival]
     present_names: list[str]
+    # The typed addressee bound to a present person or to this turn's resolved introduction.
+    addressee: str | None = None
 
 
 class NpcIntroductionResolver:
@@ -202,6 +204,7 @@ class NpcIntroductionResolver:
         introductions: list,
         present_names: list[str],
         target_location_id: UUID | None,
+        addressee: str | None = None,
     ) -> NpcIntroductionResolution:
         references = [
             getattr(item, "identity_reference", None) or item.canonical_name
@@ -280,7 +283,9 @@ class NpcIntroductionResolver:
         holders = {
             (entity.custom_fields or {}).get("slot_id"): entity for entity in all_characters
         }
+        bound: dict[str, str] = {}  # this turn's designations -> the person they resolved to
         for introduction, reference in zip(introductions, references):
+            designations = {identity_key(reference), identity_key(introduction.canonical_name)}
             holder = holders.get(introduction.resident_slot) if introduction.resident_slot else None
             if holder is not None and character_locations.get(UUID(str(holder.id))) != target_location_id:
                 continue  # The slot's keeper is elsewhere: nobody new takes the slot (ban 1).
@@ -355,10 +360,12 @@ class NpcIntroductionResolver:
                 )
                 reserved_names.add(identity_key(candidate))
                 new_introductions.append(introduction)
+                bound.update(dict.fromkeys(designations, candidate))
                 continue
 
             existing_id, existing = next(iter(unique_matches.items()))
             existing_key = identity_key(existing.canonical_name)
+            bound.update(dict.fromkeys(designations, existing.canonical_name))
             if existing_key in present_keys:
                 continue
 
@@ -389,10 +396,20 @@ class NpcIntroductionResolver:
                 names.append(introduction.canonical_name)
                 present_keys.add(key)
 
+        # One binding for the addressee: a present person by name or alias, else whomever this
+        # turn's introduction of that designation resolved to (a slot keeper, an arrival, a newcomer).
+        lookup = {
+            identity_key(value): entity.canonical_name
+            for entity in all_characters if identity_key(entity.canonical_name) in present_keys
+            for value in (entity.canonical_name, *entity.aliases)
+        }
+        lookup.update(bound)
+        lookup.update({identity_key(name): name for name in names})
         return NpcIntroductionResolution(
             new_introductions=new_introductions,
             existing_arrivals=existing_arrivals,
             present_names=names,
+            addressee=lookup.get(identity_key(addressee or "")) if addressee else None,
         )
 
 
