@@ -22,6 +22,7 @@ from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.canon_semantics import evidence_supported
 from app.services.entity_identity import identity_key, resolve_character_candidates
 from app.services.name_identity_contract import (
+    NEEDS_NAME_FIELD,
     accept_short_canonical,
     given_name_collides,
     description_used_as_identity_name,
@@ -732,6 +733,7 @@ class EntityRegistrar:
         aliases = self._clean_aliases([*shown, *entity.aliases, *mention.aliases], new_name)
         custom_fields = dict(entity.custom_fields or {})
         custom_fields["temporary_name"] = False
+        custom_fields.pop(NEEDS_NAME_FIELD, None)
         custom_fields.setdefault("identity_promoted_from", old_name)
         custom_fields["identity_promoted_turn_id"] = str(source_turn_id)
         custom_fields["identity_binding"] = {
