@@ -573,46 +573,5 @@ async def test_apply_return_after_nested_outside_restores_original_tavern(
     assert target is not None
     assert target.location_id == tavern.id
     assert innkeeper.id in target.participants
-    assert target.title == tavern.canonical_name
+    assert target.title == "Начало: Трактир «Якорь»"  # the original tavern scene is reused
 
-
-@pytest.mark.asyncio
-async def test_sequence_return_after_nested_outside_restores_original_tavern(
-    db_session: AsyncSession,
-):
-    """Same live topology through ActionSequenceExecutor (inner apply has no trigger turn)."""
-    from app.services.action_sequence_executor import ActionSequenceExecutor
-    from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
-
-    world = await _nested_outside_topology(db_session, "Nested return sequence")
-    tavern = world["tavern"]
-    innkeeper = world["innkeeper"]
-    scenes = world["scenes"]
-
-    execution = await ActionSequenceExecutor(db_session).execute(
-        world["campaign_id"],
-        world["nested_scene_id"],
-        world["user"].id,
-        ActionSequencePlan(
-            steps=[
-                ActionStepPlan(
-                    action_type="movement",
-                    intent="возвращение в трактир «Якорь»",
-                    resolution="auto_success",
-                    safe_mundane=True,
-                    observable_outcome=(
-                        "Ты направляешься обратно к трактиру «Якорь»."
-                    ),
-                    transition=_live_return_plan(),
-                )
-            ]
-        ),
-        route_discovery_turn_id=world["user"].id,
-    )
-
-    assert execution.final_scene_id is not None
-    target = await scenes.get_by_id(execution.final_scene_id)
-    assert target is not None
-    assert target.location_id == tavern.id
-    assert innkeeper.id in target.participants
-    assert target.title == tavern.canonical_name

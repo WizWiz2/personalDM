@@ -100,7 +100,8 @@ async def extract_actor_segment_proposals_with_audit(
         "сообщает персонажу игрока конкретное фактическое сведение о человеке, месте, "
         "предмете, событии, времени, доступе, внешности или наблюдении. Не выбирай жесты, "
         "эмоции, атмосферу, Narrator-текст, вопросы, приветствия или чистые намерения. "
-        "Явное отрицательное утверждение NPC допустимо. Не решай, прав ли NPC: это только "
+        "Явное отрицательное утверждение NPC допустимо. Явный отказ, согласие, обещание "
+        "или условие NPC персонажу игрока — его решение, выбирай его тоже. Не решай, прав ли NPC: это только "
         "character_claim. Если фактических утверждений нет, верни пустой список.\n"
         f"Говорящий NPC: {actor.canonical_name}.\n"
         f"Слушатель: {player.canonical_name}.\n"
@@ -346,15 +347,10 @@ def install() -> None:
     if _INSTALLED:
         return
 
-    import app.services.post_turn_processor as post_turn_module
     from app.services.post_turn_processor import PostTurnProcessor
 
     original_process_job = PostTurnProcessor.process_job
     original_trace = PlaytestTraceService._trace_from_snapshot
-
-    post_turn_module.extract_actor_segment_proposals = (
-        extract_actor_segment_proposals_with_audit
-    )
 
     async def audited_process_job(self, job_id, *, already_claimed=False):
         token = _ACTOR_AUDIT.set(None)

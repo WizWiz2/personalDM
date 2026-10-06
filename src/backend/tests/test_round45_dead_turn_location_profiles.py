@@ -1,15 +1,6 @@
-from app.services.dead_turn_guard import _is_dead_surface, _is_empty_plan
+from app.services.dead_turn_guard import _is_empty_plan
 from app.services.location_profile_guard import extract_destination_profile
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
-
-
-def test_generic_no_change_surface_is_classified_as_dead_turn():
-    assert _is_dead_surface("Пока ничего заметно не меняется.")
-    assert _is_dead_surface("Ничего не происходит")
-    assert not _is_dead_surface("В журналах нет следов входа под чужой учётной записью.")
-    assert not _is_dead_surface(
-        "Пока ничего заметно не меняется, но в журнале появляется неизвестный внешний адрес."
-    )
 
 
 def test_absent_marks_do_not_refuse_a_completed_plan():

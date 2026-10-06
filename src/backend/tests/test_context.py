@@ -192,3 +192,115 @@ async def test_knowledge_boundary_leak_protection(db_session: AsyncSession):
     assert narrator_meta["actor_scope_strict"] is False
     assert str(secret_fact.id) in narrator_meta["included_fact_ids"]
     assert str(private_thesis.id) in narrator_meta["included_thesis_ids"]
+
+
+@pytest.mark.asyncio
+async def test_narrator_card_carries_what_a_present_npc_already_said(db_session: AsyncSession):
+    """Replay 4: T5 «смотрителя сейчас нет» reached the narrator only as the hero's anonymous memory."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Memory"))
+    entities, scenes = EntityRepository(db_session), SceneRepository(db_session)
+    hero = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Илья"))
+    host = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Семён"))
+    scene = await scenes.create(campaign_id, SceneCreate(title="Трактир"))
+    for person in (hero, host):
+        await scenes.add_participant(scene.id, person.id)
+    for proposition, source in [("Смотрителя сейчас нет.", host.id), ("Огни видели с парохода.", None)]:
+        await BeliefRepository(db_session).create(BeliefCreate(
+            character_id=hero.id, proposition=proposition, source_character_id=source,
+            status="known", visibility="character_only",
+        ))
+    await db_session.commit()
+
+    messages, _ = await ContextCompiler(db_session).compile_context(campaign_id, scene_id=scene.id)
+    context = "\n".join(message.content for message in messages)
+
+    host_card = context[context.index("Семён"):]
+    assert "Already said by this character" in host_card
+    assert host_card.index("Already said") < host_card.index("Смотрителя сейчас нет.")
+    assert context.count("Смотрителя сейчас нет.") == 1
+    assert "Огни видели с парохода." in context
+
+
+@pytest.mark.asyncio
+async def test_a_line_heard_from_an_absent_npc_keeps_its_speaker(db_session: AsyncSession):
+    """Live B5 T4: the host took the absent fisherman's «— Степаном меня зовут.» as his own."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Heard"))
+    entities, scenes = EntityRepository(db_session), SceneRepository(db_session)
+    hero = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Илья"))
+    fisher = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Рыбак"))
+    scene = await scenes.create(campaign_id, SceneCreate(title="Трактир"))
+    await scenes.add_participant(scene.id, hero.id)
+    await BeliefRepository(db_session).create(BeliefCreate(
+        character_id=hero.id, proposition="— Степаном меня зовут.", source_character_id=fisher.id,
+        status="known", visibility="character_only",
+    ))
+    await db_session.commit()
+
+    messages, _ = await ContextCompiler(db_session).compile_context(campaign_id, scene_id=scene.id)
+
+    assert "- heard from Рыбак: — Степаном меня зовут." in messages[0].content
+
+
+@pytest.mark.asyncio
+async def test_the_narrative_person_is_one_typed_campaign_setting(db_session: AsyncSession):
+    """Replay 4 drifted between «Илья…» and «вы»; the person is one typed campaign setting."""
+    from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
+    from app.models.turn_authority import TurnAuthority
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Person"))
+    setups = CampaignSetupRepository(db_session)
+    assert await setups.narrative_person(campaign_id) == "second_singular"
+    row = await setups.create_draft(campaign_id, campaign_name="Person")
+    await setups.update(row, {"custom_fields": {"narrative_person": "second_plural"}})
+    person = await setups.narrative_person(campaign_id)
+    payload = TurnAuthority(campaign_id=campaign_id, trigger_turn_id=uuid4(), player_input="x",
+                            narrative_person=person).narrator_payload()
+    assert payload["narrative_person"] == "second person plural («вы»)"
+    await setups.update(row, {"custom_fields": {"narrative_person": "вы"}})
+    with pytest.raises(ValueError):
+        await setups.narrative_person(campaign_id)
+
+
+@pytest.mark.asyncio
+async def test_an_npc_card_lists_only_what_that_npc_witnessed(db_session: AsyncSession):
+    """Live B6 T7: the innkeeper repeated the fisherman's T2 words heard only at the pier."""
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.turn import TurnCreate
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Witness"))
+    entities, scenes, turns = EntityRepository(db_session), SceneRepository(db_session), TurnRepository(db_session)
+    hero = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Илья"))
+    fisher = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Егор"))
+    host = await entities.create_character(campaign_id, CharacterCreate(canonical_name="Трактирщик"))
+    from app.models.campaign import CampaignUpdate
+
+    await CampaignRepository(db_session).update(campaign_id, CampaignUpdate(player_character_id=hero.id))
+    pier = await scenes.create(campaign_id, SceneCreate(title="Пристань"))
+    inn = await scenes.create(campaign_id, SceneCreate(title="Трактир"))
+    for scene, cast in ((pier, (hero, fisher)), (inn, (hero, host))):
+        for person in cast:
+            await scenes.add_participant(scene.id, person.id)
+    at_pier = await turns.create(campaign_id, TurnCreate(role="assistant", content="…", scene_id=pier.id))
+    at_inn = await turns.create(campaign_id, TurnCreate(role="assistant", content="…", scene_id=inn.id))
+    await BeliefRepository(db_session).create(BeliefCreate(
+        character_id=hero.id, proposition="Прохор ночует у вдовы Марьи.", source_character_id=fisher.id,
+        status="known", visibility="character_only", source_turn_id=at_pier.id,
+    ))
+    await FactRepository(db_session).create(campaign_id, FactCreate(
+        subject="полтинник", predicate="лежит", object_value="на стойке", source_turn_id=at_inn.id,
+    ))
+    await db_session.commit()
+
+    messages, _ = await ContextCompiler(db_session).compile_context(campaign_id, scene_id=inn.id)
+    context = "\n".join(message.content for message in messages)
+    [section] = context.split("Witnessed (was present when it was published):\n")[1:]  # host only
+    from itertools import takewhile
+
+    seen = "\n".join(takewhile(lambda line: line.startswith("- "), section.split("\n")))
+
+    assert "Прохор ночует у вдовы Марьи." in context and "[witnesses:" not in context
+    assert "полтинник лежит на стойке" in seen and "вдовы Марьи" not in seen

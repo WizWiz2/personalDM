@@ -3,6 +3,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 
 from app.db.memory_taxonomy_table import FactMemoryProfile
+from app.db.memory_witness import record_witnesses
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Fact
 from app.models.fact import FactCreate, FactRead, FactUpdate
@@ -59,6 +60,7 @@ class FactRepository(BaseRepository):
         )
         self._session.add(profile)
         await self._session.flush()
+        await record_witnesses(self._session, db_fact.id, data.source_turn_id)
         return self._read(db_fact, profile)
 
     async def get_by_id(self, fact_id: UUID) -> FactRead | None:
@@ -220,6 +222,14 @@ class FactRepository(BaseRepository):
             scene_id=data.scene_id,
             memory_kind=data.memory_kind,
         )
+        if data.subject_entity_id and data.memory_kind == "scene_state" and cardinality == "single":
+            # An entity's scene state is one value under any wording: the newest supersedes by its
+            # typed subject (B5 kept «занят на кухне» while the attendant stood at the counter).
+            current += [
+                fact for fact in await self.list_active(campaign_id, scene_id=data.scene_id)
+                if fact.subject_entity_id == data.subject_entity_id
+                and fact.memory_kind == "scene_state" and fact not in current
+            ]
         object_key = self.normalize(data.object_value)
         truth_key = self.normalize(data.truth_status)
 

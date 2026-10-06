@@ -73,8 +73,35 @@ async def test_changed_role_cannot_clone_referenced_existing_npc(db_session, tem
 
 
 @pytest.mark.asyncio
+async def test_resident_slot_keeper_is_reused_whatever_the_role_wording(db_session):
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Inn keeper"))
+    locations = LocationRepository(db_session)
+    inn = await locations.create(campaign_id, LocationCreate(canonical_name="Трактир"))
+    kitchen = await locations.create(
+        campaign_id, LocationCreate(canonical_name="Кухня", parent_location_id=inn.id)
+    )
+    entities = EntityRepository(db_session)
+    keeper = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Трактирщик", current_location_id=inn.id,
+        custom_fields={"temporary_name": True, "role": "трактирщик", "slot_id": str(inn.id)},
+    ))
+    introduction = PlannedNpcIntroduction.model_validate({
+        **_npc(), "canonical_name": "Хозяин трактира", "role": "хозяин трактира",
+        "resident_slot": str(inn.id),
+    })
+    result = await NpcIntroductionResolver(db_session).resolve(
+        campaign_id=campaign_id, introductions=[introduction], present_names=[],
+        target_location_id=kitchen.id,
+    )
+    assert result.new_introductions == []
+    assert [item.entity_id for item in result.existing_arrivals] == [keeper.id]
+    assert len(await entities.list_by_campaign(campaign_id, "character")) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "case", ["travel_index", "travel_evidence", "profile", "long_role", "long_name", "identity"]
+    "case", ["travel_index", "profile", "long_role", "long_name", "identity"]
 )
 async def test_invalid_semantics_are_repaired_at_provider_boundary(monkeypatch, case):
     if case.startswith("travel"):
@@ -85,15 +112,11 @@ async def test_invalid_semantics_are_repaired_at_provider_boundary(monkeypatch, 
             ]
         }
         bad = json.loads(json.dumps(good))
-        bad["obstacles"][0].update(
-            {"action_index": 1}
-            if case == "travel_index"
-            else {"evidence_quote": "Охрана не пускает."}
-        )
+        bad["obstacles"][0].update({"action_index": 1})
     elif case == "profile":
         wire = _profile_wire_model(1, action_indices=[2])
-        good = {"patches": [{"action_index": 2, "profile": PROFILE}]}
-        bad = {"patches": [{"action_index": 0, "profile": PROFILE}]}
+        good = {"patches": [{"action_index": 2, "name": "Сад", "within_current": False, "profile": PROFILE}]}
+        bad = {"patches": [{"action_index": 0, "name": "Сад", "within_current": False, "profile": PROFILE}]}
     else:
         wire = OutcomeNpcIntroductionDraft
         good = _npc()
@@ -134,7 +157,7 @@ async def test_invalid_semantics_are_repaired_at_provider_boundary(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_unrepairable_blocker_still_fails_closed(monkeypatch):
+async def test_ungrounded_travel_blocker_is_dropped_and_the_trip_proceeds(monkeypatch):
     calls = []
 
     def respond(request):
@@ -164,15 +187,17 @@ async def test_unrepairable_blocker_still_fails_closed(monkeypatch):
         "AsyncClient",
         lambda **kwargs: client(transport=httpx.MockTransport(respond), **kwargs),
     )
-    with pytest.raises(LLMProviderError, match="verbatim"):
-        await LLMProvider().generate_json(
-            [],
-            SimpleNamespace(
-                base_url="http://localhost:11434/v1", model_name="test", context_window=4096
-            ),
-            response_model=_travel_wire_model(1),
-        )
-    assert len(calls) == 3
+    wire = _travel_wire_model(1)
+    result = await LLMProvider().generate_json(
+        [],
+        SimpleNamespace(
+            base_url="http://localhost:11434/v1", model_name="test", context_window=4096
+        ),
+        response_model=wire,
+    )
+    # "Invented guard" has no evidence: not a ban, so no retry loop and no failure.
+    assert wire.model_validate(result).obstacles[0].blocking_reason is None
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio

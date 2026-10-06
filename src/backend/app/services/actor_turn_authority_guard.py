@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from uuid import UUID
 
 from pydantic import BaseModel, Field
 
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
-from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProviderError
-from app.services.role_model_router import ModelRole
 
-_INSTALLED = False
 
 
 class ActorSegmentSelection(BaseModel):
@@ -33,39 +30,6 @@ def _key(value: object) -> str:
 def _word_key(value: object) -> str:
     """Normalize immutable evidence for duplicate detection, not semantic classification."""
     return " ".join(_WORD_RE.findall(_key(value)))
-
-
-def actor_turn_contract(authority) -> dict | None:
-    if authority.scene_disposition != "actor_turn" or not authority.acting_character_id:
-        return None
-    return {
-        "acting_character_id": str(authority.acting_character_id),
-        "acting_character": authority.acting_character_name,
-        "authorized": [
-            "speak_as_self",
-            "answer_current_player_input",
-            "state_personal_memories_observations_and_claims",
-            "mention_absent_people_places_objects_or_past_events_as_claims",
-            "local_reversible_conversational_body_language",
-            "transient_actor_emotion_tone_or_affect",
-        ],
-        "not_authorized": [
-            "invent_player_dialogue_or_voluntary_action",
-            "move_to_another_location_without_structured_authority",
-            "physically_introduce_or_control_other_characters",
-            "transfer_items_or_create_irversible_world_outcomes_without_authority",
-            "establish_world_outcomes_beyond_the_actor_own_claims",
-        ],
-        "epistemic_rule": (
-            "New factual content spoken by the acting character is a character_claim, not an "
-            "objective fact/event. The claim may be novel, mistaken or false. Novel actor-owned "
-            "speech is not a new complication merely because Planner did not pre-state it."
-        ),
-        "presence_rule": (
-            "Mentioning an absent person/place/object in actor-owned speech does not materialize "
-            "that entity or make it physically present."
-        ),
-    }
 
 
 def _split_candidate_text(value: str) -> list[str]:
@@ -100,60 +64,48 @@ def segment_actor_response(assistant_content: str, *, max_segments: int = 20) ->
         seen.add(key)
         candidates.append(segment)
 
-    for match in _QUOTE_RE.finditer(text):
-        quoted = next((group for group in match.groups() if group is not None), "")
-        for part in _split_candidate_text(quoted):
+    for span in speech_spans(text):
+        for part in _split_candidate_text(span):
             add(part)
             if len(candidates) >= max_segments:
                 return candidates
-
-    for part in _split_candidate_text(text):
-        add(part)
-        if len(candidates) >= max_segments:
-            break
     return candidates
 
 
-def _deduplicate_selected_segments(
-    segments: list[str],
-    selected_segment_ids: list[int],
-) -> list[int]:
-    """Collapse nested immutable evidence spans while preserving distinct selected claims.
+def speech_spans(text: str) -> list[str]:
+    """Direct speech by typography alone: quoted spans, and dialogue lines opened by a dash. Inside
+    either, a spaced dash after a punctuation mark switches between the speaker and the author."""
+    spans: list[str] = []
+    for match in _QUOTE_RE.finditer(text or ""):
+        spans += _speaker_parts(next(g for g in match.groups() if g is not None), 0)
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line and unicodedata.category(line[0]) == "Pd":
+            spans += _speaker_parts(line, 1)
+    return spans
 
-    Quote extraction intentionally produces both the exact quoted claim and, later, the enclosing
-    sentence. If the semantic selector chooses both, persisting both creates duplicate beliefs such
-    as `Это мой груз` and `«Это мой груз», — говорит он...`. This function does not decide meaning:
-    it only notices that one already-published selected span is textually contained in another and
-    keeps the more precise (shorter) evidence span.
-    """
+
+def _speaker_parts(line: str, start: int) -> list[str]:
+    parts = []
+    for index in range(max(2, start + 1), len(line) - 1):
+        if (unicodedata.category(line[index]) == "Pd" and line[index - 1].isspace()
+                and line[index + 1].isspace() and unicodedata.category(line[index - 2])[0] == "P"):
+            parts.append(line[start:index])
+            start = index + 1
+    return [part.strip() for part in [*parts, line[start:]][::2] if part.strip()]
+
+
+def _valid_segment_ids(segments: list[str], selected_segment_ids: list[int]) -> list[int]:
+    """Selected IDs that exist, once each; candidates are already unique speech spans."""
     valid: list[int] = []
-    seen: set[int] = set()
     for raw_id in selected_segment_ids[:8]:
         try:
             segment_id = int(raw_id)
         except (TypeError, ValueError):
             continue
-        if segment_id in seen or not (1 <= segment_id <= len(segments)):
-            continue
-        seen.add(segment_id)
-        valid.append(segment_id)
-
-    keep = set(valid)
-    for left in valid:
-        left_text = _word_key(segments[left - 1])
-        if not left_text:
-            continue
-        for right in valid:
-            if left == right:
-                continue
-            right_text = _word_key(segments[right - 1])
-            if not right_text or left_text == right_text:
-                if left_text == right_text and left > right:
-                    keep.discard(left)
-                continue
-            if left_text in right_text and len(left_text) < len(right_text):
-                keep.discard(right)
-    return [segment_id for segment_id in valid if segment_id in keep]
+        if 1 <= segment_id <= len(segments) and segment_id not in valid:
+            valid.append(segment_id)
+    return valid
 
 
 def build_actor_segment_proposals(
@@ -164,7 +116,7 @@ def build_actor_segment_proposals(
     player_character_id: UUID,
 ) -> list[ProposedChangeCreate]:
     proposals: list[ProposedChangeCreate] = []
-    for segment_id in _deduplicate_selected_segments(segments, selected_segment_ids):
+    for segment_id in _valid_segment_ids(segments, selected_segment_ids):
         evidence = segments[segment_id - 1]
         proposals.append(
             ProposedChangeCreate(
@@ -190,122 +142,9 @@ def build_actor_segment_proposals(
     return proposals
 
 
-async def extract_actor_segment_proposals(
-    scribe,
-    *,
-    campaign_id: UUID,
-    assistant_content: str,
-    acting_character_id: UUID,
-    player_character_id: UUID,
-) -> list[ProposedChangeCreate]:
-    """Ask the Scribe which immutable published segments are factual actor claims."""
-    clean = " ".join((assistant_content or "").split()).strip()
-    if not clean:
-        return []
-
-    actor = await scribe._entity_repo.get_character(acting_character_id)
-    player = await scribe._entity_repo.get_character(player_character_id)
-    if not actor or not player:
-        return []
-    segments = segment_actor_response(assistant_content)
-    if not segments:
-        return []
-
-    selection = await scribe._model_router.resolve(campaign_id, ModelRole.SCRIBE)
-    if selection is None:
-        return []
-
-    segment_block = "\n".join(
-        f"S{index}: {segment}" for index, segment in enumerate(segments, start=1)
-    )
-    try:
-        data = await scribe._model_router.generate_json(
-            scribe._llm_provider,
-            selection,
-            [
-                ChatMessage(
-                    role="system",
-                    content=(
-                        "[ACTOR CLAIM SEGMENT SELECTOR]\n"
-                        "Тебе даны неизменяемые фрагменты ОПУБЛИКОВАННОГО ответа NPC. "
-                        "Не пиши и не исправляй текст. Семантически выбери только номера S-сегментов, "
-                        "где именно выбранный NPC сообщает персонажу игрока конкретное фактическое "
-                        "сведение о человеке, месте, предмете, событии, времени, доступе, внешности "
-                        "или наблюдении. Не выбирай жесты, эмоции, атмосферу, описание Narrator, "
-                        "в том числе третьелицевые предложения о том, где NPC находится или что он "
-                        "делает; само упоминание говорящего не превращает авторское описание в его "
-                        "реплику. "
-                        "вопросы, приветствия, намерения или предположения рассказчика. Не решай, "
-                        "прав ли NPC: это character_claim. Если фактических утверждений нет, верни "
-                        "пустой список. Определяй говорящего и смысл по контексту, не по словам-маркерам.\n"
-                        f"Говорящий NPC: {actor.canonical_name}.\n"
-                        f"Слушатель: {player.canonical_name}.\n"
-                        "Формат: {\"segment_ids\":[1,2]}"
-                    ),
-                ),
-                ChatMessage(role="user", content=segment_block),
-            ],
-            max_tokens=220,
-            temperature=0.0,
-            response_model=ActorSegmentSelection,
-        )
-        envelope = ActorSegmentSelection.model_validate(data)
-    except (LLMProviderError, ValueError, TypeError):
-        return []
-
-    return build_actor_segment_proposals(
-        segments,
-        envelope.segment_ids,
-        acting_character_id=acting_character_id,
-        player_character_id=player_character_id,
-    )
-
-
-def install() -> None:
-    """Install actor rights as typed Validator context, without lexical post-filtering."""
-    global _INSTALLED
-    if _INSTALLED:
-        return
-    _INSTALLED = True
-
-    from app.models.turn_authority import TurnAuthority
-    from app.services.turn_authority_validator import TurnAuthorityValidator
-
-    original_validator_payload = TurnAuthority.validator_payload
-
-    if "ACTOR TURN RIGHTS" not in TurnAuthorityValidator.SYSTEM_PROMPT:
-        TurnAuthorityValidator.SYSTEM_PROMPT += """
-
-ACTOR TURN RIGHTS
-When TURN AUTHORITY has scene_disposition=actor_turn and actor_turn_contract:
-- acting_character is explicitly authorized to speak as themselves, answer the current player
-  message, reveal their own memories/observations/claims and use local reversible conversational
-  body language or transient affect;
-- new information in actor-owned speech is epistemic character_claim, not objective world canon;
-- an actor claim may mention absent people, places, objects or past events without materializing them;
-- actor-owned speech/gesture/thought/emotion is NOT PLAYER AGENCY;
-- player_character remains fully protected from invented speech, voluntary action, choice, thought
-  or emotion;
-- actor_turn does not authorize physical relocation, item transfer, new physical characters or
-  objective world mutations beyond typed authority.
-Judge ownership semantically from subject/context. Do not use word-marker lists.
-"""
-
-    def actor_aware_validator_payload(self):
-        payload = original_validator_payload(self)
-        contract = actor_turn_contract(self)
-        if contract:
-            payload["actor_turn_contract"] = contract
-        return payload
-
-    TurnAuthority.validator_payload = actor_aware_validator_payload
-
-
 __all__ = [
     "ActorSegmentSelection",
-    "actor_turn_contract",
     "build_actor_segment_proposals",
-    "extract_actor_segment_proposals",
-    "install",
     "segment_actor_response",
+    "speech_spans",
 ]

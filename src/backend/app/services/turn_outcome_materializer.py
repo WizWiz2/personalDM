@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Entity, SceneParticipant
+from app.db.tables import Entity, SceneParticipant, Turn
+from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
-from app.models.turn_authority import TurnAuthority
+from app.models.narration_validation import GrantedBeat
+from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.entity_identity import identity_key
+from app.services.name_identity_contract import given_name_collides
+from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
 
 
 @dataclass(frozen=True)
@@ -77,12 +81,12 @@ class TurnOutcomeMaterializer:
         for arrival in authority.allowed_existing_npc_arrivals:
             if arrival.entity_id in existing_participants:
                 continue
-            # Authority already checked current_location_id == target location. Keep movement
-            # disabled here so materialization can never turn an identity repair into teleportation.
+            # Authority already checked the character is at the target place or a parent/child place
+            # of it; stepping within one establishment is not a trip.
             await self._scenes.add_participant(
                 authority.target_scene_id,
                 arrival.entity_id,
-                allow_movement=False,
+                allow_movement=True,
             )
             arrived_existing.append((authority.target_scene_id, arrival.entity_id))
             existing_participants.add(arrival.entity_id)
@@ -107,38 +111,12 @@ class TurnOutcomeMaterializer:
                     "Cannot materialize planned new NPC because that identity already exists: "
                     f"{introduction.canonical_name}"
                 )
-            character = await self._entities.create_character(
-                authority.campaign_id,
-                CharacterCreate(
-                    canonical_name=introduction.canonical_name,
-                    description=introduction.description or introduction.role,
-                    appearance=introduction.appearance,
-                    voice=introduction.voice,
-                    custom_fields={
-                        "introduced_by": "turn_authority",
-                        "introduction_turn_id": str(source_turn_id),
-                        "introduction_trigger_turn_id": str(authority.trigger_turn_id),
-                        "introduction_reason": introduction.reason,
-                        "role": introduction.role,
-                        "temporary_name": introduction.temporary_name,
-                    },
-                ),
-            )
-            await self._scenes.add_participant(
-                authority.target_scene_id,
-                character.id,
-                allow_movement=True,
-            )
+            character = await self._create(authority, introduction, source_turn_id)
             created_ids.append(character.id)
-            response = authority.addressed_response
-            if response and identity_key(response.speaker_name or "") == key:
-                authority.addressed_response = response.model_copy(
-                    update={"speaker_id": character.id}
-                )
-                authority.acting_character_id = character.id
-                authority.acting_character_name = character.canonical_name
-            if character.canonical_name not in authority.present_character_names:
-                authority.present_character_names.append(character.canonical_name)
+            if authority.beat_owner_id is None and identity_key(authority.beat_owner_name or "") == key:
+                authority.beat_owner_id = authority.acting_character_id = character.id
+                if authority.addressed_response:
+                    authority.addressed_response.speaker_id = character.id
             known_names.add(key)
 
         await self._session.flush()
@@ -148,6 +126,75 @@ class TurnOutcomeMaterializer:
             arrived_existing_participants=tuple(arrived_existing),
             identity_updates=(identity_update,) if identity_update else (),
         )
+
+    async def _create(self, authority: TurnAuthority, introduction, source_turn_id: UUID):
+        character = await self._entities.create_character(
+            authority.campaign_id,
+            CharacterCreate(
+                canonical_name=introduction.canonical_name,
+                description=introduction.description or introduction.role,
+                appearance=introduction.appearance,
+                voice=introduction.voice,
+                custom_fields={
+                    "introduced_by": "turn_authority",
+                    "introduction_turn_id": str(source_turn_id),
+                    "introduction_trigger_turn_id": str(authority.trigger_turn_id),
+                    "introduction_reason": introduction.reason,
+                    "role": introduction.role,
+                    "temporary_name": introduction.temporary_name,
+                    **({"slot_id": introduction.resident_slot} if introduction.resident_slot else {}),
+                },
+            ),
+        )
+        await self._scenes.add_participant(
+            authority.target_scene_id,
+            character.id,
+            allow_movement=True,
+        )
+        if character.canonical_name not in authority.present_character_names:
+            authority.present_character_names.append(character.canonical_name)
+        return character
+
+    async def introduce_published_newcomer(self, authority: TurnAuthority, beat, prose, outcome, source_turn_id):
+        """A person a present beat owner brings in through an executed step, who then speaks or acts
+        in the published prose, joins the scene by the planned-introduction path (7b T7 «речник»)."""
+        newcomer = beat.newcomer if beat else None
+        if not (newcomer and authority.beat_owner_id and authority.target_scene_id) or not any(
+            step["status"] == "completed" for step in authority.executed_steps()
+        ):
+            return outcome
+        claim = GrantedBeat(cast_id=newcomer.name, kind=newcomer.kind, evidence=newcomer.evidence)
+        if claim.failure(newcomer.name, newcomer.name, prose):
+            return outcome
+        known = await self._entities.list_by_campaign(authority.campaign_id, entity_type="character")
+        occupied = {identity_key(name) for entity in known for name in (entity.canonical_name, *entity.aliases)}
+        try:
+            [introduction] = NpcIntroductionResolver.sanitize_introductions(
+                [PlannedNpcIntroduction(canonical_name=newcomer.name, role=newcomer.name, temporary_name=True,
+                                        reason=f"Приведён: {authority.beat_owner_name}")],
+                occupied_canonical_keys=occupied, locale_text=authority.player_input,
+            )
+        except (AuthorityResolutionError, ValueError):
+            return outcome
+        if identity_key(introduction.canonical_name) in occupied:
+            return outcome
+        character = await self._create(authority, introduction, source_turn_id)
+        await self._session.flush()
+        return replace(outcome, introduced_character_ids=(*outcome.introduced_character_ids, character.id))
+
+    async def reveal_published_name(self, authority: TurnAuthority, beat, outcome, source_turn_id):
+        """The narrator voices the beat owner, so a name it types in the owner's own published beat is
+        that owner's (B5 T1 «Степаном меня зовут» never left «Рыбак у пристани»)."""
+        if not (beat and beat.revealed_name and authority.beat_owner_id) or beat.revealed_name not in beat.evidence:
+            return outcome
+        authority.addressed_response = (authority.addressed_response or AddressedResponse()).model_copy(
+            update={"speaker_id": authority.beat_owner_id, "speaker_name": authority.beat_owner_name,
+                    "revealed_name": beat.revealed_name, "name_evidence": beat.evidence})
+        try:
+            update = await self._reveal_identity(authority, source_turn_id)
+        except ValueError:
+            return outcome  # An established personal name is never overwritten.
+        return replace(outcome, identity_updates=(*outcome.identity_updates, update)) if update else outcome
 
     async def _reveal_identity(self, authority, source_turn_id) -> IdentityUpdate | None:
         response = authority.addressed_response
@@ -165,18 +212,24 @@ class TurnOutcomeMaterializer:
         if not fields.get("temporary_name"):
             raise ValueError("Name revelation cannot overwrite an established personal identity")
         known = await self._entities.list_by_campaign(authority.campaign_id)
-        if any(
-            entity.id != response.speaker_id and identity_key(response.revealed_name) in {
-                identity_key(entity.canonical_name), *(identity_key(alias) for alias in entity.aliases)
-            } for entity in known
-        ):
-            raise ValueError("Name revelation conflicts with another existing identity")
+        taken = {
+            identity_key(name) for entity in known if entity.id != response.speaker_id
+            for name in (entity.canonical_name, *entity.aliases)
+        }
+        if given_name_collides(response.revealed_name, taken):
+            return None  # Another identity owns this name or its given name; keep the designation.
         update = IdentityUpdate(
             response.speaker_id, row.canonical_name, row.aliases or "[]", row.custom_fields or "{}",
         )
         old_name = row.canonical_name
         aliases = json.loads(row.aliases or "[]")
-        if old_name not in aliases:
+        # A designation becomes an alias only if the player read it; a planner's role label
+        # («Хозяин или служащий трактира») never shown in prose is no name.
+        shown = " ".join([response.name_evidence or "", *(await self._session.execute(
+            select(Turn.content).where(Turn.campaign_id == str(authority.campaign_id),
+                                       Turn.role == "assistant", Turn.status == "active")
+        )).scalars()]).casefold()
+        if old_name not in aliases and old_name.casefold() in shown:
             aliases.append(old_name)
         row.canonical_name = response.revealed_name
         row.aliases = json.dumps(aliases, ensure_ascii=False)
@@ -197,9 +250,7 @@ class TurnOutcomeMaterializer:
             for npc in authority.allowed_new_npcs
         ]
         authority.addressed_response = response.model_copy(update={"speaker_name": response.revealed_name})
-        authority.addressed_response_obligation = response.revealed_name
-        authority.acting_character_id = response.speaker_id
-        authority.acting_character_name = response.revealed_name
+        authority.beat_owner_name = authority.acting_character_name = response.revealed_name
         await self._session.flush()
         return update
 

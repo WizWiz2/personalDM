@@ -23,7 +23,7 @@ async def test_silence_word_cannot_hide_a_factual_claim():
         _model_router=router, _llm_provider=SimpleNamespace(), last_audit={},
     )
     proposals = await extract_actor_segment_proposals_with_audit(
-        scribe, campaign_id=uuid4(), assistant_content="Он молчит, потому что дверь закрыта.",
+        scribe, campaign_id=uuid4(), assistant_content="— Молчу, потому что дверь закрыта.",
         acting_character_id=actor_id, player_character_id=player_id,
     )
     router.generate_json.assert_awaited_once()

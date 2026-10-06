@@ -3,26 +3,25 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Character
-from app.models.addressed_response import AddressedResponse, QuestionResponse
+from app.models.addressed_response import AddressedResponse
 from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
+from app.models.narration_validation import GrantedBeat
 from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.response_memory import ResponseMemoryService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_authority_service import TurnAuthorityService
-from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
+from app.services.turn_outcome_materializer import MaterializedTurnOutcome, TurnOutcomeMaterializer
 from app.services.turn_outcome_resolver import _outcome_wire_model
 from app.services.turn_undo_service import TurnUndoService
 from app.services.turn_world_frame import TurnWorldFrame
@@ -47,12 +46,8 @@ async def world(session):
     return campaign_id, player, location, scene
 
 
-def response(name="Продавец", words="Номер дела 123456789, дата 15.03.2023.", after=None):
-    return AddressedResponse(
-        speaker_name=name, after_action_index=after,
-        questions=["Какой номер дела и точная дата?"],
-        answers=[QuestionResponse(question_index=0, disposition="answer", words=words)],
-    )
+def response(name="Продавец", after=None):
+    return AddressedResponse(speaker_name=name, after_action_index=after)
 
 
 async def build(session, campaign_id, scene, plan, trigger_id=None):
@@ -84,12 +79,10 @@ async def test_new_npc_answers_and_is_talkable_in_same_published_scene(db_sessio
     materializer = TurnOutcomeMaterializer(db_session)
     outcome = await materializer.materialize(authority, source_turn_id=authority.trigger_turn_id)
     frame = await TurnWorldFrame.capture(db_session, campaign_id, scene.id)
-    published, _ = NarrationPublicationGuard.publish(authority, "", None)
     npc = await EntityRepository(db_session).get_character(authority.addressed_response.speaker_id)
     assert npc.id in frame.participant_ids
     assert npc.current_location_id == location.id
     assert authority.acting_character_id == npc.id
-    assert "Продавец: «Номер дела 123456789, дата 15.03.2023.»" in published
     await materializer.rollback(outcome)
     assert await EntityRepository(db_session).get_by_id(npc.id) is None
     assert (await SceneRepository(db_session).get_participants(scene.id)) == [player.id]
@@ -148,48 +141,18 @@ async def test_publication_refuses_world_drift(db_session):
         await frame.assert_unchanged(db_session, campaign_id)
 
 
-@pytest.mark.asyncio
-async def test_exact_answer_memory_is_atomic_sourced_and_undoable(db_session):
-    campaign_id, player, location, scene = await world(db_session)
-    entities = EntityRepository(db_session)
-    npc = await entities.create_character(campaign_id, CharacterCreate(
-        canonical_name="Продавец", current_location_id=location.id,
-    ))
-    await SceneRepository(db_session).add_participant(scene.id, npc.id)
-    turns = TurnRepository(db_session)
-    user = await turns.create(campaign_id, TurnCreate(role="user", content="Спрашиваю дату."))
-    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
-        player_intent="Спрашиваю дату.", resolution="conversation", addressed_response_requested=True,
-        addressed_response=response(),
-    ), user.id)
-    text, _ = NarrationPublicationGuard.publish(authority, "", None)
-    assistant = await turns.create(campaign_id, TurnCreate(
-        role="assistant", content=text, scene_id=scene.id, parent_turn_id=user.id,
-        acting_character_id=npc.id, context_snapshot={"turn_authority": authority.model_dump(mode="json")},
-    ))
-    memory = ResponseMemoryService(db_session)
-    await memory.publish(authority, assistant.id)
-    await memory.publish(authority, assistant.id)
-    beliefs = await BeliefRepository(db_session).get_for_character(player.id)
-    assert len(beliefs) == 1
-    assert "123456789" in beliefs[0].proposition and "15.03.2023" in beliefs[0].proposition
-    assert beliefs[0].source_character_id == npc.id
-    assert beliefs[0].source_turn_id == assistant.id
-    assert beliefs[0].status == "heard"
-    await db_session.commit()
-    assert await TurnUndoService(db_session).undo_last_pair(campaign_id)
-    assert not await BeliefRepository(db_session).get_for_character(player.id)
-
-
-def test_repeating_question_cannot_satisfy_answer_schema():
-    wire = _outcome_wire_model(0, question_count=1, questions=["Кто пришёл?"])
-    with pytest.raises(ValidationError, match="repeated question"):
+def test_action_free_outcome_needs_an_external_result_but_no_npc_lines():
+    wire = _outcome_wire_model(0)
+    schema = wire.model_json_schema()
+    assert "direct_response" not in schema["properties"]
+    assert "question_responses" not in schema["properties"]
+    with pytest.raises(ValidationError):
         wire.model_validate({
-            "action_outcomes": [], "npc_introductions": [], "observable_consequences": ["Шаги."],
-            "question_responses": [{
-                "question_index": 0, "disposition": "unknown", "words": "Кто пришёл?",
-            }],
+            "action_outcomes": [], "npc_introductions": [], "observable_consequences": [],
         })
+    assert wire.model_validate({
+        "action_outcomes": [], "npc_introductions": [], "observable_consequences": ["Шаги."],
+    }).observable_consequences == ["Шаги."]
 
 
 @pytest.mark.asyncio
@@ -205,10 +168,7 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
     user = await turns.create(campaign_id, TurnCreate(role="user", content="Как тебя зовут?"))
     reply = AddressedResponse(
         speaker_name="Посетитель", revealed_name="Александр Ковалёв",
-        name_evidence="Меня зовут Александр Ковалёв.", questions=["Как тебя зовут?"],
-        answers=[QuestionResponse(
-            question_index=0, disposition="answer", words="Меня зовут Александр Ковалёв.",
-        )],
+        name_evidence="Посетитель отвечает: «Меня зовут Александр Ковалёв.»",
     )
     authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
         player_intent="Спрашиваю имя.", resolution="conversation", identity_reveal_requested=True,
@@ -220,7 +180,7 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
     assert renamed.canonical_name == "Александр Ковалёв"
     assert "Посетитель" in renamed.aliases
     assert authority.addressed_response.speaker_id == npc.id
-    text, _ = NarrationPublicationGuard.publish(authority, "", None)
+    text = "— Меня зовут Александр Ковалёв, — отвечает посетитель."
     assistant = await turns.create(campaign_id, TurnCreate(
         role="assistant", content=text, scene_id=scene.id, parent_turn_id=user.id,
         context_snapshot={"turn_materialization": {
@@ -236,9 +196,141 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
     assert "Александр Ковалёв" not in restored.aliases
 
 
+@pytest.mark.asyncio
+async def test_a_name_the_owner_gives_in_its_published_beat_promotes_its_designation(db_session):
+    campaign_id, _, location, scene = await world(db_session)
+    entities = EntityRepository(db_session)
+    npc = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Рыбак у пристани", current_location_id=location.id,
+        custom_fields={"temporary_name": True, "role": "рыбак"},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, npc.id)
+    user = await TurnRepository(db_session).create(campaign_id, TurnCreate(role="user", content="Как тебя зовут?"))
+    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
+        player_intent="Спрашиваю имя.", resolution="conversation",
+    ), user.id)
+    authority.beat_owner_id, authority.beat_owner_name = npc.id, "Рыбак у пристани"
+    materializer = TurnOutcomeMaterializer(db_session)
+    beat = GrantedBeat(cast_id=str(npc.id), kind="speech", evidence="— Степаном меня зовут.")
+
+    unchanged = await materializer.reveal_published_name(
+        authority, beat.model_copy(update={"revealed_name": "Прохор"}), MaterializedTurnOutcome(), user.id)
+    outcome = await materializer.reveal_published_name(
+        authority, beat.model_copy(update={"revealed_name": "Степан"}), MaterializedTurnOutcome(), user.id)
+
+    assert not unchanged.identity_updates
+    assert (await entities.get_character(npc.id)).canonical_name == "Степан"
+    assert [update.previous_name for update in outcome.identity_updates] == ["Рыбак у пристани"]
+
+
 def test_unproved_name_revelation_is_rejected():
     with pytest.raises(ValidationError, match="self-identification"):
         AddressedResponse(
-            speaker_name="Посетитель", direct_response="Я видел Александра Ковалёва вчера.",
-            revealed_name="Александр Ковалёв", name_evidence="Меня зовут Александр Ковалёв.",
+            speaker_name="Посетитель",
+            revealed_name="Александр Ковалёв", name_evidence="Я видел его вчера.",
         )
+
+
+@pytest.mark.asyncio
+async def test_an_unshown_planner_designation_is_not_kept_as_alias(db_session):
+    campaign_id, _, location, scene = await world(db_session)
+    entities = EntityRepository(db_session)
+    npc = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Хозяин или служащий трактира", current_location_id=location.id,
+        custom_fields={"temporary_name": True, "role": "хозяин или служащий трактира"},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, npc.id)
+    user = await TurnRepository(db_session).create(campaign_id, TurnCreate(role="user", content="Имя?"))
+    reply = AddressedResponse(
+        speaker_name="Хозяин или служащий трактира", revealed_name="Кузьма Андреевич",
+        name_evidence="«Добрый вечер. Кузьма Андреевич», — отвечает он.",
+    )
+    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
+        player_intent="Спрашиваю имя.", resolution="conversation", identity_reveal_requested=True,
+        addressed_response_requested=True, addressed_response=reply,
+    ), user.id)
+    await TurnOutcomeMaterializer(db_session).materialize(authority, source_turn_id=user.id)
+    renamed = await entities.get_character(npc.id)
+    assert renamed.canonical_name == "Кузьма Андреевич"
+    assert renamed.aliases == []
+
+
+@pytest.mark.asyncio
+async def test_a_person_the_owner_brings_in_who_speaks_in_prose_joins_the_scene(db_session):
+    campaign_id, _, location, scene = await world(db_session)
+    entities = EntityRepository(db_session)
+    host = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Степан Лукич", current_location_id=location.id))
+    await SceneRepository(db_session).add_participant(scene.id, host.id)
+    user = await TurnRepository(db_session).create(campaign_id, TurnCreate(role="user", content="Сведите с речником."))
+    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
+        player_intent="Прошу свести с речником.", resolution="conversation",
+    ), user.id)
+    authority.beat_owner_id, authority.beat_owner_name = host.id, "Степан Лукич"
+    prose = "Степан Лукич подзывает речника. Речник садится напротив. «Белова знаю», — говорит речник."
+    beat = GrantedBeat(cast_id=str(host.id), kind="act", evidence="Степан Лукич подзывает речника.",
+                       newcomer={"name": "Речник", "kind": "speech", "evidence": "«Белова знаю»"})
+    materializer = TurnOutcomeMaterializer(db_session)
+
+    idle = await materializer.introduce_published_newcomer(authority, beat, prose, MaterializedTurnOutcome(), user.id)
+    authority.action_sequence = {"steps": [{"action_type": "service", "status": "completed"}]}
+    outcome = await materializer.introduce_published_newcomer(authority, beat, prose, MaterializedTurnOutcome(), user.id)
+
+    assert not idle.introduced_character_ids
+    [new_id] = outcome.introduced_character_ids
+    assert new_id in await SceneRepository(db_session).get_participants(scene.id)
+    assert "Речник" in authority.present_character_names
+
+
+@pytest.mark.asyncio
+async def test_with_two_npcs_present_the_typed_addressee_owns_the_beat(db_session):
+    campaign_id, _, location, scene = await world(db_session)
+    entities = EntityRepository(db_session)
+    host = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Фёдор Матвеевич", aliases=["Хозяин трактира"], current_location_id=location.id))
+    boy = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Половой", current_location_id=location.id))
+    for npc in (host, boy):
+        await SceneRepository(db_session).add_participant(scene.id, npc.id)
+
+    def plan(name):
+        return CoordinatedTurnPlan(player_intent="Спрашиваю хозяина.", resolution="conversation",
+                                   addressed_response_requested=True, addressed_response=response(name))
+
+    by_alias = await build(db_session, campaign_id, scene, plan("Хозяин трактира"))
+    unknown = await build(db_session, campaign_id, scene, plan("Кто-то ещё"))
+
+    assert (by_alias.beat_owner_id, by_alias.beat_owner_name) == (host.id, "Фёдор Матвеевич")
+    assert unknown.beat_owner_id is None
+
+
+@pytest.mark.asyncio
+async def test_destination_binding_sees_which_known_place_is_current(db_session):
+    """B8 T5: «к мужчине у причального столба» at the crossing was bound to the town's pier scene."""
+    from unittest.mock import MagicMock
+
+    from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
+
+    campaign_id, _, location, _scene = await world(db_session)
+    await LocationRepository(db_session).create(campaign_id, LocationCreate(canonical_name="Пристань"))
+
+    _names, catalog = await TurnIntentPlanningPipeline(db_session, MagicMock())._location_catalog(campaign_id)
+
+    assert {entry["name"]: entry["current"] for entry in catalog.values()} == {"Мастерская": True, "Пристань": False}
+
+
+@pytest.mark.asyncio
+async def test_an_addressee_introduced_this_turn_owns_the_beat_beside_another_npc(db_session):
+    """B9 T8: «Трактирщик» was addressed while being introduced; nobody got the beat."""
+    campaign_id, _, location, scene = await world(db_session)
+    boy = await EntityRepository(db_session).create_character(campaign_id, CharacterCreate(
+        canonical_name="Половой", current_location_id=location.id))
+    await SceneRepository(db_session).add_participant(scene.id, boy.id)
+
+    authority = await build(db_session, campaign_id, scene, CoordinatedTurnPlan(
+        player_intent="Спрашиваю продавца.", resolution="conversation",
+        addressed_response_requested=True, addressed_response=response(),
+        npc_introductions=[introduction()],
+    ))
+
+    assert authority.beat_owner_name == "Продавец"

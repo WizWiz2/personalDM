@@ -3,10 +3,6 @@ from __future__ import annotations
 import re
 
 from app.models.turn import ChatMessage
-from app.services.narration_repetition_guard import (
-    NarrationRepetitionGuard,
-    RepetitionMatch,
-)
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
 from app.services.turn_authority_service import TurnAuthorityService
@@ -14,7 +10,6 @@ from app.services.turn_planner import TurnPlanningError
 from app.services.turn_runner import TurnRunner
 
 _INSTALLED = False
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|[\r\n]+")
 _REFERENCE_ID_RE = re.compile(
     r"\[id=([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\]"
@@ -145,65 +140,6 @@ def structured_inventory_contract_issues(
     return issues
 
 
-def normalize_impossible_inventory_acquisition(
-    plan: CoordinatedTurnPlan,
-    context_messages,
-) -> CoordinatedTurnPlan:
-    """Downgrade an impossible ``take`` of an already-owned item to a neutral interaction.
-
-    Ownership is a machine-authored invariant, not a lexical guess.  Once the typed plan says
-    ``take`` but the authoritative bridge says the item is not a physical object here, the
-    mutation cannot be executed.  An already-owned item is retained as a neutral interaction;
-    an otherwise absent item is fail-closed as a blocked step.  Neither path invents an
-    acquisition or mutates the world.
-    """
-    has_owned, owned_ids = _reference_ids(context_messages, "Player-owned items:")
-    has_objects, object_ids = _reference_ids(context_messages, "Objects physically here:")
-    if not (has_owned and has_objects):
-        return plan
-
-    steps = list(plan.action_sequence.steps)
-    changed = False
-    for index, step in enumerate(steps):
-        if (
-            step.action_type == "inventory"
-            and step.resolution == "auto_success"
-            and step.inventory_operation == "take"
-            and step.item_id is not None
-            and str(step.item_id).casefold() not in object_ids
-        ):
-            if str(step.item_id).casefold() in owned_ids:
-                steps[index] = step.model_copy(
-                    update={
-                        "action_type": "interaction",
-                        "item_id": None,
-                        "inventory_operation": None,
-                        "inventory_target_id": None,
-                    }
-                )
-            else:
-                steps[index] = step.model_copy(
-                    update={
-                        "resolution": "blocked",
-                        "safe_mundane": False,
-                        "blocking_reason": (
-                            "Предмет не находится среди доступных объектов текущей сцены."
-                        ),
-                        "item_id": None,
-                        "inventory_operation": None,
-                        "inventory_target_id": None,
-                    }
-                )
-            changed = True
-    if not changed:
-        return plan
-    return plan.model_copy(
-        update={
-            "action_sequence": plan.action_sequence.model_copy(update={"steps": steps})
-        }
-    )
-
-
 def systemless_contract_issues(
     plan: CoordinatedTurnPlan,
     player_input: str,
@@ -250,89 +186,6 @@ def ensure_distinct_physical_location(source_location_id, resolved):
     return resolved
 
 
-def detect_contained_repetition(
-    candidate: str,
-    previous_responses: list[str],
-) -> RepetitionMatch | None:
-    """Catch a long old response pasted inside a larger newly generated response."""
-    normalized_candidate = NarrationRepetitionGuard._normalized(candidate)  # noqa: SLF001
-    if not normalized_candidate:
-        return None
-    for previous in previous_responses:
-        normalized_previous = NarrationRepetitionGuard._normalized(previous)  # noqa: SLF001
-        if len(normalized_previous) < 48:
-            continue
-        if (
-            normalized_previous != normalized_candidate
-            and normalized_previous in normalized_candidate
-        ):
-            return RepetitionMatch(
-                previous_text=previous,
-                similarity=1.0,
-                exact=False,
-            )
-    return None
-
-
-def _published_paragraphs(text: str) -> list[str]:
-    return [part.strip() for part in (text or "").split("\n\n") if part.strip()]
-
-
-def detect_prefixed_repetition(
-    candidate: str,
-    previous_responses: list[str],
-) -> RepetitionMatch | None:
-    """A new answer that opens with an already published paragraph is a reprint.
-
-    Containment only matches when the whole old answer sits inside the new one.
-    The live failure reprints one or more published paragraphs and then continues.
-    Equality is on those stored paragraphs. A short reply is not a scene paragraph.
-    """
-    candidate_parts = _published_paragraphs(candidate)
-    if not candidate_parts:
-        return None
-    best: RepetitionMatch | None = None
-    best_shared = 0
-    for previous in previous_responses:
-        previous_parts = _published_paragraphs(previous)
-        if not previous_parts:
-            continue
-        shared = 0
-        for left, right in zip(candidate_parts, previous_parts):
-            left_key = NarrationRepetitionGuard._normalized(left)  # noqa: SLF001
-            right_key = NarrationRepetitionGuard._normalized(right)  # noqa: SLF001
-            if not left_key or left_key != right_key:
-                break
-            shared += 1
-        if shared < 1:
-            continue
-        if shared == len(candidate_parts) and shared == len(previous_parts):
-            continue
-        if shared > best_shared:
-            best_shared = shared
-            best = RepetitionMatch(
-                previous_text=previous,
-                similarity=1.0,
-                exact=False,
-            )
-    return best
-
-
-def detect_self_repetition(candidate: str) -> RepetitionMatch | None:
-    """Catch duplicated sentence/paragraph blocks inside one generated response."""
-    seen: dict[str, str] = {}
-    for part in _SENTENCE_SPLIT_RE.split(candidate or ""):
-        clean = part.strip()
-        normalized = NarrationRepetitionGuard._normalized(clean)  # noqa: SLF001
-        if len(normalized) < 48:
-            continue
-        previous = seen.get(normalized)
-        if previous is not None:
-            return RepetitionMatch(previous_text=previous, similarity=1.0, exact=True)
-        seen[normalized] = clean
-    return None
-
-
 def install() -> None:
     """Install structural systemless invariants without lexical semantic classifiers."""
     global _INSTALLED
@@ -342,7 +195,6 @@ def install() -> None:
     original_contract_issues = TurnAuthorityPlanner.contract_issues
     original_plan = TurnAuthorityPlanner.plan
     original_resolve_existing_location = SceneTransitionExecutor._resolve_existing_location
-    original_repetition_detect = NarrationRepetitionGuard.detect
     original_authority_build = TurnAuthorityService.build
     original_addressed_character_id = TurnRunner._addressed_character_id
 
@@ -427,29 +279,6 @@ def install() -> None:
         )
         return ensure_distinct_physical_location(source_location_id, resolved)
 
-    def repetition_with_containment(
-        self,
-        candidate,
-        previous_responses,
-        *,
-        actor_turn,
-    ):
-        self_repeated = detect_self_repetition(candidate)
-        if self_repeated is not None:
-            return self_repeated
-        contained = detect_contained_repetition(candidate, previous_responses)
-        if contained is not None:
-            return contained
-        prefixed = detect_prefixed_repetition(candidate, previous_responses)
-        if prefixed is not None:
-            return prefixed
-        return original_repetition_detect(
-            self,
-            candidate,
-            previous_responses,
-            actor_turn=actor_turn,
-        )
-
     async def response_owned_authority(self, *args, **kwargs):
         authority = await original_authority_build(self, *args, **kwargs)
         # Explicit actor-scoped internal callers remain authoritative. Public /talk only supplies
@@ -499,8 +328,6 @@ def install() -> None:
     TurnAuthorityPlanner.contract_issues = guarded_contract_issues
     TurnAuthorityPlanner.plan = guarded_plan
     SceneTransitionExecutor._resolve_existing_location = reject_same_physical_location
-    NarrationRepetitionGuard.RECENT_LIMIT = max(NarrationRepetitionGuard.RECENT_LIMIT, 12)
-    NarrationRepetitionGuard.detect = repetition_with_containment
     TurnAuthorityService.build = response_owned_authority
     TurnRunner._addressed_character_id = staticmethod(routed_addressed_character_id)
     TurnRunner._recompile_narrator_context = actor_neutral_narrator_context
@@ -509,9 +336,6 @@ def install() -> None:
 
 __all__ = [
     "addressed_response_requested",
-    "detect_contained_repetition",
-    "detect_prefixed_repetition",
-    "detect_self_repetition",
     "ensure_distinct_physical_location",
     "input_uses_addressed_character",
     "install",

@@ -78,6 +78,10 @@ class StructuredReceiptEventCompiler:
         for step in steps:
             if step.status == "skipped":
                 continue
+            if step.status != "blocked" and not step.transition_id and not step.item_operation:
+                # No typed effect: the step text is the planner's restatement of the attempt,
+                # not published canon. The published narration is the scribe's evidence.
+                continue
             event = await self._step_event(sequence, step)
             result = await self._reducer.append_and_reduce(UUID(sequence.campaign_id), event)
             event_ids.append(result.event_id)

@@ -243,7 +243,7 @@ def test_upgrade_head_adopts_full_precreated_orm_chain_and_preserves_rows(tmp_pa
             ).fetchall()
         }
 
-    assert revision == ("d1e2f3a4b5c6",)
+    assert revision == ("f3a4b5c6d7e8",)
     assert transition == ("preserve me", "legacy-runtime")
     assert lifecycle == ("received", 1)
     assert preserved_entity == (

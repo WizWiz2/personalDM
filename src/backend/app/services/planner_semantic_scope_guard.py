@@ -6,7 +6,7 @@ from uuid import UUID
 from app.models.character import CharacterUpdate
 from app.models.turn import ChatMessage
 from app.services.entity_identity import identity_key
-from app.services.narrator_authority_contracts import (
+from app.services.name_identity_contract import (
     description_used_as_identity_name,
     is_usable_short_designation,
 )

@@ -142,69 +142,6 @@ async def test_published_address_reference_authorizes_and_normalizes_new_destina
     assert "quoted in recent narration" in authorization.reason
 
 
-@pytest.mark.asyncio
-async def test_new_route_discovery_does_not_make_source_location_its_parent(
-    db_session: AsyncSession,
-):
-    campaign_id, office, _, scene = await _campaign_with_player(db_session)
-    turns = TurnRepository(db_session)
-    await turns.create(
-        campaign_id,
-        TurnCreate(
-            role="assistant",
-            scene_id=scene.id,
-            content="Адрес: улица Лиговского, старое здание банка.",
-        ),
-    )
-    user = await turns.create(
-        campaign_id,
-        TurnCreate(
-            role="user",
-            scene_id=scene.id,
-            content="Еду по адресу, который вы назвали.",
-        ),
-    )
-    sequence = ActionSequencePlan(
-        steps=[
-            ActionStepPlan(
-                action_type="movement",
-                intent="поехать к старому зданию банка",
-                resolution="auto_success",
-                safe_mundane=True,
-                observable_outcome="Роман прибывает к старому зданию банка на улице Лиговского.",
-                transition=SceneTransitionPlan(
-                    required=True,
-                    transition_type="location_transition",
-                    destination_location=(
-                        "улица Лиговского, старое здание банка — "
-                        f"{office.canonical_name}"
-                    ),
-                    destination_parent_location=office.canonical_name,
-                    carry_participants=["Роман"],
-                ),
-            )
-        ]
-    )
-
-    applied = await SceneTransitionExecutor(db_session).apply(
-        campaign_id,
-        scene.id,
-        user.id,
-        SceneTransitionPlan(
-            required=True,
-            transition_type="focus_transition",
-            sequence_payload=sequence.model_dump(mode="json"),
-        ),
-    )
-
-    assert applied is not None
-    assert applied.target_location_id != office.id
-    target = await LocationRepository(db_session).get_by_id(applied.target_location_id)
-    assert target is not None
-    assert target.parent_location_id is None
-    assert office.canonical_name not in target.canonical_name
-
-
 def _sequence_authority(*, steps, consequences, ending_hook="", acting=False):
     actor_id = uuid4() if acting else None
     return TurnAuthority(
@@ -242,8 +179,6 @@ def test_sequence_without_structured_outcome_cannot_authorize_remote_findings():
     )
 
     assert authority.observable_consequences == []
-    assert authority.ending_hook == ""
-    assert authority.canon_constraints == []
     assert any("текущей физической локации" in value for value in authority.narration_guidance)
 
 

@@ -3,13 +3,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.action_sequence_table import ActionSequence
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
+from app.db.scene_state_table import SceneRuntimeState
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Entity, Scene, SceneParticipant
 from app.models.action_sequence import ActionSequenceExecution
@@ -128,18 +129,6 @@ class SceneTransitionExecutor:
             destination,
         )
 
-    async def route_discovery_allowed(
-        self,
-        trigger_turn_id: UUID | None,
-        destination: str | None,
-    ) -> bool:
-        """Compatibility helper: discovery is allowed only for an authorized destination."""
-        authorization = await self.authorize_destination(
-            trigger_turn_id,
-            destination,
-        )
-        return authorization.applicable and authorization.authorized
-
     async def apply(
         self,
         campaign_id: UUID,
@@ -185,7 +174,10 @@ class SceneTransitionExecutor:
         )
         target_location_id = source_location_id
         destination_created = False
-        if plan.transition_type == "location_transition":
+        if plan.transition_type == "location_transition" and plan.destination_location_id:
+            # The compiler already proved identity and an open route; nothing is re-matched by name.
+            target_location_id = plan.destination_location_id
+        elif plan.transition_type == "location_transition":
             destination = plan.destination_location or ""
             authorization = None
             if trigger_turn_id:
@@ -228,6 +220,7 @@ class SceneTransitionExecutor:
                         destination,
                         plan.destination_parent_location,
                         profile=_destination_profile(plan.bridge_summary),
+                        resident_role=plan.destination_resident_role,
                     )
                 )
             if allow_route_discovery is None:
@@ -257,23 +250,30 @@ class SceneTransitionExecutor:
         if plan.transition_type == "location_transition" and target_location_id:
             resolved_location = await self._locations.get_by_id(target_location_id)
             campaign_locations = await self._locations.list_by_campaign(campaign_id)
-        target_scene = await self._scenes.create(
-            campaign_id,
-            SceneCreate(
-                title=self._scene_title(
-                    source_scene,
-                    plan,
-                    resolved_location,
-                    campaign_locations,
+        reused_id = await self._scene_at(campaign_id, source_scene_id, source_location_id, target_location_id)
+        previous_time_label = None
+        if reused_id:
+            target_scene = await self._scenes.get_by_id(reused_id)
+            previous_time_label = (await self._state.ensure_runtime_state(reused_id)).world_time_label
+            await self._session.execute(delete(SceneParticipant).where(
+                SceneParticipant.scene_id == str(reused_id),
+                SceneParticipant.entity_id.in_(select(Character.entity_id).where(
+                    Character.current_location_id.is_distinct_from(str(target_location_id)),
+                    Character.entity_id != (campaign.player_character_id or ""),
+                )),
+            ))
+        else:
+            target_scene = await self._scenes.create(
+                campaign_id,
+                SceneCreate(
+                    title=self._scene_title(source_scene, plan, resolved_location, campaign_locations),
+                    location_id=target_location_id,
+                    location_description=None,
                 ),
-                location_id=target_location_id,
-                location_description=None,
-            ),
-        )
+            )
         await self._state.inherit_transition_state(
             source_scene_id,
             target_scene.id,
-            elapsed_time=plan.elapsed_time,
             time_after=plan.time_after,
         )
 
@@ -330,6 +330,8 @@ class SceneTransitionExecutor:
             time_after=plan.time_after,
             reason=plan.reason,
             detector="turn_planner",
+            target_reused=reused_id is not None,
+            previous_time_label=previous_time_label,
         )
         self._session.add(row)
         await self._session.flush()
@@ -526,9 +528,7 @@ class SceneTransitionExecutor:
                     if player:
                         player.current_location_id = None
 
-        target = await self._session.get(Scene, row.target_scene_id)
-        if target:
-            target.status = "abandoned"
+        await release_transition_target(self._session, row)
         row.status = "rolled_back"
         row.undone_at = datetime.utcnow()
         await self._bridges.mark_status(transition_id, "rolled_back")
@@ -680,6 +680,7 @@ class SceneTransitionExecutor:
         destination: str,
         parent_name: str | None,
         profile: str | None = None,
+        resident_role: str | None = None,
     ) -> tuple[UUID, bool]:
         clean_destination = display_location_name(" ".join(destination.split()))
         if not clean_destination:
@@ -708,6 +709,7 @@ class SceneTransitionExecutor:
                 custom_fields={
                     "created_by": "turn_planner",
                     **({"profile_source": "turn_planner_destination_profile"} if profile else {}),
+                    **({"resident_role": resident_role} if resident_role else {}),
                 },
             ),
         )
@@ -722,6 +724,25 @@ class SceneTransitionExecutor:
             if any(alias.casefold() == needle for alias in location.aliases):
                 return location
         return None
+
+    async def _scene_at(self, campaign_id, source_scene_id, source_location_id, target_location_id):
+        """The live scene of the target place: the source itself, or the latest earlier visit."""
+        if target_location_id is None:
+            return None
+        if source_scene_id and source_location_id == target_location_id:
+            return source_scene_id
+        found = await self._session.scalar(
+            select(Scene.id)
+            .join(SceneLocationLink, SceneLocationLink.scene_id == Scene.id)
+            .where(
+                Scene.campaign_id == str(campaign_id),
+                Scene.status != "abandoned",
+                SceneLocationLink.location_id == str(target_location_id),
+            )
+            .order_by(Scene.created_at.desc())
+            .limit(1)
+        )
+        return UUID(found) if found else None
 
     async def _participants_to_carry(
         self,
@@ -875,3 +896,15 @@ class SceneTransitionExecutor:
             status=row.status,
             action_sequence=action_sequence,
         )
+
+
+async def release_transition_target(session: AsyncSession, transition: SceneTransition) -> None:
+    """Undo abandons only a scene the transition created; a reused scene gets its clock back."""
+    if transition.target_reused:
+        runtime = await session.get(SceneRuntimeState, transition.target_scene_id)
+        if runtime:
+            runtime.world_time_label = transition.previous_time_label
+        return
+    target = await session.get(Scene, transition.target_scene_id)
+    if target:
+        target.status = "abandoned"

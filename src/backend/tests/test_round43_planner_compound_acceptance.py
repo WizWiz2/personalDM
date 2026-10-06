@@ -32,7 +32,6 @@ def _plan(*destinations: str) -> dict:
             "steps": steps,
         },
         "observable_consequences": ["Маршрут выполняется по порядку."],
-        "canon_constraints": [],
         "new_fact_candidates": [],
         "narration_guidance": [],
         "character_beats": [],

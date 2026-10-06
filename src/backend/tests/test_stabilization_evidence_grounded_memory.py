@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.services.actor_memory_observability_guard import extract_actor_segment_proposals_with_audit
+
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -9,7 +11,6 @@ from app.models.proposed_change import ChangeType
 from app.providers.llm_provider import LLMProviderError
 from app.services.actor_turn_authority_guard import (
     build_actor_segment_proposals,
-    extract_actor_segment_proposals,
     segment_actor_response,
 )
 
@@ -121,7 +122,7 @@ async def test_extractor_uses_one_semantic_call_and_model_returns_only_segment_i
     segment_id = _segment_id_containing(segments, EXACT)
     router = FakeRouter(segment_ids=[segment_id, 999])
 
-    result = await extract_actor_segment_proposals(
+    result = await extract_actor_segment_proposals_with_audit(
         _scribe(router),
         campaign_id=uuid4(),
         assistant_content=PUBLISHED,
@@ -144,7 +145,7 @@ async def test_extractor_failure_does_not_create_or_invent_memory():
     player_id = uuid4()
     router = FakeRouter(error=LLMProviderError("planned extractor failure"))
 
-    result = await extract_actor_segment_proposals(
+    result = await extract_actor_segment_proposals_with_audit(
         _scribe(router),
         campaign_id=uuid4(),
         assistant_content=PUBLISHED,
@@ -153,16 +154,16 @@ async def test_extractor_failure_does_not_create_or_invent_memory():
     )
 
     assert result == []
-    assert router.calls == 1
+    assert router.calls == 2  # one bounded retry, still no invented memory
 
 
 @pytest.mark.asyncio
-async def test_silence_is_semantically_rejected_as_knowledge():
+async def test_narration_without_speech_is_never_actor_knowledge():
     actor_id = uuid4()
     player_id = uuid4()
     router = FakeRouter(segment_ids=[])
 
-    result = await extract_actor_segment_proposals(
+    result = await extract_actor_segment_proposals_with_audit(
         _scribe(router),
         campaign_id=uuid4(),
         assistant_content="Бармен умолкает.",
@@ -171,7 +172,4 @@ async def test_silence_is_semantically_rejected_as_knowledge():
     )
 
     assert result == []
-    assert router.calls == 1
-    prompt = "\n".join(message.content for message in router.last_messages)
-    assert "Не выбирай жесты, эмоции" in prompt
-    assert "Если фактических утверждений нет" in prompt
+    assert router.calls == 0

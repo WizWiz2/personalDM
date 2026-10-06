@@ -119,7 +119,6 @@ def test_evaluator_history_drops_duplicate_current_assistant_result():
     assert [item.content for item in selected] == ["Проверяю дверь"]
 
 
-
 def test_deterministic_player_is_not_recorded_as_fallback(tmp_path, monkeypatch):
     monkeypatch.setenv("PDM_SIM_DATA_DIR", str(tmp_path))
     from tests import run_realistic_simulation as harness

@@ -81,25 +81,17 @@ def test_transition_can_be_the_renderable_outcome_for_movement():
     assert plan.action_sequence.steps[0].transition.destination_location == "Старая Марина"
 
 
-def test_nested_quote_and_enclosing_sentence_create_one_actor_belief():
-    text = "Докер кивает. «Это мой груз», — говорит он низким голосом."
-    segments = segment_actor_response(text)
-    quoted_id = next(i for i, value in enumerate(segments, start=1) if value == "Это мой груз")
-    enclosing_id = next(
-        i
-        for i, value in enumerate(segments, start=1)
-        if "Это мой груз" in value and value != "Это мой груз"
+def test_only_speech_spans_are_actor_claim_candidates():
+    text = (
+        "Докер кивает. «Это мой груз», — говорит он низким голосом.\n"
+        "— Свою нынче не дам, — говорит он после паузы. — Самому понадобится, да и два-три дня — "
+        "не на верёвку отвязать."
     )
 
-    proposals = build_actor_segment_proposals(
-        segments,
-        [quoted_id, enclosing_id],
-        acting_character_id=uuid4(),
-        player_character_id=uuid4(),
-    )
-
-    assert len(proposals) == 1
-    assert proposals[0].payload["proposition"] == "Это мой груз"
+    assert segment_actor_response(text) == [
+        "Это мой груз", "Свою нынче не дам,",
+        "Самому понадобится, да и два-три дня — не на верёвку отвязать.",
+    ]
 
 
 def test_actor_surface_contract_locks_selected_speaker_and_forbids_meta_prose():
@@ -139,3 +131,10 @@ def test_location_projection_does_not_try_to_inflect_canonical_name():
 
     assert rendered == "Вы приходите туда, куда направлялись: Старая Марина."
     assert "к Старая Марина" not in rendered
+
+
+def test_author_remark_inside_a_quote_is_not_speech() -> None:
+    from app.services.actor_turn_authority_guard import speech_spans
+
+    text = "«Не назову, — говорит он наконец. — Постой не по спискам ведётся». Он молчит."
+    assert speech_spans(text) == ["Не назову,", "Постой не по спискам ведётся"]

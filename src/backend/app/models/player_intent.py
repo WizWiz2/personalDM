@@ -8,6 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.models.addressed_response import AddressedResponse
 
 
+# Scene clock authority: a typed part of day, never a phrase copied from the player.
+DayPart = Literal["dawn", "morning", "day", "evening", "night"]
+
 IntentActionType = Literal[
     "service",
     "movement",
@@ -34,6 +37,10 @@ class PlayerActionIntent(BaseModel):
 
     # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
+    # Bound identity of a known place; None means the player selected a new place.
+    destination_location_id: UUID | None = None
+    # A new place inside the location the hop starts from (a building in this town, a room here).
+    destination_within_origin: bool = False
     movement_method: Literal["ordinary", "special"] = "ordinary"
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
 
@@ -45,14 +52,14 @@ class PlayerActionIntent(BaseModel):
     # Time authority. These fields describe what the player committed to waiting/resting through;
     # the compiler later turns them into a time transition when the outcome permits it.
     elapsed_time: str | None = Field(default=None, max_length=255)
-    time_after: str | None = Field(default=None, max_length=255)
+    time_after: DayPart | None = None
 
     @model_validator(mode="after")
     def validate_domain_fields(self):
         if self.action_type == "movement":
             if not self.destination_location:
                 raise ValueError("movement intent requires destination_location")
-        elif self.destination_location is not None:
+        elif self.destination_location is not None or self.destination_location_id is not None:
             raise ValueError("only movement intent may carry destination authority")
         if self.requested_companions and self.action_type != "movement":
             raise ValueError("only movement intent may request companions")
@@ -90,11 +97,12 @@ class PlayerIntentContract(BaseModel):
     addressed_character_name: str | None = Field(default=None, max_length=120)
     identity_reveal_requested: bool = False
     world_state_question: bool = False
-    questions: list[str] = Field(default_factory=list, max_length=8)
 
     # Player-agency boundaries that remain unresolved after this input.
     pending_player_choice: str | None = Field(default=None, max_length=1000)
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
+    # The moment the player skips to before acting; the compiler moves the scene clock to it.
+    time_advance: DayPart | None = None
 
     @model_validator(mode="after")
     def validate_response_target(self):
@@ -117,17 +125,45 @@ class PlayerIntentReview(BaseModel):
     summary: str = Field(default="", max_length=800)
 
 
+ActionResolution = Literal["auto_success", "requires_choice", "blocked"]
+TurnResolution = Literal[
+    "success",
+    "partial_success",
+    "failure",
+    "uncertain",
+    "conversation",
+    "observation",
+    "transition",
+    "sequence",
+]
+DramaticMode = Literal["calm", "routine", "tense", "dangerous"]
+
+
+class DestinationProfilePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action_index: int = Field(ge=0, le=7)
+    name: str = Field(min_length=2, max_length=120, description="The place's own nominative name.")
+    within_current: bool = Field(description="True if it lies inside the place the hop starts from.")
+    # The place's typed resident slot (its ID is the location ID); role of who keeps it, or null.
+    resident_role: str | None = Field(
+        default=None, max_length=60, description="Role of the person who keeps this public place, or null."
+    )
+    profile: str = Field(min_length=80, max_length=1000)
+
+
 class ActionOutcomeDecision(BaseModel):
     """External/current-world result for one frozen action index."""
 
     model_config = ConfigDict(extra="forbid")
 
     action_index: int = Field(ge=0, le=7)
-    resolution: Literal["auto_success", "requires_choice", "blocked"]
+    resolution: ActionResolution
     safe_mundane: bool = False
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
-    destination_profile: str | None = Field(default=None, max_length=1200)
+    # A new place's name, containment and resident slot come from its generated profile.
+    destination: DestinationProfilePatch | None = None
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
@@ -158,6 +194,8 @@ class OutcomeNpcIntroduction(BaseModel):
     personal_name_evidence: str | None = Field(default=None, max_length=500)
     reason: str = Field(min_length=2, max_length=500)
     after_action_index: int | None = Field(default=None, ge=0, le=7)
+    resident_slot: str | None = Field(default=None, max_length=64)
+    arrives: bool = False
 
     @model_validator(mode="after")
     def stable_name_requires_evidence(self):
@@ -175,23 +213,12 @@ class TurnOutcomeDecision(BaseModel):
     npc_introductions: list[OutcomeNpcIntroduction] = Field(default_factory=list, max_length=4)
 
     # These fields constrain narration/external consequences only; they cannot add player actions.
-    resolution: Literal[
-        "success",
-        "partial_success",
-        "failure",
-        "uncertain",
-        "conversation",
-        "observation",
-        "transition",
-        "sequence",
-    ] = "success"
+    resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     addressed_response: AddressedResponse | None = None
-    canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
-    ending_hook: str = Field(default="", max_length=500)
-    dramatic_mode: Literal["calm", "routine", "tense", "dangerous"] = "calm"
+    dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = Field(default=None, max_length=1000)
 
@@ -202,13 +229,6 @@ class TurnOutcomeDecision(BaseModel):
         if not self.allow_new_complication:
             self.complication_source = None
         return self
-
-
-class DestinationProfilePatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    action_index: int = Field(ge=0, le=7)
-    profile: str = Field(min_length=80, max_length=1000)
 
 
 class DestinationProfilePatchSet(BaseModel):

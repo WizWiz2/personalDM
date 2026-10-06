@@ -12,7 +12,6 @@ from app.services.actor_memory_observability_guard import _augment_trace
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.systemless_authority_guard import (
     addressed_response_requested,
-    detect_self_repetition,
     input_uses_addressed_character,
     normalize_addressed_response,
 )
@@ -26,7 +25,6 @@ def _base_plan(**updates) -> CoordinatedTurnPlan:
         "resolution": "conversation",
         "observable_consequences": [],
         "character_beats": [],
-        "canon_constraints": [],
         "new_fact_candidates": [],
         "narration_guidance": [],
         "ending_hook": "",
@@ -97,20 +95,6 @@ def test_requires_check_is_invalid_even_for_addressed_dialogue() -> None:
             intent="спросить Марину, когда это произошло",
             resolution="requires_check",
         )
-
-
-def test_repetition_guard_detects_duplicate_inside_same_response() -> None:
-    sentence = (
-        "Вы внимательно осматриваете дверь, но ничего особенного не замечаете и не находите "
-        "никаких странных знаков."
-    )
-    candidate = f"{sentence} {sentence}"
-
-    match = detect_self_repetition(candidate)
-
-    assert match is not None
-    assert match.similarity == 1.0
-    assert match.exact is True
 
 
 @pytest.mark.asyncio

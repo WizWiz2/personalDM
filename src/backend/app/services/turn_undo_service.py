@@ -9,7 +9,8 @@ from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Entity, Scene, SceneThesis, Turn
+from app.db.tables import Campaign, Character, Entity, SceneThesis, Turn
+from app.services.scene_transition_executor import release_transition_target
 from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
@@ -109,6 +110,12 @@ class TurnUndoService:
             assistant_turn.id,
         ):
             return False
+        # A place the undone turn catalogued must not stay a binding target for the redo.
+        for place in (await self._session.execute(select(Entity).where(
+            Entity.campaign_id == str(campaign_id), Entity.entity_type == "location",
+            Entity.created_at >= user_turn.created_at,
+        ))).scalars():
+            place.status = "inactive"
 
         # Prefer restoring the pre-commit rhythm snapshot from the undone turn when present.
         try:
@@ -189,9 +196,7 @@ class TurnUndoService:
                         if player:
                             player.current_location_id = None
 
-            target = await self._session.get(Scene, transition.target_scene_id)
-            if target:
-                target.status = "abandoned"
+            await release_transition_target(self._session, transition)
             transition.status = "undone"
             transition.undone_at = datetime.utcnow()
             await self._bridges.mark_status(UUID(transition.id), "undone")

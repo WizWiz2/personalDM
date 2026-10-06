@@ -86,11 +86,11 @@ def test_intent_wire_schema_cannot_accept_empty_json_object() -> None:
         PlayerIntentContractDraft.model_validate({})
 
 
-def test_destination_bindings_cannot_select_another_actions_candidate():
-    refs = {"room": "Комната", "garden": "Сад"}
-    wire = _destination_binding_wire([0, 1], refs, {0: {"room": "Комната"}, 1: {"garden": "Сад"}})
+def test_destination_bindings_select_only_catalogued_ids_or_new():
+    wire = _destination_binding_wire([0, 1], {"room": "Комната", "garden": "Сад"})
+    assert wire.model_validate({"action_0": "garden", "action_1": "new"})
     with pytest.raises(ValidationError):
-        wire.model_validate({"action_0": "garden", "action_1": "garden"})
+        wire.model_validate({"action_0": "Сад", "action_1": "garden"})
     with pytest.raises(ValidationError):
         wire.model_validate({"action_0": "room", "action_1": "garden", "actions": []})
 
@@ -138,6 +138,10 @@ def test_required_movement_draft_still_normalizes_into_strict_ir() -> None:
     assert len(contract.actions) == 1
     assert contract.actions[0].action_type == "movement"
     assert contract.actions[0].destination_location == "Коридор"
+    assert contract.actions[0].destination_within_origin is False
+    draft.actions[0].destination_reference = "new_inside"
+    inside = normalize_intent_draft(draft, "Я выхожу из своей комнаты в коридор.").actions[0]
+    assert (inside.destination_location_id, inside.destination_within_origin) == (None, True)
 
 
 def test_outcome_wire_schema_requires_action_outcomes_field() -> None:
@@ -258,51 +262,62 @@ def test_actionless_turn_requires_a_response_without_inventing_an_action() -> No
     assert parsed.action_outcomes == []
 
 
-def _revealed_response(*, spoken_name: str, evidence: str):
+def test_unfilled_resident_slot_is_introduced_through_npc_introductions() -> None:
+    wire = _outcome_wire_model(0, resident_slots=["inn", "town"], required_slot="inn")
+    base = {"action_outcomes": [], "observable_consequences": ["За стойкой стоит хозяин."]}
+    keeper = {
+        "canonical_name": "Трактирщик", "role": "трактирщик", "reason": "Хозяин за стойкой.",
+        "description": "Плотный немолодой мужчина в фартуке, хозяин этого трактира.",
+        "appearance": "Седая борода, закатанные рукава, полотенце через плечо.",
+        "resident_slot": "inn",
+    }
+    with pytest.raises(ValidationError):
+        wire.model_validate({**base, "npc_introductions": []})
+    with pytest.raises(ValidationError):
+        wire.model_validate({**base, "npc_introductions": [{**keeper, "resident_slot": "town"}]})
+    parsed = wire.model_validate({**base, "npc_introductions": [keeper]})
+    assert parsed.npc_introductions[0].resident_slot == "inn"
+
+
+def test_addressee_can_summon_a_newcomer_only_through_a_frozen_action() -> None:
+    wire = _outcome_wire_model(1, bound_response_speaker="Хозяин")
+    servant = {
+        "canonical_name": "Половой", "role": "половой", "reason": "Хозяин позвал его из подсобки.",
+        "description": "Молодой парень в косоворотке, ведёт книгу постояльцев.",
+        "appearance": "Вихрастый, с карандашом за ухом и полотенцем на плече.",
+    }
+    base = {
+        "action_outcomes": [{"action_index": 0, "resolution": "auto_success"}],
+        "response_speaker_name": "Хозяин",
+    }
+    with pytest.raises(ValidationError):
+        wire.model_validate({**base, "npc_introductions": [servant]})
+    parsed = wire.model_validate({**base, "npc_introductions": [{**servant, "after_action_index": 0}]})
+    assert parsed.npc_introductions[0].after_action_index == 0
+
+
+def _revealed_response(*, evidence: str):
     return {
         "action_outcomes": [], "npc_introductions": [],
-        "observable_consequences": [],
-        "direct_response": "Меня зовут Мартин.",
+        "observable_consequences": ["Дежурный отрывается от журнала."],
         "response_revealed_name": "Мартин", "response_name_evidence": evidence,
-        "question_responses": [
-            {"question_index": 0, "disposition": "answer", "words": f"Я {spoken_name}."}
-        ],
     }
 
 
-def test_name_evidence_binds_to_authoritative_answer_without_paraphrasing():
-    wire = _outcome_wire_model(0, question_count=1, questions=["Как тебя зовут?"], requires_response=True)
-    parsed = wire.model_validate(_revealed_response(
-        spoken_name="Мартин", evidence="Меня зовут Мартин.",
-    ))
-    assert parsed.response_name_evidence == "Я Мартин."
+def test_typed_name_change_keeps_its_self_identification_evidence():
+    parsed = _outcome_wire_model(0).model_validate(_revealed_response(evidence="Меня зовут Мартин."))
+    assert parsed.response_revealed_name == "Мартин"
+    assert parsed.response_name_evidence == "Меня зовут Мартин."
 
 
-def test_aggregate_name_cannot_override_a_different_authoritative_answer():
-    wire = _outcome_wire_model(0, question_count=1, questions=["Как тебя зовут?"], requires_response=True)
-    with pytest.raises(ValidationError, match="name revelation requires exact self-identification"):
-        wire.model_validate(_revealed_response(
-            spoken_name="Эдгар", evidence="Меня зовут Мартин.",
-        ))
-
-
-def test_bound_name_evidence_respects_quote_limit_in_a_long_answer():
-    wire = _outcome_wire_model(0, question_count=1, questions=["Как тебя зовут?"], requires_response=True)
-    payload = _revealed_response(spoken_name="Мартин", evidence="Пересказ")
-    words = "Предисловие. " * 40 + "Я Мартин. " + "Продолжение. " * 20
-    payload["question_responses"][0]["words"] = words
-    parsed = wire.model_validate(payload)
-    assert len(parsed.response_name_evidence) <= 500
-    assert parsed.response_name_evidence in words
-    assert "Мартин" in parsed.response_name_evidence
+def test_name_change_without_matching_self_identification_is_rejected():
+    with pytest.raises(ValidationError, match="self-identification"):
+        _outcome_wire_model(0).model_validate(_revealed_response(evidence="Меня зовут Эдгар."))
 
 
 def test_revealed_name_cannot_replace_the_existing_response_owner():
-    wire = _outcome_wire_model(
-        0, question_count=1, questions=["Как тебя зовут?"], requires_response=True,
-        bound_response_speaker="Дежурный у стойки",
-    )
-    payload = _revealed_response(spoken_name="Мартин", evidence="Я Мартин.")
+    wire = _outcome_wire_model(0, bound_response_speaker="Дежурный у стойки")
+    payload = _revealed_response(evidence="Я Мартин.")
     payload["response_speaker_name"] = "Мартин"
     with pytest.raises(ValidationError):
         wire.model_validate(payload)
@@ -312,6 +327,18 @@ def test_revealed_name_cannot_replace_the_existing_response_owner():
     assert parsed.response_revealed_name == "Мартин"
     schema = wire.model_json_schema()["properties"]["response_speaker_name"]
     assert schema["anyOf"][0]["const"] == "Дежурный у стойки"
+
+
+def test_unbound_response_speaker_is_a_present_designation_or_this_turns_introduction():
+    wire = _outcome_wire_model(0, present_names=["Илья", "Трактирщик", "Егор"])
+    payload = _revealed_response(evidence="Зовут меня Семёном.")
+    payload["response_revealed_name"] = "Семён"
+    payload["response_name_evidence"] = "Зовут меня Семён."
+    payload["response_speaker_name"] = "Семён"
+    with pytest.raises(ValidationError, match="current designation"):
+        wire.model_validate(payload)
+    payload["response_speaker_name"] = "Трактирщик"
+    assert wire.model_validate(payload).response_revealed_name == "Семён"
 
 
 def test_npc_wire_cannot_omit_encounter_evidence_and_profile() -> None:
@@ -352,6 +379,8 @@ def test_profile_wire_schema_enforces_requested_patch_cardinality() -> None:
             "patches": [
                 {
                     "action_index": 0,
+                    "name": "Прачечная",
+                    "within_current": False,
                     "profile": (
                         "Круглосуточная прачечная занимает светлое помещение первого этажа; "
                         "вдоль стен стоят ряды машин, столы для белья и обычная зона ожидания."

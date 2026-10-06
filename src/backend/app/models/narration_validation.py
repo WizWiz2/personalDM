@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -27,6 +28,7 @@ class NarrationViolation(BaseModel):
     severity: Literal["warning", "error"] = "error"
     evidence: str = Field(min_length=1, max_length=1000)
     correction: str = Field(min_length=1, max_length=1000)
+    known_absent_name: str | None = None
 
     def trace(self, candidate: str) -> dict:
         """Compact record of this violation and the exact candidate span it rejected."""
@@ -49,11 +51,63 @@ class NarrationViolation(BaseModel):
         }
 
 
-class NarrationQuestionCoverage(BaseModel):
-    """Reviewer-selected exact prose evidence for one frozen information request."""
+class NewcomerBeat(BaseModel):
+    """A person the beat owner brings in who takes a line or an act of their own in the prose."""
 
-    question_index: int = Field(ge=0, le=7)
-    evidence: str = Field(min_length=1, max_length=500)
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=2, max_length=120)
+    kind: Literal["speech", "act"]
+    evidence: str = Field(min_length=1)
+
+
+class GrantedBeat(BaseModel):
+    """The narrator's typed claim of how the beat owner took the beat, with exact prose evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cast_id: str = Field(min_length=1, max_length=64)
+    kind: Literal["speech", "refusal", "leave", "act"]
+    evidence: str = Field(min_length=1)
+    # The personal name the owner gives for themself in this beat (nominative), else null.
+    revealed_name: str | None = Field(default=None, max_length=120)
+    newcomer: NewcomerBeat | None = None
+
+    def failure(self, owner_id: object, owner_name: str, prose: str) -> str | None:
+        """Structural check: owner ID, exact fragment; speech overlaps a dialogue line or quote span,
+        an act or leave has the owner as grammatical subject (a refusal may be either)."""
+        if self.cast_id != str(owner_id):
+            return f"beat cast_id {self.cast_id} is not the grant owner {owner_id}"
+        evidence = self.evidence.strip()
+        # A sentence end the model added where the prose continues («заметили.» vs «заметили: …»).
+        while evidence not in prose and evidence and unicodedata.category(evidence[-1])[0] == "P":
+            evidence = evidence[:-1].rstrip()
+        start = prose.find(evidence)
+        if not evidence or start < 0:
+            return "beat evidence is not an exact fragment of the prose"
+        lines = prose[prose.rfind("\n", 0, start) + 1:start + len(evidence)].split("\n")
+        before = prose[:start]
+        spoken = (
+            any(line.lstrip().startswith(("—", "–")) for line in lines)
+            or any(mark in evidence for mark in "«„\"")
+            or before.count("«") > before.count("»")
+            or before.count("„") > before.count("“")
+            or before.count('"') % 2 == 1
+        )
+        if self.kind == "speech" or (spoken and self.kind == "refusal"):
+            return None if spoken else "speech evidence is outside any dialogue line or quote"
+        from app.services.linguistic_intent_analyzer import LinguisticIntentAnalyzer
+
+        if not LinguisticIntentAnalyzer().subject_is(prose, evidence, owner_name):
+            return f"{self.kind} evidence does not have {owner_name} as its grammatical subject"
+        return None
+
+
+class GrantedNarration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prose: str = Field(min_length=1)
+    beat: GrantedBeat
 
 
 class NarrationValidationResult(BaseModel):
@@ -62,7 +116,6 @@ class NarrationValidationResult(BaseModel):
     verdict: Literal["pass", "repair_required"]
     summary: str = Field(default="", max_length=1500)
     violations: list[NarrationViolation] = Field(default_factory=list, max_length=12)
-    response_coverage: list[NarrationQuestionCoverage] = Field(default_factory=list, max_length=8)
 
     def trace(self, candidate: str) -> dict:
         """Compact decision payload: the verdict, every violation and a short candidate head."""
@@ -73,17 +126,6 @@ class NarrationValidationResult(BaseModel):
             "candidate_excerpt": candidate[:_TRACE_TEXT_LIMIT],
             "violations": [item.trace(candidate) for item in self.violations],
         }
-
-    def covers_questions(self, question_count: int, candidate: str) -> bool:
-        indices = [item.question_index for item in self.response_coverage]
-        return (
-            len(indices) == len(set(indices))
-            and set(indices) == set(range(question_count))
-            and all(
-                item.evidence.strip() and item.evidence.strip() in candidate
-                for item in self.response_coverage
-            )
-        )
 
     @model_validator(mode="after")
     def validate_verdict(self):

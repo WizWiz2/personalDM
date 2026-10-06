@@ -73,7 +73,7 @@ def _compound_plan() -> TurnPlan:
                         required=True,
                         transition_type="time_transition",
                         elapsed_time="8 часов",
-                        time_after="утро",
+                        time_after="morning",
                         scene_title="Утро в гостевой комнате",
                         reason="Безопасный сон до утра.",
                     ),
@@ -96,7 +96,6 @@ def _compound_plan() -> TurnPlan:
             ],
         ),
         observable_consequences=["Вечер и ночь проходят без происшествий."],
-        canon_constraints=["Бармен остаётся в общем зале."],
         narration_guidance=["Кратко связать выполненные шаги."],
         ending_hook="Герой стоит у входа Купцов утром.",
     )
@@ -219,7 +218,7 @@ async def test_compound_sequence_executes_every_safe_step_in_order(
         world["campaign_id"],
         applied.target_scene_id,
     )
-    assert final_state.world_time_label == "утро"
+    assert final_state.world_time_label == "morning"
     assert final_state.world_time_order == 13
     assert final_state.participant_ids == [world["hero"].id]
 
@@ -280,7 +279,7 @@ async def test_sequence_stops_at_real_obstacle_and_skips_later_steps(
                     transition=SceneTransitionPlan(
                         required=True,
                         transition_type="time_transition",
-                        time_after="утро",
+                        time_after="morning",
                     ),
                 ),
             ]
@@ -447,7 +446,7 @@ def test_full_turn_and_undo_keep_sequence_atomic(
         )
 
     assert response.status_code == 200, response.text
-    assert "[EXECUTED ACTION SEQUENCE]" in captured["system"]
+    assert "[TYPED TURN FACTS]" in captured["system"]
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["campaign"]["player_location_id"] == merchants["id"]
 

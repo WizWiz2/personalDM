@@ -26,11 +26,9 @@ from app.services.master_director import (
     advance_rhythm,
     apply_moves_to_narration_guidance,
     apply_moves_to_outcome_decision,
-    has_substance_stamp,
     narrator_persona_block,
     pick_moves,
     sampling_seed,
-    scene_development_disposition_bias,
     select_director_moves,
     subordinate_quiet_guidance_to_substance,
 )
@@ -185,9 +183,7 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
             "resolution": "success",
             "dramatic_mode": "calm",
             "allow_new_complication": False,
-            "canon_constraints": [],
             "narration_guidance": ["prose only"],
-            "ending_hook": "",
         }
     )
     harden = DirectorMoveSelection(
@@ -198,10 +194,7 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
     )
     hardened = apply_moves_to_outcome_decision(base, harden)
     assert hardened.dramatic_mode in {"tense", "dangerous"}
-    assert any("harden_consequence" in item for item in hardened.canon_constraints)
-    assert any("advance_conflict" in item for item in hardened.canon_constraints)
     # Pressure adjusts direction, not a fictional event: no ungrounded generic cliffhanger.
-    assert hardened.ending_hook == ""
     assert hardened.narration_guidance == ["prose only"]  # guidance applied separately
 
     quiet = DirectorMoveSelection(
@@ -223,7 +216,6 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
     assert calmed.dramatic_mode == "calm"
     assert calmed.allow_new_complication is False
     assert calmed.complication_source is None
-    assert any("quiet" in item for item in calmed.canon_constraints)
 
     chaos = DirectorMoveSelection(
         moves=["escalate_chaos", "introduce_contact"],
@@ -234,7 +226,6 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
     )
     chaotic = apply_moves_to_outcome_decision(base, chaos)
     assert chaotic.dramatic_mode == "dangerous"
-    assert any("introduce_contact" in item for item in chaotic.canon_constraints)
 
     initiative = DirectorMoveSelection(
         moves=["npc_initiative", "intrigue_reveal"],
@@ -243,9 +234,7 @@ def test_structural_injection_changes_decision_fields_not_only_guidance() -> Non
         master_display_name="Кукловод",
     )
     asserted = apply_moves_to_outcome_decision(base, initiative)
-    assert any("npc_initiative" in item for item in asserted.canon_constraints)
-    assert scene_development_disposition_bias(initiative) == "act"
-    assert scene_development_disposition_bias(quiet) == "quiet"
+    assert asserted.dramatic_mode == "tense"
 
 
 def test_narrator_persona_block_is_style_only() -> None:
@@ -283,38 +272,6 @@ def test_move_policy_rejects_negative_weights() -> None:
         assert False, "expected validation error"
     except Exception:
         pass
-
-
-def test_requires_contact_introduction_honors_director_force() -> None:
-    from app.models.player_intent import PlayerIntentContract
-    from app.models.turn import ChatMessage
-    from app.services.turn_outcome_resolver import TurnOutcomeResolver
-
-    contract = PlayerIntentContract.model_validate(
-        {
-            "summary": "look around for people",
-            "actions": [{"action_type": "observation", "intent": "seek attendants"}],
-            "addressed_response_requested": False,
-        }
-    )
-    context = [ChatMessage(role="system", content="Physically present characters: Эйдан")]
-    empty = TurnOutcomeDecision.model_validate(
-        {
-            "action_outcomes": [
-                {
-                    "action_index": 0,
-                    "resolution": "auto_success",
-                    "observable_outcome": "Тишина.",
-                }
-            ],
-            "npc_introductions": [],
-            "resolution": "observation",
-        }
-    )
-    assert not TurnOutcomeResolver._requires_contact_introduction(contract, context, empty)
-    assert TurnOutcomeResolver._requires_contact_introduction(
-        contract, context, empty, force_introduce_contact=True
-    )
 
 
 @pytest.mark.asyncio
@@ -540,71 +497,6 @@ def test_travel_plus_observation_still_seeks_contact() -> None:
     assert seeks_contact_or_presence(contract) is True
 
 
-def test_soft_keeper_quiet_cannot_soft_stall_committed_travel() -> None:
-    """Quiet Soft Keeper may keep calm atmosphere but must stamp honor_travel."""
-    base = TurnOutcomeDecision.model_validate(
-        {
-            "action_outcomes": [
-                {
-                    "action_index": 0,
-                    "resolution": "auto_success",
-                    "safe_mundane": True,
-                    "observable_outcome": "Переход в место «улица» завершён.",
-                }
-            ],
-            "resolution": "sequence",
-            "dramatic_mode": "routine",
-            "allow_new_complication": False,
-            "canon_constraints": [],
-            "narration_guidance": [],
-            "ending_hook": "",
-        }
-    )
-    quiet = DirectorMoveSelection(
-        moves=["quiet", "soften_blow"],
-        obligations=["y"],
-        master_id="soft_keeper",
-        master_display_name="Мягкий хранитель",
-    )
-    decided = apply_moves_to_outcome_decision(base, quiet, committed_travel=True)
-    assert decided.dramatic_mode == "calm"  # Soft Keeper may keep calm
-    assert any("honor_travel" in item for item in decided.canon_constraints)
-    assert any("quiet" in item for item in decided.canon_constraints)
-    # Outcomes must remain typed success — quiet must not rewrite travel.
-    assert decided.action_outcomes[0].resolution == "auto_success"
-    assert scene_development_disposition_bias(quiet, committed_travel=True) is None
-    assert scene_development_disposition_bias(quiet, committed_travel=False) == "quiet"
-
-
-def test_honor_travel_also_stamps_without_quiet_moves() -> None:
-    base = TurnOutcomeDecision.model_validate(
-        {
-            "action_outcomes": [
-                {
-                    "action_index": 0,
-                    "resolution": "blocked",
-                    "blocking_reason": "Дверь заперта изнутри.",
-                }
-            ],
-            "resolution": "sequence",
-            "dramatic_mode": "tense",
-            "allow_new_complication": False,
-            "canon_constraints": [],
-            "narration_guidance": [],
-            "ending_hook": "",
-        }
-    )
-    pressure = DirectorMoveSelection(
-        moves=["advance_conflict", "npc_initiative"],
-        obligations=["z"],
-        master_id="iron_chronicler",
-        master_display_name="Железный хронист",
-    )
-    decided = apply_moves_to_outcome_decision(base, pressure, committed_travel=True)
-    assert any("honor_travel" in item for item in decided.canon_constraints)
-    assert decided.action_outcomes[0].resolution == "blocked"
-
-
 def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
     """Soft Keeper quiet stays voice seasoning; substance stamp rewrites atmospheric quiet tip."""
     quiet = DirectorMoveSelection(
@@ -622,20 +514,6 @@ def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
     stamped = apply_moves_to_narration_guidance(["keep stakes"], quiet, substance_active=True)
     assert any("subordinated" in item for item in stamped)
     assert not any("Atmospheric beat with low plot push" in item for item in stamped)
-    assert has_substance_stamp(committed_travel=True) is True
-    assert (
-        has_substance_stamp(
-            addressed_response_obligation="Управляющая домом",
-        )
-        is True
-    )
-    assert (
-        has_substance_stamp(
-            canon_constraints=["[DIRECTOR STRUCTURAL: honor_travel] Arrive or hard-block."],
-        )
-        is True
-    )
-    assert has_substance_stamp() is False
 
     rewritten = subordinate_quiet_guidance_to_substance(
         [

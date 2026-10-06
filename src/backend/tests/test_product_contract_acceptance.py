@@ -4,12 +4,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.narration_validation import NarrationValidationResult
-from app.models.turn_authority import TurnAuthority
-from app.services.narration_publication_guard import (
-    NarrationPublicationError,
-    NarrationPublicationGuard,
-)
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
 from app.services.turn_planner import SceneTransitionPlan, TurnPlanningError
@@ -60,7 +54,6 @@ def _location_plan(*, with_profile: bool) -> CoordinatedTurnPlan:
             bridge_summary=bridge_summary,
         ),
         observable_consequences=["Кай добирается до своего укрытия."],
-        canon_constraints=["Не придумывать попутчиков или угрозы без отдельного основания."],
         narration_guidance=["Коротко показать завершённое возвращение."],
         ending_hook="Кай снова в укрытии.",
     )
@@ -73,9 +66,6 @@ def _investigation_plan() -> CoordinatedTurnPlan:
         observable_consequences=[
             "В системных журналах обнаружены три неудачные попытки входа в административный контур.",
             "Все три попытки пришли с одного внешнего адреса в течение семи минут.",
-        ],
-        canon_constraints=[
-            "Не объявлять личность атакующего установленной без отдельного подтверждения."
         ],
         narration_guidance=[
             "Сообщить найденные технические следы и отделить наблюдаемую зацепку от вывода о виновнике."
@@ -198,71 +188,6 @@ def test_new_location_profile_survives_full_turn_and_is_queryable(client: TestCl
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
     assert [turn["role"] for turn in history] == ["user", "assistant"]
     assert history[-1]["content"] == response.text
-
-
-def test_investigation_publishes_typed_findings_even_when_narrator_returns_dead_stub(
-    client: TestClient,
-):
-    campaign_id, _hero = _campaign_with_player(client)
-    player_input = (
-        "Я пытаюсь поднять системные журналы и найти следы взлома. "
-        "И желательно зацепки, к которым они могут привести."
-    )
-
-    with (
-        patch.object(
-            TurnIntentPlanningPipeline,
-            "plan",
-            new_callable=AsyncMock,
-            return_value=_pipeline_result(_investigation_plan()),
-        ),
-        patch(
-            "app.providers.llm_provider.LLMProvider.generate_stream",
-            side_effect=_dead_investigation_narration,
-        ),
-    ):
-        response = client.post(
-            f"/api/campaigns/{campaign_id}/turns",
-            json={"role": "user", "content": player_input},
-        )
-
-    assert response.status_code == 200, response.text
-    published = response.text.casefold()
-    assert "пока ничего заметно не меняется" not in published
-    assert "ничего не происходит" not in published
-    assert "три неудачные попытки" in published
-    assert "одного внешнего адреса" in published
-    assert "семи минут" in published
-
-    history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
-    assistant = next(turn for turn in history if turn["role"] == "assistant")
-    assert assistant["content"] == response.text
-
-
-def test_empty_authority_cannot_be_rebranded_as_safe_fiction():
-    authority = TurnAuthority(
-        campaign_id="00000000-0000-0000-0000-000000000001",
-        trigger_turn_id="00000000-0000-0000-0000-000000000002",
-        player_character_id="00000000-0000-0000-0000-000000000003",
-        player_character_name="Кай",
-        player_input="Ищу следы взлома.",
-        resolution="uncertain",
-        scene_disposition="stay",
-        observable_consequences=[],
-        ending_hook="",
-    )
-    passed = NarrationValidationResult(
-        verdict="pass",
-        summary="Модель ошибочно одобрила пустой surface.",
-        violations=[],
-    )
-
-    with pytest.raises(NarrationPublicationError):
-        NarrationPublicationGuard.publish(
-            authority,
-            "Пока ничего заметно не меняется.",
-            passed,
-        )
 
 
 def test_toxic_dead_turn_literal_is_not_a_production_fallback():

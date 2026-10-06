@@ -392,7 +392,6 @@ class SceneStateService:
         source_scene_id: UUID | None,
         target_scene_id: UUID,
         *,
-        elapsed_time: str | None,
         time_after: str | None,
         scene_goal: str | None = None,
         active_conflict: str | None = None,
@@ -404,15 +403,8 @@ class SceneStateService:
             else None
         )
         target.world_time_order = (source.world_time_order if source else 0) + 1
-        target.world_time_label = (
-            time_after
-            or (
-                f"{source.world_time_label} + {elapsed_time}"
-                if source and source.world_time_label and elapsed_time
-                else elapsed_time
-            )
-            or (source.world_time_label if source else None)
-        )
+        # The clock is the typed part of day; elapsed_time stays narration, never label text.
+        target.world_time_label = time_after or (source.world_time_label if source else None)
         target.scene_goal = scene_goal if scene_goal is not None else (
             source.scene_goal if source else None
         )

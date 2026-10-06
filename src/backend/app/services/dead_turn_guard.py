@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from functools import wraps
 
-from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.turn_authority_service import TurnAuthorityService
 from app.services.turn_planner import TurnPlanningError
 from app.services.turn_saga import TurnSaga
@@ -17,11 +16,6 @@ def _is_empty_plan(plan) -> bool:
     Planner crashes are metadata status != completed, handled by the caller.
     """
     return plan is None
-
-
-def _is_dead_surface(value: object) -> bool:
-    clean = " ".join(str(value or "").split()).strip()
-    return bool(clean and NarrationPublicationGuard.DEAD_TURN_PATTERN.fullmatch(clean))
 
 
 def _empty_plan_diagnostic(plan) -> str:
@@ -82,4 +76,4 @@ def install() -> None:
     TurnAuthorityService.build = strict_authority
 
 
-__all__ = ["_empty_plan_diagnostic", "_is_dead_surface", "_is_empty_plan", "install"]
+__all__ = ["_empty_plan_diagnostic", "_is_empty_plan", "install"]

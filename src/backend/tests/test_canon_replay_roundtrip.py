@@ -233,3 +233,28 @@ async def test_archive_v2_contains_checkpoint_and_verifiable_hash(
     unsigned = dict(archive)
     integrity = unsigned.pop("integrity")
     assert integrity["payload_hash"] == service._digest(unsigned)
+
+
+@pytest.mark.asyncio
+async def test_restore_keeps_a_character_introduced_after_the_checkpoint(db_session: AsyncSession):
+    """Live B4 T5a: undo nulled the place of NPCs introduced after the checkpoint."""
+    campaign_id, hero_id, inn_id, host_id = uuid4(), uuid4(), uuid4(), uuid4()
+    db_session.add(Campaign(id=str(campaign_id), name="Undo"))
+    for entity_id, kind, name in [
+        (hero_id, "character", "Илья"), (inn_id, "location", "Трактир"),
+    ]:
+        db_session.add(Entity(id=str(entity_id), campaign_id=str(campaign_id),
+                              entity_type=kind, canonical_name=name))
+    db_session.add(Character(entity_id=str(hero_id), current_location_id=str(inn_id)))
+    await db_session.flush()
+    service = InitialWorldStateService(db_session)
+    await service.ensure_snapshot(campaign_id)
+    db_session.add(Entity(id=str(host_id), campaign_id=str(campaign_id),
+                          entity_type="character", canonical_name="Хозяин"))
+    db_session.add(Character(entity_id=str(host_id), current_location_id=str(inn_id)))
+    await db_session.flush()
+
+    await service.restore(campaign_id)
+
+    assert (await db_session.get(Character, str(host_id))).current_location_id == str(inn_id)
+    assert (await db_session.get(Character, str(hero_id))).current_location_id == str(inn_id)

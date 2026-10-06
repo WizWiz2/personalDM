@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import settings
 from app.models.action_sequence import ActionSequenceExecution
+from app.models.player_intent import ActionResolution, DayPart, DramaticMode, TurnResolution
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
@@ -32,10 +33,13 @@ class SceneTransitionPlan(BaseModel):
         "focus_transition",
     ] = "none"
     destination_location: str | None = Field(default=None, max_length=255)
+    # Compiled identity of a known destination; the executor never re-matches it by name.
+    destination_location_id: UUID | None = None
     destination_parent_location: str | None = Field(default=None, max_length=255)
+    destination_resident_role: str | None = Field(default=None, max_length=60)
     scene_title: str | None = Field(default=None, max_length=255)
     elapsed_time: str | None = Field(default=None, max_length=255)
-    time_after: str | None = Field(default=None, max_length=255)
+    time_after: DayPart | None = None
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
     reason: str | None = Field(default=None, max_length=500)
     bridge_summary: str | None = Field(default=None, max_length=1200)
@@ -72,11 +76,7 @@ class ActionStepPlan(BaseModel):
         "other",
     ]
     intent: str = Field(min_length=1, max_length=500)
-    resolution: Literal[
-        "auto_success",
-        "requires_choice",
-        "blocked",
-    ]
+    resolution: ActionResolution
     safe_mundane: bool = False
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
@@ -159,7 +159,7 @@ class NarrationPolicy(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    dramatic_mode: Literal["calm", "routine", "tense", "dangerous"] = "calm"
+    dramatic_mode: DramaticMode = "calm"
     allow_new_complication: bool = False
     complication_source: str | None = Field(default=None, max_length=1000)
     pending_player_choice: str | None = Field(default=None, max_length=1000)
@@ -182,25 +182,14 @@ class TurnPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     player_intent: str = Field(min_length=1, max_length=500)
-    resolution: Literal[
-        "success",
-        "partial_success",
-        "failure",
-        "uncertain",
-        "conversation",
-        "observation",
-        "transition",
-        "sequence",
-    ]
+    resolution: TurnResolution
     action_sequence: ActionSequencePlan = Field(default_factory=ActionSequencePlan)
     scene_transition: SceneTransitionPlan = Field(default_factory=SceneTransitionPlan)
     narration_policy: NarrationPolicy = Field(default_factory=NarrationPolicy)
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
-    canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     new_fact_candidates: list[str] = Field(default_factory=list, max_length=4)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
-    ending_hook: str = Field(default="", max_length=500)
 
     @model_validator(mode="after")
     def enforce_structured_boundaries(self):
@@ -320,7 +309,7 @@ Return only this schema:
           "destination_parent_location": null,
           "scene_title": null,
           "elapsed_time": null,
-          "time_after": null,
+          "time_after": "dawn|morning|day|evening|night|null",
           "carry_participants": [],
           "reason": null,
           "bridge_summary": null,
@@ -337,7 +326,7 @@ Return only this schema:
     "destination_parent_location": null,
     "scene_title": null,
     "elapsed_time": null,
-    "time_after": null,
+    "time_after": "dawn|morning|day|evening|night|null",
     "carry_participants": [],
     "reason": null,
     "bridge_summary": null,
@@ -353,10 +342,8 @@ Return only this schema:
   },
   "observable_consequences": ["1-4 concrete current physical/informational/social consequences"],
   "character_beats": ["present NPC reaction functions, not finished prose"],
-  "canon_constraints": ["specific facts/limits Narrator must obey"],
   "new_fact_candidates": ["only genuinely new durable facts implied by this turn"],
-  "narration_guidance": ["pacing/focus/sensory guidance, no finished prose"],
-  "ending_hook": "current unresolved situation returned to player"
+  "narration_guidance": ["pacing/focus/sensory guidance, no finished prose"]
 }
 """
 

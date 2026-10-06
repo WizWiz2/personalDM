@@ -202,7 +202,6 @@ async def test_failed_transition_rolls_back_bridge_and_removes_it_from_context(
     ) is None
 
 
-
 def test_new_complication_requires_an_established_source():
     with pytest.raises(ValidationError):
         NarrationPolicy(

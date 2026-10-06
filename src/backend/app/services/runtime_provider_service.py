@@ -451,18 +451,6 @@ class RuntimeProviderService:
                 )
         return self.check_image()
 
-    def ensure_selected_local_providers(self) -> dict:
-        result: dict[str, dict] = {}
-        if self.text_mode() == "local":
-            result["text"] = self.ensure_local_text()
-        else:
-            result["text"] = self.check_text()
-        if self.image_mode() == "local":
-            result["image"] = self.ensure_local_image()
-        else:
-            result["image"] = self.check_image()
-        return result
-
     def _install_comfy_source(self) -> None:
         if self.COMFY_DIR.exists():
             shutil.rmtree(self.COMFY_DIR, ignore_errors=True)

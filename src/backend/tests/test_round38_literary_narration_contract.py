@@ -1,6 +1,4 @@
 from app.models.narration_validation import NarrationValidationResult, NarrationViolation
-from app.services.narration_publication_guard import NarrationPublicationGuard
-from app.services.narrator_quality_recovery_guard import literary_surgical_repair_candidate
 from app.services.prompt_policy import CURRENT_PROMPT_POLICY
 
 
@@ -48,55 +46,3 @@ def test_actor_scoped_turn_is_also_a_finished_literary_scene():
     assert "do not recycle or reassign another NPC's earlier line" in contract
 
 
-def test_literary_surgical_repair_preserves_paragraphs_and_grounded_texture():
-    bad = "Вы решаете немедленно отойти к воротам."
-    candidate = (
-        "Тёплый воздух пахнет пылью и старым деревом; где-то за стеной мерно звякает цепь. "
-        "Тамар не спешит отводить взгляд.\n\n"
-        "— Это мой груз, — говорит она и кладёт ладонь на край ящика. "
-        f"{bad} "
-        "Крышка едва слышно поскрипывает под её пальцами.\n\n"
-        "Снаружи порыв ветра шевелит полог, и в комнату на миг тянет прохладой. "
-        "Тамар остаётся рядом с ящиком, ожидая вашей реакции."
-    )
-
-    repaired, metadata = literary_surgical_repair_candidate(
-        NarrationPublicationGuard,
-        candidate,
-        _rejected(bad),
-    )
-
-    assert repaired is not None
-    assert bad not in repaired
-    assert len(_paragraphs(repaired)) == 3
-    assert "пахнет пылью" in repaired
-    assert "едва слышно поскрипывает" in repaired
-    assert "тянет прохладой" in repaired
-    assert "— Это мой груз" in repaired
-    assert metadata["status"] == "candidate"
-    assert metadata["retained_ratio"] >= 0.70
-
-
-def test_literary_surgical_repair_refuses_to_publish_scene_after_major_amputation():
-    bad = (
-        "Вы решаете, что Тамар врёт, делаете несколько шагов к двери, затем обещаете вернуться "
-        "с охраной и мысленно прикидываете, как лучше её напугать."
-    )
-    candidate = (
-        "В тесной комнате пахнет смолой, а с улицы доносится глухой стук тележных колёс. "
-        "Тамар стоит возле груза, не заслоняя проход.\n\n"
-        f"{bad} {bad} {bad}\n\n"
-        "Она проводит большим пальцем по шершавой доске ящика. "
-        "Холодный сквозняк касается рук и тут же стихает."
-    )
-
-    repaired, metadata = literary_surgical_repair_candidate(
-        NarrationPublicationGuard,
-        candidate,
-        _rejected(bad),
-    )
-
-    assert repaired is None
-    assert metadata["status"] == "skipped"
-    assert metadata["reason"] == "literary_surface_degraded"
-    assert metadata["retained_ratio"] < 0.70

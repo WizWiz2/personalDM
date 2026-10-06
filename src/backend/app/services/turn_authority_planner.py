@@ -181,12 +181,6 @@ class CoordinatedTurnPlan(TurnPlan):
             response_ownership_reason="Planner недоступен; response ownership не подтверждён.",
             observable_consequences=[],
             character_beats=[],
-            canon_constraints=[
-                (
-                    "Планировщик недоступен: не придумывай завершённое перемещение, новых NPC, "
-                    "новые предметы, новые факты или добровольные действия протагониста."
-                )
-            ],
             new_fact_candidates=[],
             narration_guidance=[
                 (
@@ -194,7 +188,6 @@ class CoordinatedTurnPlan(TurnPlan):
                     "попытку без нового подтверждённого результата вместо выдумывания исхода."
                 )
             ],
-            ending_hook="Попытка пока не приводит к подтверждённому результату.",
         )
 
 

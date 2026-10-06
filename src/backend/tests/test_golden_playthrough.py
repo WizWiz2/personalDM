@@ -105,7 +105,6 @@ def _conversation_plan() -> CoordinatedTurnPlan:
         ),
         observable_consequences=["Бармен Роэн отвечает на вопрос и показывает доступный ключ."],
         character_beats=["Роэн даёт практичный ответ без скрытого конфликта."],
-        canon_constraints=["Роэн находится в общем зале и никуда не следует за героем."],
         narration_guidance=["Короткая спокойная сцена без обязательной угрозы."],
         ending_hook="Комната доступна; дальнейшее решение остаётся за игроком.",
     )
@@ -158,7 +157,7 @@ def _compound_plan() -> CoordinatedTurnPlan:
                         required=True,
                         transition_type="time_transition",
                         elapsed_time="8 часов",
-                        time_after="утро",
+                        time_after="morning",
                         scene_title="Утро в гостевой комнате",
                         reason="Безопасный сон до утра.",
                         bridge_summary="Ночь прошла спокойно.",
@@ -185,10 +184,6 @@ def _compound_plan() -> CoordinatedTurnPlan:
             ],
         ),
         observable_consequences=["Вечер, ночь и дорога проходят без происшествий."],
-        canon_constraints=[
-            "Бармен Роэн остаётся в общем зале.",
-            "Нельзя придумывать посетителя, стук, засаду или скрытую плату.",
-        ],
         narration_guidance=["Кратко связать завершённые шаги в их порядке."],
         ending_hook="Эйдан находится у входа Купцов утром.",
     )
@@ -228,7 +223,7 @@ async def _intro_narrator(messages, *args, **kwargs):
 
 
 async def _sequence_narrator(messages, *args, **kwargs):
-    if "[REPAIR AGAINST TURN AUTHORITY]" in messages[-1].content:
+    if "[REPAIR REJECTED NARRATION]" in messages[-1].content:
         yield REPAIRED_SEQUENCE_TEXT
     else:
         yield INVALID_SEQUENCE_DRAFT
@@ -583,7 +578,7 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     final_state = client.get(
         f"/api/campaigns/{campaign_id}/scenes/{final_snapshot['active_scene']['id']}/state"
     ).json()
-    assert final_state["world_time_label"] == "утро"
+    assert final_state["world_time_label"] == "morning"
     assert final_state["participant_names"] == ["Эйдан"]
 
     sequence = (

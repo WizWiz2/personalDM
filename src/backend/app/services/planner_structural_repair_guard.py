@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.models.player_intent import DayPart
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
 from app.services.systemless_authority_guard import structured_inventory_contract_issues
@@ -105,7 +106,7 @@ class TimeTransitionPatch(BaseModel):
 
     step_index: int = Field(ge=1, le=32)
     elapsed_time: str | None = Field(default=None, max_length=255)
-    time_after: str | None = Field(default=None, max_length=255)
+    time_after: DayPart | None = None
 
     @model_validator(mode="after")
     def has_time_value(self):

@@ -149,6 +149,9 @@ class MemoryScribe:
 - Если в текущих FACTS уже есть то же смысловое subject+predicate, новая подтверждённая версия
   должна использовать operation=revise, сохранить тот же scope и заменить прежнее значение;
   не создавай второй параллельный current fact для single-кардинальности.
+- Если результат исполняет, отменяет или меняет ожидаемое/отложенное состояние текущего факта
+  (договорённость состоялась, человек пришёл, ожидание закончилось), сделай operation=revise того же
+  subject+predicate с новым значением: устаревшее «ещё не» не должно оставаться current.
 - object_value всегда является короткой строкой на русском, даже если состояние логически
   истинно или ложно: не помещай boolean true/false в object_value. Boolean-аспект уже
   выражается наличием факта и truth_status="true" или "false".
@@ -262,54 +265,7 @@ FACT SEMANTICS:
             player_character_id=player_character_id,
             scene_participant_ids=scene_participant_ids,
         )
-        audit = self.last_audit
-        if audit.get("envelope_valid", True) and not audit.get("gap_count"):
-            return proposals
-
-        reason = audit.get("error") or (
-            "rejected evidence="
-            f"{audit.get('rejected_evidence_count', 0)}, "
-            "authority="
-            f"{audit.get('rejected_authority_count', 0)}, "
-            "schema="
-            f"{audit.get('rejected_schema_count', 0)}, "
-            "gaps="
-            f"{audit.get('gap_count', 0)}"
-        )
-        repaired = await self._model_router.generate_json(
-            self._llm_provider,
-            selection,
-            [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(
-                    role="user",
-                    content=(
-                        "ПОПЫТКА ИГРОКА:\n"
-                        f"{user_content}\n\n"
-                        "АВТОРИТЕТНЫЙ РЕЗУЛЬТАТ ДМа:\n"
-                        f"{assistant_content}\n\n"
-                        "ПРЕДЫДУЩИЙ JSON СЕМАНТИЧЕСКИ ОТКЛОНЁН:\n"
-                        f"{reason}\n"
-                        "Сформируй envelope заново. Evidence должен быть точным "
-                        "фрагментом результата ДМа. Каждый durable outcome должен "
-                        "иметь нормализуемый proposal с именами только из списка "
-                        "известных сущностей."
-                    ),
-                ),
-            ],
-            max_tokens=1400,
-            temperature=0.0,
-            response_model=CanonEnvelope,
-        )
-        return self._parse_data(
-            repaired,
-            authoritative_text=assistant_content,
-            known_entities=known_entities,
-            known_ids=set(display_by_id),
-            acting_character_id=acting_character_id,
-            player_character_id=player_character_id,
-            scene_participant_ids=scene_participant_ids,
-        )
+        return proposals
 
     def _parse_response(
         self,
@@ -364,7 +320,6 @@ FACT SEMANTICS:
         rejected_actor_knowledge: set[str] = set()
         existing_gaps = set(audit.gap_outcome_ids)
 
-        self._known_display_names = list(known_entities.keys())
         for proposal in extracted:
             canon_meta = (
                 proposal.payload.get("_canon")
@@ -628,17 +583,6 @@ FACT SEMANTICS:
             resolved["cardinality"] = cardinality
             if operation != "retract" and not resolved.get("object_value"):
                 return None
-            known_names = list(getattr(self, "_known_display_names", []) or [])
-            if known_names:
-                from app.services.play_surface_contract import snap_near_names
-
-                if resolved.get("subject"):
-                    resolved["subject"] = snap_near_names(str(resolved["subject"]), known_names)
-                if resolved.get("object_value"):
-                    resolved["object_value"] = snap_near_names(
-                        str(resolved["object_value"]),
-                        known_names,
-                    )
             scope = str(resolved.get("scope") or "scene").casefold()
             if scope not in {"campaign", "scene"}:
                 scope = "scene"

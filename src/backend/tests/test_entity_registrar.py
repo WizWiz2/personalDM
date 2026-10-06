@@ -457,3 +457,50 @@ async def test_scene_participant_insertion_requires_explicit_movement(
     moved = await entities.get_character(remote.id)
     assert moved.current_location_id == tavern.id
     assert remote.id in (await scenes.get_by_id(scene.id)).participants
+
+
+@pytest.mark.asyncio
+async def test_an_unpublished_working_designation_is_not_kept_as_an_alias(db_session: AsyncSession):
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    host = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name='Хозяин или служащий трактира', current_location_id=tavern.id,
+        custom_fields={'temporary_name': True, 'role': 'хозяин'},
+    ))
+    await SceneRepository(db_session).add_participant(scene.id, host.id)
+    text = 'Хозяин вытирает кружку. «Савелий Матвеевич», — отвечает он.'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(return_value={'characters': [{
+        'canonical_name': 'Савелий Матвеевич', 'role': 'хозяин', 'temporary_name': False,
+        'presence': 'present', 'evidence': text,
+    }]})
+    registrar._confirm_personal_name_reveal = AsyncMock(return_value='Савелий Матвеевич')
+
+    await registrar.register_from_turn(campaign_id, scene.id, uuid4(), text, promotion_only=True)
+
+    renamed = await entities.get_character(host.id)
+    assert renamed.canonical_name == 'Савелий Матвеевич'
+    assert renamed.aliases == []
+
+
+@pytest.mark.asyncio
+async def test_named_offscreen_person_becomes_an_off_scene_entity(db_session: AsyncSession):
+    campaign_id, _, _, _, scene = await _campaign_state(db_session)
+    text = 'Рыбак говорит: «Он ночует у вдовы Марьи Кузьминичны».'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(return_value={'characters': [{
+        'canonical_name': 'Марья Кузьминична', 'temporary_name': False,
+        'presence': 'mentioned_only', 'evidence': text,
+        'name_surface': 'Марьи Кузьминичны',
+    }]})
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, promotion_only=True,
+    )
+    assert len(result.created_ids) == 1
+    created = await EntityRepository(db_session).get_character(result.created_ids[0])
+    assert created.current_location_id is None
+    assert created.custom_fields['presence'] == 'mentioned_only'
+    scene_after = await SceneRepository(db_session).get_by_id(scene.id)
+    assert created.id not in scene_after.participants

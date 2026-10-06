@@ -39,9 +39,7 @@ from app.services.turn_outcome_materializer import (
     TurnOutcomeMaterializer,
 )
 from app.services.turn_planner import TurnPlanningError
-from app.services.scene_development import SceneDevelopmentService
 from app.services.turn_world_frame import TurnWorldFrame
-from app.services.response_memory import ResponseMemoryService
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -123,67 +121,46 @@ class TurnSaga:
         messages: list[ChatMessage],
         authority,
     ) -> list[ChatMessage]:
-        """Give the narrator one and only one machine-readable turn contract."""
+        """Give the narrator the typed turn facts once, plus the four bans. Nothing is mandatory."""
         if not messages:
             return messages
         first, *rest = messages
         contract = (
-            "[TYPED TURN AUTHORITY — authoritative, not advisory]\n"
-            + json.dumps(authority.narrator_payload(), ensure_ascii=False, indent=2)
-            + "\nHard rules:\n"
-            "- The sheet lists confirmed outcomes and bans. It is not the only prose you may write.\n"
-            "- Only allowed_speakers may receive new dialogue; the player is never an allowed "
-            "speaker. Protagonist speech stays limited to player_input.\n"
-            "- People already present may speak, refuse, gesture, or move inside the current place. "
-            "Speech is not required, and a missing mark is not a ban.\n"
-            "- Do not invent a person who is not already present and not structurally authorized. "
-            "Do not contradict or overwrite established_state. "
-            "Do not write the protagonist's next voluntary choice, dialogue, or action. "
-            "Do not move anyone to another place without a typed trip. "
-            "A step inside the current room is not a trip.\n"
-            "- The human player's voluntary actions/dialogue are limited to player_input.\n"
-            "- allowed_new_npcs are approved structured first appearances; "
-            "allowed_existing_npc_arrivals are known identities approved to be present here.\n"
-            "- known_absent_characters may not appear physically.\n"
-            "- Never complete a scene boundary absent from scene_disposition/transition_type.\n"
-            "- Preserve observable_consequences, canon_constraints and completed action steps.\n"
-            "- addressed_response contains the approved speech act: answer every indexed question "
-            "with its assigned speaker, meaning and disposition before any hook. Atmosphere is not "
-            "an answer. These words remain character claims, not omniscient world facts.\n"
-            "- Explicit negative player boundaries remain binding even for sensory actions.\n"
-            "- narration_guidance and ending_hook affect prose only; they never override state.\n"
-            "- Complete the current exchange before any hook. A closing opportunity must refer "
-            "to an actual approved outcome, open choice or NPC offer; do not replace it with "
-            "abstract suspense or a rhetorical challenge. A complete quiet answer may simply end.\n"
-            "- scene_development actions are approved NPC-owned acts AFTER the executed outcome. "
-            "Render them concretely, preserving the actor and leaving player_opportunity open. "
-            "They do not authorize accepting an offer for the hero or changing physical state. "
-            "A quiet disposition needs no added hook or explanation.\n"
-            "- End before inventing the protagonist's next voluntary response.\n"
+            "[TYPED TURN FACTS]\n"
+            + json.dumps(authority.narrator_payload(), ensure_ascii=False)
+            + "\n\nWhat is not forbidden is allowed. Only four bans:\n"
+            "1. Do not put a person physically into the scene unless they are in present_characters, "
+            "allowed_new_npcs, allowed_existing_npc_arrivals, or one person beat_owner brings in "
+            "through executed_steps. Mentioning anyone else is fine.\n"
+            "2. Do not contradict established_state, scene_time or executed_steps.\n"
+            "3. Do not write the player character's speech, decisions, thoughts, feelings or "
+            "voluntary actions beyond player_input.\n"
+            "4. Do not move anyone to another place without a typed trip "
+            "(scene_disposition/transition_type). Moving inside the current place is fine.\n"
+            "Present characters may speak, answer, refuse, stay silent or act; none of it is "
+            "required, except that beat_owner, when set, takes this beat itself: it may speak, "
+            "refuse, leave or act, and you return the prose with beat = {cast_id: beat_owner.id, "
+            "kind, evidence: the exact prose fragment of that beat, for act/leave a sentence whose "
+            "subject is beat_owner, revealed_name: the personal name beat_owner gives for themself "
+            "in that beat, nominative, else null, newcomer: the person beat_owner brought in, if they "
+            "speak or act here, as {name as in the prose, kind: speech|act, evidence}, else null}. "
+            "Everything else in the facts "
+            "is optional context.\n\n"
+            "Render the immediate result as natural Russian literary prose in narrative_person, also "
+            "where the facts name the protagonist in third person; usually 2-3 paragraphs, "
+            "and stop before the player's next choice."
         )
-        result = [
+        return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
             *rest,
-        ]
-        # Recent narrative history is evidence for style only, not physical canon. Keep the
-        # authority as the final instruction as well, otherwise a model can repeat an untyped
-        # person mentioned in an earlier prose turn after a planner fallback.
-        result.append(
             ChatMessage(
                 role="user",
                 content=(
-                    "[FINAL AUTHORITY REMINDER]\n"
-                    "Physical presence is limited to present_character_names plus "
-                    "allowed_new_npcs and allowed_existing_npc_arrivals in the typed authority. "
-                    "Do not physically show, approach, or describe any other person, even if "
-                    "older narrative prose mentioned one. Historical prose cannot create canon. "
-                    "If established_state is present, those slots are already true and outrank "
-                    "the opening scene description. Older prose is not canon. "
-                    "People already present may speak, refuse, gesture, or move inside the current place. Speech is not required, and a missing mark is not a ban."
+                    "[REMINDER] Older prose is not canon: only people in the typed facts are "
+                    "physically here. Others may only be mentioned."
                 ),
-            )
-        )
-        return result
+            ),
+        ]
 
     async def _compile(
         self,
@@ -529,49 +506,6 @@ class TurnSaga:
                 max_budget_override=max_budget_override,
             )
 
-            # World agency is decided against the actual destination and prepared participants.
-            # Route-graph fast paths and blocked sequences share this phase with all other turns.
-            development_service = SceneDevelopmentService(self._session)
-            disposition_bias = None
-            gm_meta = (planner_metadata.get("telemetry") or {}).get("game_master")
-            if not isinstance(gm_meta, dict):
-                gm_meta = planner_metadata.get("game_master")
-            if isinstance(gm_meta, dict):
-                from app.models.game_master import DirectorMoveSelection
-                from app.services.master_director import scene_development_disposition_bias
-
-                moves = gm_meta.get("moves") or []
-                if moves:
-                    disposition_bias = scene_development_disposition_bias(
-                        DirectorMoveSelection(
-                            moves=moves[:2],
-                            obligations=[],
-                            forced_introduce_contact=bool(gm_meta.get("forced_introduce_contact")),
-                            master_id=str(gm_meta.get("id") or "unknown"),
-                            master_display_name=str(gm_meta.get("display_name") or "unknown"),
-                        ),
-                        committed_travel=bool(gm_meta.get("committed_travel")),
-                    )
-            # Direct address to a present cast member outranks Soft Keeper quiet bias:
-            # atmosphere-only quiet must not erase an obligated addressee.
-            if (
-                getattr(authority, "addressed_response_obligation", None)
-                and disposition_bias == "quiet"
-            ):
-                disposition_bias = None
-            # Committed travel outranks Soft Keeper quiet bias: do not soft-stall arrival.
-            if disposition_bias == "quiet":
-                travel_flag = isinstance(gm_meta, dict) and bool(gm_meta.get("committed_travel"))
-                source_path = list(getattr(authority, "source_location_path", None) or [])
-                target_path = list(getattr(authority, "target_location_path", None) or [])
-                if travel_flag or (target_path and target_path != source_path):
-                    disposition_bias = None
-            development, development_metadata = await development_service.plan(
-                authority,
-                role_router,
-                disposition_bias=disposition_bias,
-            )
-            authority = authority.model_copy(update={"scene_development": development})
             narrator_messages = self._inject_authority(narrator_messages, authority)
             context_metadata = dict(context_metadata)
             lifecycle = await self._generation_lifecycle.get(generation_run.id)
@@ -585,7 +519,6 @@ class TurnSaga:
                     "scene_transition": transition_metadata,
                     "turn_authority": authority.model_dump(mode="json"),
                     "world_frame": world_frame.model_dump(mode="json") if world_frame else None,
-                    "scene_development": development_metadata,
                     "turn_materialization": {
                         "identity_updates": [
                             update.snapshot() for update in materialized_outcome.identity_updates
@@ -623,25 +556,6 @@ class TurnSaga:
             publication = (narration.telemetry.get("narration_validation") or {}).get(
                 "publication_guard", {}
             )
-            if development.actions and (
-                narration.validation_status == "safe_fallback"
-                or publication.get("validated_surface") is False
-            ):
-                # Player outcome already resolved; omit unpublished NPC acts instead of
-                # compensating the whole prepared turn saga.
-                omitted = len(development.actions)
-                development = SceneDevelopmentService.quiet_without_acts(
-                    "NPC initiative omitted: narration lacked a validated surface for those acts."
-                )
-                authority = authority.model_copy(update={"scene_development": development})
-                development_metadata = {
-                    **development_metadata,
-                    "status": "degraded_unpublished_acts",
-                    "omitted_act_count": omitted,
-                    "sanitize_status": "degraded_quiet",
-                }
-                context_metadata["turn_authority"] = authority.model_dump(mode="json")
-                context_metadata["scene_development"] = development_metadata
             await self._set_phase(generation_run.id, GenerationPhase.NARRATED)
 
             context_metadata["provider_telemetry"] = narration.telemetry
@@ -660,6 +574,19 @@ class TurnSaga:
             token_count = (narration.telemetry.get("usage") or {}).get("completion_tokens")
             if world_frame:
                 await world_frame.assert_unchanged(self._session, campaign_id)
+            materialized_outcome = await materializer.reveal_published_name(
+                authority, narration.beat, materialized_outcome, user_turn.id
+            )
+            materialized_outcome = await materializer.introduce_published_newcomer(
+                authority, narration.beat, narration.text, materialized_outcome, user_turn.id
+            )
+            context_metadata["turn_materialization"]["introduced_character_ids"] = [
+                str(value) for value in materialized_outcome.introduced_character_ids
+            ]
+            context_metadata["turn_authority"] = authority.model_dump(mode="json")
+            context_metadata["turn_materialization"]["identity_updates"] = [
+                update.snapshot() for update in materialized_outcome.identity_updates
+            ]
             saved_assistant = await self._turn_repo.create(
                 campaign_id,
                 TurnCreate(
@@ -673,11 +600,6 @@ class TurnSaga:
                     token_count=token_count,
                 ),
             )
-
-            # The action becomes durable only together with the validated published answer.
-            # It records behavior, never promotes the content of an NPC claim into objective canon.
-            await development_service.publish(authority, saved_assistant.id)
-            await ResponseMemoryService(self._session).publish(authority, saved_assistant.id)
 
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(

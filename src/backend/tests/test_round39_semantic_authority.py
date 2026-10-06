@@ -7,11 +7,9 @@ import pytest
 from pydantic import ValidationError
 
 import app.services.systemless_authority_guard as systemless_guard
-from app.models.narration_validation import NarrationValidationResult, NarrationViolation
 from app.models.turn_authority import TurnAuthority
-from app.services.semantic_authority_guard import _semantic_review_failed_narration, install
+from app.services.semantic_authority_guard import install
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
-from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
 @pytest.fixture(autouse=True)
@@ -91,64 +89,12 @@ def test_contact_semantics_do_not_autocreate_an_npc_behind_planner_back():
     assert returned.npc_introductions == []
 
 
-def test_deterministic_layer_does_not_classify_sensation_or_emotion_by_word_stems():
-    authority = _authority()
-    passed = NarrationValidationResult(verdict="pass", summary="ok", violations=[])
-
-    sensory = TurnAuthorityValidator.apply_deterministic_player_agency(
-        passed,
-        authority,
-        "Вы чувствуете запах сырого дерева и холод от металлической крышки.",
-    )
-    emotional = TurnAuthorityValidator.apply_deterministic_player_agency(
-        passed,
-        authority,
-        "Вы чувствуете тревогу и начинаете доверять незнакомцу.",
-    )
-
-    assert sensory.verdict == "pass"
-    assert emotional.verdict == "pass"
-
-
 class _PassReviewRouter:
     async def resolve(self, *args, **kwargs):
         return SimpleNamespace(role="evaluator")
 
     async def generate_json(self, *args, **kwargs):
         return {"verdict": "pass", "summary": "Ложное нарушение снято.", "violations": []}
-
-
-@pytest.mark.asyncio
-async def test_failed_player_agency_verdict_can_be_semantically_readjudicated():
-    authority = _authority("Кто выдаёт постановление?")
-    candidate = (
-        "Чиновник усмехается и отодвигает папку от края стола. "
-        "«Кто выдаёт? Это городские службы», — отвечает он."
-    )
-    previous = NarrationValidationResult(
-        verdict="repair_required",
-        summary="Ошибочно приписана мысль игроку.",
-        violations=[
-            NarrationViolation(
-                violation_type="player_agency",
-                severity="error",
-                evidence="Чиновник усмехается",
-                correction="Удалить внутреннее состояние героя.",
-            )
-        ],
-    )
-    validator = TurnAuthorityValidator(_PassReviewRouter())
-
-    reviewed = await _semantic_review_failed_narration(
-        validator,
-        None,
-        authority,
-        candidate,
-        previous,
-    )
-
-    assert reviewed.verdict == "pass"
-    assert reviewed.violations == []
 
 
 def test_planner_prompt_explicitly_assigns_semantics_to_model():

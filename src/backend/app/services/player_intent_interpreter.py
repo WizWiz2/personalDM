@@ -9,14 +9,13 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from app.config import settings
-from app.models.player_intent import IntentActionType, PlayerIntentContract
+from app.models.player_intent import DayPart, IntentActionType, PlayerIntentContract
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.linguistic_intent_analyzer import (
     LinguisticIntentAnalyzer,
     LinguisticParserUnavailable,
 )
-from app.services.location_identity import location_reference_key, same_location_reference
 from app.services.planning_context import action_reference_catalog, intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
@@ -30,8 +29,6 @@ Speech is NOT an executable action, even in imperative form: "назовись",
 меня", "ответь на вопрос" request information. For dialogue-only input use actions=[],
 information_request_only=true, addressed_response_requested=true and the current addressee's
 designation (or null for unspecified people). A name question also sets identity_reveal_requested.
-questions contains each distinct information request in order, including implicit imperatives;
-preserve its meaning without adding questions. Extract these semantically, not by punctuation.
 Do not invent service/interaction/observation actions for asking, speaking or listening to a reply.
 Questions to the narrator about existing state use actions=[], information_request_only=true,
 world_state_question=true, addressed_response_requested=false; they do not execute the queried event.
@@ -91,7 +88,6 @@ class PlayerActionIntentDraft(BaseModel):
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     destination_reference: str | None = None
-    destination_reference_mode: Literal["explicit", "contextual"] | None = None
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
     movement_method: Literal[
         "ordinary", "special", "teleportation", "force", "stealth", "ability"
@@ -100,7 +96,7 @@ class PlayerActionIntentDraft(BaseModel):
     inventory_operation: str | None = None
     inventory_target_id: str | None = None
     elapsed_time: str | None = None
-    time_after: str | None = None
+    time_after: DayPart | None = None
 
 
 class PlayerIntentContractDraft(BaseModel):
@@ -120,9 +116,11 @@ class PlayerIntentContractDraft(BaseModel):
     identity_reveal_requested: bool = False
     information_request_only: bool = False
     world_state_question: bool = False
-    questions: list[str] = Field(default_factory=list, max_length=8)
     pending_player_choice: str | None = None
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
+    time_advance: DayPart | None = Field(
+        default=None, description="The later part of day the player skips to before acting, else null.",
+    )
 
 
 class _ActionWire(BaseModel):
@@ -162,7 +160,7 @@ class _GiveWire(_ActionWire):
 class _TimeWire(_ActionWire):
     action_type: Literal["rest", "wait"]
     elapsed_time: str | None = None
-    time_after: str | None = None
+    time_after: DayPart | None = None
 
 
 class _LocalActionWire(_ActionWire):
@@ -175,9 +173,10 @@ class _IntentWire(PlayerIntentContractDraft):
         json_schema_extra={
             "additionalProperties": False,
             "required": [
-                "summary", "actions", "questions", "protected_player_decisions",
+                "summary", "actions", "protected_player_decisions",
                 "addressed_response_requested", "addressed_character_name",
                 "identity_reveal_requested", "information_request_only", "world_state_question",
+                "time_advance",
             ],
         },
     )
@@ -245,7 +244,7 @@ class ActionOwnershipDecision(BaseModel):
     inventory_operation: Literal["take", "drop", "place", "give"] | None = None
     inventory_target_id: UUID | None = None
     elapsed_time: str | None = None
-    time_after: str | None = None
+    time_after: DayPart | None = None
     contribution_kind: Literal["world_action", "speech"] = "world_action"
     spatial_effect: Literal["local", "travel", "none"] | None = Field(
         default=None, description="Intended spatial effect, never whether the attempt succeeds."
@@ -254,7 +253,6 @@ class ActionOwnershipDecision(BaseModel):
         default=None, max_length=255,
         description="Player-selected travel endpoint, including an unreachable destination.",
     )
-    destination_reference_mode: Literal["explicit", "contextual"] | None = None
     # The model's quote is a hint for aligning syntax with one action. A paraphrase cannot be
     # trusted as evidence, but it must not abort an otherwise valid turn.
     evidence_quote: str = Field(default="", max_length=500)
@@ -294,7 +292,6 @@ def _intent_semantic_review_wire(
                 "required": [
                     "action_index", "actor_role", "contribution_kind",
                     "spatial_effect", "destination_location",
-                    "destination_reference_mode",
                     "action_type", "item_id", "inventory_operation", "inventory_target_id",
                     "elapsed_time", "time_after",
                 ],
@@ -326,7 +323,6 @@ def _intent_semantic_review_wire(
         action_type: Literal["movement"]
         spatial_effect: Literal["travel"]
         destination_location: str = Field(min_length=1, max_length=255)
-        destination_reference_mode: Literal["explicit", "contextual"]
         item_id: None = None
         inventory_operation: None = None
         inventory_target_id: None = None
@@ -338,7 +334,6 @@ def _intent_semantic_review_wire(
         action_type: Literal["inventory"]
         spatial_effect: Literal["local"]
         destination_location: None = None
-        destination_reference_mode: None = None
         item_id: Literal[items] if items else UUID = Field(
             description="Select the exact registered item's ID."
         )
@@ -356,7 +351,6 @@ def _intent_semantic_review_wire(
         action_type: Literal["rest", "wait"]
         spatial_effect: Literal["none"]
         destination_location: None = None
-        destination_reference_mode: None = None
         item_id: None = None
         inventory_operation: None = None
         inventory_target_id: None = None
@@ -366,7 +360,6 @@ def _intent_semantic_review_wire(
         action_type: Literal["service", "interaction", "observation", "other"]
         spatial_effect: Literal["local", "none"]
         destination_location: None = None
-        destination_reference_mode: None = None
         item_id: None = None
         inventory_operation: None = None
         inventory_target_id: None = None
@@ -378,7 +371,6 @@ def _intent_semantic_review_wire(
         action_type: None = None
         spatial_effect: Literal["local", "none"]
         destination_location: None = None
-        destination_reference_mode: None = None
         item_id: None = None
         inventory_operation: None = None
         inventory_target_id: None = None
@@ -463,11 +455,6 @@ Locking a workshop, inspecting its doorway, turning toward a sound, or putting a
 local, even if extraction mislabeled it movement. Entering or returning to a workshop is travel.
 For travel supply the endpoint in destination_location from the human's intended reference;
 otherwise return null. This corrects classification only: preserve order, actor and action text.
-For travel classify destination_reference_mode by how the endpoint is identified: explicit means
-the human independently names/describes the destination; contextual means its identity depends
-on deixis, possession, anaphora or a prior scene (home, back, outside). A named public establishment
-with its own description is explicit, even when reaching it involves leaving another building.
-Other actions carry null. This is a semantic reference classification, not a keyword test.
 Independently select action_type by the act's durable effect, regardless of the extraction's label.
 Any change of a registered item's owner or physical placement is inventory, including placing it
 on furniture and withdrawing the hand. Select item_id from the catalog and the take/drop/place/give
@@ -495,23 +482,16 @@ information_recipient=character. "Открой дверь" is world_action, acto
 """
 
 
-def _destination_binding_wire(
-    indices: list[int],
-    references: dict[str, str],
-    candidates: dict[int, dict[str, str]] | None = None,
-):
+def _destination_binding_wire(indices: list[int], references: dict[str, str]):
     return create_model(
         "DestinationIdentityBindings",
         __config__=ConfigDict(extra="forbid"),
         **{
             f"action_{index}": (
-                Literal[
-                    tuple(candidates[index] if candidates is not None else references)
-                    + ("new", "unresolved")
-                ],
-                Field(
-                    description="Same-place ID, new for a concrete new place, unresolved for ambiguity."
-                ),
+                Literal[tuple(references) + ("new_inside", "new", "unresolved")],
+                Field(description="Same-place ID (also a spot within earshot of those present); "
+                      "new_inside for a new separate place inside it; new for one elsewhere; "
+                      "unresolved for ambiguity."),
             )
             for index in indices
         },
@@ -537,7 +517,7 @@ def _normalized_action(
 ) -> dict[str, Any]:
     action_type = _compact(action.action_type).casefold()
     if action_type not in _ACTION_TYPES:
-        raise TurnPlanningError(f"unknown action type: {action_type!r}")
+        action_type = "other"
 
     operation = _inventory_operation(action)
     item_id = _compact(action.item_id) or None
@@ -562,22 +542,27 @@ def _normalized_action(
         "time_after": None,
     }
 
+    destination = _compact(action.destination_location)
+    if action_type == "movement" and not destination:
+        # No selected place, no trip (ban 4): a local step, not a failed turn.
+        action_type = "interaction"
+    if action_type == "inventory" and not (
+        item_id and operation and (operation != "give" or inventory_target_id)
+    ):
+        # Without a catalogued item/operation/recipient nothing changes hands; the act stays local.
+        action_type = "interaction"
+    payload["action_type"] = action_type
+
     if action_type == "movement":
-        destination = _compact(action.destination_location)
-        if not destination:
-            raise TurnPlanningError("movement intent is missing the player-selected destination")
         payload["destination_location"] = destination
+        if action.destination_reference not in (None, "new_inside", "new", "unresolved"):
+            payload["destination_location_id"] = action.destination_reference
+        payload["destination_within_origin"] = action.destination_reference == "new_inside"
         payload["requested_companions"] = list(dict.fromkeys(action.requested_companions))
         payload["movement_method"] = (
             "ordinary" if action.movement_method == "ordinary" else "special"
         )
     elif action_type == "inventory":
-        if not item_id:
-            raise TurnPlanningError("inventory intent is missing an authoritative item id")
-        if not operation:
-            raise TurnPlanningError("inventory intent is missing take/drop/give/place operation")
-        if operation == "give" and not inventory_target_id:
-            raise TurnPlanningError("give intent is missing an authoritative recipient id")
         payload.update(
             {
                 "item_id": item_id,
@@ -635,8 +620,8 @@ def normalize_intent_draft(
             "addressed_character_name": _compact(draft.addressed_character_name) or None,
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
             "world_state_question": bool(draft.world_state_question),
-            "questions": [value for raw in draft.questions if (value := _compact(raw))],
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
+            "time_advance": _compact(draft.time_advance) or None,
             "protected_player_decisions": [
                 value for raw in draft.protected_player_decisions if (value := _compact(raw))
             ],
@@ -798,7 +783,6 @@ class PlayerIntentInterpreter:
                 else:
                     action.action_type = "movement"
                     action.destination_location = ownership.destination_location
-                    action.destination_reference_mode = ownership.destination_reference_mode
             elif ownership.spatial_effect in {"local", "none"} and action.action_type == "movement":
                 action.action_type = "interaction"
                 action.destination_location = None
@@ -831,12 +815,6 @@ class PlayerIntentInterpreter:
         for index, action_role in enumerate(syntax.action_roles):
             if action_role is not None:
                 draft.actions[index].actor_role = action_role
-        if len(draft.actions) == 1 and len(syntax.imperative_clauses) == 1:
-            # An imperative clause is itself an unambiguous addressee commitment.  The semantic
-            # reviewer can otherwise cite a neighbouring speech-attribution clause ("I say") and
-            # incorrectly turn the command into the player's own action.
-            draft.actions[0].actor_role = "addressee"
-            draft.actions[0].intent = syntax.imperative_clauses[0]
         if not syntax.action_roles and syntax.uniform_action_role is not None:
             for action in draft.actions:
                 action.actor_role = syntax.uniform_action_role
@@ -873,66 +851,20 @@ class PlayerIntentInterpreter:
         return review
 
     async def _bind_destinations(
-        self, selection, draft, player_input, references, context_messages=None,
+        self, selection, draft, player_input, references, context_messages=None, catalog=None,
     ):
         """Resolve only place identity; this pass cannot change the extracted action sequence.
 
-        Keeping the catalogue out of action extraction avoids substituting a familiar location for
-        the player's explicitly new destination. Exact references need no additional model call.
+        Identity is a typed choice among catalogued location IDs (with parent, description and the
+        opening of the scene held there), "new" or "unresolved". No string matching decides it.
         """
-        unresolved = {}
-        candidates = {}
-
-        pipeline = getattr(self._linguistic_analyzer, "pipeline", None)
-        lemma_cache: dict[str, set[str]] = {}
-
-        def lexical_lemmas(text: str) -> set[str]:
-            if pipeline is None:
-                return set()
-            key = text.casefold()
-            if key not in lemma_cache:
-                lemma_cache[key] = {
-                    token.lemma_.casefold()
-                    for token in pipeline(key)
-                    if token.pos_ in {"NOUN", "PROPN", "ADJ", "NUM"}
-                }
-            return lemma_cache[key]
-
-        for index, action in enumerate(draft.actions):
-            if action.action_type != "movement":
-                continue
-            matches = [
-                key
-                for key, name in references.items()
-                if same_location_reference(action.destination_location or "", name)
-            ]
-            if len(matches) == 1:
-                action.destination_reference = matches[0]
-            else:
-                # Identity lookup is conservative candidate matching, not a campaign-wide nearest
-                # neighbour search. A shared lexical anchor permits resolving inflection/possession;
-                # an unrelated named place must never replace the selected new destination.
-                tokens = set(location_reference_key(action.destination_location or ""))
-                lemmas = lexical_lemmas(action.destination_location or "")
-                plausible = {
-                    key: name
-                    for key, name in references.items()
-                    if tokens.intersection(location_reference_key(name))
-                    or lemmas.intersection(lexical_lemmas(name))
-                }
-                if action.destination_reference_mode == "explicit" and not plausible:
-                    # The semantic review already established a concrete named endpoint.
-                    # With no identity candidates it is new, not an unresolved deictic reference.
-                    # A second model choice must not replace it or reopen that decision.
-                    action.destination_reference = "new"
-                    continue
-                # Absence of lexical overlap is not evidence of a new place: deictic references
-                # such as "home"/"outside" need the scene and catalogue too. Candidate retrieval
-                # narrows named references; contextual binding owns identity and ambiguity.
-                unresolved[index] = action.destination_location
-                candidates[index] = plausible or dict(references)
+        unresolved = {
+            index: action.destination_location
+            for index, action in enumerate(draft.actions)
+            if action.action_type == "movement"
+        }
         if unresolved:
-            wire = _destination_binding_wire(list(unresolved), references, candidates)
+            wire = _destination_binding_wire(list(unresolved), references)
             data = await self._router.generate_json(
                 self._provider,
                 selection,
@@ -940,16 +872,15 @@ class PlayerIntentInterpreter:
                     ChatMessage(
                         role="system",
                         content=(
-                            "Resolve location identity only. For each extracted destination, select an ID "
-                            "ONLY if it names the SAME place in LOCATION REFERENCES. Inflection and a "
-                            "possessive reference (my room) may refer to the same place. Otherwise select "
-                            "new only for a concrete, independently named new physical place. "
-                            "Relative references (home/outside/back/aside/inside) must resolve against "
-                            "the scene and human input; choose unresolved if their endpoint is unclear, "
-                            "never create a location named after a direction or a pronoun. "
-                            "A new public destination is valid; never substitute a similar place, "
-                            "a parent area, an intermediate route or a nearby candidate. Do not judge "
-                            "accessibility, feasibility or actions. Compare meanings, not exact spelling. "
+                            "Resolve location identity only. For each extracted destination select the ID "
+                            "of the SAME known place in LOCATION REFERENCES (each has name, parent, "
+                            "description and the opening of the scene held there, so a spot where an earlier "
+                            "scene took place belongs to that location's ID). Compare meanings, not spelling. "
+                            "Stepping to someone or something within sight and earshot of those present "
+                            "keeps the current location's ID (current=true). Select new_inside for an uncatalogued separate "
+                            "place inside the current location that one leaves their earshot to reach, new "
+                            "for one elsewhere, unresolved when the endpoint is unclear. Do not judge "
+                            "feasibility. "
                             "Return DestinationIdentityBindings.\n\n[OUTPUT JSON SCHEMA]\n"
                             + json.dumps(wire.model_json_schema(), ensure_ascii=False)
                         ),
@@ -963,7 +894,7 @@ class PlayerIntentInterpreter:
                                     context_messages or []
                                 ),
                                 "selected_destinations": unresolved,
-                                "LOCATION REFERENCES by action index": candidates,
+                                "LOCATION REFERENCES": catalog or references,
                             },
                             ensure_ascii=False,
                         ),
@@ -979,11 +910,18 @@ class PlayerIntentInterpreter:
                 draft.actions[index].destination_reference = bindings[f"action_{index}"]
         for action in draft.actions:
             reference = action.destination_reference
-            if reference == "unresolved":
-                raise TurnPlanningError("movement endpoint needs clarification before creating topology")
-            if action.action_type == "movement" and reference and reference != "new":
-                if reference not in references:
-                    raise TurnPlanningError("movement refers to an unknown location identity")
+            if action.action_type == "movement" and (
+                reference == "unresolved"
+                or (reference and reference not in ("new", "new_inside") and reference not in references)
+            ):
+                # An unclear endpoint creates no topology and moves nobody (ban 4); the attempt
+                # stays a local act for the narrator instead of failing the turn.
+                action.action_type = "interaction"
+                action.destination_location = None
+                action.destination_reference = None
+                action.requested_companions = []
+                continue
+            if action.action_type == "movement" and reference in references:
                 action.destination_location = references[reference]
 
     async def interpret(
@@ -993,6 +931,7 @@ class PlayerIntentInterpreter:
         player_input: str,
         *,
         location_references: dict[str, str] | None = None,
+        location_catalog: dict[str, dict] | None = None,
     ) -> PlayerIntentContract:
         references = location_references or {}
         user = (
@@ -1025,7 +964,7 @@ class PlayerIntentInterpreter:
             draft = PlayerIntentContractDraft.model_validate(data)
             await self._review_semantic_ownership(selection, player_input, draft, context_messages)
             await self._bind_destinations(
-                selection, draft, player_input, references, context_messages,
+                selection, draft, player_input, references, context_messages, location_catalog,
             )
             contract = normalize_intent_draft(draft, player_input)
             self.audit.append(

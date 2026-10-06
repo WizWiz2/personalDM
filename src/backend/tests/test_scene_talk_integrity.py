@@ -12,7 +12,6 @@ def _base_plan(**updates):
         "resolution": "observation",
         "observable_consequences": [],
         "character_beats": [],
-        "canon_constraints": [],
         "new_fact_candidates": [],
         "narration_guidance": [],
         "ending_hook": "",

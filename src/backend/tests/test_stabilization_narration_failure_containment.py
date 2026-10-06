@@ -16,7 +16,6 @@ from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProviderError, LLMProviderTruncatedError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.campaign_service import CampaignService
-from app.services.narration_failure_containment_guard import install as install_containment
 from app.services.role_model_router import RoleModelRouter
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
@@ -43,12 +42,11 @@ def _authority(*, campaign_id=None, trigger_turn_id=None) -> TurnAuthority:
         LLMProviderError("LLM returned HTTP 500: internal provider failure"),
     ],
 )
-async def test_provider_failure_after_authority_publishes_safe_projection(
+async def test_provider_failure_publishes_typed_outcome_as_plain_text(
     db_session,
     monkeypatch,
     error,
 ):
-    install_containment()
     pipeline = AuthorityNarrationPipeline(
         db_session,
         RoleModelRouter(ProviderConfigRepository(db_session)),
@@ -77,11 +75,6 @@ async def test_provider_failure_after_authority_publishes_safe_projection(
     assert "HTTP 500" not in result.text
     assert result.validation_status == "safe_fallback"
     assert result.telemetry["narration_degraded"] is True
-    assert result.telemetry["structured_outcome_preserved"] is True
-    assert (
-        result.telemetry["narration_validation"]["presentation_failure_recovered"]
-        is True
-    )
 
 
 @pytest.mark.asyncio
@@ -89,7 +82,6 @@ async def test_repair_generation_failure_finalizes_validation_audit_and_preserve
     db_session,
     monkeypatch,
 ):
-    install_containment()
     campaign = await CampaignService(db_session).create_campaign(
         CampaignCreate(name="Presentation containment")
     )
@@ -165,3 +157,69 @@ async def test_repair_generation_failure_finalizes_validation_audit_and_preserve
     assert run.failure_reason is not None
     assert "LLMProviderTruncatedError" in run.failure_reason
     assert "completion budget" not in result.text
+
+
+@pytest.mark.asyncio
+async def test_unhonored_beat_gets_one_repair_then_the_typed_fallback(db_session, monkeypatch):
+    """Grant → beat check fails → one repair carrying the failure → still failing → projection."""
+    import app.services.authority_narration_pipeline as module
+
+    campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Beat grant"))
+    user_turn = await TurnRepository(db_session).create(
+        campaign.id, TurnCreate(role="user", content="Кладу полтинник на стойку.")
+    )
+    await db_session.commit()
+    host = uuid4()
+    coin = "Серебряный полтинник ложится на стойку перед Фёдором Андреевичем."
+    sent: list[list[ChatMessage]] = []
+
+    class FakeRouter:
+        async def resolve(self, *args, **kwargs):
+            return SimpleNamespace(config=SimpleNamespace(model_name="m"), source="control_default")
+
+        async def generate_json(self, provider, selection, messages, **kwargs):
+            sent.append(messages)
+            return {"prose": coin, "beat": {"cast_id": str(host), "kind": "act", "evidence": coin}}
+
+    async def never_validate(*args, **kwargs):
+        raise AssertionError("a failed beat skips the four-ban validator")
+
+    decisions: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, "record_decision", lambda step, outcome, *a, **k: decisions.append((step, outcome)))
+    monkeypatch.setattr(TurnAuthorityValidator, "validate", never_validate)
+    authority = _authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id).model_copy(
+        update={"beat_owner_id": host, "beat_owner_name": "Фёдор Андреевич Климов"}
+    )
+    result = await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
+        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
+        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+        narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="m"), source="x"),
+        authority=authority,
+    )
+
+    assert len(sent) == 2 and "grammatical subject" in sent[1][-1].content
+    assert decisions == [
+        ("beat", "unhonored"), ("repair", "requested"), ("beat", "unhonored"),
+        ("publish", "authority_projection"),
+    ]
+    assert result.text == "Дверь оказывается открыта."
+    assert result.validation_status == "safe_fallback"
+
+
+@pytest.mark.asyncio
+async def test_granted_narration_schema_admits_only_the_owner_id(db_session):
+    """Live B5 T4: the repair returned the owner's UUID with a typo and the turn fell back."""
+    host, schemas = uuid4(), []
+
+    class FakeRouter:
+        async def generate_json(self, provider, selection, messages, **kwargs):
+            schemas.append(kwargs["response_model"].model_json_schema())
+            return {"prose": "— Да.", "beat": {"cast_id": str(host), "kind": "speech", "evidence": "— Да."}}
+
+    authority = _authority().model_copy(update={"beat_owner_id": host, "beat_owner_name": "Хозяин"})
+    prose, beat, _ = await AuthorityNarrationPipeline(db_session, FakeRouter())._narrate(
+        [], SimpleNamespace(), authority, temperature=0.5)
+
+    cast = next(iter(schemas[0]["$defs"].values()))["properties"]["cast_id"]
+    assert cast.get("const", (cast.get("enum") or [None])[0]) == str(host)
+    assert beat.cast_id == str(host) and prose == "— Да."

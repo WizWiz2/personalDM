@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
+
 from app.db.repositories.location_repo import LocationRepository
+from app.db.scene_location_table import SceneLocationLink
+from app.db.tables import Campaign, Character, Entity, Turn
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -38,6 +42,55 @@ class TurnIntentPlanningPipeline:
         self._outcomes = TurnOutcomeResolver(router)
         self._compiler = ActionPlanCompiler(session)
 
+    async def _destination_cast(self, campaign_id, contract, names) -> dict[str, list[str]]:
+        """Typed occupants of every known place the frozen actions travel to."""
+        targets = {str(a.destination_location_id) for a in contract.actions if a.destination_location_id}
+        if not targets:
+            return {}
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        rows = await self._session.execute(
+            select(Character.current_location_id, Entity.canonical_name)
+            .join(Entity, Entity.id == Character.entity_id)
+            .where(
+                Entity.campaign_id == str(campaign_id),
+                Character.current_location_id.in_(targets),
+                Entity.id != (campaign.player_character_id if campaign else ""),
+            )
+        )
+        cast: dict[str, list[str]] = {}
+        for location_id, name in rows.all():
+            cast.setdefault(names.get(location_id, location_id), []).append(name)
+        return cast
+
+    async def _location_catalog(self, campaign_id) -> tuple[dict[str, str], dict[str, dict]]:
+        """Known places for destination binding; current marks where the player is now."""
+        locations = [
+            place for place in await LocationRepository(self._session).list_by_campaign(campaign_id)
+            if place.status != "inactive"
+        ]
+        names = {str(location.id): location.canonical_name for location in locations}
+        openings = dict((await self._session.execute(
+            select(SceneLocationLink.location_id, Turn.content)
+            .join(Turn, Turn.scene_id == SceneLocationLink.scene_id)
+            .where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant")
+            .order_by(Turn.created_at.desc())
+        )).all())
+        try:
+            here = str((await self._compiler._world(campaign_id))[1].location_id)
+        except TurnPlanningError:
+            here = None
+        return names, {
+            key: {
+                "name": location.canonical_name,
+                "parent": names.get(str(location.parent_location_id)),
+                "description": (location.description or "")[:240],
+                "scene_opening": (openings.get(key) or "")[:240],
+                "current": key == here,
+            }
+            for location in locations
+            for key in [str(location.id)]
+        }
+
     async def plan(
         self,
         *,
@@ -46,17 +99,16 @@ class TurnIntentPlanningPipeline:
         context_messages,
         selection,
     ) -> tuple[CoordinatedTurnPlan, dict]:
-        locations = await LocationRepository(self._session).list_by_campaign(campaign_id)
+        names, catalog = await self._location_catalog(campaign_id)
         contract = await self._intent.interpret(
             selection,
             context_messages,
             user_input,
-            location_references={
-                str(location.id): location.canonical_name for location in locations
-            },
+            location_references=names,
+            location_catalog=catalog,
         )
         # Director moves are selected before outcome resolution so force_introduce_contact
-        # can drive the existing contact-seeking recovery path. Rhythm is NOT persisted here.
+        # can add optional contact guidance to the resolver. Rhythm is NOT persisted here.
         seek_contact = seeks_contact_or_presence(contract)
         empty_cast = solo_physical_presence(context_messages)
         master_service = MasterService(self._session)
@@ -67,6 +119,7 @@ class TurnIntentPlanningPipeline:
             persist_rhythm=False,
         )
 
+        resident_slots = await self._compiler.resident_slots(campaign_id)
         decision = await self._compiler.resolve_known_travel(campaign_id, contract)
         outcome_owner = "route_graph" if decision is not None else "external_resolver"
         if decision is None:
@@ -76,10 +129,12 @@ class TurnIntentPlanningPipeline:
                 user_input,
                 contract,
                 force_introduce_contact=director.forced_introduce_contact,
+                resident_slots=resident_slots,
+                destination_cast=await self._destination_cast(campaign_id, contract, names),
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
-            # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver
-            # so forced contact-seeking still requires typed introductions.
+            # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so
+            # forced contact-seeking gets its (optional) chance at a typed introduction.
             decision = await self._outcomes.resolve(
                 selection,
                 context_messages,
@@ -102,15 +157,10 @@ class TurnIntentPlanningPipeline:
             )
 
         # Primary: structural authority levers. Secondary: narration_guidance seasoning.
-        # Pure ordinary travel stamps honor_travel so Soft Keeper quiet cannot soft-stall.
         committed_travel = is_pure_ordinary_travel(contract) or any(
             action.action_type == "movement" for action in contract.actions
         )
-        decision = apply_moves_to_outcome_decision(
-            decision,
-            director,
-            committed_travel=committed_travel,
-        )
+        decision = apply_moves_to_outcome_decision(decision, director)
         guidance = apply_moves_to_narration_guidance(
             list(decision.narration_guidance),
             director,

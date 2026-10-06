@@ -154,69 +154,6 @@ async def test_explicit_travel_does_not_reactivate_inactive_direct_route(
 
 
 @pytest.mark.asyncio
-async def test_compound_explicit_travel_propagates_discovery_to_movement_step(
-    db_session: AsyncSession,
-):
-    campaign_id, hero, _, _, department, source = await _navigation_world(db_session)
-    user_turn = await TurnRepository(db_session).create(
-        campaign_id,
-        TurnCreate(
-            role="user",
-            content="Еду в Департамент, вхожу в вестибюль и осматриваюсь.",
-        ),
-    )
-    sequence = ActionSequencePlan(
-        summary="Доехать до Департамента и осмотреть вестибюль.",
-        steps=[
-            ActionStepPlan(
-                action_type="movement",
-                intent="Доехать до Департамента",
-                resolution="auto_success",
-                safe_mundane=True,
-                observable_outcome="Рэт прибывает в Департамент Киберпреступлений.",
-                transition=SceneTransitionPlan(
-                    required=True,
-                    transition_type="location_transition",
-                    destination_location=department.canonical_name,
-                ),
-            ),
-            ActionStepPlan(
-                action_type="observation",
-                intent="Осмотреть вестибюль",
-                resolution="auto_success",
-                safe_mundane=True,
-                observable_outcome="Рэт осматривает вестибюль.",
-            ),
-        ],
-    )
-    boundary = SceneTransitionPlan(
-        required=True,
-        transition_type="focus_transition",
-        reason="Execute ordered player action sequence.",
-        sequence_payload=sequence.model_dump(mode="json"),
-    )
-
-    applied = await SceneTransitionExecutor(db_session).apply(
-        campaign_id,
-        source.id,
-        user_turn.id,
-        boundary,
-    )
-
-    assert applied is not None
-    assert applied.action_sequence is not None
-    assert applied.action_sequence.blocked_step_index is None
-    assert [step.status for step in applied.action_sequence.steps] == [
-        "completed",
-        "completed",
-    ]
-    assert applied.target_location_id == department.id
-    character = await EntityRepository(db_session).get_character(hero.id)
-    assert character is not None
-    assert character.current_location_id == department.id
-
-
-@pytest.mark.asyncio
 async def test_generic_travel_shorthand_cannot_choose_between_two_departments(
     db_session: AsyncSession,
 ):

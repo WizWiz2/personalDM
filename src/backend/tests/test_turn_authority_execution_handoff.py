@@ -89,6 +89,6 @@ async def test_scene_transition_execution_report_is_the_sequence_authority(
     assert authority.action_sequence["completed_steps"] == 1
     assert authority.action_sequence["steps"][0]["status"] == "completed"
     assert authority.action_sequence["steps"][1]["status"] == "blocked"
-    assert authority.narrator_payload()["execution_section"] == (
-        "[EXECUTED ACTION SEQUENCE]"
-    )
+    assert [step["status"] for step in authority.narrator_payload()["executed_steps"]] == [
+        "completed", "blocked",
+    ]

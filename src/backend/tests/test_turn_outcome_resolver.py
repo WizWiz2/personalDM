@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
+
 import pytest
+from pydantic import ValidationError
 
 from app.models.player_intent import PlayerIntentContract
+from app.providers.llm_provider import LLMProvider
 from app.services.turn_outcome_resolver import (
     TurnOutcomeDecisionDraft,
     _outcome_wire_model,
     normalize_outcome_draft,
-    stamp_world_state_answer,
 )
 from app.services.turn_planner import TurnPlanningError
 
@@ -103,13 +106,18 @@ def test_missing_frozen_action_outcome_still_fails_closed() -> None:
         normalize_outcome_draft(draft, _movement_contract())
 
 
-def test_unknown_action_resolution_still_fails_closed() -> None:
-    draft = TurnOutcomeDecisionDraft.model_validate(
-        {"action_outcomes": [{"action_index": 0, "resolution": "maybe"}]}
+@pytest.mark.parametrize("resolution", ["success", "успех", "pending_player_choice"])
+def test_resolution_is_a_typed_enum_at_the_wire_boundary(resolution: str) -> None:
+    with pytest.raises(ValidationError):
+        TurnOutcomeDecisionDraft.model_validate(
+            {"action_outcomes": [{"action_index": 0, "resolution": resolution}]}
+        )
+    schema = LLMProvider._strict_schema(
+        LLMProvider._compact_schema(_outcome_wire_model(2).model_json_schema())
     )
-
-    with pytest.raises(TurnPlanningError, match="unknown resolution"):
-        normalize_outcome_draft(draft, _movement_contract())
+    assert '"enum":["auto_success","requires_choice","blocked"]' in json.dumps(
+        schema, separators=(",", ":")
+    )
 
 def test_typed_outcome_keeps_its_reaction_and_drops_an_unbound_beat() -> None:
     draft = TurnOutcomeDecisionDraft.model_validate(
@@ -283,24 +291,17 @@ def test_long_source_anchor_survives_provider_resolver_roundtrip() -> None:
     assert wire.model_validate(first).action_outcomes[0].resolution == "blocked"
 
 
-def test_addressed_question_requires_actual_reply_not_waiting_gesture():
-    wire = _outcome_wire_model(
-        0, allow_choice=False, allow_introductions=False, requires_response=True,
-    )
-    with pytest.raises(ValueError, match="direct_response"):
-        wire.model_validate({
-            "action_outcomes": [], "npc_introductions": [],
-            "observable_consequences": ["Контактное лицо кивает и готовится ответить."],
-        })
+def test_addressed_question_needs_an_external_result_and_leaves_words_to_the_narrator():
+    wire = _outcome_wire_model(0, allow_choice=False, allow_introductions=False)
+    assert "direct_response" not in wire.model_json_schema()["properties"]
     contract = PlayerIntentContract(summary="Спрашиваю, откуда он знает моё имя.",
                                     addressed_response_requested=True)
     draft = wire.model_validate({
         "action_outcomes": [], "npc_introductions": [],
-        "direct_response": "Контактное лицо отвечает: «Я не знаю вашего имени»." ,
-        "observable_consequences": ["Собеседник опускает руку."],
+        "observable_consequences": ["Контактное лицо кивает и опускает руку."],
     })
     result = normalize_outcome_draft(draft, contract)
-    assert result.observable_consequences[0] == draft.direct_response
+    assert result.observable_consequences == ["Контактное лицо кивает и опускает руку."]
     assert result.npc_introductions == []
 
 
@@ -320,12 +321,10 @@ def test_unsupported_ordinary_travel_block_resolves_without_invented_obstacle() 
             "blocking_reason": "Путь закрыт.",
             "blocking_evidence_quote": "Запертая дверь",
         }],
-        "canon_constraints": ["Не пускать игрока в прачечную."],
     })
 
     assert parsed.action_outcomes[0].resolution == "auto_success"
     assert parsed.action_outcomes[0].blocking_reason is None
-    assert parsed.canon_constraints == []
     assert parsed.observable_consequences == [
         "Переход в место «Прачечная соседнего дома» завершён."
     ]
@@ -351,25 +350,119 @@ def test_observation_can_report_newly_discovered_negative_result_without_context
     assert parsed.action_outcomes[0].blocking_evidence_quote is None
 
 
-def test_world_state_question_stamps_direct_answer_obligation() -> None:
-    contract = PlayerIntentContract.model_validate(
-        {
-            "summary": "Во что сейчас одета Мария?",
-            "actions": [],
-            "world_state_question": True,
-        }
-    )
-    decision = normalize_outcome_draft(
-        TurnOutcomeDecisionDraft.model_validate(
-            {
-                "action_outcomes": [],
-                "observable_consequences": ["Мария сейчас полностью обнажена."],
+
+
+@pytest.mark.asyncio
+async def test_contact_seeking_without_introduction_resolves_with_nobody_appearing() -> None:
+    """Regression (B playtest turn 4): alone in a new place, asking for Степан, the planner
+    introduces nobody. The turn must resolve (nobody appears), not fail closed."""
+    from types import SimpleNamespace
+
+    from app.models.turn import ChatMessage
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    class _Router:
+        def __init__(self):
+            self.calls = []
+
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            del provider, selection, kwargs
+            self.calls.append(messages[-1].content)
+            return {
+                "action_outcomes": [{
+                    "action_index": 0,
+                    "resolution": "auto_success",
+                    "observable_outcome": "Кай приходит в слободу и спрашивает о Степане.",
+                }],
+                "npc_introductions": [],
+                "response_speaker_name": "Степан",
+                "observable_consequences": ["Степана поблизости не видно."],
             }
-        ),
-        contract,
+
+    contract = PlayerIntentContract.model_validate({
+        "summary": "Иду в трактирную слободу и ищу Степана, чтобы поговорить.",
+        "actions": [{
+            "action_type": "movement",
+            "intent": "Пойти в трактирную слободу.",
+            "destination_location": "Трактирная слобода",
+        }],
+        "addressed_response_requested": True,
+        "addressed_character_name": "Степан",
+    })
+    context = [ChatMessage(role="system", content="Physically present characters: Кай")]
+    router = _Router()
+
+    decision = await TurnOutcomeResolver(router).resolve(
+        SimpleNamespace(), context, "Иду в слободу, хочу поговорить со Степаном.", contract,
+        force_introduce_contact=True,
     )
 
-    stamped = stamp_world_state_answer(decision, contract)
+    assert decision.npc_introductions == []
+    assert decision.action_outcomes[0].resolution == "auto_success"
+    assert "Степана поблизости не видно." in decision.observable_consequences
+    # Guidance is optional and offered once; there is no forced re-ask.
+    assert len(router.calls) == 1
+    assert "CONTACT-SEEKING" in router.calls[0]
 
-    assert any("WORLD STATE ANSWER" in item for item in stamped.canon_constraints)
-    assert any("direct answer" in item for item in stamped.narration_guidance)
+
+@pytest.mark.asyncio
+async def test_travel_shows_the_destinations_typed_cast_and_binds_its_addressee() -> None:
+    """Regression (B5 T10): returning to the inn, the resolver never saw the host standing there
+    and resolved «Савелий не обнаружен». The destination's typed occupants are now authority."""
+    from types import SimpleNamespace
+
+    from app.models.turn import ChatMessage
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    class _Router:
+        def __init__(self):
+            self.calls, self.schemas = [], []
+
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            self.calls.append(messages[-1].content)
+            self.schemas.append(response_model.model_json_schema())
+            return {
+                "action_outcomes": [{"action_index": 0, "resolution": "auto_success",
+                                     "observable_outcome": "Кай входит в трактир."}],
+                "npc_introductions": [], "response_speaker_name": "Савелий",
+            }
+
+    contract = PlayerIntentContract.model_validate({
+        "summary": "Иду в трактир и спрашиваю хозяина.",
+        "actions": [{"action_type": "movement", "intent": "Вернуться в трактир.",
+                     "destination_location": "Трактир"}],
+        "addressed_response_requested": True, "addressed_character_name": "Савелий",
+    })
+    router = _Router()
+    decision = await TurnOutcomeResolver(router).resolve(
+        SimpleNamespace(), [ChatMessage(role="system", content="Physically present characters: Рыбак")],
+        "Иду в трактир, спрошу Савелия.", contract, destination_cast={"Трактир": ["Савелий"]},
+    )
+
+    assert "«Трактир» when the human arrives: Савелий" in router.calls[0]
+    assert router.schemas[0]["properties"]["response_speaker_name"]["anyOf"][0]["const"] == "Савелий"
+    assert decision.npc_introductions == []
+
+
+def test_a_step_that_brings_someone_carries_their_typed_introduction() -> None:
+    person = {
+        "canonical_name": "Речник", "role": "речник",
+        "description": "Речник, ходивший этой осенью на Ладогу, вернулся в город.",
+        "appearance": "Мужчина в промокшем дорожном кафтане и влажной шапке.",
+        "reason": "Хозяин послал за ним.",
+    }
+    wait = PlayerIntentContract.model_validate(
+        {"summary": "Илья ждёт речника.", "actions": [{"action_type": "wait", "intent": "Ждать речника."}]}
+    )
+    draft = TurnOutcomeDecisionDraft.model_validate({
+        "action_outcomes": [{
+            "action_index": 0, "resolution": "auto_success",
+            "observable_outcome": "В трактир входит речник.", "arriving": person,
+        }],
+        "npc_introductions": [person],
+    })
+
+    decision = normalize_outcome_draft(draft, wait)
+
+    [arrival] = decision.npc_introductions
+    assert (arrival.canonical_name, arrival.after_action_index, arrival.arrives) == ("Речник", 0, True)

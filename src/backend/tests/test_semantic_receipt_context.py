@@ -1,7 +1,7 @@
 from app.services.semantic_receipt_context import memory_evidence
 
 
-def test_memory_evidence_keeps_published_text_and_exact_receipt_description() -> None:
+def test_memory_evidence_keeps_published_text_and_only_typed_receipt_fields() -> None:
     text = memory_evidence(
         "Кай щёлкает выключателем.",
         [
@@ -17,7 +17,7 @@ def test_memory_evidence_keeps_published_text_and_exact_receipt_description() ->
     )
 
     assert "Кай щёлкает выключателем." in text
-    assert "Свет в комнате включается, освещая пространство." in text
+    assert "Свет в комнате включается" not in text  # the plan's wording, not the published prose
     assert '"status": "completed"' in text
     assert '"action_type": "interaction"' in text
 

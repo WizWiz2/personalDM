@@ -248,6 +248,8 @@ async def test_invalid_authority_compensates_committed_prepared_transition(
 
     assert refreshed_player is not None
     assert refreshed_player.current_location_id == tavern.id
+    # A same-place focus transition keeps the one scene of the place; undo must not abandon it.
+    assert applied.target_scene_id == source_scene.id
     assert source_row is not None and source_row.status == "active"
-    assert target_row is not None and target_row.status == "abandoned"
+    assert target_row is source_row
     assert transition_row is not None and transition_row.status == "rolled_back"

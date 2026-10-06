@@ -12,13 +12,10 @@ from app.models.jobs import GenerationPhase
 _INSTALLED = False
 _CRASH_LOG_HANDLE: TextIO | None = None
 _GUARDS = (
-    "actor_turn_authority",
     "actor_memory_observability",
     "narrator_memory_audit",
     "systemless_authority",
-    "mixed_actor_response",
     "narrator_quality_recovery",
-    "narration_failure_containment",
     "session_zero_finalize",
     "session_zero_placeholder",
     "planner_compound",
@@ -84,13 +81,8 @@ def install_runtime() -> None:
     from app.services.actor_memory_observability_guard import (
         install as install_actor_memory_observability,
     )
-    from app.services.actor_turn_authority_guard import install as install_actor_turn_authority
     from app.services.dead_turn_guard import install as install_dead_turn
     from app.services.location_profile_guard import install as install_location_profile
-    from app.services.mixed_actor_response_guard import install as install_mixed_actor_response
-    from app.services.narration_failure_containment_guard import (
-        install as install_narration_failure_containment,
-    )
     from app.services.narrator_memory_audit_guard import install as install_narrator_memory_audit
     from app.services.narrator_quality_recovery_guard import (
         install as install_narrator_quality_recovery,
@@ -119,13 +111,10 @@ def install_runtime() -> None:
     # Performance instrumentation wraps provider/router calls only. Install it before the semantic
     # guards so every later control/narration call is visible without changing their behavior.
     install_performance_telemetry()
-    install_actor_turn_authority()
     install_systemless_authority()
-    install_mixed_actor_response()
     install_actor_memory_observability()
     install_narrator_memory_audit()
     install_narrator_quality_recovery()
-    install_narration_failure_containment()
     install_session_zero_finalize()
     install_session_zero_placeholder()
     install_planner_compound()
@@ -193,11 +182,9 @@ def runtime_manifest() -> dict[str, Any]:
             "build_turn_authority",
             "materialize_structured_outcome",
             "compile_narrator_context",
-            "plan_scene_development_from_prepared_world",
             "render_narration",
-            "validate_authority",
+            "validate_four_bans",
             "publish_assistant_turn",
-            "record_scene_development_events",
             "enqueue_post_turn",
         ],
         "generation_phases": [phase.value for phase in GenerationPhase],
@@ -209,13 +196,10 @@ def runtime_manifest() -> dict[str, Any]:
         },
         "narration_pipeline": [
             "generate_draft",
-            "guard_repetition",
-            "validate_authority",
-            "semantic_re_adjudication_on_failure",
+            "validate_four_bans",
             "repair_once",
-            "guard_repetition",
-            "contain_presentation_failure",
-            "publish_accepted",
+            "validate_four_bans",
+            "publish_accepted_or_typed_outcome",
         ],
         "semantic_policy": {
             "player_action_ownership": "frozen_player_intent_ir",
