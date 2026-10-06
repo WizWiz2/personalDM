@@ -202,7 +202,7 @@ async def test_a_name_the_owner_gives_in_its_published_beat_promotes_its_designa
     entities = EntityRepository(db_session)
     npc = await entities.create_character(campaign_id, CharacterCreate(
         canonical_name="Рыбак у пристани", current_location_id=location.id,
-        custom_fields={"temporary_name": True, "role": "рыбак"},
+        custom_fields={"temporary_name": True, "role": "рыбак", "needs_name": True},
     ))
     await SceneRepository(db_session).add_participant(scene.id, npc.id)
     user = await TurnRepository(db_session).create(campaign_id, TurnCreate(role="user", content="Как тебя зовут?"))
@@ -221,6 +221,10 @@ async def test_a_name_the_owner_gives_in_its_published_beat_promotes_its_designa
     assert not unchanged.identity_updates
     assert (await entities.get_character(npc.id)).canonical_name == "Степан"
     assert [update.previous_name for update in outcome.identity_updates] == ["Рыбак у пристани"]
+    # The next turn's facts carry the promoted name as present, not the role label (A10 T14).
+    later = await build(db_session, campaign_id, scene, None)
+    assert "Степан" in later.present_character_names
+    assert "Степан" not in later.known_absent_character_names
 
 
 def test_unproved_name_revelation_is_rejected():

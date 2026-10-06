@@ -15,7 +15,7 @@ from app.models.character import CharacterCreate
 from app.models.narration_validation import GrantedBeat
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.entity_identity import identity_key
-from app.services.name_identity_contract import given_name_collides
+from app.services.name_identity_contract import NEEDS_NAME_FIELD, given_name_collides
 from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
 
 
@@ -237,6 +237,7 @@ class TurnOutcomeMaterializer:
             temporary_name=False, identity_promoted_from=old_name,
             identity_promoted_turn_id=str(source_turn_id),
         )
+        fields.pop(NEEDS_NAME_FIELD, None)  # A personal name answers it (A10 T14: label stayed the role).
         row.custom_fields = json.dumps(fields, ensure_ascii=False)
         authority.present_character_names = [
             response.revealed_name if identity_key(name) == identity_key(old_name) else name
