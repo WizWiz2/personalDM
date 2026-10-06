@@ -673,12 +673,6 @@ def normalize_outcome_draft(
         {key: value for key, value in item.items() if key != "reaction"} for item in action_outcomes
     ]
     response_speaker = _compact(draft.response_speaker_name) or contract.addressed_character_name
-    speaker_intros = [
-        item for item in introductions
-        if identity_key(item["identity_reference"]) == identity_key(response_speaker)
-    ]
-    if len(speaker_intros) == 1:
-        response_speaker = speaker_intros[0]["canonical_name"]
     return TurnOutcomeDecision.model_validate(
         {
             "action_outcomes": public_outcomes,

@@ -117,6 +117,7 @@ class TurnAuthorityService:
                 introductions=introductions,
                 present_names=present_names,
                 target_location_id=(target_state.location_id if target_state else None),
+                addressee=(planned_response.speaker_name if planned_response else None),
             )
         except AuthorityResolutionError as exc:
             raise TurnAuthorityError(str(exc)) from exc
@@ -200,22 +201,16 @@ class TurnAuthorityService:
         )
 
         # The beat grant is the single source of NPC response: the /talk listener, else, when the
-        # plan marks the player's line as addressed, the planner's typed addressee among present
-        # NPCs (by name or alias, this turn's introductions included), else the sole present NPC.
-        # A new introduction receives its ID when it is materialized.
+        # plan marks the player's line as addressed, the addressee the binding step resolved, else
+        # the sole present NPC. A new introduction receives its ID when it is materialized.
         npcs = [
             name for name in present_names
             if identity_key(name) != identity_key(authority.player_character_name or "")
         ]
-        addressee = identity_key((planned_response.speaker_name if planned_response else None) or "")
-        aliases = {entity.canonical_name: entity.aliases for entity in all_characters}
-        named = [
-            name for name in npcs
-            if addressee and addressee in {identity_key(value) for value in (name, *aliases.get(name, ()))}
-        ]
+        sole = npcs[0] if len(npcs) == 1 else None
         addressed = bool(plan and plan.addressed_response_requested)
         owner_name = actor.canonical_name if actor else (
-            (named or npcs)[0] if addressed and len(named or npcs) == 1 else None
+            (npc_resolution.addressee or sole) if addressed else None
         )
         owner = next(
             (entity for entity in all_characters

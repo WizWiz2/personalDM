@@ -43,3 +43,29 @@ async def test_a_person_found_at_the_keepers_place_is_its_keeper_and_a_brought_o
 
     assert [(item.canonical_name, item.resident_slot) for item in resolved.new_introductions] == [
         ("Хозяин трактира", str(inn.id)), ("Речник", None)]
+
+
+@pytest.mark.asyncio
+async def test_the_addressee_binds_to_whom_this_turns_designation_resolved(db_session):
+    """B9 T8: the host was addressed as the planner's «Хозяин…» beside the slot's «Трактирщик»;
+    the grant found no owner and the revealed name never promoted."""
+    from app.db.repositories.entity_repo import EntityRepository
+    from app.models.character import CharacterCreate
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Keeper"))
+    inn = await LocationRepository(db_session).create(campaign_id, LocationCreate(
+        canonical_name="Трактир", custom_fields={"resident_role": "трактирщик"}))
+    await EntityRepository(db_session).create_character(campaign_id, CharacterCreate(
+        canonical_name="Трактирщик", current_location_id=inn.id,
+        custom_fields={"temporary_name": True, "role": "трактирщик", "slot_id": str(inn.id)}))
+    host = PlannedNpcIntroduction(canonical_name="Хозяин и распорядитель трактира",
+                                  role="хозяин трактира", temporary_name=True,
+                                  reason="Стоит за стойкой.", after_action_index=0)
+
+    resolved = await NpcIntroductionResolver(db_session).resolve(
+        campaign_id=campaign_id, introductions=[host], present_names=["Илья", "Трактирщик"],
+        target_location_id=inn.id, addressee="Хозяин и распорядитель трактира")
+
+    assert resolved.new_introductions == []
+    assert resolved.addressee == "Трактирщик"
