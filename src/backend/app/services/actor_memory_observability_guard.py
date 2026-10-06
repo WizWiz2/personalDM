@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 from contextvars import ContextVar
+from typing import Literal
 from uuid import UUID
+
+from pydantic import create_model
 
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
 from app.services.actor_turn_authority_guard import (
     ActorSegmentSelection,
+    SegmentClaim,
     build_actor_segment_proposals,
     segment_actor_response,
 )
@@ -41,8 +45,10 @@ async def extract_actor_segment_proposals_with_audit(
     assistant_content: str,
     acting_character_id: UUID,
     player_character_id: UUID,
+    present_cast_ids: list[UUID] = (),
 ):
-    """Select immutable actor claims with one bounded semantic retry and durable diagnostics."""
+    """Select immutable NPC claims, each bound to a present cast ID as its speaker (A10 T9: the
+    host's «Ужин запишу за вами» was filed under the acting servant). One bounded retry."""
     clean = " ".join((assistant_content or "").split()).strip()
     base_audit = {
         "actor_knowledge_mode": "indexed_segments",
@@ -70,6 +76,16 @@ async def extract_actor_segment_proposals_with_audit(
         base_audit["selector_status"] = "skipped_missing_actor_or_recipient"
         _set_audit(scribe, base_audit)
         return []
+    cast = {str(acting_character_id): actor.canonical_name}
+    for cast_id in present_cast_ids:
+        if str(cast_id) not in cast and cast_id != player_character_id:
+            member = await scribe._entity_repo.get_character(cast_id)  # noqa: SLF001
+            if member:
+                cast[str(cast_id)] = member.canonical_name
+    claim = create_model("SegmentClaim", __base__=SegmentClaim,
+                         speaker_id=(Literal[tuple(cast)], ...))
+    wire = create_model("ActorSegmentSelection", __base__=ActorSegmentSelection,
+                        claims=(list[claim], ...))
 
     segments = segment_actor_response(assistant_content)
     base_audit["candidate_segments"] = [
@@ -96,16 +112,17 @@ async def extract_actor_segment_proposals_with_audit(
     system_prompt = (
         "[ACTOR CLAIM SEGMENT SELECTOR]\n"
         "Тебе даны неизменяемые фрагменты ОПУБЛИКОВАННОГО ответа NPC. Не пиши и не "
-        "исправляй текст. Верни только номера S-сегментов, в которых сам выбранный NPC "
+        "исправляй текст. Верни только номера S-сегментов, в которых присутствующий NPC "
         "сообщает персонажу игрока конкретное фактическое сведение о человеке, месте, "
         "предмете, событии, времени, доступе, внешности или наблюдении. Не выбирай жесты, "
         "эмоции, атмосферу, Narrator-текст, вопросы, приветствия или чистые намерения. "
         "Явное отрицательное утверждение NPC допустимо. Явный отказ, согласие, обещание "
         "или условие NPC персонажу игрока — его решение, выбирай его тоже. Не решай, прав ли NPC: это только "
         "character_claim. Если фактических утверждений нет, верни пустой список.\n"
-        f"Говорящий NPC: {actor.canonical_name}.\n"
+        "Для каждого номера speaker_id — ID того присутствующего NPC, кто произносит сегмент: "
+        + "; ".join(f"{cast_id} — {name}" for cast_id, name in cast.items()) + ".\n"
         f"Слушатель: {player.canonical_name}.\n"
-        "Формат: {\"segment_ids\":[1,2]}"
+        "Формат: {\"claims\":[{\"segment_id\":1,\"speaker_id\":\"ID\"}]}"
     )
 
     async def select_ids(extra_instruction: str | None = None) -> list[int]:
@@ -119,14 +136,13 @@ async def extract_actor_segment_proposals_with_audit(
             scribe._llm_provider,  # noqa: SLF001
             selection,
             messages,
-            max_tokens=220,
+            max_tokens=320,
             temperature=0.0,
-            response_model=ActorSegmentSelection,
+            response_model=wire,
         )
-        envelope = ActorSegmentSelection.model_validate(data)
-        return list(envelope.segment_ids)
+        return {item.segment_id: item.speaker_id for item in wire.model_validate(data).claims}
 
-    selected_ids: list[int] = []
+    selected_ids: dict[int, str] = {}
     first_error: str | None = None
     try:
         base_audit["selector_attempts"] = 1
@@ -159,9 +175,10 @@ async def extract_actor_segment_proposals_with_audit(
 
     proposals = build_actor_segment_proposals(
         segments,
-        selected_ids,
+        list(selected_ids),
         acting_character_id=acting_character_id,
         player_character_id=player_character_id,
+        speakers=selected_ids,
     )
     accepted_ids = [
         int((proposal.payload.get("_canon") or {}).get("segment_id"))
@@ -303,36 +320,6 @@ def _augment_trace(snapshot: dict, assistant_turn_id: str, trace: dict) -> dict:
         return trace
     context = assistant.get("context_snapshot") or {}
     audit = context.get("actor_memory_debug") if isinstance(context, dict) else None
-
-    if not isinstance(audit, dict) and assistant.get("actor_id"):
-        candidate_segments = segment_actor_response(
-            str(assistant.get("content") or "")
-        )
-        selected_ids: list[int] = []
-        for proposal in snapshot.get("proposals", []):
-            if (
-                proposal.get("turn_id") != assistant_turn_id
-                or proposal.get("change_type") != "knowledge"
-            ):
-                continue
-            payload = proposal.get("payload") or {}
-            canon = payload.get("_canon") if isinstance(payload, dict) else None
-            value = canon.get("segment_id") if isinstance(canon, dict) else None
-            try:
-                if value is not None:
-                    selected_ids.append(int(value))
-            except (TypeError, ValueError):
-                pass
-        audit = {
-            "selector_status": "legacy_trace_inferred",
-            "candidate_segments": [
-                {"segment_id": index, "text": segment}
-                for index, segment in enumerate(candidate_segments, start=1)
-            ],
-            "selected_segment_ids": selected_ids,
-            "selector_attempts": None,
-            "selector_error": None,
-        }
 
     safe_audit = audit or {}
     trace.setdefault("memory", {})["actor_selector"] = safe_audit

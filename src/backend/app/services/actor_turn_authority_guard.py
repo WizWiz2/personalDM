@@ -10,10 +10,17 @@ from app.models.proposed_change import ChangeType, ProposedChangeCreate
 
 
 
-class ActorSegmentSelection(BaseModel):
-    """IDs of immutable published segments that contain factual NPC claims."""
+class SegmentClaim(BaseModel):
+    """One immutable published segment and the present cast ID who says it."""
 
-    segment_ids: list[int] = Field(default_factory=list, max_length=8)
+    segment_id: int
+    speaker_id: str
+
+
+class ActorSegmentSelection(BaseModel):
+    """Factual NPC claims: immutable segment IDs, each bound to its speaker's cast ID."""
+
+    claims: list[SegmentClaim] = Field(default_factory=list, max_length=8)
 
 
 # These regexes only segment already-published text into immutable spans. They do not decide who owns
@@ -114,17 +121,20 @@ def build_actor_segment_proposals(
     *,
     acting_character_id: UUID,
     player_character_id: UUID,
+    speakers: dict[int, str] | None = None,
 ) -> list[ProposedChangeCreate]:
+    """``speakers`` binds a segment to the cast ID who says it; unbound segments are the actor's."""
     proposals: list[ProposedChangeCreate] = []
     for segment_id in _valid_segment_ids(segments, selected_segment_ids):
         evidence = segments[segment_id - 1]
+        speaker = (speakers or {}).get(segment_id) or str(acting_character_id)
         proposals.append(
             ProposedChangeCreate(
                 change_type=ChangeType.KNOWLEDGE,
                 payload={
                     "recipient_id": str(player_character_id),
                     "proposition": evidence,
-                    "source_character_id": str(acting_character_id),
+                    "source_character_id": speaker,
                     "confidence": 0.8,
                     "status": "known",
                     "_canon": {
@@ -144,6 +154,7 @@ def build_actor_segment_proposals(
 
 __all__ = [
     "ActorSegmentSelection",
+    "SegmentClaim",
     "build_actor_segment_proposals",
     "segment_actor_response",
     "speech_spans",

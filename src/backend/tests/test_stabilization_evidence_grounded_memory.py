@@ -37,7 +37,7 @@ class FakeRouter:
         self.last_messages = messages
         if self.error:
             raise self.error
-        return {"segment_ids": self.segment_ids}
+        return {"claims": [{"segment_id": i, "speaker_id": self.speaker} for i in self.segment_ids]}
 
 
 class FakeEntities:
@@ -121,6 +121,7 @@ async def test_extractor_uses_one_semantic_call_and_model_returns_only_segment_i
     segments = segment_actor_response(PUBLISHED)
     segment_id = _segment_id_containing(segments, EXACT)
     router = FakeRouter(segment_ids=[segment_id, 999])
+    router.speaker = str(actor_id)
 
     result = await extract_actor_segment_proposals_with_audit(
         _scribe(router),

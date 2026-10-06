@@ -111,7 +111,7 @@ async def test_empty_general_scribe_can_recover_actor_claims():
         ),
         _model_router=SimpleNamespace(
             resolve=AsyncMock(return_value=SimpleNamespace()),
-            generate_json=AsyncMock(return_value={"segment_ids": [target_id]}),
+            generate_json=AsyncMock(return_value={"claims": [{"segment_id": target_id, "speaker_id": str(actor_id)}]}),
         ),
         _llm_provider=SimpleNamespace(),
     )
@@ -131,3 +131,28 @@ async def test_empty_general_scribe_can_recover_actor_claims():
     assert "брата зовут Иван Сергеевич" in proposals[0].payload["proposition"]
 
 
+
+
+@pytest.mark.asyncio
+async def test_each_claim_is_filed_under_the_present_speaker_who_says_it():
+    """A10 T9: the host's «Ужин запишу за вами» was filed under the acting servant."""
+    servant, host, player = uuid4(), uuid4(), uuid4()
+    text = "Служащий уходит.\n— Ужин запишу за вами, — говорит хозяин."
+    names = {servant: "Служащий", host: "Трактирщик", player: "Илья"}
+    scribe = SimpleNamespace(
+        _entity_repo=SimpleNamespace(get_character=AsyncMock(side_effect=lambda cast_id: SimpleNamespace(
+            canonical_name=names[cast_id]))),
+        _model_router=SimpleNamespace(
+            resolve=AsyncMock(return_value=SimpleNamespace()),
+            generate_json=AsyncMock(return_value={"claims": [{"segment_id": 1, "speaker_id": str(host)}]}),
+        ),
+        _llm_provider=SimpleNamespace(),
+    )
+    proposals = await extract_actor_segment_proposals_with_audit(
+        scribe, campaign_id=uuid4(), assistant_content=text,
+        acting_character_id=servant, player_character_id=player, present_cast_ids=[servant, host, player],
+    )
+    assert [p.payload["source_character_id"] for p in proposals] == [str(host)]
+    wire = scribe._model_router.generate_json.await_args.kwargs["response_model"]
+    with pytest.raises(ValueError):  # the speaker is a present cast ID, never the player or a free string
+        wire.model_validate({"claims": [{"segment_id": 1, "speaker_id": str(player)}]})

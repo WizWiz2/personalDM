@@ -115,8 +115,8 @@ async def test_actor_selector_retries_empty_selection_without_rewriting_evidence
             resolve=AsyncMock(return_value=SimpleNamespace()),
             generate_json=AsyncMock(
                 side_effect=[
-                    {"segment_ids": []},
-                    {"segment_ids": [1]},
+                    {"claims": []},
+                    {"claims": [{"segment_id": 1, "speaker_id": str(actor_id)}]},
                 ]
             ),
         ),
