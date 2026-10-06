@@ -81,8 +81,7 @@ class TurnOutcomeMaterializer:
         for arrival in authority.allowed_existing_npc_arrivals:
             if arrival.entity_id in existing_participants:
                 continue
-            # Authority already checked the character is at the target place or a parent/child place
-            # of it; stepping within one establishment is not a trip.
+            # Authority checked the character is at this establishment or a completed step brings them.
             await self._scenes.add_participant(
                 authority.target_scene_id,
                 arrival.entity_id,

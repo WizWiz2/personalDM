@@ -69,3 +69,31 @@ async def test_the_addressee_binds_to_whom_this_turns_designation_resolved(db_se
 
     assert resolved.new_introductions == []
     assert resolved.addressee == "Трактирщик"
+
+
+@pytest.mark.asyncio
+async def test_a_step_that_brings_a_known_person_moves_them_here(db_session):
+    """A10 T9-T11: the servant sent to the post office could never be typed as coming back."""
+    from app.db.repositories.entity_repo import EntityRepository
+    from app.models.character import CharacterCreate
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Errand"))
+    places = LocationRepository(db_session)
+    inn = await places.create(campaign_id, LocationCreate(canonical_name="Трактир"))
+    post = await places.create(campaign_id, LocationCreate(canonical_name="Почтовый двор"))
+    servant = await EntityRepository(db_session).create_character(campaign_id, CharacterCreate(
+        canonical_name="Служащий", current_location_id=post.id, custom_fields={"temporary_name": True}))
+    back = PlannedNpcIntroduction(canonical_name="Служащий", role="служащий", temporary_name=True,
+                                  reason="Вернулся с поручения.", after_action_index=0, arrives=True)
+
+    resolved = await NpcIntroductionResolver(db_session).resolve(
+        campaign_id=campaign_id, introductions=[back], present_names=[], target_location_id=inn.id)
+
+    assert [item.entity_id for item in resolved.existing_arrivals] == [servant.id]
+    assert not resolved.new_introductions
+    # Merely found here, a designation is local: another «Служащий», never the one elsewhere.
+    found = await NpcIntroductionResolver(db_session).resolve(
+        campaign_id=campaign_id, introductions=[back.model_copy(update={"arrives": False})],
+        present_names=[], target_location_id=inn.id)
+    assert not found.existing_arrivals
