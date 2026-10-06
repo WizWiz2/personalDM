@@ -39,8 +39,8 @@ class PlayerActionIntent(BaseModel):
     destination_location: str | None = Field(default=None, max_length=255)
     # Bound identity of a known place; None means the player selected a new place.
     destination_location_id: UUID | None = None
-    # A new place inside the location the hop starts from (a building in this town, a room here).
-    destination_within_origin: bool = False
+    # The known place a new (uncatalogued) destination lies in: a building's town, a room's house.
+    destination_parent_location_id: UUID | None = None
     movement_method: Literal["ordinary", "special"] = "ordinary"
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
 
@@ -59,7 +59,9 @@ class PlayerActionIntent(BaseModel):
         if self.action_type == "movement":
             if not self.destination_location:
                 raise ValueError("movement intent requires destination_location")
-        elif self.destination_location is not None or self.destination_location_id is not None:
+        elif any(value is not None for value in (
+            self.destination_location, self.destination_location_id, self.destination_parent_location_id,
+        )):
             raise ValueError("only movement intent may carry destination authority")
         if self.requested_companions and self.action_type != "movement":
             raise ValueError("only movement intent may request companions")
@@ -144,7 +146,6 @@ class DestinationProfilePatch(BaseModel):
 
     action_index: int = Field(ge=0, le=7)
     name: str = Field(min_length=2, max_length=120, description="The place's own nominative name.")
-    within_current: bool = Field(description="True if it lies inside the place the hop starts from.")
     # The place's typed resident slot (its ID is the location ID); role of who keeps it, or null.
     resident_role: str | None = Field(
         default=None, max_length=60, description="Role of the person who keeps this public place, or null."

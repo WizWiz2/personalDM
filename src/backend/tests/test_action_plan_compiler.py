@@ -110,17 +110,16 @@ async def test_same_place_is_a_local_step_and_new_inside_is_a_child_place():
     plan = await compiler.compile(CAMPAIGN, here, TurnOutcomeDecision(action_outcomes=[_success(0)]))
     assert plan.action_sequence.steps[0].action_type == "interaction"
     assert not plan.action_sequence.steps[0].transition.required
-    # Live T3a: «иду в трактир у торговой площади» is a new place inside the town (typed new_inside).
+    # Live T3a / B9 T5: «иду в трактир у торговой площади» is a new place in the town (new_in:<town>).
     inn = PlayerActionIntent(
         action_type="movement", intent="Идти в трактир.",
-        destination_location="трактир у торговой площади", destination_within_origin=True,
+        destination_location="трактир у торговой площади", destination_parent_location_id=ROOM,
     )
     contract = PlayerIntentContract(summary="Иду в трактир.", actions=[inn])
     decision = TurnOutcomeDecision(action_outcomes=[_success(0)])
     [missing] = await compiler.missing_destination_profiles(CAMPAIGN, contract, decision)
-    assert missing.inside is True
     decision.action_outcomes[0].destination = DestinationProfilePatch(
-        action_index=0, name="Трактир у торговой площади", within_current=True,
+        action_index=0, name="Трактир у торговой площади",
         profile="Бревенчатый трактир с вывеской у торговой площади; внутри общий зал, печь, лавки и стойка для приезжих.",
     )
     step = (await compiler.compile(CAMPAIGN, contract, decision)).action_sequence.steps[0]
@@ -249,7 +248,7 @@ async def test_unknown_explicit_destination_becomes_one_route_discovery_step() -
                 safe_mundane=True,
                 observable_outcome="Кай добирается до прачечной.",
                 destination=DestinationProfilePatch(
-                    action_index=0, name="Круглосуточная прачечная", within_current=False,
+                    action_index=0, name="Круглосуточная прачечная",
                     profile=profile,
                 ),
             ),
@@ -263,10 +262,10 @@ async def test_unknown_explicit_destination_becomes_one_route_discovery_step() -
 
     assert payload["_route_discovery_steps"] == [0]
     first, back = plan.action_sequence.steps
-    # The name comes from the generated profile; with no containing place of its own the
-    # origin has none to share, so the new place lies inside the origin.
+    # The name comes from the generated profile; containment only from the binder's new_in:<ID>,
+    # so a place bound as «new» lies inside no known place.
     assert first.transition.destination_location == "Круглосуточная прачечная"
-    assert first.transition.destination_parent_location == "Комната Кая"
+    assert first.transition.destination_parent_location is None
     assert "DESTINATION PROFILE:" in (first.transition.bridge_summary or "")
     # A hop after a place created this turn compiles from it instead of losing the origin.
     assert back.resolution == "auto_success"

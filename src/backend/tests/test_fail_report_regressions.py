@@ -115,8 +115,8 @@ async def test_invalid_semantics_are_repaired_at_provider_boundary(monkeypatch, 
         bad["obstacles"][0].update({"action_index": 1})
     elif case == "profile":
         wire = _profile_wire_model(1, action_indices=[2])
-        good = {"patches": [{"action_index": 2, "name": "Сад", "within_current": False, "profile": PROFILE}]}
-        bad = {"patches": [{"action_index": 0, "name": "Сад", "within_current": False, "profile": PROFILE}]}
+        good = {"patches": [{"action_index": 2, "name": "Сад", "profile": PROFILE}]}
+        bad = {"patches": [{"action_index": 0, "name": "Сад", "profile": PROFILE}]}
     else:
         wire = OutcomeNpcIntroductionDraft
         good = _npc()
