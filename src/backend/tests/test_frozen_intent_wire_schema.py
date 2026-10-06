@@ -400,3 +400,20 @@ def test_empty_plan_diagnostic_exposes_actual_shape() -> None:
     assert "action_steps=0" in diagnostic
     assert "transition_required=False" in diagnostic
     assert "observable_consequences=0" in diagnostic
+
+
+def test_arrival_is_required_explicit_null_decided_before_the_result_and_never_dropped():
+    from app.providers.llm_provider import LLMProvider as Provider
+
+    wire = _outcome_wire_model(1, present_names=["Илья", "Хозяин"])
+    strict = Provider._strict_schema(Provider._compact_schema(wire.model_json_schema()))
+    step = next(v for k, v in strict["$defs"].items() if "ActionOutcome" in k)
+    assert "arriving" in step["required"]
+    assert {"type": "null"} in step["properties"]["arriving"]["anyOf"]
+    order = list(step["properties"])
+    assert order.index("arriving") < order.index("observable_outcome")
+    with pytest.raises(ValidationError):
+        wire.model_validate({
+            "action_outcomes": [{"action_index": 0, "resolution": "auto_success",
+                                 "arriving": {"canonical_name": "Речник", "role": "речник"}}],
+        })

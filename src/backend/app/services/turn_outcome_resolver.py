@@ -211,23 +211,16 @@ class ActionOutcomeDraft(BaseModel):
     action_index: int = Field(ge=0, le=7)
     resolution: ActionResolution
     safe_mundane: bool = False
+    # Decided before the result is written (strict decoding emits fields in order, null explicit);
+    # an invalid arrival goes to schema repair instead of silently vanishing (B9 T10 «речник»).
+    arriving: OutcomeNpcIntroductionDraft | None = Field(
+        default=None, description="A person not yet present whom this result brings here.")
     observable_outcome: str | None = None
     reaction: str | None = None
     blocking_reason: str | None = None
     blocking_evidence_quote: str | None = None
     blocking_evidence_ref: str | None = None
     carry_participants: list[str] = Field(default_factory=list, max_length=8)
-    arriving: OutcomeNpcIntroductionDraft | None = Field(
-        default=None, description="A person not yet present whom this result brings here.")
-
-    @field_validator("arriving", mode="before")
-    @classmethod
-    def drop_invalid_arrival(cls, value):
-        """An ungrounded arrival is dropped like an invalid introduction: nobody arrives."""
-        try:
-            return None if value is None else OutcomeNpcIntroductionDraft.model_validate(value)
-        except (ValidationError, ValueError, TypeError):
-            return None
 
 
 class OutcomeNpcIntroductionDraft(BaseModel):
