@@ -316,7 +316,10 @@ def _actor_segment_selector(prompt: str) -> str:
         int(value)
         for value in re.findall(r"^S(\d+):\s+.+$", prompt, flags=re.MULTILINE)
     ]
-    return json.dumps({"segment_ids": segment_ids[:1]}, ensure_ascii=False)
+    speaker = re.search(r"([0-9a-f-]{36}) — ", prompt)
+    return json.dumps({"claims": [
+        {"segment_id": value, "speaker_id": speaker.group(1)} for value in segment_ids[:1]
+    ]}, ensure_ascii=False)
 
 
 def _turn_authority_plan(prompt: str) -> str:

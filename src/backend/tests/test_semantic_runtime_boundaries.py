@@ -14,7 +14,7 @@ async def test_silence_word_cannot_hide_a_factual_claim():
     actor_id, player_id = uuid4(), uuid4()
     router = SimpleNamespace(
         resolve=AsyncMock(return_value=SimpleNamespace()),
-        generate_json=AsyncMock(return_value={"segment_ids": [1]}),
+        generate_json=AsyncMock(return_value={"claims": [{"segment_id": 1, "speaker_id": str(actor_id)}]}),
     )
     scribe = SimpleNamespace(
         _entity_repo=SimpleNamespace(get_character=AsyncMock(side_effect=[

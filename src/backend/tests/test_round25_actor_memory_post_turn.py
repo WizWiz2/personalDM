@@ -94,7 +94,7 @@ async def test_actor_dialogue_creates_belief_without_objective_canon(db_session)
         RoleModelRouter,
         "generate_json",
         new_callable=AsyncMock,
-        return_value={"segment_ids": selected_ids},
+        return_value={"claims": [{"segment_id": i, "speaker_id": str(anna.id)} for i in selected_ids]},
     ):
         await processor.process_job(memory_job.id)
 
@@ -169,7 +169,7 @@ async def test_actor_silence_post_turn_creates_no_belief(db_session):
         if job.job_type == "memory_scribe"
     )
 
-    generate = AsyncMock(return_value={"segment_ids": []})
+    generate = AsyncMock(return_value={"claims": []})
     with patch.object(
         RoleModelRouter,
         "resolve",

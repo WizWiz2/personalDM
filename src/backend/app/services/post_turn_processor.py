@@ -443,6 +443,8 @@ class PostTurnProcessor:
                             assistant_content=assistant.content,
                             acting_character_id=assistant.acting_character_id,
                             player_character_id=campaign.player_character_id,
+                            present_cast_ids=(await SceneRepository(self._session).get_participants(
+                                UUID(str(assistant.scene_id))) if assistant.scene_id else []),
                         )
                         audit = dict(getattr(scribe, "last_audit", {}) or {})
                         audit.update(
