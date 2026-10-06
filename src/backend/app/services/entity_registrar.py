@@ -40,7 +40,7 @@ class CharacterMention(BaseModel):
     voice: str | None = Field(default=None, max_length=400)
     role: str | None = Field(default=None, max_length=200)
     evidence: str = Field(min_length=2, max_length=600)
-    presence: Literal["present", "departed", "mentioned_only"] = "present"
+    presence: Literal["present", "mentioned_only"] = "present"
     importance: Literal["incidental", "supporting", "major"] = "incidental"
     temporary_name: bool = False
     personal_name_evidence: str | None = Field(default=None, max_length=500)
@@ -223,7 +223,6 @@ class EntityRegistrar:
   значения temporary_name: движок всё равно проверит цитату и однозначность сцены перед promotion.
 - evidence — короткий точный фрагмент ответа ДМа, доказывающий появление, действие, реплику или уход.
 - presence=present только если персонаж физически находится в сцене к концу ответа.
-- presence=departed только если он явно покинул сцену.
 - presence=mentioned_only не добавляет персонажа в сцену.
 - persistent=false для чисто фоновой фигуры, которую не нужно помнить.
 - Не выдумывай биографию, секреты, мотивацию или внешность сверх текста.
@@ -503,8 +502,6 @@ class EntityRegistrar:
                     )
                     continue
                 result.present_ids.append(character_id)
-            elif mention.presence == "departed":
-                await self._scenes.remove_participant(scene_id, character_id)
 
         if promotion_only:
             await self._recover_omitted_name_reveal(

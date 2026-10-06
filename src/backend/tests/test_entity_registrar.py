@@ -504,3 +504,12 @@ async def test_named_offscreen_person_becomes_an_off_scene_entity(db_session: As
     assert created.custom_fields['presence'] == 'mentioned_only'
     scene_after = await SceneRepository(db_session).get_by_id(scene.id)
     assert created.id not in scene_after.participants
+
+
+def test_prose_cannot_type_a_departure():
+    """A11 T8: «Илья вместе со Степаном выходит во двор» removed Степан from the scene while no
+    step moved him; presence leaves only through typed steps (trips, a beat's leave, movement)."""
+    from app.services.entity_registrar import CharacterMention
+
+    with pytest.raises(ValidationError):
+        CharacterMention(canonical_name="Степан", evidence="выходит во двор", presence="departed")
