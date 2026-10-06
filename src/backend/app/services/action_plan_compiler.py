@@ -32,7 +32,6 @@ class MissingDestinationProfile:
     action_index: int
     destination: str
     origin: str | None = None
-    inside: bool = False  # typed: the new place lies inside the hop's origin
 
 
 class ActionPlanCompiler:
@@ -221,9 +220,7 @@ class ActionPlanCompiler:
                 and action.destination_location_id is None
                 and not outcome.destination
             ):
-                missing.append(MissingDestinationProfile(
-                    index, action.destination_location, origin, action.destination_within_origin
-                ))
+                missing.append(MissingDestinationProfile(index, action.destination_location, origin))
             origin = names.get(action.destination_location_id, action.destination_location)
         return missing
 
@@ -303,12 +300,8 @@ class ActionPlanCompiler:
         if destination is None:
             raise TurnPlanningError("new destination lacks a generated name and durable profile")
         name = " ".join(destination.name.split())
-        origin, origin_parent = pending or (
-            current.canonical_name,
-            getattr(by_id.get(current.parent_location_id), "canonical_name", None),
-        )
-        # A place with no containing place of its own lies inside the one the hop starts from.
-        parent = origin if destination.within_current or not origin_parent else origin_parent
+        # Containment is the binder's typed choice of a known place (new_in:<ID>), else none.
+        parent = getattr(by_id.get(action.destination_parent_location_id), "canonical_name", None)
         transition = SceneTransitionPlan(
             required=True,
             transition_type="location_transition",

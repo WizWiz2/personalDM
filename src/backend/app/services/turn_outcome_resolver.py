@@ -92,8 +92,7 @@ No complication without a grounded complication_source.
 
 _PROFILE_PROMPT = """[NEW DESTINATION PROFILE ENRICHMENT]
 Return exactly DestinationProfilePatchSet, one patch per requested action index. Each request is a
-new place the player travels to from the place named in "from". Give its own nominative name, whether
-it lies inside "from", the role of whoever keeps it if it is a public place, and a stable public physical profile: 2-4 Russian sentences, at least 80
+new place the player travels to from the place named in "from". Give its own nominative name, the role of whoever keeps it if it is a public place, and a stable public physical profile: 2-4 Russian sentences, at least 80
 characters, ordinary purpose/appearance only. Do not change routes, actions, outcomes or NPCs.
 """
 
@@ -1014,11 +1013,8 @@ class TurnOutcomeResolver:
             )
         enriched = decision.model_copy(deep=True)
         outcomes = {item.action_index: item for item in enriched.action_outcomes}
-        inside = {item.action_index for item in missing if item.inside}
         for index, patch in by_index.items():
-            outcomes[index].destination = (
-                patch.model_copy(update={"within_current": True}) if index in inside else patch
-            )
+            outcomes[index].destination = patch
         self.audit.append({
             "phase": "destination_profiles", "requests": requests,
             "patches": {index: patch.model_dump() for index, patch in by_index.items()},

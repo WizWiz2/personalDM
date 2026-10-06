@@ -138,10 +138,11 @@ def test_required_movement_draft_still_normalizes_into_strict_ir() -> None:
     assert len(contract.actions) == 1
     assert contract.actions[0].action_type == "movement"
     assert contract.actions[0].destination_location == "Коридор"
-    assert contract.actions[0].destination_within_origin is False
-    draft.actions[0].destination_reference = "new_inside"
+    assert contract.actions[0].destination_parent_location_id is None
+    house = "6f1c1c4e-2b7a-4a43-9a51-0d5a1f6b7c11"
+    draft.actions[0].destination_reference = f"new_in:{house}"
     inside = normalize_intent_draft(draft, "Я выхожу из своей комнаты в коридор.").actions[0]
-    assert (inside.destination_location_id, inside.destination_within_origin) == (None, True)
+    assert (inside.destination_location_id, str(inside.destination_parent_location_id)) == (None, house)
 
 
 def test_outcome_wire_schema_requires_action_outcomes_field() -> None:
@@ -380,7 +381,6 @@ def test_profile_wire_schema_enforces_requested_patch_cardinality() -> None:
                 {
                     "action_index": 0,
                     "name": "Прачечная",
-                    "within_current": False,
                     "profile": (
                         "Круглосуточная прачечная занимает светлое помещение первого этажа; "
                         "вдоль стен стоят ряды машин, столы для белья и обычная зона ожидания."

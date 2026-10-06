@@ -488,10 +488,11 @@ def _destination_binding_wire(indices: list[int], references: dict[str, str]):
         __config__=ConfigDict(extra="forbid"),
         **{
             f"action_{index}": (
-                Literal[tuple(references) + ("new_inside", "new", "unresolved")],
+                Literal[tuple(references) + tuple(f"new_in:{key}" for key in references)
+                        + ("new", "unresolved")],
                 Field(description="Same-place ID (also a spot within earshot of those present); "
-                      "new_inside for a new separate place inside it; new for one elsewhere; "
-                      "unresolved for ambiguity."),
+                      "new_in:<ID> for a new uncatalogued place inside that known place; new for one "
+                      "inside none of them; unresolved for ambiguity."),
             )
             for index in indices
         },
@@ -555,9 +556,11 @@ def _normalized_action(
 
     if action_type == "movement":
         payload["destination_location"] = destination
-        if action.destination_reference not in (None, "new_inside", "new", "unresolved"):
-            payload["destination_location_id"] = action.destination_reference
-        payload["destination_within_origin"] = action.destination_reference == "new_inside"
+        reference = action.destination_reference or ""
+        if reference.startswith("new_in:"):
+            payload["destination_parent_location_id"] = reference.removeprefix("new_in:")
+        elif reference not in ("", "new", "unresolved"):
+            payload["destination_location_id"] = reference
         payload["requested_companions"] = list(dict.fromkeys(action.requested_companions))
         payload["movement_method"] = (
             "ordinary" if action.movement_method == "ordinary" else "special"
@@ -877,9 +880,10 @@ class PlayerIntentInterpreter:
                             "description and the opening of the scene held there, so a spot where an earlier "
                             "scene took place belongs to that location's ID). Compare meanings, not spelling. "
                             "Stepping to someone or something within sight and earshot of those present "
-                            "keeps the current location's ID (current=true). Select new_inside for an uncatalogued separate "
-                            "place inside the current location that one leaves their earshot to reach, new "
-                            "for one elsewhere, unresolved when the endpoint is unclear. Do not judge "
+                            "keeps the current location's ID (current=true). Select new_in:<ID> for an uncatalogued separate "
+                            "place that one leaves earshot to reach, with the ID of the known place it lies "
+                            "in (an inn in a known town is new_in:<the town's ID>), new for one inside none "
+                            "of them, unresolved when the endpoint is unclear. Do not judge "
                             "feasibility. "
                             "Return DestinationIdentityBindings.\n\n[OUTPUT JSON SCHEMA]\n"
                             + json.dumps(wire.model_json_schema(), ensure_ascii=False)
@@ -912,7 +916,8 @@ class PlayerIntentInterpreter:
             reference = action.destination_reference
             if action.action_type == "movement" and (
                 reference == "unresolved"
-                or (reference and reference not in ("new", "new_inside") and reference not in references)
+                or (reference and reference != "new"
+                    and reference.removeprefix("new_in:") not in references)
             ):
                 # An unclear endpoint creates no topology and moves nobody (ban 4); the attempt
                 # stays a local act for the narrator instead of failing the turn.
