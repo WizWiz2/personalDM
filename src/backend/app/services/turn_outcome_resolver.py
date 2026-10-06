@@ -349,6 +349,13 @@ def _outcome_wire_model(
                 description="Frozen action whose result brings this person here.")),
         )
 
+    if movement_indices and not required_slot:
+        # A trip brings only the traveler: at the destination only its typed residents appear (A10 T5).
+        IndexedNpcIntroductionDraft = create_model(
+            "ResidentOnlyNpcIntroductionDraft", __base__=IndexedNpcIntroductionDraft,
+            resident_slot=(Literal[tuple(resident_slots)] if resident_slots else type(None), ...),
+        )
+
     if required_slot:
         # An unfilled resident slot of this place: its keeper is introduced now.
         IndexedNpcIntroductionDraft = create_model(
@@ -405,6 +412,8 @@ def _outcome_wire_model(
                             list[participant_type],
                             Field(default_factory=list, max_length=limit),
                         ),
+                        # A trip carries its party; it brings nobody new (A10 T5 «Служащий»).
+                        **({"arriving": (type(None), None)} if limit else {}),
                     )
                 )
         action_model = reduce(or_, variants)
@@ -420,7 +429,8 @@ def _outcome_wire_model(
         )
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
             min_length=1 if required_slot and allow_introductions else 0,
-            max_length=(1 if required_slot else 4) if allow_introductions else 0,
+            max_length=(1 if required_slot else 4 if resident_slots or not movement_indices else 0)
+            if allow_introductions else 0,
         )
 
         @model_validator(mode="before")
@@ -596,7 +606,6 @@ def normalize_outcome_draft(
 
     action_outcomes: list[dict[str, Any]] = []
     for item in draft.action_outcomes:
-        moving = contract.actions[item.action_index].action_type == "movement"
         resolution = item.resolution
         blocking_reason = _compact(item.blocking_reason) or None
         if resolution == "blocked" and not blocking_reason:
@@ -611,8 +620,8 @@ def normalize_outcome_draft(
                 "observable_outcome": _compact(item.observable_outcome) or None,
                 "reaction": _compact(item.reaction) or None,
                 "blocking_reason": blocking_reason if resolution == "blocked" else None,
-                # Only a real trip can carry people (ban 4); elsewhere the roster is dropped.
-                "carry_participants": list(dict.fromkeys(item.carry_participants)) if moving else [],
+                # Only a Moving variant admits a roster (ban 4), enforced by the wire.
+                "carry_participants": list(dict.fromkeys(item.carry_participants)),
             }
         )
 
