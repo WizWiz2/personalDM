@@ -291,9 +291,10 @@ class NpcIntroductionResolver:
                 continue  # The slot's keeper is elsewhere: nobody new takes the slot (ban 1).
             # A resident slot has one keeper; otherwise role normalization must not erase an
             # existing identity reference: temporary designations local, stable names global.
+            arrives = getattr(introduction, "arrives", False)
             matches = [holder] if holder is not None else [
                 entity for entity in exact_identity_matches(all_characters, reference)
-                if not (entity.custom_fields or {}).get("temporary_name")
+                if arrives or not (entity.custom_fields or {}).get("temporary_name")
                 or (
                     target_location_id is not None
                     and character_locations.get(entity.id) == target_location_id
@@ -370,7 +371,9 @@ class NpcIntroductionResolver:
                 continue
 
             current_location_id = character_locations.get(existing_id)
-            if target_location_id and current_location_id == target_location_id:
+            # A completed step's typed result that brings a known person here is their structured
+            # movement (A10 T9-T11: the servant sent for the river man could never come back).
+            if target_location_id and (current_location_id == target_location_id or arrives):
                 existing_arrivals.append(
                     ExistingNpcArrival(
                         entity_id=existing_id,
