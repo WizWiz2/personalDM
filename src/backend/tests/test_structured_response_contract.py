@@ -71,6 +71,26 @@ def test_native_schema_does_not_offer_companions_to_nonmovement():
     assert wire.model_validate(payload).action_outcomes[1].carry_participants == ["Марта"]
 
 
+def test_a_trip_brings_only_the_traveler_and_typed_residents():
+    """A10 T5: «Служащий ближайшего трактира» arrived on the movement step itself."""
+    newcomer = {
+        "canonical_name": "Служащий", "role": "служащий", "reason": "Работает в трактире.",
+        "description": "Молодой служащий трактира в засаленном фартуке.",
+        "appearance": "Худощавый, с полотенцем через плечо и в засаленном фартуке.",
+    }
+    move = {"action_index": 0, "resolution": "auto_success", "observable_outcome": "Пришли."}
+    wire = _outcome_wire_model(1, allow_choice=False, movement_indices={0}, resident_slots=["slot-1"])
+    with pytest.raises(ValidationError):
+        wire.model_validate({"npc_introductions": [], "action_outcomes": [{**move, "arriving": newcomer}]})
+    with pytest.raises(ValidationError):
+        wire.model_validate({"npc_introductions": [newcomer], "action_outcomes": [move]})
+    resident = {**newcomer, "resident_slot": "slot-1"}
+    assert wire.model_validate({"npc_introductions": [resident], "action_outcomes": [move]})
+    bare = _outcome_wire_model(1, allow_choice=False, movement_indices={0})
+    with pytest.raises(ValidationError):
+        bare.model_validate({"npc_introductions": [newcomer], "action_outcomes": [move]})
+
+
 async def world(session):
     campaign_id = uuid4()
     campaigns = CampaignRepository(session)
