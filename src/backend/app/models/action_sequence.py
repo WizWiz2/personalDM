@@ -17,6 +17,8 @@ class ExecutedActionStep(BaseModel):
     resolution: str
     safe_mundane: bool
     status: str
+    actor_id: UUID | None = None
+    actor_name: str | None = None
     observable_outcome: str | None = None
     blocking_reason: str | None = None
     public_blocking_reason: str | None = None

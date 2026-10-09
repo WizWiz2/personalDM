@@ -90,8 +90,7 @@ def test_safe_publication_preserves_speaker_and_all_answers():
     published, telemetry = NarrationPublicationGuard.publish(
         authority, "Только загадочный гул.", None
     )
-    assert "Марта: «Меня зовут Марта.»" in published
-    assert "Марта: «О грузе я не знаю.»" in published
+    assert "Марта: «Меня зовут Марта. О грузе я не знаю.»" in published
     assert "гул" not in published
     assert telemetry["mode"] == "authority_projection"
 

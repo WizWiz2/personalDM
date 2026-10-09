@@ -93,8 +93,10 @@ async def established_state_lines(
             # A receipt can own several facts. Replaying its entire prose when just one fact
             # remains active resurrects superseded positions/ownership of unrelated subjects.
             subject = snap_near_names(str(fact.subject or ""), known_names)
-            value = f": {fact.object_value}" if fact.object_value is not None else ""
-            line = f"{subject} — {fact.predicate}{value}."
+            # This is a public fact, not the executor's "task — status: result"
+            # ledger. Keep its format distinct from the forbidden technical rows.
+            value = f" — {fact.object_value}" if fact.object_value is not None else ""
+            line = f"{subject}: {fact.predicate}{value}."
             if line not in lines:
                 lines.append(line)
     return lines

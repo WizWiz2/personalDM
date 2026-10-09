@@ -32,6 +32,12 @@ class PostTurnDispatcher:
                 return pending
 
         async def run() -> None:
+            from app.services.interactive_budget import detach as detach_deadline
+            from app.providers.local_inference_queue import background_inference
+            from app.services.generation_progress import detach
+            detach()
+            detach_deadline()
+            background_inference.set(True)
             factory = async_sessionmaker(
                 bind=bind,
                 expire_on_commit=False,

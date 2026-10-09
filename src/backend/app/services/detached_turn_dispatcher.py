@@ -70,7 +70,8 @@ class DetachedTurnDispatcher:
             return None
         run = latest[0]
         if run.status != "running" or cls._has_live_task(campaign_id):
-            return run
+            from app.services.generation_progress import snapshot
+            return run.model_copy(update={"progress": snapshot(run.id) or None})
 
         await runs.set_status(
             run.id,

@@ -155,6 +155,14 @@ class ActionPlanCompiler:
                 return None
             if any(exit_row.access_rule for exit_row, _ in matches):
                 return None
+            if not matches and self._session is not None:
+                from app.services.player_destination_authorization import PlayerDestinationAuthorizer
+                if await PlayerDestinationAuthorizer(self._session).announced_direction(
+                    campaign_id, current_id, destination,
+                ):
+                    # Directions are a lead, not a verified trip. Let the outcome resolver
+                    # decide whether following them succeeds before discovering the edge.
+                    return None
             candidate = ActionOutcomeDecision(
                 action_index=index,
                 resolution="auto_success",
@@ -354,6 +362,23 @@ class ActionPlanCompiler:
                 False,
             )
         if len(global_matches) == 1:
+            from app.services.player_destination_authorization import PlayerDestinationAuthorizer
+            direction = (
+                await PlayerDestinationAuthorizer(self._session).announced_direction(
+                    campaign_id, current_location_id, destination,
+                ) if self._session is not None else None
+            )
+            if direction and outcome.safe_mundane:
+                target = global_matches[0]
+                return (ActionStepPlan(
+                    action_type="movement", intent=action.intent, resolution="auto_success",
+                    safe_mundane=True, observable_outcome=outcome.observable_outcome,
+                    transition=SceneTransitionPlan(
+                        required=True, transition_type="location_transition",
+                        destination_location=target.canonical_name, reason=action.intent,
+                        bridge_summary=outcome.observable_outcome or action.intent,
+                    ),
+                ), target.id, True)
             # A known place with no edge from the virtual current location is a graph blocker. The
             # compiler never invents a shortcut merely because the player named a known location.
             return (
@@ -434,6 +459,7 @@ class ActionPlanCompiler:
         return ActionStepPlan(
             action_type=action.action_type,
             intent=action.intent,
+            depends_on_previous=action.depends_on_previous,
             resolution=outcome.resolution,
             safe_mundane=outcome.safe_mundane,
             observable_outcome=outcome.observable_outcome,
@@ -445,6 +471,19 @@ class ActionPlanCompiler:
             transition=transition,
         )
 
+    async def _performers(self, campaign_id: UUID, contract: PlayerIntentContract):
+        from app.db.repositories.entity_repo import EntityRepository
+        from app.services.entity_identity import exact_identity_matches
+
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        entities = await EntityRepository(self._session).list_by_campaign(campaign_id)
+        by_entity_id = {entity.id: entity for entity in entities}
+        player = by_entity_id.get(UUID(str(campaign.player_character_id))) if campaign.player_character_id else None
+        if any(action.actor_role == "speaker" for action in contract.actions) and player is None:
+            raise TurnPlanningError("player action requires a bound controlled character")
+        addressees = exact_identity_matches(entities, contract.addressed_character_name or "")
+        return player, addressees
+
     async def compile(
         self,
         campaign_id: UUID,
@@ -454,6 +493,7 @@ class ActionPlanCompiler:
         _scene_id, state, locations = await self._world(campaign_id)
         by_id = {item.id: item for item in locations}
         outcome_by_index = self._outcome_map(contract, decision)
+        player, addressees = await self._performers(campaign_id, contract)
         current_location_id = state.location_id
         steps: list[ActionStepPlan] = []
         discovery_steps: list[int] = []
@@ -480,6 +520,11 @@ class ActionPlanCompiler:
                     discovery_steps.append(index)
             else:
                 step = self._compile_nonmovement(action, outcome)
+            actor = player if action.actor_role == "speaker" else (addressees[0] if len(addressees) == 1 else None)
+            if action.actor_role == "addressee" and actor is None:
+                raise TurnPlanningError("addressed action requires one bound performer")
+            step.actor_id = actor.id if actor else None
+            step.actor_name = actor.canonical_name if actor else None
             steps.append(step)
 
         introductions = [
@@ -501,6 +546,7 @@ class ActionPlanCompiler:
         sequence = ActionSequencePlan(summary=contract.summary, steps=steps)
         plan = CoordinatedTurnPlan(
             player_intent=contract.summary,
+            clarification_required=contract.clarification_required,
             resolution=decision.resolution,
             action_sequence=sequence,
             narration_policy=NarrationPolicy(

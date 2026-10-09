@@ -147,6 +147,7 @@ class MasterService:
         *,
         seek_contact: bool,
         empty_companion_cast: bool,
+        committed_travel: bool = False,
         persist_rhythm: bool = False,
         seed: int | None = None,
     ) -> tuple[GameMasterPersona, DirectorMoveSelection, MasterRhythmState]:
@@ -168,6 +169,7 @@ class MasterService:
             state.rhythm,
             seek_contact=seek_contact,
             empty_companion_cast=empty_companion_cast,
+            committed_travel=committed_travel,
             campaign_id=str(campaign_id),
             seed=seed,
         )
@@ -190,6 +192,9 @@ class MasterService:
         self,
         campaign_id: UUID,
         selected: DirectorMoveSelection | None = None,
+        *,
+        realized_pressure: bool = False,
+        realized_progress: bool = False,
     ) -> MasterRhythmState:
         """Advance and persist rhythm after a successful turn commit."""
         row = await self._ensure_setup(campaign_id)
@@ -200,7 +205,10 @@ class MasterService:
             selected = DirectorMoveSelection.model_validate(pending["selection"])
         if selected is None:
             return state.rhythm
-        state.rhythm = advance_rhythm(state.rhythm, selected)
+        state.rhythm = advance_rhythm(
+            state.rhythm, selected,
+            realized_pressure=realized_pressure, realized_progress=realized_progress,
+        )
         custom[GAME_MASTER_FIELD] = state.model_dump(mode="json")
         custom.pop(PENDING_DIRECTOR_FIELD, None)
         await self._setups.update(row, {"custom_fields": custom})

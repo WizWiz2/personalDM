@@ -49,6 +49,7 @@ class TurnAuthority(BaseModel):
     player_character_name: str | None = None
     acting_character_id: UUID | None = None
     acting_character_name: str | None = None
+    clarification_required: str | None = Field(default=None, max_length=1000)
     player_input: str
 
     source_scene_id: UUID | None = None
@@ -82,6 +83,7 @@ class TurnAuthority(BaseModel):
     canon_constraints: list[str] = Field(default_factory=list)
     established_state: list[str] = Field(default_factory=list)
     established_subjects: list[str] = Field(default_factory=list)
+    published_world_state: dict = Field(default_factory=dict)
     narration_guidance: list[str] = Field(default_factory=list)
     ending_hook: str = ""
     protected_player_decisions: list[str] = Field(default_factory=list)
@@ -121,7 +123,6 @@ class TurnAuthority(BaseModel):
                 message = self._public_blocked_outcome(step)
                 if message not in executed:
                     executed.append(message)
-                break
 
         self.observable_consequences = executed
 
@@ -211,13 +212,14 @@ class TurnAuthority(BaseModel):
             "canon_constraints": self.canon_constraints,
             "established_state": self.established_state,
             "established_subjects": self.established_subjects,
+            "published_world_state": self.published_world_state,
             "protected_player_decisions": self.protected_player_decisions,
             "pending_player_choice": self.pending_player_choice,
             "allow_new_complication": self.allow_new_complication,
             "complication_source": self.complication_source,
             "action_sequence": self._public_action_sequence(),
             "scene_development": (
-                self.scene_development.model_dump(mode="json") if self.scene_development else None
+                self.scene_development.model_dump(mode="json", exclude={"narration_draft"}) if self.scene_development else None
             ),
         }
         if self.acting_character_id and self.acting_character_name:
@@ -235,6 +237,12 @@ class TurnAuthority(BaseModel):
             # Private purposes/source references are audit data, not omniscient prose to publish.
             payload["scene_development"] = {
                 "disposition": self.scene_development.disposition,
+                "world_development": (
+                    {"kind": self.scene_development.world_development.kind,
+                     "development": self.scene_development.world_development.development,
+                     "player_opportunity": self.scene_development.world_development.player_opportunity}
+                    if self.scene_development.world_development else None
+                ),
                 "actions": [
                     {
                         "actor_id": str(action.actor_id),
@@ -242,6 +250,10 @@ class TurnAuthority(BaseModel):
                         "player_opportunity": action.player_opportunity,
                     }
                     for action in self.scene_development.actions
+                ],
+                "state_updates": [
+                    {"state_id": str(update.state_id), "subject": update.subject, "value": update.value}
+                    for update in self.scene_development.state_updates
                 ],
             }
         payload.update(

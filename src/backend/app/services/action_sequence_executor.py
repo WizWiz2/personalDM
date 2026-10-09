@@ -90,6 +90,8 @@ class ActionSequenceExecutor:
                 step_index=index,
                 action_type=step.action_type,
                 intent=step.intent,
+                actor_id=str(step.actor_id) if step.actor_id else None,
+                actor_name=step.actor_name,
                 resolution=step.resolution,
                 safe_mundane=step.safe_mundane,
                 status="planned",
@@ -102,7 +104,15 @@ class ActionSequenceExecutor:
             )
             self._session.add(db_step)
 
-            if blocked:
+            independent_observation = (
+                not step.depends_on_previous
+                and step.action_type == "observation"
+                and step.resolution == "auto_success"
+                and step.safe_mundane
+                and not step.transition.required
+            )
+            if blocked and not independent_observation:
+                db_step.observable_outcome = None
                 db_step.status = "skipped"
                 db_step.target_scene_id = (
                     str(current_scene_id) if current_scene_id else None
@@ -510,8 +520,8 @@ class ActionSequenceExecutor:
                 "- Narrate completed mundane steps compactly; do not reopen them.",
                 "- Do not insert an unseeded interruption, threat, visitor, accident, "
                 "or complication between completed safe-mundane steps.",
-                "- If a step is BLOCKED, only earlier completed steps happened. Stop at "
-                "that blocker and return the decision or obstacle to the player.",
+                "- Only COMPLETED steps happened, including independent observations after a blocker. "
+                "Describe the obstacle without completing the blocked action.",
                 "- Never narrate a SKIPPED later step as completed.",
             ]
         )
@@ -520,6 +530,8 @@ class ActionSequenceExecutor:
     @staticmethod
     def _step_read(step: ActionStep) -> ExecutedActionStep:
         return ExecutedActionStep(
+            actor_id=UUID(step.actor_id) if step.actor_id else None,
+            actor_name=step.actor_name,
             step_index=step.step_index,
             action_type=step.action_type,
             intent=step.intent,

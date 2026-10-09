@@ -214,14 +214,16 @@ class RoleModelRouter:
     async def _generate_json_once(
         self, provider, selection, config, api_key, messages, **kwargs,
     ) -> dict:
+        from app.services.generation_progress import update
+        stage = f"{selection.role.value}:{getattr(kwargs.get('response_model'), '__name__', 'structured')}"
+        update(f"queued:{stage}", config.model_name)
         provider.last_telemetry = {}
         try:
             async with local_inference_slot(
                 config.base_url,
-                background=selection.role in {
-                    ModelRole.ENTITY_REGISTRAR, ModelRole.SCRIBE, ModelRole.CURATOR,
-                },
+                background=False,  # Task context, not model role, owns scheduling priority.
             ) as queue_wait_ms:
+                update(stage, config.model_name)
                 try:
                     return await self._generate_json_with_budget(
                         provider, selection, config, api_key, messages, **kwargs,
@@ -283,15 +285,24 @@ class RoleModelRouter:
         messages: list[ChatMessage],
         **kwargs,
     ) -> dict:
+        from app.services.narration_call_budget import consume_control
+        from app.services.interactive_budget import InteractiveBudgetExceeded, request_timeout, remaining
+        consume_control(selection.role.value)
+        response_wire = kwargs.pop('response_wire', None)
+        if response_wire is not None:
+            kwargs['response_model'] = response_wire
+        timeout = (request_timeout(settings.CONTROL_LLM_TIMEOUT_SECONDS,
+                                   settings.INTERACTIVE_LLM_REQUEST_SECONDS)
+                   if remaining() is not None else None)
         try:
-            result = await self._generate_json_once(
+            result = await asyncio.wait_for(self._generate_json_once(
                 provider,
                 selection,
                 selection.config,
                 selection.api_key,
                 messages,
                 **kwargs,
-            )
+            ), timeout=timeout)
             telemetry = dict(provider.last_telemetry or {})
             telemetry.update(
                 {
@@ -302,17 +313,29 @@ class RoleModelRouter:
             )
             provider.last_telemetry = telemetry
             return result
+        except TimeoutError as exc:
+            provider.last_telemetry = {**dict(provider.last_telemetry or {}),
+                                      "status": "interactive_timeout", "timeout_seconds": timeout}
+            raise InteractiveBudgetExceeded(f"Model request exceeded {timeout:g}s allowance") from exc
         except LLMProviderError as primary_error:
+            if isinstance(primary_error, InteractiveBudgetExceeded):
+                raise
             if not selection.has_distinct_fallback:
                 raise
-            result = await self._generate_json_once(
+            timeout = (request_timeout(settings.CONTROL_LLM_TIMEOUT_SECONDS,
+                                       settings.INTERACTIVE_LLM_REQUEST_SECONDS)
+                       if remaining() is not None else None)
+            try:
+                result = await asyncio.wait_for(self._generate_json_once(
                 provider,
                 selection,
                 selection.fallback_config,
                 selection.fallback_api_key,
                 messages,
                 **kwargs,
-            )
+                ), timeout=timeout)
+            except TimeoutError as exc:
+                raise InteractiveBudgetExceeded("Fallback model exceeded interactive allowance") from exc
             telemetry = dict(provider.last_telemetry or {})
             telemetry.update(
                 {

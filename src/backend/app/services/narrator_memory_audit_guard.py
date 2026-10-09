@@ -13,7 +13,7 @@ from app.services.actor_turn_authority_guard import (
     build_actor_segment_proposals,
     segment_actor_response,
 )
-from app.services.canon_semantics import CanonEnvelope
+from app.models.canon_wire import CanonEnvelopeWire
 from app.services.role_model_router import ModelRole
 from app.services.semantic_receipt_context import memory_evidence
 
@@ -36,7 +36,9 @@ class NarratorMemoryAudit(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     claims: list[NarratorClaimSelection] = Field(default_factory=list, max_length=12)
-    recovery: CanonEnvelope = Field(default_factory=CanonEnvelope)
+    recovery: CanonEnvelopeWire = Field(
+        default_factory=lambda: CanonEnvelopeWire(outcomes=[], proposals=[])
+    )
 
 
 _AUDIT_PROMPT = """[NARRATOR MEMORY AUDITOR]
@@ -51,7 +53,7 @@ Two jobs only:
    over a larger enclosing narration segment when both exist.
 2. Recover durable OBJECTIVE facts/events that are explicit in the narrator's own world description,
    are important enough to matter after this turn, and are missing from EXISTING SCRIBE PROPOSALS.
-   Recovery must use the CanonEnvelope schema and exact evidence from the published response.
+   Recovery must use the typed CanonEnvelopeWire schema and exact evidence from the published response.
 
 Hard boundaries:
 - Never put an NPC claim into recovery as dm_confirmed/public_observation.
@@ -62,6 +64,9 @@ Hard boundaries:
 - A document/key/trace/folder composition, stable ownership/identity, discovered physical clue, or
   explicit durable world-state change may be recoverable when directly described by the narrator.
 - If EXISTING SCRIBE PROPOSALS already cover an objective outcome, do not duplicate it in recovery.
+- CURRENT FACTS already represent established state. Repetition of those facts is not a new
+  change and needs no recovery. Recover only new confirmed outcomes not already represented.
+- Each durable recovery outcome must include its typed proposal with all required payload fields.
 - Evidence in recovery must be an exact short fragment of PUBLISHED RESPONSE.
 - EXECUTED WORLD RESULTS, when supplied in the response evidence, are authoritative completed
   outcomes. Check coverage of their changed state before decorative narrative properties.
@@ -295,6 +300,12 @@ async def enrich_narrator_memory(
     if selection is None:
         return base_proposals
 
+    current_facts = await scribe._fact_repo.list_active(campaign_id, scene_id=scene_id)
+    fact_block = "\n".join(
+        f"- {fact.subject} | {fact.predicate} | {fact.object_value} [{fact.truth_status}]"
+        for fact in current_facts
+    ) or "- нет"
+
     segment_block = "\n".join(
         f"S{index}: {segment}" for index, segment in enumerate(segments, start=1)
     )
@@ -310,13 +321,19 @@ async def enrich_narrator_memory(
                     + (", ".join(present_npc_names) or "- нет")
                     + "\n\n[PUBLISHED RESPONSE SEGMENTS]\n"
                     + segment_block
+                    + "\n\n[ENTITY CATALOG: exact name / ID]\n"
+                    + "\n".join(f"{name} / {identity}" for identity, name in display_by_id.items())
+                    + "\n\n[SCENE PARTICIPANT IDS]\n"
+                    + ", ".join(participant_ids)
+                    + "\n\n[CURRENT FACTS]\n"
+                    + fact_block
                     + "\n\n[EXISTING SCRIBE PROPOSALS]\n"
                     + _proposal_summary(base_proposals)
                     + "\n\nAudit this exact published response."
                 ),
             ),
         ],
-        max_tokens=1200,
+        max_tokens=3500,
         temperature=0.0,
         response_model=NarratorMemoryAudit,
     )

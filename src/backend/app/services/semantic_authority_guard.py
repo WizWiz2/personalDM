@@ -61,6 +61,8 @@ _NPC_PROFILE_REVIEW_CONTRACT = """
 """
 
 _NARRATION_REVIEW_PROMPT = """[SEMANTIC NARRATION AUTHORITY REVIEW]
+Compare material outcomes and agency, not exact wording. Semantically equivalent descriptions
+of an approved result or scene development pass; planning adjectives are not mandatory prose.
 You are an independent semantic reviewer of a proposed narration-validator verdict. Do not continue
 the story and do not rewrite prose. Judge candidate prose against TURN AUTHORITY from meaning,
 grammatical roles and scene context. Never use keyword/stem whitelists or blacklists.
@@ -86,6 +88,15 @@ Critical ownership rules:
   protagonist. Never cite an NPC-owned fragment as protagonist agency.
 
 World authority rules:
+- published_world_state contains current public conditions and ordered legacy changes with origin
+  locations. Ended conditions cannot resume as sensory atmosphere. A grounded approved new world
+  development or completed action may change them; state_updates supersede the same state_id. Historical prose
+  and an old event in a different location cannot authorize renewed perception here.
+- Local staging by a present NPC is authorized: routine posture, gestures and movement INSIDE
+  the current place need no separate executor or scene_development receipt when they change no
+  mechanical state. scene_development=quiet is not a ban on that behavior. Completed movement
+  means a change of PLACE, not a local bodily motion. Judge the resulting state, not whether the
+  planning sheet prewrote the gesture. Consequential world changes still require typed authority.
 - A physically new NPC, route, threat, clue, significant object, completed movement or objective
   world outcome still needs typed authority. Literary quality is not permission to mutate canon.
 - Neutral scene texture and sensory staging are allowed when they do not create a significant fact.
@@ -102,7 +113,9 @@ Turn-completeness rules:
   candidate prose. A pass without complete extractive coverage is invalid.
   Ignorance/refusal are complete when explicit; atmosphere or a postponed answer is not.
   An explicit player prohibition also constrains voluntary sensory actions such as touching.
-- scene_development contains separately approved NPC actions after the resolved player action.
+- scene_development contains separately approved NPC actions and a grounded world_development
+  after the resolved player action. Its world development explicitly authorizes that local beat,
+  including a complication; it never authorizes additional objects, routes or player decisions.
   Require their concrete rendering with the correct actor and an open player opportunity. Never
   repair away this initiative merely because it is absent from the player's action_sequence.
   Private purpose is not public knowledge, and a character claim does not establish objective truth.

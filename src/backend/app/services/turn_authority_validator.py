@@ -5,6 +5,7 @@ import re
 
 from app.config import settings
 from app.models.narration_validation import (
+    NarrationQuestionCoverage,
     NarrationValidationResult,
     NarrationViolation,
 )
@@ -39,6 +40,17 @@ the four bans and for outcomes already established, not for the only legal sente
 Judge SEMANTICALLY from the whole sentence, grammatical subject and scene context. Never decide from
 a word/stem whitelist or blacklist.
 
+Preserve SEMANTIC outcomes, not exact wording. Equivalent descriptions of the same result,
+location, actor and available choice pass. Do not require every planning adjective or a verbatim
+receipt. Repair only a missing material result, changed stakes, contradicted state or forbidden
+act. A concise rendition of an approved development must not be rejected for stylistic differences.
+
+An executed-step BLOCKED result states only the typed public_blocking_reason. A movement rejected
+because the route graph has no known available passage does not establish a physical wall, locked
+door, guard or other obstacle. Do not promote missing route topology into a physical world fact;
+describe only that no available way there is established. A concrete obstacle may be described only
+when the action result or established scene state supplies that obstacle.
+
 Return repair_required for the four bans and for meta or technical surface leakage.
 Do not return repair_required merely because a line, refusal, gesture, or step inside the current
 place was not prewritten in observable_consequences. A missing mark is not a violation.
@@ -46,6 +58,11 @@ place was not prewritten in observable_consequences. A missing mark is not a vio
 The four bans:
 - Do not invent a person who is not already present and not structurally authorized.
 - Do not contradict or overwrite established_state or a completed outcome.
+- published_world_state contains current public conditions and ordered legacy changes, with their
+  origin location. Ended/resolved conditions cannot resume as atmospheric texture or implied
+  background. A grounded approved world_development or completed action may change them; state_updates
+  supersede the same state_id. An old sound/event at another location is not evidence of perception
+  here. Earlier narrative prose cannot restart it. Contradictions are canon_conflict.
 - Do not write the protagonist's next voluntary choice, dialogue, or action.
 - Do not move anyone to another place without a typed trip. A step inside the current room is not a trip.
 
@@ -70,11 +87,15 @@ Concrete violations:
   as "чувствовать".
 - NPC OWNERSHIP: thoughts, emotions, facial expressions, gestures, posture, speech and local
   conversational behavior of a present/authorized NPC belong to that NPC, not to the protagonist.
+  Routine staging inside the current place that changes no mechanical state needs no separate
+  executor or scene_development action. A quiet disposition is not a ban on present NPC behavior.
 - PRESENT NPC DIALOGUE: a person already present may speak, refuse, gesture, or move inside the
   current place. Speech is not required. No reply mark is required, and a missing mark is not
   repair_required. Personal memories, observations, opinions, uncertainty, claims and lies are
   epistemic character claims, not objective canon merely because they contain new information.
   Never turn legal present-person behavior into silence.
+- ACTION PERFORMER: completed steps carry actor_id/actor_name. These own the act regardless
+  of acting_character or response speaker. Reassigning a player action to an NPC is a canon conflict.
 - SPEAKER CONSISTENCY: when acting_character is set, new first-person NPC dialogue and its immediate
   attribution must belong to that actor. Reject a response that accidentally assigns another NPC's
   earlier line, self-reference, grammatical identity/sex or conversational stance to the current
@@ -91,6 +112,11 @@ Concrete violations:
   without a typed trip. A step inside the current room is not a trip and is not a violation.
   Distinguish that from a true scene transition by meaning, not vocabulary.
 - OUTCOME: prose contradicts observable_consequences or completed structured execution.
+- EXECUTION STATUS: only action_steps/action_sequence steps with status=completed happened.
+  BLOCKED actions were attempted but failed; SKIPPED actions were not attempted. Even a negative
+  observation result ("you see no traces") completes an observation and is forbidden for a skipped
+  step. Independent completed observations after a blocker are allowed. Reject any invented result
+  of a blocked/skipped step as sequence_violation; quote the exact offending prose.
 - QUESTION COVERAGE: addressed_response preserves indexed questions and approved answers. Render
   every answer's meaning with its actual speaker and disposition, before any hook. A gesture,
   atmosphere, promise to answer later, or response to a different question is not coverage.
@@ -116,7 +142,13 @@ Concrete violations:
   Its purpose is private motivation, not public knowledge; an NPC claim does not establish its truth.
   An open player_opportunity must remain open: never accept, decide or act for the protagonist.
   A quiet disposition requires no artificial hook. An approved local offer is not itself a new threat.
-- COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false.
+- WORLD DEVELOPMENT: render the approved scene_development.world_development when present.
+  Its development is an authorized local world beat, including revelations and complications,
+  even if the earlier player-outcome policy allowed no additional complication. Preserve the
+  concrete change and open player_opportunity. Do not invent extra people, objects, routes,
+  movement, ownership or protagonist decisions beyond the receipt.
+- COMPLICATION: prose invents a new threat/interruption/twist when allow_new_complication=false
+  and it is not explicitly authorized by scene_development.world_development.
 - META LANGUAGE: player-facing prose talks about game/engine causality instead of the fictional
   moment, e.g. explains that an internal action caused no external changes, says information was
   mechanically received, refers to the response/narration/player/next turn, or describes waiting for
@@ -299,6 +331,14 @@ Return exactly:
         response = authority.addressed_response
         if response is None or not response.questions:
             return result
+        coverage = list(result.response_coverage)
+        for answer in response.answers:
+            if answer.words in candidate_text:
+                coverage = [item for item in coverage if item.question_index != answer.question_index]
+                coverage.append(NarrationQuestionCoverage(
+                    question_index=answer.question_index, evidence=answer.words[:500],
+                ))
+        result = result.model_copy(update={"response_coverage": coverage})
         if result.covers_questions(len(response.questions), candidate_text):
             return result
         return cls._append_error(

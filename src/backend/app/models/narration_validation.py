@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class NarrationViolation(BaseModel):
@@ -24,6 +24,17 @@ class NarrationViolation(BaseModel):
     severity: Literal["warning", "error"] = "error"
     evidence: str = Field(min_length=1, max_length=1000)
     correction: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("violation_type", mode="before")
+    @classmethod
+    def normalize_reported_category(cls, value):
+        # The finding's severity/evidence/correction still bind. An unfamiliar label
+        # is an uncategorized finding, not a reason to rerun the whole review.
+        if isinstance(value, str) and value.strip():
+            normalized = value.strip()
+            known = get_args(cls.model_fields["violation_type"].annotation)
+            return normalized if normalized in known else "other"
+        return value
 
 
 class NarrationQuestionCoverage(BaseModel):

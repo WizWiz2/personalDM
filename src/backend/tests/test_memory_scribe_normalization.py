@@ -63,6 +63,7 @@ def test_supported_outcome_with_unknown_entity_becomes_canon_gap():
     assert len(proposals) == 1
     assert proposals[0].change_type == ChangeType.CANON_GAP
     assert "failed backend" in proposals[0].payload["_validation_error"]
+    assert proposals[0].payload["_rejected_deltas"][0]["payload"]["location_id"] == "Неизвестная башня"
     assert scribe.last_audit["envelope_valid"] is False
     assert scribe.last_audit["gap_count"] == 1
     assert scribe.last_audit["coverage_ratio"] == 0.0

@@ -71,7 +71,7 @@ class ChatGPTAuthService:
         return httpx.Client(
             timeout=timeout,
             follow_redirects=True,
-            trust_env=False,
+            trust_env=True,
         )
 
     @staticmethod

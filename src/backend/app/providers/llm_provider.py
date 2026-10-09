@@ -20,6 +20,13 @@ class LLMProviderError(RuntimeError):
     """Raised when a provider request cannot produce a usable model response."""
 
 
+class LLMProviderHTTPError(LLMProviderError):
+    def __init__(self, message: str, status: int, parameter: str | None):
+        super().__init__(message)
+        self.http_status = status
+        self.parameter = parameter
+
+
 class LLMProviderTruncatedError(LLMProviderError):
     """Raised when a provider exhausts its output budget before finishing."""
 
@@ -253,6 +260,35 @@ class LLMProvider:
     @staticmethod
     def _messages_payload(messages: list[ChatMessage]) -> list[dict[str, str]]:
         return [{"role": message.role, "content": message.content} for message in messages]
+
+    @classmethod
+    def _structured_messages(cls, messages, response_model, *, outline=False):
+        """Deliver the output contract even when the caller supplies no schema text."""
+        result = cls._messages_payload(messages)
+        if response_model is None:
+            return result, None
+        original = response_model.model_json_schema()
+        schema = cls._compact_schema(original)
+        visible = cls._schema_outline(schema) if outline else schema
+        schema_text = json.dumps(visible, ensure_ascii=False, separators=(",", ":"))
+        for message in result:
+            for ascii_only in (False, True):
+                message["content"] = message["content"].replace(
+                    json.dumps(original, ensure_ascii=ascii_only), schema_text,
+                )
+        instruction = (
+            "[OUTPUT CONTRACT]\nReturn exactly one JSON object conforming to the following "
+            "JSON Schema. Use the exact property names, required fields, nesting and enum "
+            "values. Do not return a single list item in place of its containing object. "
+            "Do not include Markdown or commentary. This contract describes output structure; "
+            "the task instructions still govern meaning.\n"
+        )
+        if not any(schema_text in message["content"] for message in result):
+            instruction += schema_text
+        else:
+            instruction += "Use the schema already supplied in the messages."
+        result.append({"role": "system", "content": instruction})
+        return result, schema
 
     @classmethod
     def _compact_schema(cls, schema: dict[str, Any]) -> dict[str, Any]:
@@ -525,24 +561,16 @@ class LLMProvider:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
-        base_messages = self._messages_payload(messages)
-        original_schema = response_model.model_json_schema() if response_model else None
-        response_schema = self._compact_schema(original_schema) if original_schema else None
-        if original_schema:
-            compact_text = json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))
-            for message in base_messages:
-                for ascii_only in (False, True):
-                    message["content"] = message["content"].replace(
-                        json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
-                    )
+        base_messages, response_schema = self._structured_messages(messages, response_model)
 
         started = time.monotonic()
         last_error: Exception | None = None
         last_raw_text = ""
         attempts: list[dict[str, Any]] = []
+        reasoning_disabled = False
         async with httpx.AsyncClient(
-            trust_env=False,
-            timeout=httpx.Timeout(240.0, connect=10.0),
+            trust_env=True,
+            timeout=httpx.Timeout(settings.LLM_HTTP_TIMEOUT_SECONDS, connect=10.0),
         ) as client:
             for attempt in range(1, 4):
                 request_messages = list(base_messages)
@@ -554,11 +582,25 @@ class LLMProvider:
                     "stream": True,
                     "store": False,
                 }
+                if settings.CHATGPT_CONTROL_REASONING_EFFORT and not reasoning_disabled:
+                    payload["reasoning"] = {"effort": settings.CHATGPT_CONTROL_REASONING_EFFORT}
                 attempt_started = time.monotonic()
                 try:
-                    raw_text, usage, frames = await self._collect_chatgpt_response(
-                        client, url, headers, payload
-                    )
+                    try:
+                        raw_text, usage, frames = await self._collect_chatgpt_response(
+                            client, url, headers, payload
+                        )
+                    except LLMProviderHTTPError as exc:
+                        if not (payload.get("reasoning") and exc.http_status in (400, 422)
+                                and exc.parameter in ("reasoning", "reasoning.effort")):
+                            raise
+                        # One explicit capability negotiation, before any usable response.
+                        # Do not spend JSON repair attempts on an unsupported API parameter.
+                        reasoning_disabled = True
+                        payload.pop("reasoning")
+                        raw_text, usage, frames = await self._collect_chatgpt_response(
+                            client, url, headers, payload
+                        )
                     if not raw_text.strip():
                         raise LLMProviderError("ChatGPT plan returned no structured text")
                     last_raw_text = raw_text
@@ -598,6 +640,8 @@ class LLMProvider:
                         "usage": usage,
                         "response_characters": len(raw_text),
                         "requested_max_tokens": max_tokens,
+                        "reasoning_effort": (payload.get("reasoning") or {}).get("effort"),
+                        "reasoning_fallback": reasoning_disabled,
                         "duration_ms": round((time.monotonic() - started) * 1000),
                     }
                     return parsed
@@ -652,8 +696,8 @@ class LLMProvider:
         completed = False
         try:
             async with httpx.AsyncClient(
-                trust_env=False,
-                timeout=httpx.Timeout(240.0, connect=10.0),
+                trust_env=True,
+                timeout=httpx.Timeout(settings.LLM_HTTP_TIMEOUT_SECONDS, connect=10.0),
             ) as client:
                 async for data in self._stream_once(client, url, headers, payload):
                     if data.get("_malformed"):
@@ -701,14 +745,12 @@ class LLMProvider:
         response_model: type[BaseModel] | None = None,
     ) -> dict[str, Any]:
         """Return one schema-validated JSON object with adaptive budget and repair."""
+        from app.services.generation_progress import update
+        update(f"structured:{getattr(response_model, '__name__', 'json')}", config.model_name)
         if getattr(config, "provider_kind", "openai_compatible") == "chatgpt":
             return await self._generate_json_chatgpt(
-                messages,
-                config,
-                api_key,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_model=response_model,
+                messages, config, api_key, max_tokens=max_tokens,
+                temperature=temperature, response_model=response_model,
             )
         is_ollama = self._is_ollama(config.base_url)
         url = (
@@ -721,19 +763,9 @@ class LLMProvider:
             headers["Authorization"] = f"Bearer {api_key}"
 
         base_budget = max_tokens or settings.CONTROL_RESPONSE_RESERVE_TOKENS
-        base_messages = self._messages_payload(messages)
-        original_schema = response_model.model_json_schema() if response_model else None
-        response_schema = self._compact_schema(original_schema) if original_schema else None
-        if original_schema:
-            # Callers expose the schema in text because native `format` is a decoder constraint,
-            # not model-visible instructions. Replace that copy with the same compact contract.
-            prompt_schema = self._schema_outline(response_schema) if is_ollama else response_schema
-            compact_text = json.dumps(prompt_schema, ensure_ascii=False, separators=(",", ":"))
-            for message in base_messages:
-                for ascii_only in (False, True):
-                    message["content"] = message["content"].replace(
-                        json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
-                    )
+        base_messages, response_schema = self._structured_messages(
+            messages, response_model, outline=is_ollama,
+        )
         started = time.monotonic()
         last_error: Exception | None = None
         last_raw_text = ""
@@ -743,7 +775,7 @@ class LLMProvider:
 
         async with httpx.AsyncClient(
             trust_env=False,
-            timeout=httpx.Timeout(240.0, connect=10.0),
+            timeout=httpx.Timeout(settings.LLM_HTTP_TIMEOUT_SECONDS, connect=10.0),
         ) as client:
             for attempt in range(1, 4):
                 # More tokens help a truncated JSON object, not a semantically rejected one.
@@ -827,6 +859,7 @@ class LLMProvider:
                         raise LLMProviderError(
                             f"LLM returned HTTP {response.status_code}: {response.text[:2000]}"
                         )
+                    update(activity=True)
                     data = response.json()
                     if not isinstance(data, dict):
                         raise LLMProviderError("LLM returned a non-object response")
@@ -976,8 +1009,14 @@ class LLMProvider:
             if response.status_code != 200:
                 error_body = await response.aread()
                 detail = error_body.decode(errors="replace")[:2000]
-                raise LLMProviderError(
-                    f"LLM returned HTTP {response.status_code}: {detail}"
+                try:
+                    error = json.loads(error_body).get("error") or {}
+                    parameter = error.get("param") if isinstance(error, dict) else None
+                except (ValueError, AttributeError):
+                    parameter = None
+                raise LLMProviderHTTPError(
+                    f"LLM returned HTTP {response.status_code}: {detail}",
+                    response.status_code, parameter,
                 )
             async for raw_line in response.aiter_lines():
                 if not raw_line:
@@ -996,6 +1035,8 @@ class LLMProvider:
                     yield {"_malformed": True}
                     continue
                 if isinstance(data, dict):
+                    from app.services.generation_progress import update
+                    update(activity=True)
                     yield data
 
     async def generate_stream(
@@ -1008,9 +1049,12 @@ class LLMProvider:
         temperature: float | None = None,
         disable_thinking: bool = True,
     ) -> AsyncIterator[str]:
+        from app.services.generation_progress import update
+        update("queued:narration", config.model_name)
         self.last_telemetry = {}
         try:
             async with local_inference_slot(config.base_url) as queue_wait_ms:
+                update("narration", config.model_name)
                 try:
                     async with aclosing(self._generate_stream(
                         messages, config, api_key, max_tokens=max_tokens,
@@ -1112,7 +1156,7 @@ class LLMProvider:
         try:
             async with httpx.AsyncClient(
                 trust_env=False,
-                timeout=httpx.Timeout(240.0, connect=10.0),
+                timeout=httpx.Timeout(settings.LLM_HTTP_TIMEOUT_SECONDS, connect=10.0),
             ) as client:
                 for candidate_index, candidate in enumerate(payload_variants):
                     used_payload = candidate

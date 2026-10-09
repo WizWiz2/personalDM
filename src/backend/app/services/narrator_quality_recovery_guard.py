@@ -25,11 +25,13 @@ def _compact_step(step: object) -> dict | None:
         key: step.get(key)
         for key in (
             "action_type",
+            "actor_id",
+            "actor_name",
             "intent",
             "status",
             "resolution",
             "observable_outcome",
-            "blocking_reason",
+            "public_blocking_reason",
         )
         if step.get(key) not in (None, "", [], {})
     }
@@ -58,33 +60,28 @@ def compact_narrator_payload(authority) -> dict:
             if value:
                 steps.append(value)
 
-    payload = {
-        "player_input": authority.player_input,
-        "player_character": authority.player_character_name,
-        "acting_character": authority.acting_character_name,
-        "scene_disposition": authority.scene_disposition,
-        "transition_type": authority.transition_type,
-        "source_location": authority.source_location_path[-1:] if authority.source_location_path else [],
-        "target_location": authority.target_location_path[-1:] if authority.target_location_path else [],
-        "present_characters": authority.present_character_names,
-        "known_absent_characters": authority.known_absent_character_names,
-        "allowed_speakers": list(authority.allowed_speakers),
-        "allowed_new_npcs": [
-            {"canonical_name": item.canonical_name, "role": item.role}
-            for item in authority.allowed_new_npcs
-        ],
-        "identity_reveal_requested": authority.identity_reveal_requested,
-        "addressed_response_obligation": authority.addressed_response_obligation,
-        "resolution": authority.resolution,
-        "observable_consequences": authority.observable_consequences,
-        "canon_constraints": authority.canon_constraints,
-        "established_state": authority.established_state,
-        "narration_guidance": authority.narration_guidance,
-        "ending_hook": authority.ending_hook,
-        "pending_player_choice": authority.pending_player_choice,
-        "allow_new_complication": authority.allow_new_complication,
-        "action_steps": steps,
-    }
+    # Derive from the shared public contract so new authoritative fields cannot
+    # silently disappear in a separately maintained compact-field whitelist.
+    payload = authority.narrator_payload()
+    payload.pop("action_sequence", None)
+    payload.pop("execution_section", None)
+    payload["action_steps"] = steps
+    for key in ("source_location", "target_location"):
+        payload[key] = payload.get(key, [])[-1:]
+    payload["allowed_new_npcs"] = [
+        {key: value for key, value in item.items()
+         if key in {"canonical_name", "role", "description", "appearance", "voice"}}
+        for item in payload.get("allowed_new_npcs", [])
+    ]
+    payload["allowed_existing_npc_arrivals"] = [
+        {"canonical_name": item["canonical_name"]}
+        for item in payload.get("allowed_existing_npc_arrivals", [])
+    ]
+    if payload.get("addressed_response"):
+        payload["addressed_response"] = {
+            key: value for key, value in payload["addressed_response"].items()
+            if key not in {"speaker_id", "speaker_aliases"}
+        }
     return {
         key: value
         for key, value in payload.items()
@@ -285,11 +282,29 @@ def install() -> None:
             "player_input as performed speech). Do not attribute voluntary action/speech to the "
             "protagonist in third person via the canonical name — neither restaging player_input "
             "nor inventing ungrounded PC moves.\n"
+            "- Only action_steps marked completed happened. Blocked actions failed and skipped "
+            "actions were not performed; never describe their results, even a negative observation. "
+            "Completed independent observations after a blocker remain valid.\n"
+            "- Render spoken answers as utterances without nested speaker labels; nonverbal answers "
+            "are observable actions, never dialogue. Preserve each executed step actor_name independently "
+            "of the response speaker. Render every indexed addressed_response answer with its actual speaker and meaning "
+            "before any hook. Do not replace answers with atmosphere or postpone them.\n"
             "- People in present_characters / allowed_new_npcs are physically here. If that cast is "
             "non-empty beyond the player, do not claim the place is empty of people or 'only us'.\n"
             "- People already present may speak, refuse, gesture, or move inside the current place. "
             "Speech is not required, and a missing mark is not a ban.\n"
+            "- Routine local NPC staging is legal even when scene_development is quiet. "
+            "Do not invent mechanically significant tools/equipment absent from objects_here "
+            "and approved public profiles; historical prose cannot supply missing gear.\n"
+            "- scene_development contains approved world changes and NPC acts AFTER the executed "
+            "player outcome. Render their concrete meaning and open opportunities. A world beat "
+            "authorizes its own complication even when allow_new_complication is false. "
+            "Keep each NPC act with its owner; private motives are not public knowledge. "
+            "Never accept an opportunity or perform the next action for the protagonist.\n"
             "- Do not invent a person who is not already present and not structurally authorized. "
+            "Respect published_world_state and origin locations: ended conditions stay ended. "
+            "An approved world development or completed action can change them; state_updates replace "
+            "the same state_id. Old prose cannot restart an event or make it audible in another place. "
             "Do not contradict or overwrite established_state. Do not write the protagonist's next "
             "voluntary choice, dialogue, or action. Do not move anyone to another place without a "
             "typed trip. A step inside the current room is not a trip.\n"

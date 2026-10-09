@@ -87,6 +87,8 @@ class ActionStep(Base):
     step_index: Mapped[int] = mapped_column(Integer, nullable=False)
     action_type: Mapped[str] = mapped_column(String(50), nullable=False)
     intent: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actor_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     resolution: Mapped[str] = mapped_column(String(50), nullable=False)
     safe_mundane: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     status: Mapped[str] = mapped_column(

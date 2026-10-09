@@ -6,6 +6,7 @@ import { useCampaignWorkspace } from '../components/CampaignWorkspace'
 import { GeneratedPixelArt } from '../components/GeneratedPixelArt'
 import { PixelPortrait } from '../components/PixelArt'
 import { EmptyState, ErrorState, LoadingState } from '../components/States'
+import { CharacterCardCompleteness } from '../components/CharacterCardCompleteness'
 
 export function HeroPage() {
   const { campaign } = useCampaignWorkspace()
@@ -91,6 +92,7 @@ export function HeroPage() {
           <button className="btn" type="button" disabled={portraitGenerating} onClick={() => void regeneratePortrait()}>{portraitGenerating ? 'Рисуем…' : 'Перерисовать портрет'}</button>
           <h2>{character.canonical_name}</h2>
           <p>{character.description || 'Описание пока не задано.'}</p>
+          <CharacterCardCompleteness missingFields={card.missing_fields} />
           <div className="chips">{character.values?.map((v) => <span className="chip" key={v}>{v}</span>)}</div>
           {card.current_location && <div className="hero-location"><span>Сейчас</span><strong>{card.current_location.canonical_name}</strong></div>}
         </aside>

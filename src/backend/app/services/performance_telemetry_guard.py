@@ -137,6 +137,8 @@ def _flatten_telemetry(telemetry: dict[str, Any]) -> dict[str, Any]:
         "status": telemetry.get("status"),
         "transport": telemetry.get("transport"),
         "provider_duration_ms": telemetry.get("duration_ms"),
+        "reasoning_effort": telemetry.get("reasoning_effort"),
+        "reasoning_fallback": telemetry.get("reasoning_fallback"),
         "queue_wait_ms": telemetry.get("queue_wait_ms"),
         "queue_timeout_seconds": telemetry.get("queue_timeout_seconds"),
         "timeout_seconds": telemetry.get("timeout_seconds"),

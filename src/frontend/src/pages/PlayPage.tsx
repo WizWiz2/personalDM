@@ -1,4 +1,5 @@
-﻿import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+﻿import { GenerationProgress } from '../components/GenerationProgress'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, readableError } from '../api/client'
 import { submitDetachedTurn } from '../api/turnRuntime'
@@ -11,6 +12,7 @@ import { Icons } from '../components/Icons'
 import { PixelScene } from '../components/PixelArt'
 import { ErrorState, LoadingState } from '../components/States'
 import { TextProviderQuickSwitch } from '../components/TextProviderQuickSwitch'
+import { CharacterCardCompleteness } from '../components/CharacterCardCompleteness'
 
 type Mode = 'play' | 'dm'
 
@@ -57,6 +59,7 @@ export function PlayPage() {
   const [acceptedTurn, setAcceptedTurn] = useState<Turn | null>(() => readStoredTurn(acceptedKey))
   const [scene, setScene] = useState<SceneState | null>(null)
   const [playerName, setPlayerName] = useState('')
+  const [cardMissingFields, setCardMissingFields] = useState<string[]>([])
   const [master, setMaster] = useState<GameMasterPersona | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -107,6 +110,7 @@ export function PlayPage() {
       ])
       setTurns(history)
       setPlayerName(characterCard?.character.canonical_name ?? '')
+      setCardMissingFields(characterCard?.missing_fields ?? [])
       if (freshCampaign.current_scene_id) {
         const nextScene = await api.getSceneState(campaign.id, freshCampaign.current_scene_id)
         setScene(nextScene)
@@ -405,6 +409,7 @@ export function PlayPage() {
 
           <div className="timeline" aria-live="polite">
             {timelineTurns.length === 0 && <div className="story-empty">История начнётся с твоего первого действия.</div>}
+            {timelineTurns.length === 0 && <CharacterCardCompleteness missingFields={cardMissingFields} />}
             {timelineTurns.map((turn) => {
               const meta = turn.role.startsWith('meta_')
               const player = turn.role === 'user' || turn.role === 'meta_user'
@@ -424,7 +429,7 @@ export function PlayPage() {
             })}
             {busy && <article className={`turn dm thinking-turn ${generation?.user_turn_id === acceptedTurn?.id && acceptedTurn?.role === 'meta_user' ? 'meta' : ''}`}>
               <div className="turn-label">Мастер</div>
-              <div className="turn-thinking"><span /><span /><span /><em>обрабатывает ход…</em></div>
+              {generation && <GenerationProgress generation={generation} />}
             </article>}
             <div ref={bottomRef} />
           </div>

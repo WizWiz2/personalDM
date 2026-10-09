@@ -196,7 +196,10 @@ class TurnOutcomeMaterializer:
             }) if identity_key(npc.canonical_name) == identity_key(old_name) else npc
             for npc in authority.allowed_new_npcs
         ]
-        authority.addressed_response = response.model_copy(update={"speaker_name": response.revealed_name})
+        authority.addressed_response = response.model_copy(update={
+            "speaker_name": response.revealed_name,
+            "speaker_aliases": list(dict.fromkeys([*response.speaker_aliases, old_name])),
+        })
         authority.addressed_response_obligation = response.revealed_name
         authority.acting_character_id = response.speaker_id
         authority.acting_character_name = response.revealed_name

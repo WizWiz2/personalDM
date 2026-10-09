@@ -73,7 +73,7 @@ def test_attempted_movement_cannot_be_combined_with_no_endpoint_or_travel_effect
     valid = {**action, "spatial_effect": "travel", "destination_location": "Склад"}
     assert wire.model_validate({**payload, "action_ownership": [valid]}).action_ownership[0].action_type == "movement"
     schema = wire.model_json_schema()
-    movement = schema["$defs"]["MovingOwnership"]["properties"]
+    movement = schema["$defs"]["CommittedMovementOwnership"]["properties"]
     assert movement["spatial_effect"]["const"] == "travel"
     assert movement["destination_location"]["type"] == "string"
 
@@ -175,9 +175,10 @@ def test_wire_normalization_preserves_movement_and_inventory_authority() -> None
                 {
                     "action_type": "movement",
                     "actor_role": "speaker",
-                    "intent": "Выхожу в коридор.",
-                    "destination_location": "Коридор",
-                    "movement_method": "ordinary",
+                        "intent": "Выхожу в коридор.",
+                        "destination_location": "Коридор",
+                        "destination_committed": True,
+                        "movement_method": "ordinary",
                 },
                 {
                     "action_type": "inventory",
@@ -207,9 +208,10 @@ def test_special_movement_method_survives_intent_normalization():
                 {
                     "action_type": "movement",
                     "actor_role": "speaker",
-                    "intent": "Телепортироваться в коридор.",
-                    "destination_location": "Коридор",
-                    "movement_method": "teleportation",
+                        "intent": "Телепортироваться в коридор.",
+                        "destination_location": "Коридор",
+                        "destination_committed": True,
+                        "movement_method": "teleportation",
                 }
             ],
         }

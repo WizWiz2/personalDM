@@ -72,6 +72,12 @@ def apply_play_surface(authority: TurnAuthority, text: str) -> str:
     cleaned = str(text or "")
     if not cleaned.strip():
         return cleaned
+    # Discard a terminal run of non-prose symbols after a complete sentence.
+    # Quoted inscriptions and ordinary punctuation remain part of the fiction.
+    cleaned = re.sub(
+        r"(?<=[.!?…»”])(?:\s*[^\w\s.!?…,:;\"'«»“”()\[\]—–-]){3,}\s*$",
+        "", cleaned,
+    )
     names = [
         name
         for name in (

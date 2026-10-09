@@ -313,6 +313,7 @@ class TurnAuthorityService:
                 bool(plan and (plan.personal_name_revealed or plan.identity_reveal_requested))
             ),
             dramatic_mode=(plan.narration_policy.dramatic_mode if plan else "calm"),
+            clarification_required=(plan.clarification_required if plan else None),
             observable_consequences=(list(plan.observable_consequences) if plan else []),
             character_beats=(list(plan.character_beats) if plan else []),
             addressed_response=(
@@ -567,5 +568,17 @@ class TurnAuthorityService:
             slot_update["established_subjects"] = subjects
         if slot_update:
             authority = authority.model_copy(update=slot_update)
+
+        from app.services.published_world_state import PublishedWorldState
+        from app.db.repositories.scene_repo import SceneRepository
+
+        authority = authority.model_copy(update={
+            "published_world_state": await PublishedWorldState(self._session).project(
+                campaign_id,
+                observer_id=authority.acting_character_id or authority.player_character_id,
+                local_location_id=(await SceneRepository(self._session).get_location_id(effective_scene_id)
+                                   if effective_scene_id else None),
+            ),
+        })
 
         return authority

@@ -37,6 +37,7 @@ from app.services.turn_planner import TurnPlanningError
 from app.services.scene_development import SceneDevelopmentService
 from app.services.turn_world_frame import TurnWorldFrame
 from app.services.response_memory import ResponseMemoryService
+from app.services.director_contract import realized_progress
 
 active_tasks: dict[str, asyncio.Task] = {}
 
@@ -58,6 +59,8 @@ class TurnSaga:
         self._generation_lifecycle = GenerationLifecycleRepository(session)
 
     async def _set_phase(self, run_id: UUID, phase: GenerationPhase) -> None:
+        from app.services.generation_progress import update
+        update(phase.value)
         await self._generation_lifecycle.set_phase(run_id, phase)
         await self._session.commit()
 
@@ -150,6 +153,9 @@ class TurnSaga:
             "- Complete the current exchange before any hook. A closing opportunity must refer "
             "to an actual approved outcome, open choice or NPC offer; do not replace it with "
             "abstract suspense or a rhetorical challenge. A complete quiet answer may simply end.\n"
+            "- scene_development.world_development is an approved concrete world beat AFTER "
+            "the executed outcome. Render its development and open opportunity, even when "
+            "the earlier outcome allowed no additional complication. Invent no extra state changes.\n"
             "- scene_development actions are approved NPC-owned acts AFTER the executed outcome. "
             "Render them concretely, preserving the actor and leaving player_opportunity open. "
             "They do not authorize accepting an offer for the hero or changing physical state. "
@@ -331,6 +337,17 @@ class TurnSaga:
         turn_create: TurnCreate,
         existing_user_turn_id: UUID | None = None,
     ) -> AsyncIterator[str]:
+        from app.services.interactive_budget import interactive_budget
+        with interactive_budget(settings.INTERACTIVE_LLM_BUDGET_SECONDS):
+            async for token in self._run_turn_stream(campaign_id, turn_create, existing_user_turn_id):
+                yield token
+
+    async def _run_turn_stream(
+        self,
+        campaign_id: UUID,
+        turn_create: TurnCreate,
+        existing_user_turn_id: UUID | None = None,
+    ) -> AsyncIterator[str]:
         started = perf_counter()
         phase_started = started
         stage_timings: dict[str, float] = {}
@@ -363,6 +380,10 @@ class TurnSaga:
         if current_task is not None:
             active_tasks[campaign_key] = current_task
 
+        from app.services.generation_progress import begin, finish
+        from app.providers.local_inference_queue import begin_interactive, end_interactive
+        progress_token = begin(generation_run.id)
+        interactive_reserved = False
         try:
             primary_config = await self._config_repo.get_by_campaign_id(campaign_id)
             if not primary_config:
@@ -375,6 +396,10 @@ class TurnSaga:
             )
             if narrator_selection is None:
                 raise LLMProviderError("Narrator model routing did not return a provider")
+            if (role_router._is_local_ollama(narrator_selection.config.base_url)
+                    or role_router._is_local_ollama(settings.CONTROL_LLM_BASE_URL or "")):
+                begin_interactive()
+                interactive_reserved = True
 
             (compiled, compiler, max_budget_override) = await self._compile(
                 campaign_id,
@@ -559,6 +584,7 @@ class TurnSaga:
                 authority,
                 role_router,
                 disposition_bias=disposition_bias,
+                director_policy=(gm_meta.get("development_policy") if isinstance(gm_meta, dict) else None),
             )
             authority = authority.model_copy(update={"scene_development": development})
             narrator_messages = self._inject_authority(narrator_messages, authority)
@@ -607,11 +633,16 @@ class TurnSaga:
                 narrator_messages=narrator_messages,
                 narrator_selection=narrator_selection,
                 authority=authority,
+                use_development_draft=(
+                    development_metadata.get("model_name") == narrator_selection.config.model_name
+                    and development_metadata.get("model_base_url") == narrator_selection.config.base_url
+                ),
+                prepared_narration_review=development_metadata.get('prepared_narration_review'),
             )
             publication = (narration.telemetry.get("narration_validation") or {}).get(
                 "publication_guard", {}
             )
-            if development.actions and (
+            if (development.actions or development.world_development) and not publication.get("scene_development_projected") and (
                 narration.validation_status == "safe_fallback"
                 or publication.get("validated_surface") is False
             ):
@@ -627,6 +658,7 @@ class TurnSaga:
                     "status": "degraded_unpublished_acts",
                     "omitted_act_count": omitted,
                     "sanitize_status": "degraded_quiet",
+                    "director_contract_publication": "unpublished",
                 }
                 context_metadata["turn_authority"] = authority.model_dump(mode="json")
                 context_metadata["scene_development"] = development_metadata
@@ -642,7 +674,7 @@ class TurnSaga:
                 "version": 2,
                 "planner_status": planner_metadata.get("status"),
                 "validator_status": narration.validation_status,
-                "post_turn_mode": "background",
+                "post_turn_mode": "none" if authority.clarification_required else "background",
                 "structured_outcome_before_prose": True,
             }
             token_count = (narration.telemetry.get("usage") or {}).get("completion_tokens")
@@ -701,19 +733,33 @@ class TurnSaga:
                 "completed",
                 assistant_turn_id=saved_assistant.id,
             )
-            processor = PostTurnProcessor(self._session)
-            await processor.enqueue(campaign_id, saved_assistant.id)
-            # Advance Game Master rhythm only after a successful published turn.
-            try:
-                from app.services.master_service import MasterService
+            if authority.clarification_required:
+                await self._generation_lifecycle.set_phase(
+                    generation_run.id, GenerationPhase.POST_TURN_DONE,
+                )
+            else:
+                processor = PostTurnProcessor(self._session)
+                await processor.enqueue(campaign_id, saved_assistant.id)
+                # Advance Game Master rhythm only after a successful published turn.
+                try:
+                    from app.services.master_service import MasterService
 
-                await MasterService(self._session).commit_rhythm_for_selection(campaign_id)
-            except Exception:
-                # Rhythm bookkeeping must never roll back a published turn.
-                pass
+                    world_beat = development.world_development
+                    progress = realized_progress(authority, development, development_metadata)
+                    pressure = bool(progress and world_beat and world_beat.kind == "complication")
+                    await MasterService(self._session).commit_rhythm_for_selection(
+                        campaign_id, realized_pressure=pressure, realized_progress=progress,
+                    )
+                except Exception:
+                    # Rhythm bookkeeping must never roll back a published turn.
+                    pass
             await self._session.commit()
 
-            PostTurnDispatcher.schedule(self._session.bind, saved_assistant.id)
+            if interactive_reserved:
+                end_interactive()
+                interactive_reserved = False
+            if not authority.clarification_required:
+                PostTurnDispatcher.schedule(self._session.bind, saved_assistant.id)
             yield narration.text
 
         except asyncio.CancelledError:
@@ -763,6 +809,9 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
+            finish(progress_token)
+            if interactive_reserved:
+                end_interactive()
             if campaign_key in active_tasks and active_tasks[campaign_key] == current_task:
                 del active_tasks[campaign_key]
 

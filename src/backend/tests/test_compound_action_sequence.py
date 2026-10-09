@@ -19,7 +19,6 @@ from app.models.location import LocationCreate
 from app.models.scene import SceneCreate
 from app.models.scene_state import LocationExitCreate, SceneStateUpdate
 from app.models.turn import ChatMessage, TurnCreate
-from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.scene_state_service import SceneStateService
 from app.services.scene_transition_executor import SceneTransitionExecutor
@@ -434,6 +433,10 @@ def test_full_turn_and_undo_keep_sequence_atomic(
         new_callable=AsyncMock,
         return_value=_compound_plan(),
     ), patch(
+        "app.services.post_turn_processor.PostTurnProcessor.process_turn",
+        new_callable=AsyncMock,
+        return_value=None,
+    ), patch(
         "app.providers.llm_provider.LLMProvider.generate_stream",
         side_effect=narrator,
     ):
@@ -451,13 +454,6 @@ def test_full_turn_and_undo_keep_sequence_atomic(
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["campaign"]["player_location_id"] == merchants["id"]
 
-    sequence = (
-        db_session.execute(
-            select(ActionSequence).where(
-                ActionSequence.campaign_id == campaign_id
-            )
-        )
-    )
     # The TestClient runs the async dependency in its own loop; inspect through API
     # effects here and use the undo endpoint as the durable contract.
     undone = client.post(f"/api/campaigns/{campaign_id}/turns/undo")

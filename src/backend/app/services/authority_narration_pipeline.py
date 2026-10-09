@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, replace
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,8 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narration_call_budget import consume, has_capacity, narration_budget
+from app.services.interactive_budget import InteractiveBudgetExceeded
 from app.services.narration_repetition_guard import NarrationRepetitionGuard
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
@@ -97,6 +100,7 @@ class AuthorityNarrationPipeline:
         *,
         temperature: float,
     ) -> tuple[str, dict]:
+        consume("render")
         chunks: list[str] = []
         async for token in self._provider.generate_stream(
             messages,
@@ -111,12 +115,26 @@ class AuthorityNarrationPipeline:
         return text, dict(self._provider.last_telemetry or {})
 
     async def _generate_text(
+        self, messages: list[ChatMessage], selection: RoleModelSelection, *, temperature: float,
+    ) -> tuple[str, dict]:
+        from app.services.interactive_budget import remaining, request_timeout, InteractiveBudgetExceeded
+        timeout = (request_timeout(settings.LLM_HTTP_TIMEOUT_SECONDS,
+                                   settings.INTERACTIVE_LLM_REQUEST_SECONDS)
+                   if remaining() is not None else None)
+        try:
+            return await asyncio.wait_for(self._generate_text_unbounded(messages, selection,
+                temperature=temperature), timeout=timeout)
+        except TimeoutError as exc:
+            raise InteractiveBudgetExceeded("Narrator exceeded interactive request allowance") from exc
+
+    async def _generate_text_unbounded(
         self,
         messages: list[ChatMessage],
         selection: RoleModelSelection,
         *,
         temperature: float,
     ) -> tuple[str, dict]:
+        consume("render")
         chunks: list[str] = []
         try:
             async for token in self._provider.generate_stream(
@@ -170,19 +188,30 @@ class AuthorityNarrationPipeline:
         messages: list[ChatMessage],
         selection: RoleModelSelection,
         temperature: float,
+        use_development_draft: bool = False,
     ) -> tuple[str, dict, bool]:
         guard = NarrationRepetitionGuard(self._session)
         previous = await guard.recent_responses(campaign_id, scene_id, authority)
-        candidate, first_telemetry = await self._generate_text(
-            messages,
-            selection,
-            temperature=temperature,
-        )
+        prepared_draft = (authority.scene_development.narration_draft
+                          if authority.scene_development and use_development_draft else None)
+        if prepared_draft:
+            candidate, first_telemetry = prepared_draft, {'render_source': 'scene_development_draft'}
+        else:
+            candidate, first_telemetry = await self._generate_text(
+                messages,
+                selection,
+                temperature=temperature,
+            )
         actor_turn = authority.scene_disposition == "actor_turn"
         first_match = guard.detect(candidate, previous, actor_turn=actor_turn)
         if first_match is None:
             return candidate, first_telemetry, False
 
+        if not has_capacity("render"):
+            return candidate, {**first_telemetry, "repetition_guard": {
+                "detected": True, "exhausted": True, "retried": False,
+                "reason": "shared_render_budget",
+            }}, True
         retry, retry_telemetry = await self._generate_text(
             guard.retry_messages(messages, authority, first_match),
             selection,
@@ -310,7 +339,27 @@ class AuthorityNarrationPipeline:
             True,
         )
 
-    async def generate(
+    async def generate(self, **kwargs) -> AuthorityNarrationResult:
+        from app.services.interactive_budget import InteractiveBudgetExceeded
+        with narration_budget(settings.NARRATION_CONTROL_MAX_CALLS,
+                              settings.NARRATION_RENDER_MAX_CALLS) as budget:
+            budget['control_used'] = min(budget['control_limit'],
+                                        (kwargs.get('prepared_narration_review') or {}).get('control_calls', 0))
+            try:
+                result = await self._generate(**kwargs)
+            except (TimeoutError, InteractiveBudgetExceeded) as exc:
+                # Partial/unvalidated prose never escapes. Publish only frozen engine receipts.
+                audit = NarrationValidator(self._session, self._router)
+                authority = kwargs['authority']
+                run = await audit.start_run(kwargs['campaign_id'], kwargs['trigger_turn_id'],
+                                            kwargs['scene_id'], '', None)
+                result = await self._publish_fallback(audit=audit, run=run, authority=authority,
+                    candidate='', validation=None, repair_attempts=0, attempt_index=0,
+                    reason='Interactive model deadline exhausted',
+                    telemetry={'interactive_deadline': True, 'error_type': type(exc).__name__})
+            return replace(result, telemetry={**result.telemetry, "narration_call_budget": dict(budget)})
+
+    async def _generate(
         self,
         *,
         campaign_id: UUID,
@@ -319,7 +368,17 @@ class AuthorityNarrationPipeline:
         narrator_messages: list[ChatMessage],
         narrator_selection: RoleModelSelection,
         authority: TurnAuthority,
+        use_development_draft: bool = False,
+        prepared_narration_review: dict | None = None,
     ) -> AuthorityNarrationResult:
+        if authority.clarification_required:
+            return AuthorityNarrationResult(
+                text=authority.clarification_required,
+                telemetry={"narration_validation": {"publication_guard": {
+                    "strategy": "clarification", "validated_surface": True,
+                }}},
+                validation_status="not_invoked",
+            )
         draft, narrator_telemetry, repetition_exhausted = await self._generate_non_repeating(
             campaign_id=campaign_id,
             scene_id=scene_id,
@@ -327,6 +386,7 @@ class AuthorityNarrationPipeline:
             messages=narrator_messages,
             selection=narrator_selection,
             temperature=settings.NARRATOR_TEMPERATURE,
+            use_development_draft=use_development_draft,
         )
 
         validation_selection = await self._router.resolve(
@@ -401,7 +461,17 @@ class AuthorityNarrationPipeline:
 
         validator = TurnAuthorityValidator(self._router)
         try:
-            result = await validator.validate(validation_selection, authority, draft)
+            from app.services.prepared_narration_review import fingerprint
+            cached = prepared_narration_review or {}
+            if (cached.get('fingerprint') == fingerprint(authority, draft)
+                    and cached.get('model_name') == validation_selection.config.model_name
+                    and cached.get('base_url') == validation_selection.config.base_url
+                    and cached.get('result')):
+                result = NarrationValidationResult.model_validate(cached['result'])
+                validator._provider.last_telemetry = {**cached.get('telemetry', {}),
+                                                      'reused_prepared_review': True}
+            else:
+                result = await validator.validate(validation_selection, authority, draft)
             await audit.record_attempt(
                 run,
                 attempt_index=0,
@@ -503,6 +573,13 @@ class AuthorityNarrationPipeline:
                     },
                     validation_run_id=gate.validation_run_id,
                     validation_status=gate.status,
+                )
+
+            if not has_capacity("control") or not has_capacity("render"):
+                return await self._publish_fallback(
+                    audit=audit, run=run, authority=authority, candidate="", validation=None,
+                    repair_attempts=1, attempt_index=2 if surgery_attempted else 1,
+                    reason="shared narration repair budget exhausted", telemetry=narrator_telemetry,
                 )
 
             repair_messages = [
@@ -634,7 +711,12 @@ class AuthorityNarrationPipeline:
                 validation_run_id=gate.validation_run_id,
                 validation_status=gate.status,
             )
-        except NarrationValidationError as exc:
+        except (NarrationValidationError, InteractiveBudgetExceeded) as exc:
+            if isinstance(exc, InteractiveBudgetExceeded) or isinstance(exc.__cause__, InteractiveBudgetExceeded):
+                return await self._publish_fallback(audit=audit, run=run, authority=authority,
+                    candidate='', validation=None, repair_attempts=0, attempt_index=0,
+                    reason='Authority validation exceeded interactive allowance',
+                    telemetry={**narrator_telemetry, 'interactive_deadline': True})
             if settings.NARRATION_VALIDATOR_FAIL_OPEN:
                 published, publication = NarrationPublicationGuard.publish(
                     authority,

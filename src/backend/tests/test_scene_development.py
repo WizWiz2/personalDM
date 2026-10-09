@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -19,10 +19,11 @@ from app.models.character import CharacterCreate
 from app.models.goal import GoalCreate
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate
-from app.models.scene_development import NpcSceneAction, SceneDevelopment
+from app.models.scene_development import NpcSceneAction, SceneDevelopment, WorldSceneDevelopment
 from app.models.turn import TurnCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.scene_development import SceneDevelopmentService
+from app.services.truth_engine import CanonicalEventStore
 from app.services.turn_planner import TurnPlanningError
 from app.services.truth_engine_turn_context import SemanticTurnContextReader
 from app.services.turn_undo_service import TurnUndoService
@@ -318,6 +319,14 @@ async def test_full_turn_develops_destination_after_route_fast_path(db_session, 
     seen = []
 
     async def generate(_self, _provider, _selection, messages, **kwargs):
+        from app.services.director_contract import DirectorContractReview
+
+        if kwargs["response_model"] is DirectorContractReview:
+            review = json.loads(messages[1].content)
+            return {"items": [{"obligation_id": item["id"], "status": "fulfilled",
+                "evidence_ref": "action:0", "evidence_quote": initiative(npc, goal).actions[0].action,
+                "reason": "NPC предлагает посредничество в существующем споре."}
+                for item in review["obligations"]]}
         assert kwargs["response_model"] is SceneDevelopment
         context = json.loads(messages[1].content)
         assert "Гостиная" in context["resolved_turn"]["target_location"]
@@ -343,6 +352,8 @@ async def test_full_turn_develops_destination_after_route_fast_path(db_session, 
     )])
     assert seen, output
     resolver.assert_not_called()
+    from app.services.master_service import MasterService
+    assert (await MasterService(db_session).get(authority.campaign_id)).state.rhythm.turn_index == 1
     records = (await db_session.execute(select(TruthEventRecord).where(
         TruthEventRecord.source_kind == "scene_development",
     ))).scalars().all()
@@ -612,3 +623,130 @@ async def test_fit_context_hard_overflow_still_reports_clearly():
         match="Scene decision essentials exceed control context window",
     ):
         SceneDevelopmentService.fit_context(context, 2048)
+
+
+def world_beat(authority):
+    return WorldSceneDevelopment(
+        kind="revelation", source_refs=[f"scene:{authority.target_scene_id}"],
+        development="На известной стене проявляется след скрытой надписи о семейном споре.",
+        player_opportunity="Можно прочитать надпись и проверить её содержание.",
+        progress_reason="Вместо повторного осмотра появляется конкретная зацепка.",
+    )
+
+
+async def test_world_beat_without_npcs_receives_master_policy(db_session):
+    authority, npc, absent, goal = await world(db_session)
+    await SceneRepository(db_session).remove_participant(authority.target_scene_id, npc.id)
+    captured = {}
+    beat = world_beat(authority)
+
+    async def generate(_provider, _selection, messages, **kwargs):
+        captured.update(json.loads(messages[1].content))
+        return {"disposition": "quiet", "reason": "Открыть полезную зацепку.",
+                "actions": [], "world_development": beat.model_dump(mode="json")}
+
+    router = SimpleNamespace(
+        resolve=AsyncMock(return_value=SimpleNamespace(config=SimpleNamespace(
+            model_name="test", context_window=8192))),
+        generate_json=AsyncMock(side_effect=generate),
+    )
+    policy = {"moves": ["intrigue_reveal"], "rhythm": {"turns_since_progress": 4}}
+    development, audit = await SceneDevelopmentService(db_session).plan(
+        authority, router, director_policy=policy,
+    )
+    assert not captured["actors"]
+    assert captured["director_policy"] == policy
+    assert development.disposition == "act"
+    assert development.world_development == beat
+    assert audit["status"] == "completed"
+
+
+@pytest.mark.parametrize("source", ["unknown", "private_motive", "actor_scope"])
+async def test_world_beat_cannot_use_unknown_or_private_actor_evidence(db_session, source):
+    authority, npc, absent, goal = await world(db_session)
+    service = SceneDevelopmentService(db_session)
+    context = await service.context(authority)
+    beat = world_beat(authority)
+    if source == "unknown":
+        beat.source_refs = ["scene:invented"]
+    elif source == "private_motive":
+        beat.source_refs = [f"goal:{goal.id}"]
+    else:
+        context["response_actor_id"] = str(npc.id)
+    decision = SceneDevelopment(disposition="act", reason="Открыть зацепку.",
+                                actions=[], world_development=beat)
+    sanitized, audit = service.sanitize(decision, context)
+    assert sanitized.world_development is None
+    assert sanitized.disposition == "quiet"
+    assert audit["dropped_world_development"]
+
+
+async def test_world_beat_receipt_is_idempotent_and_undoable(db_session):
+    authority, npc, absent, goal = await world(db_session)
+    authority.scene_development = SceneDevelopment(
+        disposition="act", reason="Продвинуть сцену.", actions=[],
+        world_development=world_beat(authority),
+    )
+    assert authority.narrator_payload()["scene_development"]["world_development"]["kind"] == "revelation"
+    service = SceneDevelopmentService(db_session)
+    assistant = await TurnRepository(db_session).create(authority.campaign_id, TurnCreate(
+        role="assistant", content=authority.scene_development.world_development.development,
+        scene_id=authority.target_scene_id, parent_turn_id=authority.trigger_turn_id,
+        context_snapshot={"turn_authority": authority.model_dump(mode="json")},
+    ))
+    await service.publish(authority, assistant.id)
+    await service.publish(authority, assistant.id)
+    records = (await db_session.execute(select(TruthEventRecord))).scalars().all()
+    assert len(records) == 1
+    assert (await CanonicalEventStore(db_session).get(UUID(records[0].event_id))).event_type == "world_scene_development"
+    published_context = await service.context(authority)
+    assert published_context["recent_developments"][0]["world_development"]
+    assert authority.scene_development.world_development.development in published_context["scene_progress"]["published_changes"]
+    await db_session.commit()
+    assert await TurnUndoService(db_session).undo_last_pair(authority.campaign_id)
+    await db_session.refresh(records[0])
+    assert records[0].status == "reverted"
+    assert (await service.context(authority))["scene_progress"]["published_changes"] == []
+
+
+async def test_player_discovery_counts_as_progress_without_an_extra_world_beat(db_session):
+    authority, npc, absent, goal = await world(db_session)
+    from app.models.scene_development import ResolvedPlayerProgress
+    authority.observable_consequences = ["Обнаружены метки, отличающие нужный проход от остальных."]
+    service = SceneDevelopmentService(db_session)
+    context = await service.context(authority)
+    progress = ResolvedPlayerProgress(kind="discovery", evidence_quote=authority.observable_consequences[0],
+                                      reason="Найдена конкретная зацепка для выбора пути.")
+    decision = SceneDevelopment(disposition="quiet", reason="Полезная находка уже состоялась.",
+                                actions=[], resolved_progress=progress)
+    result, audit = service.sanitize(decision, context)
+    assert result.resolved_progress == progress
+    assert result.disposition == "quiet"
+    context["recent_developments"] = [{"resolved_progress": progress.model_dump()}]
+    result, audit = service.sanitize(decision, context)
+    assert result.resolved_progress is None
+    context["recent_developments"] = []
+    progress.evidence_quote = "Герой нашёл тайник и забрал сокровище."
+    result, audit = service.sanitize(decision, context)
+    assert result.resolved_progress is None
+
+
+async def test_fallback_projects_approved_world_beat_and_open_option(db_session):
+    from app.models.narration_validation import NarrationValidationResult, NarrationViolation
+    from app.services.narration_publication_guard import NarrationPublicationGuard
+    authority, npc, absent, goal = await world(db_session)
+    beat = WorldSceneDevelopment(kind="revelation", source_refs=[f"scene:{authority.target_scene_id}"],
+        development="На следующей волне стук пропускает такт; влажный след упирается в щель под бортом.",
+        player_opportunity="Можно осмотреть щель или продолжить путь по меткам.",
+        progress_reason="Источник стука теперь локализован у щели.")
+    authority.scene_development = SceneDevelopment(disposition="act", reason="Ситуация развивается.",
+                                                   actions=[], world_development=beat)
+    authority.observable_consequences = ["На краю колодца найден влажный соляной налёт."]
+    validation = NarrationValidationResult(verdict="repair_required", violations=[
+        NarrationViolation(violation_type="absent_object", evidence="несуществующий инструмент",
+                           correction="Убрать неподтверждённый предмет.")])
+    text, audit = NarrationPublicationGuard.publish(authority, "Несуществующий инструмент засиял.", validation)
+    assert beat.development in text
+    assert beat.player_opportunity in text
+    assert "Несуществующий инструмент" not in text
+    assert audit["scene_development_projected"] is True

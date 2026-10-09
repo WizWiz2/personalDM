@@ -67,8 +67,14 @@ class Settings(BaseSettings):
     # Local 7B control often exceeds 60s under load; 180s keeps turns alive without unbounded hangs.
     # Timeout becomes a normal planner/validator error instead of a stuck generation.
     CONTROL_LLM_TIMEOUT_SECONDS: float = 180.0
+    INTERACTIVE_LLM_BUDGET_SECONDS: float = Field(default=75.0, gt=0)
+    INTERACTIVE_LLM_REQUEST_SECONDS: float = Field(default=30.0, gt=0)
     # Waiting for another local model is measured separately from active inference.
     LOCAL_LLM_QUEUE_TIMEOUT_SECONDS: float = 120.0
+    # Transport read budget is configurable for CPU-only cloud play sessions.
+    LLM_HTTP_TIMEOUT_SECONDS: float = Field(default=240.0, gt=0)
+    # Structured control tasks use bounded reasoning; literary streaming is independent.
+    CHATGPT_CONTROL_REASONING_EFFORT: Literal["none", "low", "medium", "high"] | None = "low"
     PLANNER_LLM_MODEL: str | None = None
     SCRIBE_LLM_MODEL: str | None = None
     CURATOR_LLM_MODEL: str | None = None
@@ -111,6 +117,8 @@ class Settings(BaseSettings):
     NARRATION_VALIDATOR_MAX_TOKENS: int = 1100
     NARRATION_REPAIR_TEMPERATURE: float = 0.25
     NARRATION_REPAIR_ATTEMPTS: int = 2
+    NARRATION_CONTROL_MAX_CALLS: int = Field(default=4, ge=1)
+    NARRATION_RENDER_MAX_CALLS: int = Field(default=2, ge=1)
     NARRATION_VALIDATOR_FAIL_OPEN: bool = True
 
     # Narrative and structured control calls have different completion needs.

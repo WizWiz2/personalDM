@@ -8,6 +8,7 @@ location is one of them or is the current place itself.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -95,17 +96,80 @@ class PlayerDestinationAuthorizer:
                 candidate = head.strip(" —")
         if not candidate:
             return None
+        from app.db.scene_location_table import SceneLocationLink
+        origin_scenes = select(SceneLocationLink.scene_id).where(
+            SceneLocationLink.location_id == str(source_id)
+        )
         rows = (
             await self._session.execute(
-                select(Turn.content).where(
+                select(Turn).where(
                     Turn.campaign_id == turn.campaign_id,
                     Turn.role == "assistant",
-                )
+                    Turn.status == "active",
+                    Turn.created_at <= turn.created_at,
+                    (Turn.scene_id.in_(origin_scenes) if source_id else Turn.scene_id == turn.scene_id),
+                ).order_by(Turn.created_at.desc()).limit(20)
             )
         ).scalars().all()
-        published = "\n".join(row or "" for row in rows).casefold()
-        if candidate.casefold() in published:
-            return candidate
+        from app.models.addressed_response import AddressedResponse
+        for row in rows:
+            try:
+                snapshot = json.loads(row.context_snapshot or "{}")
+                raw = (snapshot.get("turn_authority") or {}).get("addressed_response")
+                response = AddressedResponse.model_validate(raw) if raw else None
+            except (ValueError, TypeError, AttributeError):
+                response = None
+            if response:
+                for route in response.route_directions:
+                    if (same_location_reference(candidate, route.destination)
+                            and route.evidence in row.content):
+                        return route.destination
+        # Compatibility for older published turns: match a whole contiguous name,
+        # tolerating Russian case inflection without accepting substrings or distant words.
+        from app.services.linguistic_intent_analyzer import _russian_pipeline, LinguisticParserUnavailable
+        try:
+            parser = _russian_pipeline()
+        except LinguisticParserUnavailable:
+            parser = None
+        def tokens(text):
+            if parser is None:
+                import re
+                return re.findall(r"\w+", text.casefold())
+            return [token.lemma_.casefold() for token in parser(text)
+                    if not token.is_space]
+        needle = tokens(candidate)
+        if not needle:
+            return None
+        for row in rows:
+            values = tokens(row.content or "")
+            if any(values[index:index + len(needle)] == needle
+                   for index in range(len(values) - len(needle) + 1)):
+                return candidate
+        return None
+
+    async def announced_direction(
+        self, campaign_id: UUID, source_location_id: UUID, destination: str,
+    ) -> str | None:
+        """Read sourced directions from active published turns at the route origin."""
+        from app.db.scene_location_table import SceneLocationLink
+        from app.models.addressed_response import AddressedResponse
+        rows = (await self._session.execute(
+            select(Turn).join(SceneLocationLink, SceneLocationLink.scene_id == Turn.scene_id)
+            .where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant",
+                   Turn.status == "active", SceneLocationLink.location_id == str(source_location_id))
+            .order_by(Turn.created_at.desc()).limit(20)
+        )).scalars().all()
+        for row in rows:
+            try:
+                raw = (json.loads(row.context_snapshot or "{}").get("turn_authority") or {}).get("addressed_response")
+                response = AddressedResponse.model_validate(raw) if raw else None
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if response:
+                for route in response.route_directions:
+                    if (same_location_reference(destination, route.destination)
+                            and route.evidence in row.content):
+                        return route.destination
         return None
 
     async def _source_location_id(self, turn: Turn) -> UUID | None:

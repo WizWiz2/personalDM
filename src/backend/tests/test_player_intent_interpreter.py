@@ -37,6 +37,7 @@ async def test_locking_workshop_is_local_even_when_extraction_calls_it_movement(
     assert result.actions[0].action_type == "interaction"
     assert result.actions[0].destination_location is None
     assert "DestinationIdentityBindings" not in router.calls
+    assert router.calls.count("IntentSemanticOwnershipReview") == 1
 
 
 @pytest.mark.asyncio
@@ -64,8 +65,85 @@ async def test_ambiguous_direction_cannot_create_a_pronoun_location():
             "action_type": "movement", "intent": "Иду наружу.", "destination_location": "наружу",
         }],
     }, bindings={"action_0": "unresolved"})
-    with pytest.raises(TurnPlanningError, match="needs clarification"):
-        await _interpreter(router).interpret(SimpleNamespace(), [], "Иду наружу.")
+    contract = await _interpreter(router).interpret(SimpleNamespace(), [], "Иду наружу.")
+    assert contract.clarification_required
+    assert contract.actions == []
+
+
+@pytest.mark.asyncio
+async def test_unselected_endpoint_is_clarified_instead_of_binding_a_known_place():
+    street_id = str(uuid4())
+    player_input = "Иду наружу с рынка, но конкретную улицу пока не выбираю."
+    router = _Router(
+        {
+            "summary": "Выхожу с рынка.",
+            "actions": [{
+                "action_type": "movement", "intent": "Выйти с рынка.",
+                "destination_location": "улица",
+            }],
+        },
+        review={
+            "action_ownership": [{
+                "action_index": 0,
+                "actor_role": "speaker",
+                "contribution_kind": "world_action",
+                "action_type": "movement",
+                "spatial_effect": "travel",
+                "destination_location": None,
+                "destination_reference_mode": None,
+                "destination_committed": False,
+            }],
+            "information_request_only": False,
+            "information_recipient": "none",
+        },
+    )
+    result = await _interpreter(router).interpret(
+        SimpleNamespace(), [], player_input,
+        location_references={street_id: "улица"},
+    )
+    assert result.clarification_required
+    assert result.actions == []
+    assert "DestinationIdentityBindings" not in router.calls
+
+
+@pytest.mark.asyncio
+async def test_semantic_review_cannot_commit_endpoint_left_open_by_extraction():
+    market_id = str(uuid4())
+    router = _Router(
+        {
+            "summary": "Иду с рынка, но конкретное направление не определено.",
+            "actions": [{
+                "action_type": "movement",
+                "intent": "Иду с рынка.",
+                "destination_location": "рынок",
+                "destination_committed": False,
+            }],
+        },
+        review={
+            "action_ownership": [{
+                "action_index": 0,
+                "actor_role": "speaker",
+                "contribution_kind": "world_action",
+                "action_type": "movement",
+                "spatial_effect": "travel",
+                "destination_location": "рынок",
+                "destination_reference_mode": "explicit",
+                "destination_committed": True,
+            }],
+            "information_request_only": False,
+            "information_recipient": "none",
+        },
+        bindings={"action_0": market_id},
+    )
+
+    result = await _interpreter(router).interpret(
+        SimpleNamespace(), [], "Иду наружу с рынка, но конкретную улицу пока не выбираю.",
+        location_references={market_id: "Рыбный рынок"},
+    )
+
+    assert result.clarification_required
+    assert result.actions == []
+    assert "DestinationIdentityBindings" not in router.calls
 
 
 class _Router:
@@ -198,6 +276,23 @@ def _interpreter(
     analysis: LinguisticIntentAnalysis | None = None,
 ) -> PlayerIntentInterpreter:
     return PlayerIntentInterpreter(router, linguistic_analyzer=_LinguisticAnalyzer(analysis))
+
+
+@pytest.mark.asyncio
+async def test_invented_actor_evidence_cannot_authorize_an_action():
+    router = _Router({
+        "summary": "Прошу указать улицу, затем жду рассвета.",
+        "actions": [{"action_type": "wait", "intent": "Жду рассвета.",
+                     "actor_role": "addressee", "time_after": "Рассвет"}],
+    }, review={
+        "action_ownership": [{"action_index": 0, "actor_role": "addressee",
+                              "action_type": "wait", "time_after": "Рассвет",
+                              "evidence_quote": "пересказ вместо цитаты"}],
+        "information_request_only": False, "information_recipient": "none",
+    })
+    with pytest.raises((ValueError, TurnPlanningError), match="exact span"):
+        await _interpreter(router).interpret(
+            SimpleNamespace(), [], "Прошу указать улицу, затем жду рассвета.")
 
 
 @pytest.mark.asyncio
@@ -727,7 +822,7 @@ def test_actor_role_is_required_on_the_model_schema() -> None:
         assert "actor_role" in definition["required"]
 
 
-def test_semantic_ownership_review_keeps_coverage_but_tolerates_paraphrased_evidence() -> None:
+def test_semantic_ownership_review_requires_literal_actor_evidence() -> None:
     wire = _intent_semantic_review_wire(1, "Мария, закрой дверь.")
     payload = {
         "action_ownership": [
@@ -744,7 +839,8 @@ def test_semantic_ownership_review_keeps_coverage_but_tolerates_paraphrased_evid
 
     assert wire.model_validate(payload).action_ownership[0].actor_role == "addressee"
     payload["action_ownership"][0]["evidence_quote"] = "придуманная цитата"
-    assert wire.model_validate(payload).action_ownership[0].evidence_quote == "придуманная цитата"
+    with pytest.raises(ValueError, match="exact span"):
+        wire.model_validate(payload)
     payload["action_ownership"].append(dict(payload["action_ownership"][0]))
     with pytest.raises(ValueError):
         wire.model_validate(payload)
@@ -761,7 +857,7 @@ async def test_empty_action_turn_skips_ownership_model_and_empty_literal() -> No
 
 
 @pytest.mark.asyncio
-async def test_inconsistent_recipient_and_paraphrased_quote_do_not_abort_turn() -> None:
+async def test_inconsistent_recipient_with_literal_quote_does_not_abort_turn() -> None:
     router = _Router(
         {
             "summary": "Я открываю дверь.",
@@ -772,7 +868,7 @@ async def test_inconsistent_recipient_and_paraphrased_quote_do_not_abort_turn() 
                 {
                     "action_index": 0,
                     "actor_role": "speaker",
-                    "evidence_quote": "Открываю дверь",
+                    "evidence_quote": "открываю дверь",
                 }
             ],
             "information_request_only": False,

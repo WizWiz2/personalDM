@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.engine import AsyncSessionLocal
+from app.db.write_transaction import reserve_sqlite_writer
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
@@ -496,6 +497,10 @@ class PostTurnProcessor:
                     # write begins. Once create_batch obtains SQLite's write transaction,
                     # a later undo will run after it and ActiveCanonReplay will compensate.
                     await self._session.rollback()
+                    # Acquire the writer BEFORE the source guard read. In WAL mode
+                    # read-then-write may fail immediately with SQLITE_BUSY_SNAPSHOT,
+                    # even with busy_timeout, when the next turn publishes meanwhile.
+                    await reserve_sqlite_writer(self._session)
                     if not await self._source_pair_is_active(assistant.id):
                         await self._finish_without_side_effects(
                             job_id,
@@ -584,6 +589,17 @@ class PostTurnWorker:
         self._stop.set()
 
     async def run(self) -> None:
+        from app.providers.local_inference_queue import background_inference
+        from app.services.generation_progress import detach
+
+        detach()
+        token = background_inference.set(True)
+        try:
+            await self._run_background()
+        finally:
+            background_inference.reset(token)
+
+    async def _run_background(self) -> None:
         async with AsyncSessionLocal() as session:
             await PostTurnJobRepository(session).recover_stale()
             await session.commit()

@@ -37,16 +37,32 @@ Questions to the narrator about existing state use actions=[], information_reque
 world_state_question=true, addressed_response_requested=false; they do not execute the queried event.
 
 Extract actual affirmative world acts only. Negative boundaries and staying put are not acts.
-An explicit physical inspection IS observation. Mixed action + dialogue keeps both the real actions
+An explicit physical inspection IS observation. Set depends_on_previous=false only for a local
+observation explicitly possible if preceding actions fail. Inspection along a journey or at its
+destination depends on the journey; keep depends_on_previous=true. Mixed action + dialogue keeps both the real actions
 and response flags. Preserve alternatives/conditions in pending_player_choice/protected_player_decisions.
 Also preserve every explicit negative action boundary there (e.g. inspect without touching): a
 sensory description is not permission to perform a prohibited voluntary action.
+Conditional future acts whose preconditions are not established are pending choices, not
+unconditional executable actions. Keep them in pending_player_choice/protected_player_decisions.
+Only requests directed to an interlocutor belong in questions; the protagonist's own conditional
+plans are not questions and must not be repeated as the interlocutor's answer.
 actor_role=speaker for the human's act, addressee for a requested physical act by another person.
 An addressee's physical act is service, not the speaker's inventory; mark the expected response.
 
-movement is the intention to reach another location, even when blocked. Keep the selected endpoint,
+movement is the intention to reach another physical location, even when blocked. Approaching a
+person, portable object or visible clue in the current scene is local interaction/observation,
+not a new location. Following a visible/heard clue within the current place is exploratory
+interaction/observation; do not require an independently named destination for that local act.
+Use the current location and published referents to distinguish local repositioning from travel.
+Keep the selected endpoint,
 never substitute a known place or classify a failed move as interaction. Two committed endpoints
 mean two moves; stairs/corridors describing the path to one endpoint are not extra moves.
+For every movement, destination_committed records whether the human selected a concrete physical
+endpoint. A departure point, route description, general direction, or statement that the direction
+is undecided is not an endpoint. Preserve movement as an attempt when the endpoint is open and set
+destination_committed=false; the application will ask for the missing choice before resolving the
+world. A concrete target remains committed even when it is unknown or unreachable.
 The compiler resolves routes and discovery. movement_method=ordinary for walking/trying to walk;
 requested_companions lists exactly those people the input says move together on this hop, including
 a guide the protagonist follows. This is a request, not NPC consent. Do not include bystanders.
@@ -89,9 +105,17 @@ class PlayerActionIntentDraft(BaseModel):
     action_type: IntentActionType
     actor_role: Literal["speaker", "addressee"] = "speaker"
     intent: str = Field(min_length=2, max_length=500)
+    depends_on_previous: bool = True
     destination_location: str | None = None
     destination_reference: str | None = None
     destination_reference_mode: Literal["explicit", "contextual"] | None = None
+    destination_committed: bool = Field(
+        default=True,
+        description=(
+            "Whether the human chose this unique physical endpoint. False when movement is "
+            "committed but its destination is still open or unspecified."
+        ),
+    )
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
     movement_method: Literal[
         "ordinary", "special", "teleportation", "force", "stealth", "ability"
@@ -122,11 +146,16 @@ class PlayerIntentContractDraft(BaseModel):
     world_state_question: bool = False
     questions: list[str] = Field(default_factory=list, max_length=8)
     pending_player_choice: str | None = None
+    clarification_required: str | None = None
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
 
 
 class _ActionWire(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    depends_on_previous: bool = Field(default=True, description=(
+        "False only for an observation explicitly independent of earlier actions; "
+        "inspection along a journey or at its destination depends on successful movement."
+    ))
     actor_role: Literal["speaker", "addressee"] = Field(
         description="speaker performs the act; addressee was asked to perform it."
     )
@@ -142,6 +171,12 @@ class _MovementWire(_ActionWire):
         description="Intended travel to another location, including attempts that cannot succeed."
     )
     destination_location: str = Field(min_length=1, max_length=255)
+    destination_committed: bool = Field(
+        description=(
+            "True only if the human selected a concrete physical destination; false for an open "
+            "direction, route, or departure from the current place without a destination."
+        ),
+    )
     movement_method: Literal["ordinary", "teleportation", "force", "stealth", "ability"]
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
 
@@ -255,8 +290,11 @@ class ActionOwnershipDecision(BaseModel):
         description="Player-selected travel endpoint, including an unreachable destination.",
     )
     destination_reference_mode: Literal["explicit", "contextual"] | None = None
-    # The model's quote is a hint for aligning syntax with one action. A paraphrase cannot be
-    # trusted as evidence, but it must not abort an otherwise valid turn.
+    destination_committed: bool = Field(
+        default=True,
+        description="Whether the player selected a destination rather than leaving the endpoint open.",
+    )
+    # Native reviews must ground ownership in literal human input, not generated prose.
     evidence_quote: str = Field(default="", max_length=500)
 
 
@@ -295,22 +333,32 @@ def _intent_semantic_review_wire(
                     "action_index", "actor_role", "contribution_kind",
                     "spatial_effect", "destination_location",
                     "destination_reference_mode",
+                    "destination_committed",
                     "action_type", "item_id", "inventory_operation", "inventory_target_id",
                     "elapsed_time", "time_after",
+                    "evidence_quote",
                 ],
             },
         )
         action_index: Literal[tuple(range(action_count))]
+        evidence_quote: str = Field(
+            default="", min_length=1, max_length=500,
+            description="Exact verbatim span of the latest human input supporting this actor.",
+        )
         item_id: item_type = None
         inventory_target_id: recipient_type = None
 
         @model_validator(mode="after")
         def require_inventory_references(self):
+            if self.evidence_quote and self.evidence_quote not in player_input:
+                raise ValueError("Ownership evidence must be an exact span of the human input")
             if self.contribution_kind == "world_action" and self.action_type == "movement":
-                if self.spatial_effect != "travel" or not _compact(self.destination_location):
+                if self.spatial_effect != "travel" or (
+                    self.destination_committed and not _compact(self.destination_location)
+                ):
                     raise ValueError(
-                        "An attempted movement keeps its travel effect and selected endpoint, "
-                        "even if an obstacle prevents completion. Local acts use another action_type."
+                        "An attempted movement keeps its travel effect; an unselected endpoint is "
+                        "represented as open rather than invented. Local acts use another action_type."
                     )
             elif self.action_type is not None and self.spatial_effect == "travel":
                 raise ValueError("Travel to a different place requires action_type=movement")
@@ -325,13 +373,23 @@ def _intent_semantic_review_wire(
         contribution_kind: Literal["world_action"]
         action_type: Literal["movement"]
         spatial_effect: Literal["travel"]
-        destination_location: str = Field(min_length=1, max_length=255)
-        destination_reference_mode: Literal["explicit", "contextual"]
+        destination_location: str | None = Field(default=None, max_length=255)
+        destination_reference_mode: Literal["explicit", "contextual"] | None = None
         item_id: None = None
         inventory_operation: None = None
         inventory_target_id: None = None
         elapsed_time: None = None
         time_after: None = None
+
+    class CommittedMovementOwnership(MovingOwnership):
+        destination_committed: Literal[True]
+        destination_location: str = Field(min_length=1, max_length=255)
+        destination_reference_mode: Literal["explicit", "contextual"]
+
+    class OpenMovementOwnership(MovingOwnership):
+        destination_committed: Literal[False]
+        destination_location: None = None
+        destination_reference_mode: None = None
 
     class InventoryOwnership(IndexedActionOwnershipDecision):
         contribution_kind: Literal["world_action"]
@@ -387,7 +445,13 @@ def _intent_semantic_review_wire(
 
     # Native decoding gets conditional shapes. The permissive Python boundary below still
     # accepts legacy sparse fixtures, while checking every explicit typed decision.
-    ownership_variants = [MovingOwnership, TemporalOwnership, LocalOwnership, SpeechOwnership]
+    ownership_variants = [
+        CommittedMovementOwnership,
+        OpenMovementOwnership,
+        TemporalOwnership,
+        LocalOwnership,
+        SpeechOwnership,
+    ]
     if items or not people:
         ownership_variants.append(InventoryOwnership)
         if recipients or not people:
@@ -459,10 +523,23 @@ Then decide from the complete utterance who performs the contribution:
 
 Also adjudicate spatial_effect for each contribution: travel reaches a different physical place,
 local manipulates or inspects something without changing place, none is speech or non-spatial acts.
+Local repositioning does not change the scene's physical location. Approaching a present person,
+their portable possession, or a clue currently visible/heard is local, even when the player walks
+toward it. Following a clue within the current place is exploration, not an open travel endpoint.
+A person's designation or a portable object cannot itself become a new physical place. Use the
+published referents and current occupancy to bind that target; preserve the person's location.
+Travel requires a different physical place or an explicitly crossed place boundary. A genuine
+journey whose destination is undecided still requires clarification; local exploration does not.
 Locking a workshop, inspecting its doorway, turning toward a sound, or putting an object down is
 local, even if extraction mislabeled it movement. Entering or returning to a workshop is travel.
 For travel supply the endpoint in destination_location from the human's intended reference;
-otherwise return null. This corrects classification only: preserve order, actor and action text.
+otherwise return null. Set destination_committed=true only when the human chose a unique physical
+endpoint. An endpoint can be blocked or unknown and still be committed. Set it false when the human
+has not chosen where to go, gives only an open direction/area, or explicitly leaves the destination
+undecided. The extraction's guessed endpoint is not evidence of the human's choice. Keep the
+movement as an attempted action with destination_committed=false; do not turn an open choice into
+a nearby or previously mentioned location. This corrects classification only: preserve order,
+actor and action text.
 For travel classify destination_reference_mode by how the endpoint is identified: explicit means
 the human independently names/describes the destination; contextual means its identity depends
 on deixis, possession, anaphora or a prior scene (home, back, outside). A named public establishment
@@ -554,6 +631,7 @@ def _normalized_action(
     payload: dict[str, Any] = {
         "action_type": action_type,
         "intent": intent,
+        "depends_on_previous": action.depends_on_previous,
         "destination_location": None,
         "item_id": None,
         "inventory_operation": None,
@@ -589,6 +667,7 @@ def _normalized_action(
         payload["elapsed_time"] = _compact(action.elapsed_time) or None
         payload["time_after"] = _compact(action.time_after) or None
 
+    payload["actor_role"] = action.actor_role
     return payload
 
 
@@ -628,7 +707,8 @@ def normalize_intent_draft(
     return PlayerIntentContract.model_validate(
         {
             "summary": summary,
-            "actions": actions,
+            "actions": [] if draft.clarification_required else actions,
+            "clarification_required": draft.clarification_required,
             "addressed_response_requested": (
                 bool(draft.addressed_response_requested) or addressee_owned
             ),
@@ -741,9 +821,6 @@ class PlayerIntentInterpreter:
         disputed = [
             item.action_index for item in review.action_ownership
             if item.contribution_kind == "speech" or (
-                draft.actions[item.action_index].action_type == "movement"
-                and item.spatial_effect in {"local", "none"}
-            ) or (
                 draft.actions[item.action_index].inventory_operation is not None
                 and item.action_type is not None and item.action_type != "inventory"
             ) or (
@@ -754,6 +831,7 @@ class PlayerIntentInterpreter:
         if disputed:
             # Extraction and review disagree about an executable domain. Resolve the contradiction
             # before mutating/removing candidates, with full typed payload and original evidence.
+            # Local spatial scope is not a contradiction: a physical step need not be travel.
             reconsidered = await self._router.generate_json(
                 self._provider, selection,
                 [ChatMessage(role="system", content=_OWNERSHIP_REVIEW_PROMPT),
@@ -777,6 +855,12 @@ class PlayerIntentInterpreter:
                                "resolved_review": review.model_dump(mode="json")})
         for ownership in review.action_ownership:
             action = draft.actions[ownership.action_index]
+            if ownership.action_type == "movement":
+                # Two independent structured reads must agree that the endpoint was chosen.
+                # A semantic reviewer cannot turn an open endpoint into a committed destination.
+                ownership.destination_committed = bool(
+                    ownership.destination_committed and action.destination_committed
+                )
             action.actor_role = ownership.actor_role
             if ownership.contribution_kind == "world_action" and ownership.action_type is not None:
                 action.action_type = ownership.action_type
@@ -851,10 +935,25 @@ class PlayerIntentInterpreter:
             draft.information_request_only = False
             draft.world_state_question = False
             draft.addressed_response_requested = True
+        open_destination = any(
+            item.contribution_kind == "world_action"
+            and item.action_type == "movement"
+            and not item.destination_committed
+            for item in review.action_ownership
+        )
+        if open_destination:
+            # The player has committed to travelling but has not selected its endpoint. This is a
+            # turn-level clarification result, so no action in the compound intent executes yet.
+            draft.clarification_required = "Куда именно ты хочешь направиться? Назови место или ориентир."
+            draft.actions = []
+            draft.addressed_response_requested = False
+            draft.addressed_character_name = None
+            draft.questions = []
         self.audit.append(
             {
                 "phase": "semantic_ownership",
                 "review": review.model_dump(mode="json"),
+                "clarification_required": draft.clarification_required,
                 "syntax": {
                     "uniform_action_role": syntax.uniform_action_role,
                     "action_roles": syntax.action_roles,
@@ -980,7 +1079,9 @@ class PlayerIntentInterpreter:
         for action in draft.actions:
             reference = action.destination_reference
             if reference == "unresolved":
-                raise TurnPlanningError("movement endpoint needs clarification before creating topology")
+                draft.clarification_required = "Уточни, пожалуйста, куда именно ты хочешь направиться: назови место или ориентир."
+                self.audit.append({"phase": "clarification_required", "reason": "unresolved_destination"})
+                return
             if action.action_type == "movement" and reference and reference != "new":
                 if reference not in references:
                     raise TurnPlanningError("movement refers to an unknown location identity")

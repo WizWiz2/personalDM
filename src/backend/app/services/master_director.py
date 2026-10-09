@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import random
+from math import ceil
 from typing import TYPE_CHECKING
 
 from app.models.game_master import (
@@ -30,15 +31,6 @@ PRESSURE_MOVES: frozenset[DirectorMove] = frozenset(
     }
 )
 QUIET_MOVES: frozenset[DirectorMove] = frozenset({"quiet", "soften_blow"})
-
-PRESSURE_THRESHOLD_BY_MASTER: dict[str, int] = {
-    "soft_keeper": 5,
-    "iron_chronicler": 2,
-    "harsh_referee": 2,
-    "chaos_dice": 3,
-    "intrigue_puppeteer": 3,
-}
-DEFAULT_PRESSURE_THRESHOLD = 3
 
 _DRAMATIC_RANK = {"calm": 0, "routine": 1, "tense": 2, "dangerous": 3}
 _RANK_TO_DRAMATIC = {value: key for key, value in _DRAMATIC_RANK.items()}
@@ -92,15 +84,24 @@ def adjust_weights(
     empty_companion_cast: bool,
 ) -> dict[DirectorMove, float]:
     weights = policy.as_mapping()
-    threshold = PRESSURE_THRESHOLD_BY_MASTER.get(master_id, DEFAULT_PRESSURE_THRESHOLD)
-    if rhythm.turns_since_pressure >= threshold:
+    # Timing follows the user's policy values, never a special case for a preset ID.
+    del master_id
+    quiet_share = sum(weights[move] for move in QUIET_MOVES) / (sum(weights.values()) or 1.0)
+    threshold = ceil(1 + 6 * quiet_share)
+    if max(rhythm.turns_since_pressure, rhythm.turns_since_progress) >= threshold:
         for move in PRESSURE_MOVES:
             weights[move] *= 1.6
         weights["quiet"] *= 0.4
         weights["soften_blow"] *= 0.45
-    if rhythm.turns_since_quiet >= threshold + 2 and master_id == "soft_keeper":
-        weights["quiet"] *= 1.5
-        weights["soften_blow"] *= 1.3
+    if rhythm.turns_since_quiet >= threshold + 2:
+        weights["quiet"] *= 1 + quiet_share
+        weights["soften_blow"] *= 1 + quiet_share
+    if empty_companion_cast:
+        # An initiative needs an actor. Preserve the policy's desire for character
+        # agency through a typed introduction instead of selecting an impossible act
+        # and spending model repairs proving again that the actor roster is empty.
+        weights["introduce_contact"] += weights["npc_initiative"]
+        weights["npc_initiative"] = 0.0
     if seek_contact and empty_companion_cast:
         for move in DIRECTOR_MOVES:
             weights[move] *= 0.15
@@ -168,6 +169,7 @@ def select_director_moves(
     *,
     seek_contact: bool = False,
     empty_companion_cast: bool = False,
+    committed_travel: bool = False,
     campaign_id: str | None = None,
     seed: int | None = None,
 ) -> DirectorMoveSelection:
@@ -197,6 +199,9 @@ def select_director_moves(
         moves=moves,
         obligations=[_obligation_text(move) for move in moves],
         forced_introduce_contact=force,
+        structural_introduction_requested=(
+            not committed_travel and "introduce_contact" in moves
+        ),
         weights_used={key: round(value, 4) for key, value in weights.items()},
         master_id=master.id,
         master_display_name=master.display_name,
@@ -206,17 +211,21 @@ def select_director_moves(
 def advance_rhythm(
     rhythm: MasterRhythmState,
     selected: DirectorMoveSelection,
+    *,
+    realized_pressure: bool = False,
+    realized_progress: bool = False,
 ) -> MasterRhythmState:
     next_state = rhythm.model_copy(deep=True)
     next_state.turn_index += 1
-    if any(move in PRESSURE_MOVES for move in selected.moves):
+    if realized_pressure:
         next_state.turns_since_pressure = 0
     else:
         next_state.turns_since_pressure += 1
-    if any(move in QUIET_MOVES for move in selected.moves):
+    if not (realized_progress or realized_pressure):
         next_state.turns_since_quiet = 0
     else:
         next_state.turns_since_quiet += 1
+    next_state.turns_since_progress = 0 if realized_progress else rhythm.turns_since_progress + 1
     return next_state
 
 
@@ -277,10 +286,11 @@ def apply_moves_to_narration_guidance(
     limit: int = 6,
     substance_active: bool = False,
 ) -> list[str]:
-    merged = list(guidance or [])
+    merged = []
     for obligation in selected.obligations:
         if obligation not in merged:
             merged.append(obligation)
+    merged.extend(item for item in list(guidance or []) if item not in merged)
     merged = subordinate_quiet_guidance_to_substance(
         merged,
         substance_active=substance_active,

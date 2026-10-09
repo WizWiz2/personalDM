@@ -143,6 +143,8 @@ class CoordinatedTurnPlan(TurnPlan):
 
     @model_validator(mode="after")
     def validate_interagent_authority(self):
+        if self.clarification_required and (self.action_sequence.steps or self.scene_transition.required or self.npc_introductions):
+            raise ValueError("clarification cannot change the world")
         for step in self.action_sequence.steps:
             if (
                 step.resolution == "auto_success"
@@ -238,6 +240,13 @@ SYSTEMLESS RESOLUTION IS ABSOLUTE:
 - There is no dice/check/rules resolver. `requires_check` is NOT a legal output and is absent from
   the schema. Resolve uncertainty directly into fiction as success, partial success, failure, or an
   uncertain observable consequence that exists now.
+- When approved addressed_response speech gives directions, preserve them in route_directions
+  as destination (canonical name), via (named waypoints), evidence (exact approved speech span).
+  These are sourced character claims, not proof that passage is open. Never invent directions
+  outside the speech or infer a route from a mere mention of a place.
+- Set depends_on_previous=false only for a safe ordinary observation explicitly possible in the
+  current place even if an earlier action fails. Observations along a journey or at its destination
+  depend on the movement and must keep depends_on_previous=true. All mutations remain dependent.
 - Present-person behavior does not need an action_sequence step or observable consequence to be a
   valid plan. A missing addressed_response_requested mark is not a ban on other present-person
   behavior. However, when the human directly addresses a person already in the present cast, set

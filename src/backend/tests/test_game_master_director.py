@@ -161,7 +161,9 @@ def test_rhythm_advances_pressure_and_quiet_counters() -> None:
     master = get_preset("iron_chronicler")
     assert master is not None
     first = select_director_moves(master, MasterRhythmState(turns_since_pressure=0))
-    next_rhythm = advance_rhythm(MasterRhythmState(), first)
+    next_rhythm = advance_rhythm(
+        MasterRhythmState(), first, realized_pressure=True, realized_progress=True
+    )
     assert next_rhythm.turn_index == 1
     if any(move in PRESSURE_MOVES for move in first.moves):
         assert next_rhythm.turns_since_pressure == 0
@@ -174,7 +176,8 @@ def test_narration_guidance_receives_structural_obligations() -> None:
     assert master is not None
     selected = select_director_moves(master, MasterRhythmState(turns_since_pressure=4))
     guidance = apply_moves_to_narration_guidance(["keep stakes concrete"], selected)
-    assert guidance[0] == "keep stakes concrete"
+    assert "keep stakes concrete" in guidance
+    assert guidance[0].startswith("[DIRECTOR MOVE:")
     assert any("DIRECTOR MOVE" in item for item in guidance)
 
 
@@ -515,6 +518,7 @@ def test_pure_ordinary_travel_is_not_contact_seeking() -> None:
         MasterRhythmState(),
         seek_contact=seeks_contact_or_presence(contract),
         empty_companion_cast=True,
+        committed_travel=is_pure_ordinary_travel(contract),
     )
     assert selected.forced_introduce_contact is False
     assert selected.moves[0] != "introduce_contact"
@@ -523,6 +527,7 @@ def test_pure_ordinary_travel_is_not_contact_seeking() -> None:
 def test_travel_plus_observation_still_seeks_contact() -> None:
     contract = PlayerIntentContract(
         summary="Иду в бар и ищу хозяина",
+        addressed_response_requested=True,
         actions=[
             PlayerActionIntent(
                 action_type="movement",
@@ -646,3 +651,39 @@ def test_quiet_guidance_subordinated_when_substance_stamp_active() -> None:
     )
     assert rewritten[0].startswith("[DIRECTOR MOVE: quiet / subordinated]")
     assert "other tip" in rewritten
+
+
+def test_selected_pressure_without_real_change_does_not_erase_stagnation():
+    selected = DirectorMoveSelection(
+        moves=["advance_conflict", "escalate_chaos"],
+        master_id="chaos_dice", master_display_name="Хаос",
+    )
+    rhythm = MasterRhythmState(turns_since_pressure=3, turns_since_progress=4)
+    unchanged = advance_rhythm(rhythm, selected)
+    assert unchanged.turns_since_pressure == 4
+    assert unchanged.turns_since_progress == 5
+    progressed = advance_rhythm(rhythm, selected, realized_progress=True)
+    assert progressed.turns_since_progress == 0
+    assert progressed.turns_since_pressure == 4
+    pressure = advance_rhythm(rhythm, selected, realized_progress=True, realized_pressure=True)
+    assert pressure.turns_since_pressure == 0
+
+
+def test_director_obligations_survive_full_guidance_budget():
+    selected = DirectorMoveSelection(
+        moves=["intrigue_reveal"], obligations=["Required revelation"],
+        master_id="custom", master_display_name="Custom",
+    )
+    guidance = apply_moves_to_narration_guidance([f"Style {n}" for n in range(6)], selected)
+    assert len(guidance) == 6
+    assert guidance[0] == "Required revelation"
+
+
+def test_same_policy_has_same_pacing_for_presets_and_custom_masters():
+    from app.services.master_director import adjust_weights
+    policy = get_preset("chaos_dice").move_policy
+    rhythm = MasterRhythmState(turns_since_progress=4, turns_since_quiet=7)
+    weights = [adjust_weights(policy, master_id=identifier, rhythm=rhythm,
+                             seek_contact=False, empty_companion_cast=False)
+               for identifier in ["chaos_dice", "soft_keeper", "my_custom_master"]]
+    assert weights[0] == weights[1] == weights[2]

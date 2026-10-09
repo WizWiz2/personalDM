@@ -67,7 +67,16 @@ def intent_reference_context(messages: list[ChatMessage]) -> str:
         "Controlled character:",
     )
     lines = [line for line in context.splitlines() if line.startswith(prefixes)]
-    return "\n".join(lines) if lines else context
+    reference = "\n".join(lines) if lines else context
+    # Scene occupancy is not a catalog of every narrated landmark. Keep recent
+    # published referents so deixis and local approaches can be resolved without
+    # inventing a location for a person, portable object or directional clue.
+    published = [message.content for message in messages[1:] if message.role == "assistant"]
+    if published:
+        reference += "\n[RECENT PUBLISHED REFERENTS — not new player authority]\n" + "\n\n".join(
+            published[-3:]
+        )
+    return reference
 
 
 def action_reference_catalog(messages: list[ChatMessage], prefix: str) -> dict[str, str]:

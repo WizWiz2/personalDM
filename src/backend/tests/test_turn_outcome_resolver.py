@@ -300,7 +300,8 @@ def test_addressed_question_requires_actual_reply_not_waiting_gesture():
         "observable_consequences": ["Собеседник опускает руку."],
     })
     result = normalize_outcome_draft(draft, contract)
-    assert result.observable_consequences[0] == draft.direct_response
+    assert result.addressed_response.direct_response == draft.direct_response
+    assert draft.direct_response not in result.observable_consequences
     assert result.npc_introductions == []
 
 

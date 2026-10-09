@@ -14,7 +14,8 @@ from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import SceneThesis
+from app.db.tables import SceneThesis, Turn
+from app.db.thesis_lifecycle_table import ThesisLifecycleProfile
 from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
@@ -32,9 +33,16 @@ class DesiredThesis(BaseModel):
     semantic_key: str | None = Field(default=None, max_length=160)
 
 
+class ThesisResolution(BaseModel):
+    thesis_id: UUID
+    evidence_ref: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=10, max_length=500)
+
+
 class CuratorResponse(BaseModel):
     desired_active: list[DesiredThesis] = Field(default_factory=list, max_length=12)
     resolve_thesis_ids: list[UUID] = Field(default_factory=list, max_length=12)
+    resolutions: list[ThesisResolution] = Field(default_factory=list, max_length=12)
 
 
 @dataclass
@@ -156,6 +164,26 @@ class ThesisCurator:
         profile.closure_reason = reason
         await self._session.flush()
 
+    async def _change_status(self, thesis, status: str, source_turn_id: UUID) -> None:
+        """Keep an undo receipt for changes to pre-existing working memory."""
+        if self._supports_lifecycle(self._session):
+            source = await self._session.get(Turn, str(source_turn_id))
+            if (source and source.role == "assistant" and source.status == "active"
+                and source.scene_id == str(thesis.scene_id)):
+                snapshot = json.loads(source.context_snapshot or "{}")
+                changes = snapshot.setdefault("working_memory_changes", {})
+                profile = await self._session.get(ThesisLifecycleProfile, str(thesis.id))
+                change = changes.setdefault(str(thesis.id), {
+                    "before_status": thesis.status,
+                    "before_profile": {
+                        key: getattr(profile, key)
+                        for key in ("semantic_key", "ttl_turns", "last_reinforced_turn_id", "closure_reason")
+                    } if profile else None,
+                })
+                change["after_status"] = status
+                source.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
+        await self._scene_repo.update_thesis(thesis.id, SceneThesisUpdate(status=status))
+
     async def close_scene(self, scene_id: UUID) -> int:
         """Resolve every operational thesis when a scene ends.
 
@@ -181,6 +209,7 @@ class ThesisCurator:
         user_content: str,
         assistant_content: str,
         entity_names: dict[str, str],
+        source_turn_id: UUID | None = None,
     ) -> list[str]:
         pair_count = max(2, int(settings.CURATOR_INTERVAL_TURNS))
         history = await self._turn_repo.get_history(
@@ -189,10 +218,12 @@ class ThesisCurator:
             active_only=True,
             channel="narrative",
         )
+        source = await self._turn_repo.get_by_id(source_turn_id) if source_turn_id else None
         relevant = [
             turn
             for turn in history
             if turn.scene_id == scene_id and turn.role in {"user", "assistant"}
+            and (source is None or (turn.created_at, str(turn.id)) <= (source.created_at, str(source.id)))
         ][-(pair_count * 2) :]
         lines: list[str] = []
         for turn in relevant:
@@ -229,6 +260,7 @@ class ThesisCurator:
             return None
 
         active = await self._scene_repo.list_theses_by_scene(scene_id, active_only=True)
+        result_evidence = await self._published_result_evidence(campaign_id, scene_id, source_turn_id)
         entity_names: dict[str, str] = {}
         for entity_id in scene.participants:
             entity = await self._entity_repo.get_by_id(entity_id)
@@ -282,6 +314,7 @@ class ThesisCurator:
             user_content,
             assistant_content,
             entity_names,
+            source_turn_id=source_turn_id,
         )
 
         entity_lines = [
@@ -301,6 +334,12 @@ class ThesisCurator:
 - desired_active содержит только новые, изменившиеся или явно подтверждённые этим окном тезисы.
 - ПРОПУСК существующего тезиса НЕ означает, что он завершён: он останется жить до TTL.
 - resolve_thesis_ids содержит только ID тезисов, которые окно ходов ЯВНО завершило или опровергло.
+- Для опубликованных структурных результатов используй resolutions: thesis_id, evidence_ref и
+  reason, объясняющий, почему именно этот результат завершает или опровергает именно этот тезис.
+  evidence_ref выбирай из R-ссылок ниже. Смысл важнее совпадения слов: обнаруженный путь закрывает
+  старый тезис об отсутствии пути, а повторное наблюдение само по себе не закрывает интригу.
+- Обновляй рабочую память после реального изменения; сохраняй semantic_key при пересказе того же
+  факта. Не создавай вторую нить из-за новой формулировки. Не считай слова игрока доказательством.
 - Никогда не resolve pinned тезис.
 - Не закрывай сюжетную нить только потому, что последние реплики были о другом.
 - Попытка игрока не становится правдой без подтверждения ДМа.
@@ -329,6 +368,9 @@ visual_state, music_mood
 Недавние structured events:
 {chr(10).join(event_lines) or '- нет'}
 
+Опубликованные выполненные результаты (R-ссылки для resolutions):
+{json.dumps(result_evidence, ensure_ascii=False)}
+
 Окно ходов с прошлого запуска Curator:
 {chr(10).join(recent_lines) or '- нет'}
 
@@ -337,7 +379,8 @@ visual_state, music_mood
   "desired_active":[
     {{"thesis_type":"tension","text":"...","priority":5,"visibility":"dm","related_entity_ids":[],"existing_thesis_id":null,"semantic_key":"короткий стабильный ключ"}}
   ],
-  "resolve_thesis_ids":[]
+  "resolve_thesis_ids":[],
+  "resolutions":[{{"thesis_id":"UUID текущего тезиса","evidence_ref":"R1","reason":"почему результат завершает нить"}}]
 }}
 """
 
@@ -383,13 +426,17 @@ visual_state, music_mood
                 UUID(str(value)) for value in envelope.resolve_thesis_ids
             }:
                 evidenced_model_resolutions.add(thesis.id)
-        structured_resolutions: set[UUID] = set(evidenced_model_resolutions)
+        structured_resolutions = self._evidenced_resolutions(envelope, active, result_evidence)
+        # Legacy prose-only turns keep their conservative compatibility path. Modern
+        # receipts use exact source identities instead of word-overlap heuristics.
+        if not result_evidence:
+            structured_resolutions.update(evidenced_model_resolutions)
         transfer_texts = [
             self._normalized_text(event.description)
             for event in events
             if event.event_type == "item_transfer"
         ]
-        if transfer_texts:
+        if transfer_texts and not result_evidence:
             for thesis in active:
                 if thesis.thesis_type != ThesisType.UNRESOLVED_BEAT:
                     continue
@@ -408,6 +455,40 @@ visual_state, music_mood
             envelope.desired_active,
             resolve_thesis_ids=structured_resolutions,
         )
+
+    async def _published_result_evidence(self, campaign_id: UUID, scene_id: UUID,
+                                         source_turn_id: UUID) -> dict:
+        source = await self._turn_repo.get_by_id(source_turn_id)
+        if not source or source.campaign_id != campaign_id or source.status != "active" or source.scene_id != scene_id:
+            return {}
+        history = await self._turn_repo.get_history(campaign_id, limit=24, active_only=True,
+                                                    channel="narrative")
+        if not any(turn.id == source.id for turn in history):
+            history.append(source)
+        evidence = {}
+        for turn in history:
+            if (turn.role != "assistant" or turn.scene_id != scene_id
+                or (turn.created_at, str(turn.id)) > (source.created_at, str(source.id))):
+                continue
+            snapshot = turn.context_snapshot or {}
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
+            authority = snapshot.get("turn_authority") or {}
+            outcomes = list(authority.get("observable_consequences") or [])
+            world = (authority.get("scene_development") or {}).get("world_development")
+            if world:
+                outcomes.append(world["development"])
+            for outcome in outcomes:
+                evidence[f"R{len(evidence) + 1}"] = {
+                    "source_turn_id": str(turn.id), "result": outcome,
+                }
+        return evidence
+
+    @staticmethod
+    def _evidenced_resolutions(envelope: CuratorResponse, active: list, evidence: dict) -> set[UUID]:
+        allowed = {thesis.id for thesis in active if not thesis.pinned}
+        return {item.thesis_id for item in envelope.resolutions
+                if item.thesis_id in allowed and item.evidence_ref in evidence}
 
     @staticmethod
     def _validate_envelope(
@@ -440,6 +521,8 @@ visual_state, music_mood
         return CuratorResponse(
             desired_active=desired,
             resolve_thesis_ids=resolve_ids,
+            resolutions=[item for item in parsed.resolutions
+                         if not allowed_theses or str(item.thesis_id) in allowed_theses],
         )
 
     @classmethod
@@ -511,10 +594,7 @@ visual_state, music_mood
                 for duplicate in pinned:
                     if duplicate.id == keeper.id:
                         continue
-                    await self._scene_repo.update_thesis(
-                        duplicate.id,
-                        SceneThesisUpdate(status="resolved"),
-                    )
+                    await self._change_status(duplicate, "resolved", source_turn_id)
                     await self._mark_profile_closed(duplicate, "duplicate_semantic_slot")
                     result.duplicate_scopes += 1
                     result.resolved += 1
@@ -525,10 +605,7 @@ visual_state, music_mood
                 for duplicate in mutable:
                     if duplicate.id == keeper.id:
                         continue
-                    await self._scene_repo.update_thesis(
-                        duplicate.id,
-                        SceneThesisUpdate(status="superseded"),
-                    )
+                    await self._change_status(duplicate, "superseded", source_turn_id)
                     await self._mark_profile_closed(duplicate, "duplicate_semantic_slot")
                     result.duplicate_scopes += 1
                     result.superseded += 1
@@ -559,10 +636,7 @@ visual_state, music_mood
 
         for slot, old in mutable_by_slot.items():
             if old.id in resolve_ids:
-                await self._scene_repo.update_thesis(
-                    old.id,
-                    SceneThesisUpdate(status="resolved"),
-                )
+                await self._change_status(old, "resolved", source_turn_id)
                 await self._mark_profile_closed(old, "curator_explicit_resolution")
                 result.resolved += 1
                 desired_by_slot.pop(slot, None)
@@ -612,10 +686,7 @@ visual_state, music_mood
                 desired_by_slot.pop(slot)
                 continue
 
-            await self._scene_repo.update_thesis(
-                old.id,
-                SceneThesisUpdate(status="superseded"),
-            )
+            await self._change_status(old, "superseded", source_turn_id)
             await self._mark_profile_closed(old, "curator_update")
             created = await self._scene_repo.create_thesis(
                 scene_id,

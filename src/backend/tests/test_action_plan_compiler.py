@@ -53,6 +53,9 @@ class _Compiler(ActionPlanCompiler):
         self._state = _FakeState(exits)
         self._fixture_locations = locations
 
+    async def _performers(self, campaign_id, contract):
+        return SimpleNamespace(id=UUID("00000000-0000-4000-8000-000000000401"), canonical_name="Кай"), []
+
     async def _world(self, campaign_id):
         del campaign_id
         return SCENE, SimpleNamespace(location_id=ROOM), list(self._fixture_locations)

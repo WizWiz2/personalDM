@@ -11,6 +11,13 @@ export interface GenerationRun {
   status: 'running' | 'completed' | 'failed' | 'cancelled' | string
   cancel_requested: boolean
   error: string | null
+  progress?: {
+    stage: string
+    stage_started_at: string
+    last_activity_at: string | null
+    generated_chunks: number
+    model: string | null
+  } | null
   phase?: string | null
   created_at: string
   updated_at: string

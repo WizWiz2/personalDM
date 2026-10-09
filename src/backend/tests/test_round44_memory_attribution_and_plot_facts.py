@@ -168,8 +168,9 @@ async def test_narrator_memory_audit_separates_npc_claims_and_recovers_plot_fact
         response_model,
         **kwargs,
     ):
-        del provider, selection, messages, kwargs
+        del provider, selection, kwargs
         if response_model.__name__ == "NarratorMemoryAudit":
+            assert "[CURRENT FACTS]" in messages[1].content
             return _narrator_audit_response(claim_segment_id)
         if response_model.__name__ == "QuoteClaimAttributionEnvelope":
             # quality_stabilization_guard deliberately distrusts the broad actor-segment guess and

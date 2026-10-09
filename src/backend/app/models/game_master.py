@@ -70,6 +70,7 @@ class MasterRhythmState(BaseModel):
     turn_index: int = 0
     turns_since_pressure: int = 0
     turns_since_quiet: int = 0
+    turns_since_progress: int = 0
 
 
 class GameMasterPersona(BaseModel):
@@ -143,6 +144,7 @@ class DirectorMoveSelection(BaseModel):
     moves: list[DirectorMove] = Field(min_length=1, max_length=2)
     obligations: list[str] = Field(default_factory=list)
     forced_introduce_contact: bool = False
+    structural_introduction_requested: bool = False
     weights_used: dict[str, float] = Field(default_factory=dict)
     master_id: str
     master_display_name: str

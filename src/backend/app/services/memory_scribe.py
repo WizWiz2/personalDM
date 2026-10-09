@@ -12,7 +12,8 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services.canon_semantics import CanonAudit, CanonEnvelope, proposals_from_envelope
+from app.models.canon_wire import CanonEnvelopeWire
+from app.services.canon_semantics import CanonAudit, proposals_from_envelope
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.semantic_receipt_context import memory_evidence
 
@@ -241,9 +242,9 @@ FACT SEMANTICS:
                         ),
                     ),
                 ],
-                max_tokens=1400,
+                max_tokens=3500,
                 temperature=0.0,
-                response_model=CanonEnvelope,
+                response_model=CanonEnvelopeWire,
             )
         except LLMProviderError as exc:
             self.last_audit = CanonAudit(
@@ -289,17 +290,18 @@ FACT SEMANTICS:
                         "АВТОРИТЕТНЫЙ РЕЗУЛЬТАТ ДМа:\n"
                         f"{assistant_content}\n\n"
                         "ПРЕДЫДУЩИЙ JSON СЕМАНТИЧЕСКИ ОТКЛОНЁН:\n"
-                        f"{reason}\n"
+                        f"{reason}\n{json.dumps(data, ensure_ascii=False)}\n"
                         "Сформируй envelope заново. Evidence должен быть точным "
                         "фрагментом результата ДМа. Каждый durable outcome должен "
-                        "иметь нормализуемый proposal с именами только из списка "
-                        "известных сущностей."
+                        "иметь нормализуемый proposal с обязательными полями его типа. "
+                        "Ссылки *_id используют только каталог сущностей. subject, predicate "
+                        "и object_value факта — текстовые понятия, они не ограничены каталогом."
                     ),
                 ),
             ],
-            max_tokens=1400,
+            max_tokens=3500,
             temperature=0.0,
-            response_model=CanonEnvelope,
+            response_model=CanonEnvelopeWire,
         )
         return self._parse_data(
             repaired,
@@ -361,6 +363,7 @@ FACT SEMANTICS:
         results: list[ProposedChangeCreate] = []
         surviving_outcomes: set[str] = set()
         failed_normalization: dict[str, dict] = {}
+        rejected_deltas: dict[str, list[dict]] = {}
         rejected_actor_knowledge: set[str] = set()
         existing_gaps = set(audit.gap_outcome_ids)
 
@@ -412,6 +415,10 @@ FACT SEMANTICS:
                     surviving_outcomes.add(outcome_id)
             elif outcome_id:
                 failed_normalization[outcome_id] = canon_meta
+                rejected_deltas.setdefault(outcome_id, []).append({
+                    "change_type": proposal.change_type.value,
+                    "payload": payload,
+                })
 
         new_gaps = sorted(set(failed_normalization) - surviving_outcomes - existing_gaps)
         for outcome_id in new_gaps:
@@ -423,6 +430,7 @@ FACT SEMANTICS:
                             "Evidence-backed outcome failed backend entity or payload normalization"
                         ),
                         "_canon": failed_normalization[outcome_id],
+                        "_rejected_deltas": rejected_deltas[outcome_id],
                     },
                 )
             )

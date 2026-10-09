@@ -267,7 +267,9 @@ async def test_established_state_comes_only_from_completed_world_steps(db_sessio
         ),
     )
     lines = await established_state_lines(db_session, campaign_id, scene.id)
-    assert lines == ["ставни — открыты: да."]
+    assert lines == ["ставни: открыты — да."]
+    from app.services.narration_publication_guard import NarrationPublicationGuard
+    assert NarrationPublicationGuard._player_facing_fragment(lines[0]) == lines[0]
 
 
 def test_publication_fallback_keeps_established_state():
@@ -312,7 +314,7 @@ def test_observation_outcome_does_not_override_established_state():
 
 
 def test_observation_publication_yields_to_established_state():
-    from app.models.narration_validation import NarrationValidationResult
+    from app.models.narration_validation import NarrationValidationResult, NarrationViolation
     from app.models.turn_authority import TurnAuthority
     from app.services.narration_publication_guard import NarrationPublicationGuard
 
@@ -330,7 +332,7 @@ def test_observation_publication_yields_to_established_state():
                 {
                     "action_type": "observation",
                     "status": "completed",
-                    "observable_outcome": "Илья осмотрел окна и кувшин.",
+                    "observable_outcome": "На столе стоит кувшин с водой.",
                 }
             ]
         },
@@ -338,7 +340,11 @@ def test_observation_publication_yields_to_established_state():
     published, guard = NarrationPublicationGuard.publish(
         authority,
         lie,
-        NarrationValidationResult(verdict="pass", summary="ok", violations=[]),
+        NarrationValidationResult(verdict="repair_required", summary="Противоречие состоянию ставней.",
+                                  violations=[NarrationViolation(
+                                      violation_type="canon_conflict", evidence=lie,
+                                      correction="Ставни уже открыты.",
+                                  )]),
     )
     assert guard["candidate_discarded"] is True
     assert "закрывал" not in published

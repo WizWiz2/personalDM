@@ -31,6 +31,8 @@ class PlayerActionIntent(BaseModel):
 
     action_type: IntentActionType
     intent: str = Field(min_length=2, max_length=500)
+    depends_on_previous: bool = True
+    actor_role: Literal["speaker", "addressee"] = "speaker"
 
     # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
@@ -92,12 +94,16 @@ class PlayerIntentContract(BaseModel):
     world_state_question: bool = False
     questions: list[str] = Field(default_factory=list, max_length=8)
 
+    clarification_required: str | None = Field(default=None, max_length=1000)
+
     # Player-agency boundaries that remain unresolved after this input.
     pending_player_choice: str | None = Field(default=None, max_length=1000)
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
     def validate_response_target(self):
+        if self.clarification_required and self.actions:
+            raise ValueError("clarification cannot authorize executable actions")
         if not self.addressed_response_requested:
             self.addressed_character_name = None
         return self

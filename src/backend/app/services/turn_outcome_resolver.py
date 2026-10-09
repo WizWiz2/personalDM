@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.addressed_response import AddressedResponse, QuestionResponse
+from app.models.addressed_response import AddressedResponse, QuestionResponse, RouteDirection
 from app.models.player_intent import (
     ActionOutcomeDecision,
     DestinationProfilePatch,
@@ -42,7 +42,10 @@ from app.services.turn_planner import TurnPlanningError
 
 _OUTCOME_PROMPT = """[FROZEN INTENT OUTCOME RESOLVER]
 Resolve only external results of the immutable PLAYER INTENT CONTRACT. Return TurnOutcomeDecisionDraft
-with concise Russian strings. No dice, checks, protagonist emotions, extra acts or postponed outcomes.
+with concise Russian strings. Each action retains its frozen actor_role: speaker is the controlled
+player character, addressee is the addressed NPC. response_speaker_name only owns the reply;
+it never replaces the performer of a speaker-owned action. observable_outcome describes the
+external result, not a restatement of who tries to act. No dice, checks, protagonist emotions, extra acts or postponed outcomes.
 action_outcomes is required: exactly one result per frozen index, [] when actions=[]. Never add,
 merge, reorder or reinterpret acts. auto_success executes now and needs a concrete observable_outcome;
 safe_mundane may be true only for success. requires_choice is allowed only for pending_player_choice.
@@ -72,6 +75,11 @@ person, not an absent known character. No atmosphere-only filler or untyped new 
 
 For actions=[] supply a concrete external reply/beat. Answer every addressed question directly with
 available knowledge; express ignorance or a grounded refusal when appropriate. Do not invent secrets.
+Missing prior detail is not established ignorance. As DM you may author an unspecified local
+causal answer or firsthand observation about an EXISTING event/thread when compatible with this
+actor's established access, knowledge and canon. Answer it here, rather than first committing
+ignorance and leaving scene development to contradict it. Existing secrets, explicit knowledge
+limits and private/foreign sources still constrain the answer. Claims stay attributed to the actor.
 When response_requested=true, direct_response must contain the addressee's actual words answering the
 questions now, not a nod, anticipation, atmospheric description or promise to answer later. If the
 information is unknown, say so directly. Never fill this field with the protagonist's reaction.
@@ -89,9 +97,19 @@ The revealed name must occur verbatim in those words; an aggregate direct_respon
 reveal a different name. Evidence is bound to that actual answer, not a separately paraphrased quote.
 Do not reveal or change an already established personal name. Otherwise both revelation fields null.
 When the frozen contract contains questions, return question_responses with exactly one entry for
-each question_index. Choose answer/unknown/refuse/deflect and actual spoken words. Ignorance and
+each question_index. Choose answer/unknown/refuse/deflect and actual spoken words.
+Set delivery=spoken for actual speech: words contains only the utterance, no speaker label or
+stage directions. Set delivery=nonverbal for a gesture/action with no spoken utterance; never
+quote it as dialogue. An information question normally needs spoken information or explicit ignorance.
+Ignorance and
 refusal must be explicit; a deflection must be a deliberate in-world response, not postponed prose.
 These are attributed character claims, never objective facts merely because somebody said them.
+When approved speech gives actual directions, preserve route_directions: destination (canonical
+name), via (named waypoints), speech_index (index in spoken answers, or 0 for direct_response),
+evidence (the engine binds this to the selected utterance). Generate only NEW directions given
+in this response; prior-turn routes remain in their original source and must not be reissued.
+Merely mentioning a place is not
+directions. This records a sourced discovery lead; it never proves access or removes obstacles.
 For world_state_question answer existing state in observable_consequences without performing it again.
 No complication without a grounded complication_source. destination_profile only enriches an explicitly
 new destination with stable public physical traits; it cannot change the route or introduce people.
@@ -194,20 +212,12 @@ def is_pure_ordinary_travel(contract: PlayerIntentContract) -> bool:
 
 
 def seeks_contact_or_presence(contract: PlayerIntentContract) -> bool:
-    """Contact/presence/exploration intent from frozen IR signals only.
+    """Use the frozen social-intent signal, not a physical action's domain.
 
-    Pure ordinary travel is not contact-seeking: Soft Keeper must not soft-stall a
-    committed move by forcing introduce_contact / atmosphere-only recovery.
-    Movement that shares a turn with interaction/observation/address still seeks contact.
+    Inspecting an object or moving locally does not require inventing a person.
+    The interpreter already marks seeking people as an addressed response.
     """
-    if contract.addressed_response_requested:
-        return True
-    if is_pure_ordinary_travel(contract):
-        return False
-    return any(
-        action.action_type in {"interaction", "service", "observation", "movement"}
-        for action in contract.actions
-    )
+    return contract.addressed_response_requested
 
 
 def _is_dead_or_blank(value: object) -> bool:
@@ -317,6 +327,12 @@ class OutcomeNpcIntroductionDraft(BaseModel):
         return self
 
 
+class DirectorContactProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    introduction: OutcomeNpcIntroductionDraft | None
+    reason: str = Field(min_length=10, max_length=180)
+
+
 class TurnOutcomeDecisionDraft(BaseModel):
     """Permissive semantic draft with a mandatory action coverage field.
 
@@ -337,6 +353,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
     response_revealed_name: str | None = Field(default=None, max_length=120)
     response_name_evidence: str | None = Field(default=None, max_length=500)
     question_responses: list[QuestionResponse] = Field(default_factory=list, max_length=8)
+    route_directions: list[RouteDirection] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     canon_constraints: list[str] = Field(default_factory=list, max_length=8)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
@@ -448,7 +465,20 @@ def _outcome_wire_model(
                 )
         action_model = reduce(or_, variants)
 
+    class ReferencedRouteDirection(RouteDirection):
+        evidence: str = Field(default="", max_length=1000)
+        speech_index: Literal[tuple(range(question_count or 1))]
+
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
+        route_directions: list[ReferencedRouteDirection] = Field(default_factory=list, max_length=4 if requires_response or question_count else 0)
+
+        @model_validator(mode="before")
+        @classmethod
+        def discard_prior_response_routes(cls, value):
+            if isinstance(value, dict) and not (requires_response or question_count):
+                return {**value, "route_directions": []}
+            return value
+
         response_speaker_name: speaker_type = None
         response_after_action_index: prerequisite_type = None
         response_revealed_name: revealed_name_type = None
@@ -543,6 +573,14 @@ def _outcome_wire_model(
                     revealed_name=self.response_revealed_name,
                     name_evidence=self.response_name_evidence,
                 )
+            if self.route_directions:
+                bound_response = AddressedResponse(
+                    direct_response=self.direct_response,
+                    questions=questions or [""] * question_count,
+                    answers=self.question_responses,
+                    route_directions=self.route_directions,
+                )
+                self.route_directions = bound_response.route_directions
             dependencies = [
                 self.response_after_action_index,
                 *(npc.after_action_index for npc in self.npc_introductions),
@@ -801,6 +839,7 @@ def normalize_outcome_draft(
                 name_evidence=draft.response_name_evidence,
                 questions=contract.questions,
                 answers=sorted(draft.question_responses, key=lambda item: item.question_index),
+                route_directions=draft.route_directions,
             ).model_dump()
             if draft.direct_response or draft.question_responses
             else None,
@@ -808,11 +847,6 @@ def normalize_outcome_draft(
                 list(
                     dict.fromkeys(
                         [
-                            *(
-                                [draft.direct_response]
-                                if draft.direct_response and not draft.question_responses
-                                else []
-                            ),
                             *draft.observable_consequences,
                             *[
                                 item["observable_outcome"]
@@ -999,6 +1033,7 @@ class TurnOutcomeResolver:
         contract: PlayerIntentContract,
         *,
         force_introduce_contact: bool = False,
+        director_context: dict | None = None,
     ) -> TurnOutcomeDecision:
         try:
             solo_cast = solo_physical_presence(context_messages)
@@ -1061,10 +1096,13 @@ class TurnOutcomeResolver:
                 "seeks_contact_or_presence": seeks_contact_or_presence(contract),
             }
             empty_cast_guidance = ""
-            if (solo_cast and seeks_contact_or_presence(contract)) or force_introduce_contact:
+            if ((solo_cast and seeks_contact_or_presence(contract)) or force_introduce_contact
+                    or (director_context or {}).get("structural_introduction_requested")):
                 empty_cast_guidance = (
-                    "\n[EMPTY CAST / CONTACT-SEEKING]\n"
-                    "The authoritative scene currently has no other physically present people. "
+                    "\n[CONTACT INTRODUCTION / CAST SCOPE]\n"
+                    + ("The authoritative scene currently has no other physically present people. "
+                       if solo_cast else "Existing present characters remain in the scene. ")
+                    +
                     "Do not resolve this as atmosphere-only filler. Prefer either (1) a complete "
                     "grounded npc_introductions entry for a newly encountered local person with a "
                     "role (temporary_name=true unless the human already supplied a personal name), "
@@ -1074,6 +1112,15 @@ class TurnOutcomeResolver:
                     "anyone who answers or appears. «Ничего не происходит» is not an acceptable "
                     "control outcome here."
                 )
+                if (director_context or {}).get("structural_introduction_requested"):
+                    empty_cast_guidance += (
+                        "\nThe director explicitly authorizes a new grounded local contact independently "
+                        "of the human's action. Introduce that person through npc_introductions now; "
+                        "Existing contacts do not fulfill an introduction of a NEW contact; "
+                        "absence of a prewritten NPC is not a prohibition. Their later initiative "
+                        "belongs to scene development. Preserve the frozen player acts and their "
+                        "outcomes; an unavailable introduction must not block those acts."
+                    )
             data = await self._router.generate_json(
                 self._provider,
                 selection,
@@ -1096,6 +1143,11 @@ class TurnOutcomeResolver:
                             + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
                             + json.dumps(response_contract, ensure_ascii=False)
                             + empty_cast_guidance
+                            + "\n[GAME MASTER DEVELOPMENT POLICY — planning priorities, not evidence]\n"
+                            + json.dumps(director_context or {}, ensure_ascii=False)
+                            + "\nResolve attempts to a useful result: discovery, specific clue, eliminated "
+                              "hypothesis or concrete obstacle. Do not postpone an ordinary search into "
+                              "another description of searching. Honor frozen acts and established canon."
                             + "\nResolve the requested exchange now; answer the actual questions."
                         ),
                     ),
@@ -1109,6 +1161,40 @@ class TurnOutcomeResolver:
             decision = stamp_world_state_answer(decision, contract)
             self._validate_coverage(contract, decision)
             decision = self._normalize_temporary_identities(decision)
+            if not decision.npc_introductions and ((director_context or {}).get("structural_introduction_requested")
+                    or self._requires_contact_introduction(contract, context_messages, decision,
+                                                          force_introduce_contact=force_introduce_contact)):
+                try:
+                    contact = await self._router.generate_json(self._provider, selection, [
+                        ChatMessage(role="system", content=(
+                            "[DIRECTOR CONTACT — STRUCTURE ONLY]\nThe director authorizes a grounded local "
+                            "NPC to become present NOW. Supply one complete introduction with a short "
+                            "temporary role as canonical_name; no invented personal name. A prewritten "
+                            "NPC is not required. Use an observed approaching person if available. "
+                            "Do not invent/redo player acts, give dialogue, move the hero or grant items. "
+                            "Description/appearance: one concrete sentence each (at least 32 characters). "
+                            "introduction=null only for an actual canon restriction, explained in reason. "
+                            "Return DirectorContactProposal JSON.")),
+                        ChatMessage(role="user", content=json.dumps({
+                            "context": authoritative_context,
+                            "executed_consequences": decision.observable_consequences,
+                            "director": director_context,
+                        }, ensure_ascii=False))], max_tokens=650, temperature=0.2,
+                        response_model=DirectorContactProposal)
+                    proposal = DirectorContactProposal.model_validate(contact)
+                    if proposal.introduction:
+                        profile = proposal.introduction.model_dump(mode="json")
+                        profile.update(temporary_name=True, personal_name_evidence=None,
+                                       after_action_index=len(contract.actions) - 1 if contract.actions else None)
+                        from app.models.player_intent import OutcomeNpcIntroduction
+                        intro = OutcomeNpcIntroduction.model_validate(profile)
+                        decision = self._normalize_temporary_identities(decision.model_copy(
+                            update={"npc_introductions": [intro]}))
+                    self.audit.append({"phase": "director_contact", "status": "completed",
+                                       "introduced": bool(proposal.introduction), "reason": proposal.reason})
+                except (LLMProviderError, ValueError, TypeError) as exc:
+                    self.audit.append({"phase": "director_contact", "status": "unavailable",
+                                       "error_type": type(exc).__name__})
             if self._requires_contact_introduction(
                 contract,
                 context_messages,

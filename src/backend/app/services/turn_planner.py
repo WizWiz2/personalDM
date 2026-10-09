@@ -78,6 +78,9 @@ class ActionStepPlan(BaseModel):
         "blocked",
     ]
     safe_mundane: bool = False
+    depends_on_previous: bool = True
+    actor_id: UUID | None = None
+    actor_name: str | None = None
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
     public_blocking_reason: str | None = Field(default=None, max_length=1000)
@@ -182,6 +185,7 @@ class TurnPlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     player_intent: str = Field(min_length=1, max_length=500)
+    clarification_required: str | None = Field(default=None, max_length=1000)
     resolution: Literal[
         "success",
         "partial_success",
@@ -441,6 +445,8 @@ The plan itself does not update canon.
         ]
         for step in execution.steps:
             label = f"{step.step_index + 1}. {step.intent}"
+            if step.actor_name:
+                label += f" [performer: {step.actor_name}]"
             if step.status == "completed":
                 lines.append(
                     f"{label} -> COMPLETED: "

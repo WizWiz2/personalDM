@@ -10,6 +10,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Entity, Scene, SceneThesis, Turn
+from app.db.thesis_lifecycle_table import ThesisLifecycleProfile
 from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
@@ -223,8 +224,20 @@ class TurnUndoService:
         await WorldReducer(self._session).rebuild(campaign_id)
         await self._remove_turn_introductions(campaign_id, assistant_turn_id)
         # Curator-created working-memory rows from the undone turn must not remain active.
-        # Existing theses changed by a curator are not reconstructed here; unlike durable canon,
-        # they are short-lived scene working memory and will be reconciled on the next active turn.
+        if assistant:
+            snapshot = assistant.context_snapshot or {}
+            if isinstance(snapshot, str):
+                snapshot = json.loads(snapshot)
+            for thesis_id, change in (snapshot.get("working_memory_changes") or {}).items():
+                thesis = await self._session.get(SceneThesis, thesis_id)
+                if (not thesis or thesis.scene_id != str(assistant.scene_id)
+                    or thesis.status != change["after_status"]):
+                    continue
+                thesis.status = change["before_status"]
+                profile = await self._session.get(ThesisLifecycleProfile, thesis_id)
+                if profile and change.get("before_profile"):
+                    for key, value in change["before_profile"].items():
+                        setattr(profile, key, value)
         await self._session.execute(
             delete(SceneThesis).where(
                 SceneThesis.source_turn_id == str(assistant_turn_id),

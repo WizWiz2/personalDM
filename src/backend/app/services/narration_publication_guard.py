@@ -9,6 +9,11 @@ from app.models.turn_authority import TurnAuthority
 class NarrationPublicationError(RuntimeError):
     """Raised when typed authority has no honest player-facing projection."""
 
+    def __init__(self, message: str, authority: TurnAuthority | None = None):
+        super().__init__(message)
+        self.telemetry = ({"phase": "publication_projection", "authority": authority.model_dump(mode="json")}
+                          if authority is not None else {})
+
 
 class NarrationPublicationGuard:
     """Publish validated prose or a deterministic projection of typed authority.
@@ -48,7 +53,9 @@ class NarrationPublicationGuard:
         r"продвинуться\s+дальше\s+пока\s+не\s+уда[её]тся)",
         flags=re.IGNORECASE,
     )
-    LEDGER_PATTERN = re.compile(r"\s—\s[^—\n]{1,80}:")
+    # An execution row has a leading task/owner before its separator. Ordinary
+    # dialogue can start with a dash and contain a colon; it is not a ledger.
+    LEDGER_PATTERN = re.compile(r"(?:^|\n)[^.!?…:—\n]{1,160}\s—\s[^—\n«»\"]{1,80}:")
     OBLIGATION_PATTERN = re.compile(
         r"получает прямое обращение и даёт ответ",
         flags=re.IGNORECASE,
@@ -120,32 +127,13 @@ class NarrationPublicationGuard:
                 "error_count": len(errors),
                 "candidate_discarded": True,
                 "validated_surface": False,
+                "scene_development_projected": cls._development_was_projected(authority, fallback),
                 "unproven_question_coverage": unproven_response,
             }
 
-        # An observation does not restate a slot a completed world step already owns.
-        # That slot's text is the step outcome. Sentences about any other subject stay.
-        if cls._observation_yields_to_established_state(authority):
-            locked = " ".join(
-                safe
-                for line in authority.established_state
-                if (safe := cls._player_facing_fragment(line))
-            )
-            if not locked:
-                locked = cls._safe_authority_projection(authority)
-            remainder = cls._observation_remainder(candidate, authority.established_subjects)
-            fallback = cls._emit(authority, locked if not remainder else f"{locked} {remainder}")
-            return fallback, {
-                "mode": "authority_projection",
-                "candidate_characters": len(candidate),
-                "published_characters": len(fallback),
-                "error_count": len(errors),
-                "candidate_discarded": True,
-                "validated_surface": False,
-                "reason": "established_state",
-                "remainder_kept": bool(remainder),
-            }
-
+        # Validator checks established facts for every domain. A passing look
+        # must keep its prose just like any other passing act; the mere presence
+        # of remembered facts is not a reason to dump them into the game response.
         # Normalize only for deterministic inspection. If the candidate passes these
         # hard publication invariants, preserve the narrator's original paragraphing
         # and punctuation rather than flattening good prose into one line.
@@ -171,6 +159,7 @@ class NarrationPublicationGuard:
             "error_count": 0,
             "candidate_discarded": True,
             "validated_surface": False,
+            "scene_development_projected": cls._development_was_projected(authority, fallback),
         }
 
     @staticmethod
@@ -206,17 +195,6 @@ class NarrationPublicationGuard:
             kept.append(sentence)
         return " ".join(kept).strip()
 
-    def _observation_yields_to_established_state(authority: TurnAuthority) -> bool:
-        """A look does not outrank state a completed world step already set."""
-        if not authority.established_state:
-            return False
-        sequence = authority.action_sequence if isinstance(authority.action_sequence, dict) else {}
-        steps = sequence.get("steps")
-        if not isinstance(steps, list):
-            return False
-        typed = [step for step in steps if isinstance(step, dict) and step.get("action_type")]
-        return bool(typed) and all(step.get("action_type") == "observation" for step in typed)
-
     @staticmethod
     def _emit(authority: TurnAuthority, text: str) -> str:
         from app.services.play_surface_contract import apply_play_surface
@@ -228,10 +206,33 @@ class NarrationPublicationGuard:
         rendered = cls.render_authority(authority)
         safe = cls._player_facing_fragment(rendered)
         if safe:
-            return cls._as_sentence(safe)
+            return "\n\n".join([cls._as_sentence(safe), *cls._development_projection(authority)])
         raise NarrationPublicationError(
             "TurnAuthority has no player-facing typed outcome; refusing generic no-change fiction"
         )
+
+    @classmethod
+    def _development_projection(cls, authority: TurnAuthority) -> list[str]:
+        development = authority.scene_development
+        if not development:
+            return []
+        fragments = []
+        if development.world_development:
+            fragments.extend([development.world_development.development,
+                              development.world_development.player_opportunity])
+        for action in development.actions:
+            fragments.append(action.action)
+            if action.player_opportunity:
+                fragments.append(action.player_opportunity)
+        safe = [cls._player_facing_fragment(fragment) for fragment in fragments]
+        # Keep all approved acts together or omit their receipts together.
+        return [cls._as_sentence(fragment) for fragment in safe] if safe and all(safe) else []
+
+    @classmethod
+    def _development_was_projected(cls, authority: TurnAuthority, published: str) -> bool:
+        fragments = cls._development_projection(authority)
+        surface = cls._clean(published)
+        return bool(fragments) and all(cls._clean(fragment) in surface for fragment in fragments)
 
     @classmethod
     def surgical_repair_candidate(
@@ -341,6 +342,8 @@ class NarrationPublicationGuard:
     @classmethod
     def render_authority(cls, authority: TurnAuthority) -> str:
         """Render only executed/typed outcomes; never promote guidance hooks into world truth."""
+        if authority.clarification_required:
+            return authority.clarification_required
         blocked = cls._blocked_in_world_fallback(authority)
         if blocked is not None:
             parts: list[str] = []
@@ -356,7 +359,6 @@ class NarrationPublicationGuard:
                             cls._append_unique(parts, safe)
                     elif step.get("status") == "blocked":
                         cls._append_unique(parts, blocked)
-                        break
             if not parts:
                 cls._append_unique(parts, blocked)
             for fragment in cls._response_fragments(authority):
@@ -366,6 +368,10 @@ class NarrationPublicationGuard:
         parts = cls._response_fragments(authority)
         # Observation describes. It does not replace a state a completed world step already set.
         observation_outcomes: set[str] = set()
+        replaced_subjects = {
+            subject.casefold() for subject in authority.established_subjects
+            if subject and subject.casefold() in authority.player_input.casefold()
+        }
         sequence = authority.action_sequence if isinstance(authority.action_sequence, dict) else {}
         steps = sequence.get("steps")
         if authority.established_state and isinstance(steps, list):
@@ -375,14 +381,44 @@ class NarrationPublicationGuard:
                 outcome = " ".join(str(step.get("observable_outcome") or "").split())
                 if outcome:
                     observation_outcomes.add(outcome)
+        # Per-step receipts are authoritative even when the resolver omitted the
+        # redundant turn-level consequences. Planned/skipped acts never project.
+        if isinstance(steps, list):
+            for step in steps:
+                if not isinstance(step, dict) or step.get("status") != "completed":
+                    continue
+                outcome = " ".join(str(step.get("observable_outcome") or "").split())
+                if outcome in observation_outcomes:
+                    if not authority.established_subjects:
+                        continue
+                    replaced_subjects.update(
+                        subject.casefold() for subject in authority.established_subjects
+                        if subject and subject.casefold() in outcome.casefold()
+                    )
+                    outcome = cls._observation_remainder(outcome, authority.established_subjects)
+                safe = cls._player_facing_fragment(outcome)
+                if safe:
+                    cls._append_unique(parts, safe)
+        response = authority.addressed_response
+        response_contents = {
+            " ".join(words.split())
+            for words in ([answer.words for answer in response.answers] or [response.direct_response or ""])
+        } if response else set()
         for consequence in authority.observable_consequences:
             normalized = " ".join(str(consequence or "").split())
-            if normalized in observation_outcomes:
+            if normalized in observation_outcomes or normalized in response_contents:
                 continue
             safe = cls._player_facing_fragment(consequence)
             if safe:
                 cls._append_unique(parts, safe)
+        # Stored state replaces observations about the same stored subject; it
+        # is not a transcript to append to every unrelated completed result.
+        has_executed_result = bool(parts)
         for item in authority.established_state:
+            if has_executed_result and authority.established_subjects and not any(
+                item.casefold().startswith(subject) for subject in replaced_subjects
+            ):
+                continue
             safe = cls._player_facing_fragment(item)
             if safe:
                 cls._append_unique(parts, safe)
@@ -415,7 +451,7 @@ class NarrationPublicationGuard:
 
         if not parts:
             raise NarrationPublicationError(
-                "TurnAuthority contains no executed player-facing result"
+                "TurnAuthority contains no executed player-facing result", authority
             )
 
         return " ".join(cls._as_sentence(value) for value in parts if value.strip()).strip()
@@ -425,13 +461,30 @@ class NarrationPublicationGuard:
         response = authority.addressed_response
         parts: list[str] = []
         if response:
+            labels = {response.speaker_name, authority.acting_character_name, *response.speaker_aliases}
+            cleaned_words = []
             for words in response.speech_fragments():
+                words = words.strip()
+                for _ in range(3):
+                    head, sep, tail = words.partition(":")
+                    if not sep or head.strip().casefold() not in {
+                        name.casefold() for name in labels if name
+                    }:
+                        break
+                    words = tail.strip().strip("«»")
+                cleaned_words.append(words)
+            for words in [" ".join(dict.fromkeys(cleaned_words))]:
                 safe = cls._player_facing_fragment(words)
                 if safe:
                     cls._append_unique(
                         parts,
                         f"{response.speaker_name}: «{safe}»" if response.speaker_name else safe,
                     )
+            for answer in response.answers:
+                if answer.delivery == "nonverbal":
+                    safe = cls._player_facing_fragment(answer.words)
+                    if safe:
+                        cls._append_unique(parts, safe)
         return parts
 
     @classmethod

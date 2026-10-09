@@ -55,6 +55,20 @@ class TurnIntentPlanningPipeline:
                 str(location.id): location.canonical_name for location in locations
             },
         )
+        if contract.clarification_required:
+            from app.models.player_intent import TurnOutcomeDecision
+            decision = TurnOutcomeDecision(
+                resolution="uncertain",
+                observable_consequences=[contract.clarification_required],
+            )
+            plan = await self._compiler.compile(campaign_id, contract, decision)
+            return plan, {
+                "architecture": "frozen_player_intent_v1",
+                "outcome_owner": "clarification",
+                "intent_contract": contract.model_dump(mode="json"),
+                "outcome_decision": decision.model_dump(mode="json"),
+                "intent_audit": list(self._intent.audit),
+            }
         # Director moves are selected before outcome resolution so force_introduce_contact
         # can drive the existing contact-seeking recovery path. Rhythm is NOT persisted here.
         seek_contact = seeks_contact_or_presence(contract)
@@ -64,8 +78,17 @@ class TurnIntentPlanningPipeline:
             campaign_id,
             seek_contact=seek_contact,
             empty_companion_cast=empty_cast,
+            committed_travel=is_pure_ordinary_travel(contract),
             persist_rhythm=False,
         )
+
+        director_context = {
+            "master": persona.display_name, "brief": persona.brief,
+            "policy": persona.move_policy.model_dump(), "moves": list(director.moves),
+            "obligations": list(director.obligations),
+            "structural_introduction_requested": director.structural_introduction_requested,
+            "rhythm": rhythm_before.model_dump(mode="json"),
+        }
 
         decision = await self._compiler.resolve_known_travel(campaign_id, contract)
         outcome_owner = "route_graph" if decision is not None else "external_resolver"
@@ -76,16 +99,20 @@ class TurnIntentPlanningPipeline:
                 user_input,
                 contract,
                 force_introduce_contact=director.forced_introduce_contact,
+                director_context=director_context,
             )
-        elif director.forced_introduce_contact and not decision.npc_introductions:
+        elif director.forced_introduce_contact and seek_contact and not decision.npc_introductions:
             # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver
-            # so forced contact-seeking still requires typed introductions.
+            # so explicit contact-seeking still requires typed introductions. A style
+            # move alone must not replace a proven route with another model call: the
+            # destination's actual cast is prepared before scene development.
             decision = await self._outcomes.resolve(
                 selection,
                 context_messages,
                 user_input,
                 contract,
                 force_introduce_contact=True,
+                director_context=director_context,
             )
             outcome_owner = "external_resolver_forced_intro"
         missing = await self._compiler.missing_destination_profiles(
@@ -128,6 +155,7 @@ class TurnIntentPlanningPipeline:
             "outcome_audit": list(self._outcomes.audit),
             "game_master": {
                 "id": persona.id,
+                "development_policy": director_context,
                 "display_name": persona.display_name,
                 "moves": list(director.moves),
                 "forced_introduce_contact": director.forced_introduce_contact,

@@ -13,7 +13,7 @@ from app.models.proposed_change import ChangeType, ProposalAction, ProposedChang
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
 from app.services.canon_applier import CanonApplier
-from app.services.canon_semantics import CanonEnvelope
+from app.models.canon_wire import FactEnvelopeWire
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.semantic_receipt_context import memory_evidence
 
@@ -322,7 +322,7 @@ async def _recover_interaction_facts(
                     "[EXECUTED INTERACTION FACT RECOVERY]\n"
                     "Recover only a missing durable OBJECTIVE world-state fact from one completed "
                     "RPG turn. EXECUTED WORLD RESULTS are machine-confirmed outcomes. The published "
-                    "narrator text may make the resulting stable state explicit. Return CanonEnvelope "
+                    "narrator text may make the resulting stable state explicit. Return FactEnvelopeWire "
                     "with zero or more FACT proposals only; do not return knowledge, relationships, "
                     "events, movement, item transfer, theses or narrative details. Never turn quoted "
                     "speech, opinions, claims, questions, player intent, mood or decorative prose into "
@@ -344,11 +344,11 @@ async def _recover_interaction_facts(
                 ),
             ),
         ],
-        max_tokens=700,
+        max_tokens=1800,
         temperature=0.0,
-        response_model=CanonEnvelope,
+        response_model=FactEnvelopeWire,
     )
-    envelope = CanonEnvelope.model_validate(data)
+    envelope = FactEnvelopeWire.model_validate(data)
     scribe._current_scene_id = scene_id  # noqa: SLF001
     recovered = scribe._parse_data(  # noqa: SLF001
         envelope.model_dump(mode="json"),
