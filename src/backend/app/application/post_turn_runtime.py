@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.db.tables import PostTurnJob
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.job_repo import PostTurnJobRepository
+from app.db.tables import PostTurnJob
 from app.services.post_turn_dispatcher import PostTurnDispatcher
 
 
