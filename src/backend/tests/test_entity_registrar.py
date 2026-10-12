@@ -556,6 +556,70 @@ async def test_inflected_surface_of_a_live_person_never_mints_a_twin(db_session:
     assert (await entities.get_character(yund.id)).canonical_name == 'Юнд'
 
 
+@pytest.mark.asyncio
+async def test_adjacent_russian_name_is_created_when_published_scene_distinguishes_person(
+    db_session: AsyncSession,
+):
+    """«Макара» is a second character, not automatically a case form of «Макар»."""
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    makar = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Макар", current_location_id=tavern.id,
+    ))
+    text = 'Макар стоит у двери. Девушка говорит: «Меня зовут Макара».'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=[
+        {"characters": [{
+            "canonical_name": "Макара", "temporary_name": False,
+            "presence": "present", "evidence": "Меня зовут Макара",
+            "personal_name_evidence": "Меня зовут Макара",
+        }]},
+        {"is_distinct_person": True, "evidence": "Меня зовут Макара"},
+    ])
+
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text,
+    )
+
+    assert len(result.created_ids) == 1
+    assert not result.conflicts
+    assert result.created_ids[0] != makar.id
+    created = await entities.get_character(result.created_ids[0])
+    assert created.canonical_name == "Макара"
+    assert (await entities.get_character(makar.id)).canonical_name == "Макар"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_adjacent_name_is_canon_gap_not_silent_drop(
+    db_session: AsyncSession,
+):
+    """If the narration does not establish distinctness, preserve the uncertainty."""
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    await EntityRepository(db_session).create_character(
+        campaign_id, CharacterCreate(canonical_name="Макар", current_location_id=tavern.id),
+    )
+    text = "В журнале фигурирует имя Макара."
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=[
+        {"characters": [{
+            "canonical_name": "Макара", "presence": "mentioned_only",
+            "evidence": "имя Макара", "temporary_name": False,
+            "name_surface": "Макара",
+        }]},
+        {"is_distinct_person": None, "evidence": "имя Макара"},
+    ])
+
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, promotion_only=True,
+    )
+
+    assert result.created_ids == []
+    assert len(result.conflicts) == 1
+    assert result.conflicts[0]["error"] == "Ambiguous adjacent-name identity"
+
+
 def test_prose_cannot_type_a_departure():
     """A11 T8: «Илья вместе со Степаном выходит во двор» removed Степан from the scene while no
     step moved him; presence leaves only through typed steps (trips, a beat's leave, movement)."""
