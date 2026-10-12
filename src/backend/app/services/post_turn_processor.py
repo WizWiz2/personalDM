@@ -16,8 +16,8 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.proposed_change import ChangeType, ProposalAction
-from app.services.actor_turn_authority_guard import speech_spans
 from app.services import campaign_write_barrier
+from app.services.actor_turn_authority_guard import speech_spans
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
