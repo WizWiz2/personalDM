@@ -175,6 +175,25 @@ def test_regeneration_undoes_previous_pair_and_reexecutes_user_action(client: Te
     assert old_assistant["status"] == "undone"
 
 
+def test_regeneration_of_non_latest_turn_refuses_to_rewrite_history(
+    client: TestClient, mock_llm,
+):
+    campaign_id = client.post(
+        "/api/campaigns", json={"name": "Regeneration guard"}
+    ).json()["id"]
+    endpoint = f"/api/campaigns/{campaign_id}/turns"
+    client.post(endpoint, json={"role": "user", "content": "I open the ledger."})
+    client.post(endpoint, json={"role": "user", "content": "I close the ledger."})
+    history_before = client.get(endpoint).json()
+
+    response = client.post(
+        f"{endpoint}/{history_before[1]['id']}/regenerate"
+    )
+    assert response.status_code == 400
+    assert "latest active" in response.json()["detail"]
+    assert client.get(endpoint).json() == history_before
+
+
 def test_new_turn_uses_current_scene_even_if_client_sends_stale_scene(
     client: TestClient,
     mock_llm,
