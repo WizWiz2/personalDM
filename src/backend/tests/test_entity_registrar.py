@@ -506,6 +506,24 @@ async def test_named_offscreen_person_becomes_an_off_scene_entity(db_session: As
     assert created.id not in scene_after.participants
 
 
+
+def test_name_inflection_gate_does_not_merge_similar_distinct_people():
+    """Edit-distance/prefix similarity is not proof of an identity or an inflection."""
+    from types import SimpleNamespace
+
+    mara = SimpleNamespace(canonical_name="Мара", aliases=[], status="active")
+    yund = SimpleNamespace(canonical_name="Юнд", aliases=[], status="active")
+    assert not EntityRegistrar._inflected_twin_of_existing("Марат", [mara])
+    assert not EntityRegistrar._inflected_twin_of_existing("Мара", [
+        SimpleNamespace(canonical_name="Марат", aliases=[], status="active")
+    ])
+    assert not EntityRegistrar._inflected_twin_of_existing("Юнда", [
+        SimpleNamespace(canonical_name="Юнд", aliases=[], status="dead")
+    ])
+    assert EntityRegistrar._inflected_twin_of_existing("Юнда", [yund])
+    assert EntityRegistrar._inflected_twin_of_existing("Юндом", [yund])
+
+
 @pytest.mark.asyncio
 async def test_inflected_surface_of_a_live_person_never_mints_a_twin(db_session: AsyncSession):
     """Playtest 2026-10-12: «Юнда» read out of «пометка Юнда» became a second character
