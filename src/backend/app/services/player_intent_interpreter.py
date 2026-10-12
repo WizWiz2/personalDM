@@ -51,6 +51,10 @@ teleportation/force/stealth/ability only for explicitly chosen means, never infe
 An unsuccessful attempted move is still a committed act. Example: "Иду в A, затем пытаюсь пройти
 в B; прямого прохода в B нет" => two movement actions, destination_location=A then B, both ordinary.
 Keep the second attempt; do not encode the missing passage by deleting its action or changing its type.
+Explicitly sequenced commitments all survive: N distinct world acts stated by the human become N
+ordered actions of their own types — never collapse "запишу X, потом выйду к причалу" into one step
+and never drop the later act because an earlier act dominates the sentence. Connectives alone are
+not proof of multiplicity; a commitment the human actually stated is.
 Success and blockers are resolved only AFTER this extraction, including for known impossible attempts.
 Inventory: take/drop/place/give with exact contextual IDs; give also needs inventory_target_id.
 drop releases the item into the place; place deliberately positions it on/in a named surface/container.
@@ -848,9 +852,23 @@ class PlayerIntentInterpreter:
         # These are extraction candidates, not frozen actions yet. Syntax decides actor
         # person/mood, never whether an imperative's meaning is speech or a physical act.
         kinds = {item.action_index: item.contribution_kind for item in review.action_ownership}
+        removed = [
+            action for index, action in enumerate(draft.actions) if kinds[index] != "world_action"
+        ]
         draft.actions = [
             action for index, action in enumerate(draft.actions) if kinds[index] == "world_action"
         ]
+        if removed:
+            # Durable per-turn evidence of candidates that became speech and stopped being
+            # executable. Without it a multi-action turn reads as if the planner silently
+            # dropped steps (playtest 2026-10-12).
+            self.audit.append(
+                {
+                    "phase": "speech_filtered_actions",
+                    "removed": [action.action_type for action in removed],
+                    "remaining": len(draft.actions),
+                }
+            )
         return review
 
     async def _bind_destinations(
