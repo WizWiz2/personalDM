@@ -55,6 +55,49 @@ async def test_single_fact_revises_old_value_and_exact_assert_is_noop(
 
 
 @pytest.mark.asyncio
+async def test_scene_state_single_slot_survives_a_multi_cardinality_vote(
+    db_session: AsyncSession,
+):
+    """Playtest 2026-10-12: four contradictory «ритм стука под настилом» observations
+    stayed current together. A scene-state slot holds one value per subject+predicate
+    no matter what cardinality vote the scribe attached."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Single slot"))
+    repo = FactRepository(db_session)
+    scene_id = uuid4()
+
+    async def knock(value):
+        return await repo.apply_change(
+            campaign_id,
+            FactCreate(
+                subject="Лодка", predicate="ритм стука под настилом",
+                object_value=value, memory_kind="scene_state", scene_id=scene_id,
+            ),
+            cardinality="multi",
+        )
+
+    first = await knock("неровный, редкий")
+    await knock("частый, двойной")
+    third = await knock("глухие удары в киль")
+    await repo.apply_change(
+        campaign_id,
+        FactCreate(
+            subject="Лодка", predicate="причалена к", object_value="сваям у сходней",
+            memory_kind="scene_state", scene_id=scene_id,
+        ),
+        cardinality="multi",
+    )
+
+    active = await repo.list_active(campaign_id)
+    assert (await repo.get_by_id(first.id)).is_current is False
+    assert {fact.predicate for fact in active} == {"ритм стука под настилом", "причалена к"}
+    assert [fact.object_value for fact in active if fact.predicate == "ритм стука под настилом"] == [
+        "глухие удары в киль",
+    ]
+    assert third.is_current is True
+
+
+@pytest.mark.asyncio
 async def test_a_known_entitys_new_scene_state_supersedes_the_old_whatever_its_predicate(
     db_session: AsyncSession,
 ):
