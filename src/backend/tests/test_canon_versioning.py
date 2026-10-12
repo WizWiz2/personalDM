@@ -129,6 +129,77 @@ async def test_scene_state_preserves_distinct_predicates_and_resolves_entity_ali
 
 
 @pytest.mark.asyncio
+async def test_same_label_different_typed_objects_are_not_superseded(
+    db_session: AsyncSession,
+):
+    """Two distinct physical boats may share a narration label and predicate."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Two boats")
+    )
+    entities = EntityRepository(db_session)
+    boat_a = await entities.create(
+        campaign_id, EntityCreate(
+            entity_type=EntityType.ITEM, canonical_name="Лодка с красным парусом",
+        ),
+    )
+    boat_b = await entities.create(
+        campaign_id, EntityCreate(
+            entity_type=EntityType.ITEM, canonical_name="Лодка с белым парусом",
+        ),
+    )
+    repo, scene_id = FactRepository(db_session), uuid4()
+
+    async def boat(entity_id, name, value):
+        return await repo.apply_change(campaign_id, FactCreate(
+            subject=name, predicate="местоположение", object_value=value,
+            scene_id=scene_id, memory_kind="scene_state",
+            subject_entity_id=entity_id,
+        ))
+
+    old_a = await boat(boat_a.id, "лодка", "у причала")
+    old_b = await boat(boat_b.id, "лодка", "у мыса")
+    assert (await repo.get_by_id(old_a.id)).is_current is True
+    assert (await repo.get_by_id(old_b.id)).is_current is True
+
+    new_a = await boat(boat_a.id, "первая лодка", "у скал")
+    assert (await repo.get_by_id(old_a.id)).superseded_by == new_a.id
+    assert (await repo.get_by_id(old_b.id)).is_current is True
+    assert {
+        (fact.subject_entity_id, fact.object_value)
+        for fact in await repo.list_active(campaign_id)
+    } == {(boat_a.id, "у скал"), (boat_b.id, "у мыса")}
+
+
+@pytest.mark.asyncio
+async def test_untyped_scene_assertion_does_not_revise_a_typed_object(
+    db_session: AsyncSession,
+):
+    """An ambiguous prose label must not silently overwrite known entity state."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Typed and untyped")
+    )
+    boat = await EntityRepository(db_session).create(
+        campaign_id, EntityCreate(
+            entity_type=EntityType.ITEM, canonical_name="Сивая чайка",
+        ),
+    )
+    repo, scene_id = FactRepository(db_session), uuid4()
+    typed = await repo.apply_change(campaign_id, FactCreate(
+        subject="лодка", predicate="состояние", object_value="опечатана",
+        scene_id=scene_id, memory_kind="scene_state",
+        subject_entity_id=boat.id,
+    ))
+    untyped = await repo.apply_change(campaign_id, FactCreate(
+        subject="лодка", predicate="состояние", object_value="на плаву",
+        scene_id=scene_id, memory_kind="scene_state",
+    ))
+    assert (await repo.get_by_id(typed.id)).is_current is True
+    assert (await repo.get_by_id(untyped.id)).is_current is True
+
+
+@pytest.mark.asyncio
 async def test_multi_fact_keeps_multiple_values_and_retracts_one(
     db_session: AsyncSession,
 ):
