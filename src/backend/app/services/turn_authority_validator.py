@@ -168,6 +168,7 @@ short prose-only fix in Russian. Return exactly:
         result: NarrationValidationResult | None,
         beat_failure: str | None = None,
         repeats: list[str] = (),
+        script_intrusions: list[str] = (),
     ) -> str:
         violations = [
             f"- {item.violation_type}: «{item.evidence}» -> {item.correction}"
@@ -181,6 +182,8 @@ short prose-only fix in Russian. Return exactly:
             )
         violations += [f"- дословный повтор уже сказанного: «{line}» -> скажи иначе или новое."
                        for line in repeats]
+        violations += [f"- символы чужого письма в тексте: «{word}» -> напиши это слово по-русски."
+                       for word in script_intrusions]
         return (
             "[REPAIR REJECTED NARRATION]\n"
             "Отредактируй текст минимально: исправь только перечисленные места и сохрани всё "

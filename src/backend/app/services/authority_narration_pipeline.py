@@ -22,7 +22,7 @@ from app.providers.llm_provider import (
 from app.services.actor_turn_authority_guard import _word_key, segment_actor_response
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
-from app.services.script_consistency import consistent_script
+from app.services.script_consistency import consistent_script, foreign_script_intrusions
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.llm_usage_tracker import record_decision, record_provider_telemetry
 from app.services.turn_authority_validator import TurnAuthorityValidator
@@ -415,11 +415,26 @@ class AuthorityNarrationPipeline:
         try:
             beat_failure = self._beat_failure(authority, draft, beat)
             repeats = await self._repeats(campaign_id, draft)
-            result = None if beat_failure or repeats else await self._check(
-                **check, candidate=draft, attempt_index=0
-            )
-            if result and result.verdict == "pass":
-                return await accepted(draft, "passed", 0, beat=beat)
+            # Foreign-script garbage words are decoder noise, not prose: like a verbatim
+            # repeat they disqualify the candidate from the surface, and the repair call
+            # is told exactly which words to replace (playtest 2026-10-12: CJK tokens
+            # reached published text because consistent_script only fixes mixed words).
+            intrusions = foreign_script_intrusions(draft)
+            # A missed beat grant is an unhonored initiative decoration, not a forbidden
+            # fact. When only the beat failed, the four-ban validator still guards the
+            # authority surface: validated prose must reach the player instead of the
+            # deterministic projection (playtest 2026-10-12: most safe_fallbacks were
+            # otherwise-clean candidates lost to a grammatical-subject miss).
+            if repeats or intrusions:
+                result = None
+            else:
+                result = await self._check(**check, candidate=draft, attempt_index=0)
+                if result.verdict == "pass":
+                    if beat_failure:
+                        return await accepted(
+                            draft, "passed", 0, reason=f"beat_unhonored: {beat_failure}"
+                        )
+                    return await accepted(draft, "passed", 0, beat=beat)
 
             record_decision(
                 "repair", "requested", {"strategy": "single_model_repair"},
@@ -429,7 +444,10 @@ class AuthorityNarrationPipeline:
                 *narrator_messages,
                 ChatMessage(
                     role="user",
-                    content=validator.repair_prompt(authority, draft, result, beat_failure, repeats),
+                    content=validator.repair_prompt(
+                        authority, draft, result, beat_failure, repeats,
+                        script_intrusions=intrusions,
+                    ),
                 ),
             ]
             try:
@@ -451,11 +469,20 @@ class AuthorityNarrationPipeline:
             telemetry = {**telemetry, "repair_generation": repair_telemetry}
             repaired_failure = self._beat_failure(authority, repaired, repaired_beat)
             repeats = await self._repeats(campaign_id, repaired)
-            repaired_result = None if repaired_failure or repeats else await self._check(
-                **check, candidate=repaired, attempt_index=1
-            )
-            if repaired_result and repaired_result.verdict == "pass":
-                return await accepted(repaired, "repaired", 1, beat=repaired_beat)
+            repaired_intrusions = foreign_script_intrusions(repaired)
+            if repeats or repaired_intrusions:
+                repaired_result = None
+            else:
+                repaired_result = await self._check(
+                    **check, candidate=repaired, attempt_index=1
+                )
+                if repaired_result.verdict == "pass":
+                    if repaired_failure:
+                        return await accepted(
+                            repaired, "repaired", 1,
+                            reason=f"beat_unhonored: {repaired_failure}",
+                        )
+                    return await accepted(repaired, "repaired", 1, beat=repaired_beat)
             return await self._fallback(
                 audit=audit,
                 run=run,
