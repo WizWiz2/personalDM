@@ -58,11 +58,6 @@ def test_adjacent_name_is_only_an_arbitration_candidate_not_an_identity_decision
     assert EntityRegistrar._inflected_twin_of_existing("Макара", [existing]) is True
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=f"a bare role designation must not hijack an unrelated keeper; the slot bind "
-    f"is blind to the profession semantics ({REVIEW} §3b)",
-)
 def test_foreign_role_designator_does_not_hijack_the_keeper() -> None:
     location = uuid4()
     keeper = SimpleNamespace(
