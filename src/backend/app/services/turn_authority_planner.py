@@ -8,8 +8,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, model_validator
 
 from app.config import settings
-from app.models.turn import ChatMessage
 from app.models.addressed_response import AddressedResponse
+from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.entity_identity import identity_key
@@ -666,7 +666,6 @@ short sentence. Return exactly the NpcContactDecision schema.
     ) -> None:
         """Keep local approach/body motion out of the physical location graph."""
         del context_messages, player_input
-        return
 
     @property
     def telemetry(self) -> dict:
