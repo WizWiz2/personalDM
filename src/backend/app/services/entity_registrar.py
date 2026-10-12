@@ -853,17 +853,31 @@ class EntityRegistrar:
         «Юнд»). Single-token names only; multi-token identities are covered by the
         existing collision contract.
         """
-        key = identity_key(name)
-        if not key or len(key.split()) != 1 or len(key) < 3:
+        proposed = name.strip().casefold()
+        # Prefix resemblance is not morphology ("Мара" != "Марат"). Only block
+        # a proposed oblique suffix of an existing Cyrillic consonant-stem name.
+        # This intentionally has false negatives; creating a legitimate new NPC
+        # is safer than silently merging distinct identities by edit distance.
+        if not proposed.isalpha() or len(proposed) < 4:
             return False
         for entity in entities:
-            surfaces = [getattr(entity, "canonical_name", None), *(getattr(entity, "aliases", None) or [])]
+            if getattr(entity, "status", "active") != "active":
+                continue
+            surfaces = [
+                getattr(entity, "canonical_name", None),
+                *(getattr(entity, "aliases", None) or []),
+            ]
             for existing in surfaces:
-                other = identity_key(existing)
-                if not other or len(other.split()) != 1 or other == key:
+                base = str(existing or "").strip().casefold()
+                if not base.isalpha() or len(base) < 3 or base == proposed:
                     continue
-                short, long_ = sorted((key, other), key=len)
-                if len(short) >= 3 and long_.startswith(short) and len(long_) - len(short) <= 3:
+                if not all(
+                    "CYRILLIC" in unicodedata.name(char, "") for char in base + proposed
+                ):
+                    continue
+                if base[-1] in "аеёиоуыэюяьъй":
+                    continue
+                if proposed in {base + suffix for suffix in ("а", "у", "ом", "ем", "е", "ы", "и")}:
                     return True
         return False
 
