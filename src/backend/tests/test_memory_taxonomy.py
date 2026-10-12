@@ -108,7 +108,7 @@ async def test_gaze_is_demoted_from_fact_to_narrative_detail(
 async def test_transient_texture_is_extracted_without_scribe_fact(
     db_session: AsyncSession,
 ):
-    campaign_id, scene, character = await campaign_scene_character(db_session)
+    campaign_id, scene, _character = await campaign_scene_character(db_session)
     details = await MemoryTaxonomyService(db_session).extract_narrative_details(
         campaign_id,
         scene.id,
