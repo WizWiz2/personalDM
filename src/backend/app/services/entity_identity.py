@@ -161,19 +161,10 @@ def resolve_character_candidates(
                 return temporary_matches
             if retained_matches:
                 return retained_matches
-            # A bare role designation for this place ("смотритель причала") binds to the
-            # unique structured slot holder of the target location, even after promotion
-            # hid the stored role. No holder or several holders stay fail-closed.
-            if temporary_name:
-                keeper_matches = [
-                    entity
-                    for entity in entities
-                    if str(
-                        (getattr(entity, "custom_fields", None) or {}).get("slot_id") or ""
-                    ) == str(target_location_id)
-                ]
-                if len(keeper_matches) == 1:
-                    return keeper_matches
+            # A location slot is NOT identity evidence: a unique keeper of a pier
+            # is not necessarily every other person described by a different role.
+            # Exact stored roles are resolved above. Unproven semantic role aliases
+            # must be explicitly adjudicated, not silently merged on slot_id alone.
 
     # A narrator may type both the newly revealed name and the NPC's already-known role.  The
     # role is not a new identity constraint in that case: when exactly one temporary character is
