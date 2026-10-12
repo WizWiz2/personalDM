@@ -10,10 +10,9 @@ def _character(name: str, custom_fields: dict):
     )
 
 
-def test_bare_role_designation_binds_the_unique_slot_keeper() -> None:
-    """Playtest 2026-10-12: «Смотритель причала» minted beside the already-promoted
-    keeper of that place. The unique structured slot holder answers a bare role
-    designation for its location, even after promotion hid the stored role."""
+def test_unique_slot_does_not_prove_an_unknown_role_is_the_keeper() -> None:
+    """A slot is a physical/world role, not evidence that two different labels
+    represent one person. Unproven semantic role aliases fail closed."""
     location = uuid4()
     keeper = _character("Эйрик Хальворсен", {
         "temporary_name": False,
@@ -29,7 +28,7 @@ def test_bare_role_designation_binds_the_unique_slot_keeper() -> None:
         target_location_id=location,
         character_locations={keeper.id: location},
     )
-    assert candidates == [keeper]
+    assert candidates == []
 
 
 def test_several_slot_holders_at_the_location_stay_fail_closed() -> None:
