@@ -146,7 +146,7 @@ class TurnUndoService:
                 )
             else:
                 await service.rewind_pending_rhythm(campaign_id)
-        except Exception:  # noqa: BLE001 - rhythm rewind is best effort
+        except Exception:
             logger.exception("Unable to rewind game-master rhythm on undo for %s", campaign_id)
 
         if action_sequence:
