@@ -228,11 +228,20 @@ class FactRepository(BaseRepository):
             scene_id=data.scene_id,
             memory_kind=data.memory_kind,
         )
-        # An entity may have multiple simultaneous scene-state properties. Do not
-        # supersede every fact sharing subject_entity_id: location/presence is owned
-        # by the physical world, while predicates such as "carries" and "is injured"
-        # can both hold. Only the exact (scope, scene, subject, predicate) slot is
-        # eligible for supersession here.
+        # Entity ID is a stronger subject key than the narrator's changing surface
+        # ("служащий" / "Служащий трактира"). Preserve distinct predicates, but
+        # supersede the same predicate for the same physical entity in this scene.
+        if data.subject_entity_id and data.memory_kind == "scene_state":
+            seen_ids = {fact.id for fact in current}
+            current.extend(
+                fact for fact in await self.list_active(campaign_id, scene_id=data.scene_id)
+                if fact.subject_entity_id == data.subject_entity_id
+                and fact.memory_kind == "scene_state"
+                and fact.scope == data.scope
+                and fact.scene_id == data.scene_id
+                and self.normalize(fact.predicate) == self.normalize(data.predicate)
+                and fact.id not in seen_ids
+            )
         object_key = self.normalize(data.object_value)
         truth_key = self.normalize(data.truth_status)
 
