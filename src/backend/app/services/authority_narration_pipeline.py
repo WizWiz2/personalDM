@@ -491,7 +491,15 @@ class AuthorityNarrationPipeline:
                     f"beat grant not honored after one repair: {repaired_failure}"
                     if repaired_failure
                     else f"verbatim repeat after one repair: {repeats[0]}" if repeats
-                    else repaired_result.summary or "narration still breaks a ban after one repair"
+                    else (
+                        "foreign-script intrusions after one repair: "
+                        + ", ".join(repaired_intrusions)
+                    ) if repaired_intrusions
+                    else (
+                        repaired_result.summary
+                        if repaired_result is not None and repaired_result.summary
+                        else "narration still breaks a ban after one repair"
+                    )
                 ),
                 repair_attempts=1,
                 telemetry=telemetry,
