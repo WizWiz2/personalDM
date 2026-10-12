@@ -227,15 +227,22 @@ class FactRepository(BaseRepository):
             scene_id=data.scene_id,
             memory_kind=data.memory_kind,
         )
-        # Entity ID is a stronger subject key than the narrator's changing surface
-        # ("служащий" / "Служащий трактира"). Preserve distinct predicates, but
-        # supersede the same predicate for the same physical entity in this scene.
-        if data.subject_entity_id and data.memory_kind == "scene_state":
+        # A free-text subject is NOT physical identity. Two registered objects
+        # may have the same label ("лодка", "лужа крови") in the same scene.
+        # Typed assertions can only supersede facts about that exact entity.
+        # Untyped assertions cannot implicitly overwrite a registered entity.
+        current = [
+            fact for fact in current
+            if fact.subject_entity_id == data.subject_entity_id
+        ]
+        if data.subject_entity_id:
+            # Match the same typed entity even when the storyteller changes its
+            # surface designation. Keep unrelated predicates and scopes intact.
             seen_ids = {fact.id for fact in current}
             current.extend(
                 fact for fact in await self.list_active(campaign_id, scene_id=data.scene_id)
                 if fact.subject_entity_id == data.subject_entity_id
-                and fact.memory_kind == "scene_state"
+                and fact.memory_kind == data.memory_kind
                 and fact.scope == data.scope
                 and fact.scene_id == data.scene_id
                 and self.normalize(fact.predicate) == self.normalize(data.predicate)
