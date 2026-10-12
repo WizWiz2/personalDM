@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from uuid import UUID
 
@@ -16,6 +17,9 @@ from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.truth_engine import CanonicalEventStore, WorldReducer
+
+
+logger = logging.getLogger(__name__)
 
 
 class TurnUndoService:
@@ -142,8 +146,8 @@ class TurnUndoService:
                 )
             else:
                 await service.rewind_pending_rhythm(campaign_id)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 - rhythm rewind is best effort
+            logger.exception("Unable to rewind game-master rhythm on undo for %s", campaign_id)
 
         if action_sequence:
             if not await sequence_executor.undo_applied(
