@@ -6,7 +6,7 @@ import unicodedata
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -75,6 +75,15 @@ class PersonalNameBindingDecision(PersonalNameRevealDecision):
         if self.is_explicit and self.entity_id is None:
             raise ValueError("is_explicit=true requires the existing speaker's entity_id")
         return self
+
+
+class AdjacentNameIdentityDecision(BaseModel):
+    """Adjudicate a possible case-form collision using the published scene, not spelling."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_distinct_person: bool | None = None
+    evidence: str | None = Field(default=None, max_length=600)
 
 
 class PublishedNameRevealDecision(PersonalNameBindingDecision):
@@ -449,12 +458,26 @@ class EntityRegistrar:
                     # person who is only mentioned is an off-scene entity, not an appearance.
                     continue
                 if self._inflected_twin_of_existing(name, character_entities):
-                    # An inflected surface is not a new person: «Юнда» read out of
-                    # «пометка Юнда» must not become a second character beside «Юнд».
-                    # Creating identities from case forms twins live people
-                    # (playtest 2026-10-12). Skipping is fail-soft: the prose stands,
-                    # no canon is minted.
-                    continue
+                    # Morphology nominates POSSIBLE coreference candidates; it cannot
+                    # veto a distinct person ("Макар" and "Макара" can coexist).
+                    # Adjudicate against the published text and existing identity
+                    # cards. An uncertain result becomes a visible canon gap.
+                    identity = await self._adjudicate_adjacent_name(
+                        selection, assistant_content, mention, character_entities,
+                        character_profiles,
+                    )
+                    if identity == "same":
+                        continue
+                    if identity != "distinct":
+                        result.conflicts.append({
+                            "description": (
+                                f"Имя {name} может быть отдельным персонажем или "
+                                "падежной формой уже известного имени."
+                            ),
+                            "evidence": mention.evidence,
+                            "error": "Ambiguous adjacent-name identity",
+                        })
+                        continue
                 character = await self._entities.create_character(
                     campaign_id,
                     CharacterCreate(
@@ -843,9 +866,68 @@ class EntityRegistrar:
             and cls._name_supported_by_text(" ".join(surface), assistant_content)
         )
 
+    async def _adjudicate_adjacent_name(
+        self, selection, assistant_content: str, mention: CharacterMention,
+        entities, character_profiles,
+    ) -> str:
+        """Rare LLM arbitration; a suffix match is a hint, never an identity verdict.
+
+        Require an exact published evidence span. Neither a model-generated name
+        nor an unsourced claim may silently merge or create a physical person.
+        """
+        candidates = [
+            entity for entity in entities
+            if entity.status == "active"
+            and self._inflected_twin_of_existing(mention.canonical_name, [entity])
+        ]
+        if not candidates:
+            return "distinct"
+        try:
+            data = await self._router.generate_json(
+                self._provider, selection, [
+                    ChatMessage(role="system", content=(
+                        "Ты проверяешь только идентичность двух похожих русских имён "
+                        "в УЖЕ ОПУБЛИКОВАННОЙ сцене. Совпадение основы слова НЕ "
+                        "доказывает, что это один человек. Например, Макар и Макара "
+                        "могут быть двумя разными персонажами; Юнда может быть "
+                        "родительным падежом имени Юнд. Верни is_distinct_person=true "
+                        "лишь если текст ясно вводит отдельную личность; false, если "
+                        "упоминание явно обозначает уже известного персонажа; null, "
+                        "если различить нельзя. evidence — точная цитата из сцены, "
+                        "подтверждающая вердикт. Не придумывай события и цитаты."
+                    )),
+                    ChatMessage(role="user", content=json.dumps({
+                        "proposed_mention": mention.model_dump(mode="json"),
+                        "possible_existing_people": [
+                            self._identity_card(character_profiles[str(e.id)])
+                            for e in candidates
+                            if character_profiles.get(str(e.id))
+                        ],
+                        "published_text": assistant_content,
+                    }, ensure_ascii=False)),
+                ],
+                max_tokens=300, temperature=0.0,
+                response_model=AdjacentNameIdentityDecision,
+            )
+            decision = AdjacentNameIdentityDecision.model_validate(data)
+        except (LLMProviderError, ValidationError, ValueError, TypeError):
+            return "uncertain"
+
+        evidence = (decision.evidence or "").strip()
+        if (
+            not evidence or evidence not in assistant_content
+            or not self._name_supported_by_text(mention.canonical_name, evidence)
+        ):
+            return "uncertain"
+        if decision.is_distinct_person is True:
+            return "distinct"
+        if decision.is_distinct_person is False:
+            return "same"
+        return "uncertain"
+
     @staticmethod
     def _inflected_twin_of_existing(name: str, entities) -> bool:
-        """True when a single-token name is a case form of a live identity.
+        """True when a name MAY be a case form of a live identity.
 
         Russian oblique forms stay close to the stem («Юнд»→«Юнда», «Тормод»→
         «Тормода»). Exact identity_key equality was the only prior check, so such
