@@ -98,31 +98,40 @@ async def test_scene_state_single_slot_survives_a_multi_cardinality_vote(
 
 
 @pytest.mark.asyncio
-async def test_a_known_entitys_new_scene_state_supersedes_the_old_whatever_its_predicate(
+async def test_scene_state_preserves_distinct_predicates_and_resolves_entity_aliases(
     db_session: AsyncSession,
 ):
+    """A typed entity can carry multiple scene properties; only the same predicate
+    is replaced, even if later prose calls the entity by another name."""
     campaign_id = uuid4()
-    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Scene state"))
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Scene state properties")
+    )
     attendant = await EntityRepository(db_session).create(
-        campaign_id, EntityCreate(entity_type=EntityType.CHARACTER, canonical_name="Служащий трактира")
+        campaign_id, EntityCreate(
+            entity_type=EntityType.CHARACTER, canonical_name="Служащий трактира"
+        )
     )
     repo, scene_id = FactRepository(db_session), uuid4()
 
-    async def state(subject, predicate, value, subject_id=None):
+    async def state(subject, predicate, value):
         return await repo.apply_change(campaign_id, FactCreate(
-            subject=subject, predicate=predicate, object_value=value, memory_kind="scene_state",
-            scene_id=scene_id, subject_entity_id=subject_id,
+            subject=subject, predicate=predicate, object_value=value,
+            memory_kind="scene_state", scene_id=scene_id,
+            subject_entity_id=attendant.id,
         ))
 
-    kitchen = await state("Служащий трактира", "занят на кухне", "переносит миски", attendant.id)
-    await state("служащий", "находится", "за стойкой", attendant.id)
-    await state("полтинник", "лежит", "на стойке")
-    await state("полтинник", "блестит", "в свете лампы")
+    first = await state("Служащий трактира", "держит", "книгу")
+    location = await state("служащий", "настроение", "тревожное")
+    updated = await state("служащий", "держит", "фонарь")
 
-    assert (await repo.get_by_id(kitchen.id)).is_current is False
-    assert sorted(fact.predicate for fact in await repo.list_active(campaign_id)) == [
-        "блестит", "лежит", "находится",
-    ]
+    assert (await repo.get_by_id(first.id)).is_current is False
+    assert (await repo.get_by_id(first.id)).superseded_by == updated.id
+    assert (await repo.get_by_id(location.id)).is_current is True
+    active = await repo.list_active(campaign_id)
+    assert {(fact.predicate, fact.object_value) for fact in active} == {
+        ("держит", "фонарь"), ("настроение", "тревожное"),
+    }
 
 
 @pytest.mark.asyncio
