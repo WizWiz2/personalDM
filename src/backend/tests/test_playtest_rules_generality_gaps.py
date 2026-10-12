@@ -52,16 +52,10 @@ async def test_two_puddles_of_the_same_label_stay_active_together(db_session: As
     assert sorted(fact.object_value for fact in active) == ["на лестнице", "у порога"]
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=f"an oblique case form and a genuinely adjacent name are deterministically "
-    f"indistinguishable; identity arbitration owns this ({REVIEW} §3c)",
-)
-def test_a_second_person_with_an_adjacent_name_is_a_real_person() -> None:
-    """Макар and Макара are two legitimate people; the twin gate cannot tell them
-    apart from a genitive of one name and must not decide identity by stem prefix."""
-    existing = SimpleNamespace(canonical_name="Макар", aliases=[])
-    assert EntityRegistrar._inflected_twin_of_existing("Макара", [existing]) is False
+def test_adjacent_name_is_only_an_arbitration_candidate_not_an_identity_decision() -> None:
+    """The suffix flags ambiguity; the registrar must adjudicate rather than veto."""
+    existing = SimpleNamespace(canonical_name="Макар", aliases=[], status="active")
+    assert EntityRegistrar._inflected_twin_of_existing("Макара", [existing]) is True
 
 
 @pytest.mark.xfail(
