@@ -214,12 +214,11 @@ class FactRepository(BaseRepository):
             else "assert"
         )
         cardinality = cardinality if cardinality in {"single", "multi"} else "single"
-        if data.memory_kind == "scene_state":
-            # A scene-state slot holds exactly one current value per (scene, subject,
-            # predicate), independent of the scribe's LLM cardinality vote. Contradictory
-            # observations must not stay active together (playtest 2026-10-12: four
-            # "ритм стука под настилом" values coexisted as current).
-            cardinality = "single"
+        # scene_state can describe a single-valued state or a set of simultaneously
+        # true observations. The memory kind alone cannot decide cardinality:
+        # ("кровь", "находится") may refer to two distinct unregistered puddles.
+        # Let the semantic taxonomy/scribe supply cardinality until a typed slot
+        # contract can prove exclusivity. Explicit revise still supersedes history.
         current = await self.find_current_by_key(
             campaign_id,
             data.subject,
