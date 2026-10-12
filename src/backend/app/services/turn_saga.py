@@ -16,6 +16,7 @@ from app.models.jobs import GenerationPhase
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProviderError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services import campaign_write_barrier
 from app.services.initial_world_state import InitialWorldStateService
 from app.services.llm_usage_tracker import (
     close_usage_context,
@@ -342,6 +343,7 @@ class TurnSaga:
         materializer: TurnOutcomeMaterializer | None = None
         materialized_outcome: MaterializedTurnOutcome | None = None
         prepared = False
+        barrier_held = False
         campaign_key = str(campaign_id)
         current_task = asyncio.current_task()
 
@@ -478,6 +480,13 @@ class TurnSaga:
                 authority,
                 source_turn_id=user_turn.id,
             )
+            # From the fingerprint capture until the publication commit the campaign is
+            # held exclusively against post-turn durable writes; otherwise a memory job
+            # auto-committing MOVEMENT/presence mid-narration would fail assert_unchanged
+            # and compensate a turn that was legitimately in flight.
+            campaign_barrier = campaign_write_barrier.for_campaign(campaign_id)
+            await campaign_barrier.acquire()
+            barrier_held = True
             world_frame = (
                 await TurnWorldFrame.capture(self._session, campaign_id, effective_scene_id)
                 if effective_scene_id else None
@@ -711,6 +720,8 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
+            if barrier_held:
+                campaign_write_barrier.for_campaign(campaign_id).release()
             if campaign_key in active_tasks and active_tasks[campaign_key] == current_task:
                 del active_tasks[campaign_key]
             await close_usage_context(usage_context_token)

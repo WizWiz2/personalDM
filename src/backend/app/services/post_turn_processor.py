@@ -17,6 +17,7 @@ from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.proposed_change import ChangeType, ProposalAction
 from app.services.actor_turn_authority_guard import speech_spans
+from app.services import campaign_write_barrier
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
 from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
@@ -381,22 +382,25 @@ class PostTurnProcessor:
                                 )
                         registration = EntityRegistrationResult()
                         if should_verify_identity:
+                            # add_participant below is fingerprinted by TurnWorldFrame.
+                            async with campaign_write_barrier.for_campaign(campaign_id):
+                                registration = await EntityRegistrar(self._session).register_from_turn(
+                                    campaign_id=campaign_id,
+                                    scene_id=assistant.scene_id,
+                                    source_turn_id=assistant.id,
+                                    assistant_content=assistant.content,
+                                    promotion_only=True,
+                                )
+                                await self._session.commit()
+                    else:
+                        async with campaign_write_barrier.for_campaign(campaign_id):
                             registration = await EntityRegistrar(self._session).register_from_turn(
                                 campaign_id=campaign_id,
                                 scene_id=assistant.scene_id,
                                 source_turn_id=assistant.id,
                                 assistant_content=assistant.content,
-                                promotion_only=True,
                             )
                             await self._session.commit()
-                    else:
-                        registration = await EntityRegistrar(self._session).register_from_turn(
-                            campaign_id=campaign_id,
-                            scene_id=assistant.scene_id,
-                            source_turn_id=assistant.id,
-                            assistant_content=assistant.content,
-                        )
-                        await self._session.commit()
                         assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
                         if not assistant or assistant.status != "active":
                             await self._finish_without_side_effects(
@@ -533,19 +537,25 @@ class PostTurnProcessor:
                         return
 
                     if proposals:
-                        created = await proposal_repo.create_batch(
-                            assistant.id,
-                            proposals,
-                        )
-                        if await self._uses_external_proposal_resolution(user_turn.id):
-                            applied_count = 0
-                            staged_count = len(created)
-                        else:
-                            applied_count, staged_count = await self._auto_commit_proposals(
-                                campaign_id,
+                        # MOVEMENT/presence proposals below mutate exactly the rows the
+                        # in-flight turn fingerprints between capture and publication.
+                        # Queue them behind the campaign write barrier; extraction already
+                        # finished read-only above, so a turn never waits on memory models.
+                        async with campaign_write_barrier.for_campaign(campaign_id):
+                            created = await proposal_repo.create_batch(
                                 assistant.id,
-                                created,
+                                proposals,
                             )
+                            if await self._uses_external_proposal_resolution(user_turn.id):
+                                applied_count = 0
+                                staged_count = len(created)
+                            else:
+                                applied_count, staged_count = await self._auto_commit_proposals(
+                                    campaign_id,
+                                    assistant.id,
+                                    created,
+                                )
+                            await self._session.commit()
                         logger.debug(
                             "Memory Scribe turn %s: extracted=%d auto_committed=%d staged=%d",
                             assistant.id,
