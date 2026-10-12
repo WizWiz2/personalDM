@@ -448,6 +448,13 @@ class EntityRegistrar:
                     # TurnAuthority owns physical first appearances. A personally named
                     # person who is only mentioned is an off-scene entity, not an appearance.
                     continue
+                if self._inflected_twin_of_existing(name, character_entities):
+                    # An inflected surface is not a new person: «Юнда» read out of
+                    # «пометка Юнда» must not become a second character beside «Юнд».
+                    # Creating identities from case forms twins live people
+                    # (playtest 2026-10-12). Skipping is fail-soft: the prose stands,
+                    # no canon is minted.
+                    continue
                 character = await self._entities.create_character(
                     campaign_id,
                     CharacterCreate(
@@ -835,6 +842,30 @@ class EntityRegistrar:
             and all(unicodedata.category(word[0]) == "Lu" for word in surface)
             and cls._name_supported_by_text(" ".join(surface), assistant_content)
         )
+
+    @staticmethod
+    def _inflected_twin_of_existing(name: str, entities) -> bool:
+        """True when a single-token name is a case form of a live identity.
+
+        Russian oblique forms stay close to the stem («Юнд»→«Юнда», «Тормод»→
+        «Тормода»). Exact identity_key equality was the only prior check, so such
+        surfaces minted twins of living people (playtest 2026-10-12: «Юнда» beside
+        «Юнд»). Single-token names only; multi-token identities are covered by the
+        existing collision contract.
+        """
+        key = identity_key(name)
+        if not key or len(key.split()) != 1 or len(key) < 3:
+            return False
+        for entity in entities:
+            surfaces = [getattr(entity, "canonical_name", None), *(getattr(entity, "aliases", None) or [])]
+            for existing in surfaces:
+                other = identity_key(existing)
+                if not other or len(other.split()) != 1 or other == key:
+                    continue
+                short, long_ = sorted((key, other), key=len)
+                if len(short) >= 3 and long_.startswith(short) and len(long_) - len(short) <= 3:
+                    return True
+        return False
 
     @staticmethod
     def _clean_name(value: str) -> str | None:

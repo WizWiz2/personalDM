@@ -87,6 +87,26 @@ def _temporary_role_key(entity) -> str:
     return identity_key(role)
 
 
+def _retained_role_key(entity) -> str:
+    """Stored role key for temporary identities and for identities promoted from a role.
+
+    Promotion replaced the role designation with a personal name but kept the structured
+    role. A later verbatim role mention in the same location must re-bind to the promoted
+    person instead of minting a twin (playtest 2026-10-12: «смотритель» mentions beside the
+    already-promoted конторщик). Exact stored-role string only — no role synonyms here."""
+    custom_fields = getattr(entity, "custom_fields", None) or {}
+    if not isinstance(custom_fields, dict):
+        return ""
+    if not (
+        custom_fields.get("temporary_name")
+        or custom_fields.get("identity_promoted_from")
+        or custom_fields.get("slot_id")
+    ):
+        return ""
+    role = custom_fields.get("role") or custom_fields.get("bootstrap_role")
+    return identity_key(role)
+
+
 def resolve_character_candidates(
     entities: Iterable,
     *,
@@ -124,15 +144,36 @@ def resolve_character_candidates(
     if target_location_id is not None and proposed_role:
         requested_role = identity_key(proposed_role)
         if requested_role:
+            # Temporary identities win first: promotion deliberately removes a person from
+            # role ambiguity, and a retained-role match must never re-introduce it (a second
+            # reveal next to an already-promoted same-role NPC stays unambiguous).
             temporary_matches = []
+            retained_matches = []
             for entity in entities:
                 entity_id = UUID(str(entity.id))
                 if character_locations.get(entity_id) != target_location_id:
                     continue
                 if _temporary_role_key(entity) == requested_role:
                     temporary_matches.append(entity)
+                elif _retained_role_key(entity) == requested_role:
+                    retained_matches.append(entity)
             if temporary_matches:
                 return temporary_matches
+            if retained_matches:
+                return retained_matches
+            # A bare role designation for this place ("смотритель причала") binds to the
+            # unique structured slot holder of the target location, even after promotion
+            # hid the stored role. No holder or several holders stay fail-closed.
+            if temporary_name:
+                keeper_matches = [
+                    entity
+                    for entity in entities
+                    if str(
+                        (getattr(entity, "custom_fields", None) or {}).get("slot_id") or ""
+                    ) == str(target_location_id)
+                ]
+                if len(keeper_matches) == 1:
+                    return keeper_matches
 
     # A narrator may type both the newly revealed name and the NPC's already-known role.  The
     # role is not a new identity constraint in that case: when exactly one temporary character is

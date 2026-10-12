@@ -506,6 +506,38 @@ async def test_named_offscreen_person_becomes_an_off_scene_entity(db_session: As
     assert created.id not in scene_after.participants
 
 
+@pytest.mark.asyncio
+async def test_inflected_surface_of_a_live_person_never_mints_a_twin(db_session: AsyncSession):
+    """Playtest 2026-10-12: «Юнда» read out of «пометка Юнда» became a second character
+    beside «Юнд» because identity equality was byte-exact. A case form of a live
+    single-token name is skipped: the prose stands, no canon is minted."""
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    yund = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name='Юнд', current_location_id=tavern.id,
+    ))
+    text = 'В старой тетради вывод: «место занято, пометка Юнда».'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(return_value={'characters': [{
+        'canonical_name': 'Юнда', 'temporary_name': False,
+        'presence': 'mentioned_only', 'evidence': text,
+        'name_surface': 'Юнда',
+    }]})
+
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, promotion_only=True,
+    )
+
+    assert result.created_ids == []
+    names = {
+        character.canonical_name
+        for character in await entities.list_by_campaign(campaign_id, 'character')
+    }
+    assert 'Юнда' not in names
+    assert (await entities.get_character(yund.id)).canonical_name == 'Юнд'
+
+
 def test_prose_cannot_type_a_departure():
     """A11 T8: «Илья вместе со Степаном выходит во двор» removed Степан from the scene while no
     step moved him; presence leaves only through typed steps (trips, a beat's leave, movement)."""
