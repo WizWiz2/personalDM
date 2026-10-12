@@ -133,7 +133,7 @@ def test_failed_generation_after_authority_is_contained(client: TestClient):
     assert active_turns[1]["content"] == response.text
 
 
-def test_regeneration_reuses_original_user_turn(client: TestClient, mock_llm):
+def test_regeneration_undoes_previous_pair_and_reexecutes_user_action(client: TestClient, mock_llm):
     campaign_id = client.post(
         "/api/campaigns",
         json={"name": "Regeneration"},
@@ -159,18 +159,20 @@ def test_regeneration_reuses_original_user_turn(client: TestClient, mock_llm):
         f"/api/campaigns/{campaign_id}/turns"
     ).json()
     assert len(active_history) == 2
-    assert active_history[0]["id"] == user_id
-    assert active_history[1]["parent_turn_id"] == user_id
+    assert active_history[0]["id"] != user_id
+    assert active_history[0]["content"] == "Inspect the archway."
+    assert active_history[1]["parent_turn_id"] == active_history[0]["id"]
 
     all_history = client.get(
         f"/api/campaigns/{campaign_id}/turns?active_only=False"
     ).json()
-    assert len(all_history) == 3
-    assert len([turn for turn in all_history if turn["role"] == "user"]) == 1
+    assert len(all_history) == 4
+    old_user = next(turn for turn in all_history if turn["id"] == user_id)
     old_assistant = next(
         turn for turn in all_history if turn["id"] == old_assistant_id
     )
-    assert old_assistant["status"] == "alternative"
+    assert old_user["status"] == "undone"
+    assert old_assistant["status"] == "undone"
 
 
 def test_new_turn_uses_current_scene_even_if_client_sends_stale_scene(
@@ -360,8 +362,13 @@ def test_planner_transition_rebuilds_narrator_context_without_old_npcs(
     snapshot = client.get(
         f"/api/campaigns/{state['campaign_id']}/debugger"
     ).json()
-    assert len(snapshot["scene_transitions"]) == 1
-    assert len(snapshot["scenes"]) == 2
+    # Undo preserves the first transition as historical evidence, but only the
+    # replacement is allowed to remain applied.
+    assert sum(
+        transition["status"] == "applied"
+        for transition in snapshot["scene_transitions"]
+    ) == 1
+    assert snapshot["active_scene"]["location_id"] == state["bedroom"]["id"]
 
 
 def test_failed_narration_preserves_new_scene_transition(client: TestClient):
