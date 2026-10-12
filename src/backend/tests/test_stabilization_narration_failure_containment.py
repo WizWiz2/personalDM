@@ -323,6 +323,58 @@ async def test_foreign_script_garbage_goes_to_repair_not_the_surface(db_session,
     assert "码头" not in result.text
 
 
+
+@pytest.mark.asyncio
+async def test_foreign_script_still_present_after_repair_falls_back_safely(db_session, monkeypatch):
+    """A repeated CJK intrusion is rejected without dereferencing a missing validator result."""
+    import app.services.authority_narration_pipeline as module
+    from app.models.narration_validation import NarrationValidationResult
+
+    campaign = await CampaignService(db_session).create_campaign(
+        CampaignCreate(name="Persistent script noise")
+    )
+    user_turn = await TurnRepository(db_session).create(
+        campaign.id, TurnCreate(role="user", content="Смотрю на причал.")
+    )
+    await db_session.commit()
+    host = uuid4()
+    noisy = "Причал тонет в тумане. 码头 пахнет смолой."
+    calls = []
+
+    class FakeRouter:
+        async def resolve(self, *args, **kwargs):
+            return SimpleNamespace(config=SimpleNamespace(model_name="m"), source="test")
+
+        async def generate_json(self, provider, selection, messages, **kwargs):
+            calls.append(messages)
+            return {"prose": noisy, "beat": {
+                "cast_id": str(host), "kind": "act", "evidence": noisy,
+            }}
+
+    async def accept(*args, **kwargs):
+        return NarrationValidationResult(verdict="pass")
+
+    monkeypatch.setattr(TurnAuthorityValidator, "validate", accept)
+    monkeypatch.setattr(module, "record_decision", lambda *a, **k: None)
+    authority = _authority(
+        campaign_id=campaign.id, trigger_turn_id=user_turn.id
+    ).model_copy(update={
+        "beat_owner_id": host, "beat_owner_name": "Смотритель",
+    })
+    result = await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
+        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
+        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+        narrator_selection=SimpleNamespace(
+            config=SimpleNamespace(model_name="m"), source="test"
+        ),
+        authority=authority,
+    )
+
+    assert len(calls) == 2
+    assert result.validation_status == "safe_fallback"
+    assert "码头" not in result.text
+
+
 @pytest.mark.asyncio
 async def test_granted_narration_schema_admits_only_the_owner_id(db_session):
     """Live B5 T4: the repair returned the owner's UUID with a typo and the turn fell back."""
