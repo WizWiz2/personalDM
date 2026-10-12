@@ -55,46 +55,40 @@ async def test_single_fact_revises_old_value_and_exact_assert_is_noop(
 
 
 @pytest.mark.asyncio
-async def test_scene_state_single_slot_survives_a_multi_cardinality_vote(
+async def test_scene_state_allows_explicit_multivalued_observations_and_targeted_revision(
     db_session: AsyncSession,
 ):
-    """Playtest 2026-10-12: four contradictory «ритм стука под настилом» observations
-    stayed current together. A scene-state slot holds one value per subject+predicate
-    no matter what cardinality vote the scribe attached."""
+    """Scene-state alone cannot assert single cardinality for an untyped subject.
+    Distinct values may coexist; a revision replaces only the specified old one."""
     campaign_id = uuid4()
-    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Single slot"))
-    repo = FactRepository(db_session)
-    scene_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Multivalued scene observations")
+    )
+    repo, scene_id = FactRepository(db_session), uuid4()
 
-    async def knock(value):
+    async def where(value, *, operation="assert", previous=None):
         return await repo.apply_change(
             campaign_id,
             FactCreate(
-                subject="Лодка", predicate="ритм стука под настилом",
-                object_value=value, memory_kind="scene_state", scene_id=scene_id,
+                subject="кровь", predicate="находится", object_value=value,
+                memory_kind="scene_state", scene_id=scene_id,
             ),
-            cardinality="multi",
+            operation=operation, cardinality="multi",
+            previous_object_value=previous,
         )
 
-    first = await knock("неровный, редкий")
-    await knock("частый, двойной")
-    third = await knock("глухие удары в киль")
-    await repo.apply_change(
-        campaign_id,
-        FactCreate(
-            subject="Лодка", predicate="причалена к", object_value="сваям у сходней",
-            memory_kind="scene_state", scene_id=scene_id,
-        ),
-        cardinality="multi",
-    )
+    first = await where("у порога")
+    second = await where("на лестнице")
+    assert {fact.object_value for fact in await repo.list_active(campaign_id)} == {
+        "у порога", "на лестнице",
+    }
 
-    active = await repo.list_active(campaign_id)
-    assert (await repo.get_by_id(first.id)).is_current is False
-    assert {fact.predicate for fact in active} == {"ритм стука под настилом", "причалена к"}
-    assert [fact.object_value for fact in active if fact.predicate == "ритм стука под настилом"] == [
-        "глухие удары в киль",
-    ]
-    assert third.is_current is True
+    correction = await where("на ступенях", operation="revise", previous="на лестнице")
+    assert (await repo.get_by_id(first.id)).is_current is True
+    assert (await repo.get_by_id(second.id)).superseded_by == correction.id
+    assert {fact.object_value for fact in await repo.list_active(campaign_id)} == {
+        "у порога", "на ступенях",
+    }
 
 
 @pytest.mark.asyncio
