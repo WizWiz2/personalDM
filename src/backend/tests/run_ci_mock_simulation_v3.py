@@ -8,6 +8,7 @@ import os
 import re
 from collections import Counter
 from pathlib import Path
+from typing import get_args
 
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 
@@ -423,7 +424,29 @@ def _consume_dm_failure_budget() -> bool:
 
 
 async def deterministic_generate_json(self, messages, config, api_key=None, **kwargs):
-    output = _dispatch_json(_all_text(messages))
+    response_model = kwargs.get("response_model")
+    if getattr(response_model, "__name__", "") == "GrantedNarration":
+        # Under an NPC beat, production requests strict JSON rather than a
+        # streaming narrator completion. Exercise that same typed transport.
+        beat_model = response_model.model_fields["beat"].annotation
+        owner_id = get_args(beat_model.model_fields["cast_id"].annotation)[0]
+        CALLS["granted_npc_beat"] += 1
+        evidence = (
+            "Я лично видел свежую отметку на стене. "
+            "Никто из караула не объяснил, откуда она взялась"
+        )
+        output = json.dumps({
+            "prose": f"— {evidence}, — говорит проводник.",
+            "beat": {
+                "cast_id": owner_id,
+                "kind": "speech",
+                "evidence": evidence,
+                "revealed_name": None,
+                "newcomer": None,
+            },
+        }, ensure_ascii=False)
+    else:
+        output = _dispatch_json(_all_text(messages))
     self.last_telemetry = {
         "status": "completed",
         "finish_reason": "stop",
