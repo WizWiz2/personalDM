@@ -50,6 +50,7 @@ from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.campaign_service import CampaignService
 from app.services.context_compiler import ContextCompiler
+from app.services.post_turn_dispatcher import PostTurnDispatcher
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.thesis_curator import ThesisCurator
 from app.services.turn_runner import TurnRunner
@@ -1370,6 +1371,11 @@ async def run_realistic_simulation_v2() -> None:
                     continue
 
                 state.consecutive_failures = 0
+                # Deterministic quality CI must inspect post-turn memory after
+                # background extraction actually completes. Racing the Scribe
+                # produced zero sourced beliefs even for NPC dialogue turns.
+                await PostTurnDispatcher.wait_for_idle()
+                await session.rollback()  # Refresh the harness read snapshot.
                 accepted, rejected = await resolve_turn_proposals(
                     session,
                     assistant_turn_id,
