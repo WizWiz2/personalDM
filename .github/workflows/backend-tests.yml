@@ -253,6 +253,13 @@ jobs:
                   authority_validated += 1
           db.close()
 
+          print(
+              "SIM_MEMORY_DIAGNOSTICS",
+              {"sourced_beliefs": sourced_beliefs, "actor_total": actor_total,
+               "actor_missing": actor_missing, "proposals": proposals,
+               "canon_gaps": canon_gaps, "authority_validated": authority_validated},
+              flush=True,
+          )
           assert characters == len(npc_names) + 1, (characters, len(npc_names))
           assert outcomes == state["phase_index"], (outcomes, state["phase_index"])
           assert proposals > 0, proposals
