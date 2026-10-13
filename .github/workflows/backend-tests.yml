@@ -251,15 +251,6 @@ jobs:
                       narrator_planner_completed += 1
               if protocol.get("validator_status") in {"passed", "repaired", "safe_fallback"}:
                   authority_validated += 1
-          db.close()
-
-          print(
-              "SIM_MEMORY_DIAGNOSTICS",
-              {"sourced_beliefs": sourced_beliefs, "actor_total": actor_total,
-               "actor_missing": actor_missing, "proposals": proposals,
-               "canon_gaps": canon_gaps, "authority_validated": authority_validated},
-              flush=True,
-          )
           actor_sample = db.execute(
               "SELECT content, context_snapshot FROM turns WHERE campaign_id=? "
               "AND role='assistant' AND acting_character_id IS NOT NULL LIMIT 1",
@@ -269,6 +260,15 @@ jobs:
               actor_context = json.loads(actor_sample[1] or "{}")
               print("SIM_ACTOR_SAMPLE", actor_sample[0][:320],
                     "audit", actor_context.get("actor_memory_debug"), flush=True)
+          db.close()
+
+          print(
+              "SIM_MEMORY_DIAGNOSTICS",
+              {"sourced_beliefs": sourced_beliefs, "actor_total": actor_total,
+               "actor_missing": actor_missing, "proposals": proposals,
+               "canon_gaps": canon_gaps, "authority_validated": authority_validated},
+              flush=True,
+          )
           assert characters == len(npc_names) + 1, (characters, len(npc_names))
           assert outcomes == state["phase_index"], (outcomes, state["phase_index"])
           assert proposals > 0, proposals
