@@ -336,7 +336,7 @@ class ContextCompiler:
                         role="system",
                         content=f"{system_msg.content}{persona_suffix}",
                     )
-            except Exception:  # noqa: BLE001 - optional persona must not block narration
+            except Exception:
                 logger.exception("Unable to compile optional master persona for %s", campaign_id)
         current_budget_used = count_tokens(system_msg.content)
         reserved_user_tokens = (
