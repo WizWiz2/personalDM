@@ -663,7 +663,9 @@ class PostTurnWorker:
 
     async def run(self) -> None:
         async with AsyncSessionLocal() as session:
-            await PostTurnJobRepository(session).recover_stale()
+            await PostTurnJobRepository(session).recover_stale(
+                stale_after_seconds=max(900, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60),
+            )
             await session.commit()
 
         while not self._stop.is_set():
