@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.narration_validation_table import NarrationValidationRun
 from app.db.scene_bridge_table import SceneBridge
-from app.db.tables import Character, Entity, SceneParticipant
+from app.db.tables import Character, Entity, PostTurnJob, SceneParticipant
 from app.models.narration_validation import (
     NarrationValidationResult,
     NarrationViolation,
@@ -447,7 +447,13 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     assert intro.text == INTRO_TEXT
 
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
-    assert snapshot["health"]["failed_jobs"] == 0
+    failed_jobs = (
+        await db_session.execute(
+            select(PostTurnJob.job_type, PostTurnJob.error)
+            .where(PostTurnJob.campaign_id == campaign_id, PostTurnJob.status == "failed")
+        )
+    ).all()
+    assert snapshot["health"]["failed_jobs"] == 0, failed_jobs
     assert set(snapshot["active_scene"]["participant_names"]) == {
         "Эйдан",
         BARTENDER_IDENTITY,
