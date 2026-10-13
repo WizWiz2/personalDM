@@ -579,6 +579,18 @@ class ScenarioDirector:
             None,
         )
         if existing and existing.status == "active":
+            # Checkpoints produced before typed scene-location links existed may
+            # have an active scene with the protagonist physically at its phase
+            # location but no scene link. Repair the fixture binding on resume,
+            # never relax TurnWorldFrame's production invariant.
+            if existing.location_id is None:
+                player = await self.entities.get_character(self.player_id)
+                if player and player.current_location_id:
+                    existing = await self.scenes.update(
+                        existing.id,
+                        SceneUpdate(location_id=player.current_location_id),
+                    )
+                    await self.session.commit()
             participants = await self.scenes.get_participants(existing.id)
             active = {
                 name: entity_id
@@ -616,16 +628,18 @@ class ScenarioDirector:
             self.campaign_id,
             SceneCreate(
                 title=phase.title,
+                location_id=location.id,
                 location_description=phase.location_description,
                 mood=phase.mood,
                 tension=phase.tension,
             ),
         )
         for character_id in active.values():
-            await self.scenes.add_participant(scene.id, character_id)
-            await self.entities.update_character(
-                character_id,
-                CharacterUpdate(current_location_id=location.id),
+            # A phase transition is explicit fixture authority for moving the
+            # protagonist and its scripted NPC cast. PresenceService owns the
+            # location update and participant link atomically.
+            await self.scenes.add_participant(
+                scene.id, character_id, allow_movement=True,
             )
         await self.campaign_service.update_campaign(
             self.campaign_id,
