@@ -222,6 +222,9 @@ async def test_unhonored_beat_gets_one_repair_then_the_typed_fallback(db_session
     ]
     assert result.text == "Дверь оказывается открыта."
     assert result.validation_status == "safe_fallback"
+    # The real ban rejection outranks the optional beat mismatch in the audit.
+    assert "Нарушен запрет" in result.telemetry["narration_validation"]["reason"]
+    assert "beat grant" not in result.telemetry["narration_validation"]["reason"]
 
 
 @pytest.mark.asyncio
