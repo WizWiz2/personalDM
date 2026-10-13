@@ -120,7 +120,7 @@ class PostTurnProcessor:
             if job.status not in {"pending", "failed"}:
                 continue
             try:
-                await self.process_job(job.id)
+                await self.process_job_bounded(job.id)
             except Exception as exc:
                 # process_job has already stored a durable failed status and error.
                 # A post-turn control-model outage must never turn a saved narrative
@@ -252,6 +252,33 @@ class PostTurnProcessor:
         row.locked_at = None
         await self._session.commit()
 
+    async def process_job_bounded(
+        self,
+        job_id: UUID,
+        *,
+        already_claimed: bool = False,
+    ) -> None:
+        """A hung provider must never leave a job permanently in running.
+
+        The inner process_job responds to cancellation with a rollback and a
+        retryable status. A wall-clock timeout then records a terminal failure
+        so resume/health checks can distinguish it from healthy slow work.
+        """
+        budget = max(1.0, float(settings.POST_TURN_JOB_TIMEOUT_SECONDS))
+        try:
+            await asyncio.wait_for(
+                self.process_job(job_id, already_claimed=already_claimed),
+                timeout=budget,
+            )
+        except TimeoutError as exc:
+            await self._session.rollback()
+            await self._jobs.finish(
+                job_id,
+                error=f"Post-turn job timed out after {budget:g} seconds",
+            )
+            await self._session.commit()
+            raise RuntimeError(f"Post-turn job {job_id} timed out") from exc
+
     async def process_job(
         self,
         job_id: UUID,
@@ -345,6 +372,15 @@ class PostTurnProcessor:
                         trigger_turn_id=UUID(str(assistant.parent_turn_id)),
                         assistant_content=assistant.content,
                     )
+                    # Profile enrichment may have flushed a location UPDATE.
+                    # Commit it before registrar/scribe LLM calls. Otherwise
+                    # their long inference holds SQLite's single-writer lock.
+                    # This card change is safe post-publication and must not
+                    # claim physical presence/scene state on its own.
+                    await self._session.commit()
+                else:
+                    # Release any read snapshot before long model inference.
+                    await self._session.rollback()
                 if not existing:
                     # TurnAuthority owns first-time NPC introductions and the materializer
                     # commits them before this job exists.  The registrar is still useful
@@ -639,7 +675,7 @@ class PostTurnWorker:
                     if job:
                         await session.commit()
                         processed = True
-                        await PostTurnProcessor(session).process_job(
+                        await PostTurnProcessor(session).process_job_bounded(
                             job.id,
                             already_claimed=True,
                         )
