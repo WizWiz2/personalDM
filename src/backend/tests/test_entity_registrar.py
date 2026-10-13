@@ -650,9 +650,9 @@ async def test_prepared_registrar_never_calls_llm_under_campaign_write_barrier(d
     prepared = await registrar.prepare_from_turn(campaign_id, scene.id, uuid4(), text)
     assert registrar._router.generate_json.await_count == 2
     await db_session.rollback()
-    assert [e.canonical_name for e in await EntityRepository(db_session).list_by_campaign(
+    assert {e.canonical_name for e in await EntityRepository(db_session).list_by_campaign(
         campaign_id, "character",
-    )] == ["Эйдан", "Макар"]
+    )} == {"Эйдан", "Макар"}
     await db_session.rollback()
     async with lock:
         result = await registrar.register_from_turn(
@@ -666,6 +666,24 @@ async def test_prepared_registrar_never_calls_llm_under_campaign_write_barrier(d
     assert (await EntityRepository(db_session).get_character(makar.id)).canonical_name == "Макар"
     created = await EntityRepository(db_session).get_character(result.created_ids[0])
     assert created.canonical_name == "Макара"
+
+
+@pytest.mark.asyncio
+async def test_registrar_preflight_provider_outage_is_a_noop(db_session):
+    from app.providers.llm_provider import LLMProviderError
+
+    campaign_id, _, _, _, scene = await _campaign_state(db_session)
+    await db_session.commit()
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(
+        side_effect=LLMProviderError("provider unavailable"),
+    )
+
+    prepared = await registrar.prepare_from_turn(
+        campaign_id, scene.id, uuid4(), "Бармен отодвинул стакан.",
+    )
+    assert prepared is None
 
 
 @pytest.mark.asyncio
