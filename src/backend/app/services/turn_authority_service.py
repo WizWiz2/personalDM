@@ -85,6 +85,13 @@ class TurnAuthorityService:
 
         actor = selected_actor
         effective_actor_id = selected_actor_id
+        # The protagonist is controlled by the human. A routed /talk target or
+        # stale actor provenance must never grant the protagonist an NPC beat:
+        # beat validation expects third-person NPC prose, while the protagonist
+        # is narrated in second person and cannot take autonomous actions.
+        if actor and actor.id == campaign.player_character_id:
+            actor = None
+            effective_actor_id = None
         if actor and target_state and identity_key(actor.canonical_name) not in present_keys:
             actor = None
             effective_actor_id = None
