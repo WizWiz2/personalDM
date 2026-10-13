@@ -459,10 +459,19 @@ async def deterministic_generate_stream(self, messages, config, api_key=None, **
                 "mock": True,
             }
             raise LLMProviderError("planned mock provider failure")
-        output = (
-            f"ДМ подтверждает конкретное последствие хода {CALLS['dm']}: группа получает "
-            "новое наблюдаемое свидетельство, меняет подход и на шаг приближается к цели сцены."
-        )
+        if "You are roleplaying one specific character" in prompt:
+            # Actor-mode must contain actual attributed speech so the indexed
+            # claim extractor can persist sourced beliefs. Narrator-mode remains
+            # a neutral objective scene consequence.
+            output = (
+                f"— Я лично видел след номер {CALLS['dm']} у входа, "
+                "но не могу подтвердить слухи о его происхождении, — говорит собеседник."
+            )
+        else:
+            output = (
+                f"ДМ подтверждает конкретное последствие хода {CALLS['dm']}: группа получает "
+                "новое наблюдаемое свидетельство, меняет подход и на шаг приближается к цели сцены."
+            )
     self.last_telemetry = {
         "status": "completed",
         "finish_reason": "stop",
