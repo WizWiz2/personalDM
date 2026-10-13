@@ -264,7 +264,7 @@ class PostTurnProcessor:
         retryable status. A wall-clock timeout then records a terminal failure
         so resume/health checks can distinguish it from healthy slow work.
         """
-        budget = max(1.0, float(settings.POST_TURN_JOB_TIMEOUT_SECONDS))
+        budget = max(0.01, float(settings.POST_TURN_JOB_TIMEOUT_SECONDS))
         try:
             await asyncio.wait_for(
                 self.process_job(job_id, already_claimed=already_claimed),
