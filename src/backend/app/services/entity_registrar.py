@@ -128,6 +128,21 @@ class EntityRegistrationResult:
         return proposals
 
 
+@dataclass
+class PreparedEntityRegistration:
+    """Read-only model decisions. The write phase must not call an LLM."""
+
+    envelope: EntityRegistrationEnvelope
+    telemetry: dict
+    identity_signature: tuple
+    bindings: dict[tuple[str, str], tuple[UUID, str] | None] = field(default_factory=dict)
+    confirmations: dict[tuple[str, str], str | None] = field(default_factory=dict)
+    adjacent_names: dict[tuple[str, str], str] = field(default_factory=dict)
+    omitted_reveal: PublishedNameRevealDecision | None = None
+
+
+
+
 class EntityRegistrar:
     """Persist concrete NPCs introduced by authoritative narrator prose.
 
@@ -145,6 +160,35 @@ class EntityRegistrar:
         self._router = RoleModelRouter(self._configs)
         self._provider = LLMProvider()
 
+    @staticmethod
+    def _identity_signature(scene, entities, profiles) -> tuple:
+        return (
+            str(scene.id),
+            str(scene.location_id),
+            tuple(sorted(str(value) for value in scene.participants)),
+            tuple(sorted(
+                (
+                    str(e.id), e.canonical_name, e.status,
+                    tuple(sorted(e.aliases)),
+                    bool((e.custom_fields or {}).get("temporary_name")),
+                    str(profiles[str(e.id)].current_location_id)
+                    if profiles.get(str(e.id)) else "",
+                )
+                for e in entities if e.entity_type == "character"
+            )),
+        )
+
+    async def prepare_from_turn(
+        self, campaign_id: UUID, scene_id: UUID | None,
+        source_turn_id: UUID, assistant_content: str,
+        *, promotion_only: bool = False,
+    ) -> PreparedEntityRegistration | None:
+        """All semantic inference outside the campaign write barrier."""
+        return await self.register_from_turn(
+            campaign_id, scene_id, source_turn_id, assistant_content,
+            promotion_only=promotion_only, _prepare_only=True,
+        )
+
     async def register_from_turn(
         self,
         campaign_id: UUID,
@@ -153,7 +197,9 @@ class EntityRegistrar:
         assistant_content: str,
         *,
         promotion_only: bool = False,
-    ) -> EntityRegistrationResult:
+        prepared: PreparedEntityRegistration | None = None,
+        _prepare_only: bool = False,
+    ) -> EntityRegistrationResult | PreparedEntityRegistration | None:
         result = EntityRegistrationResult()
         if not scene_id or not assistant_content.strip():
             return result
@@ -238,19 +284,24 @@ class EntityRegistrar:
 """
 
         try:
-            data = await self._router.generate_json(
-                self._provider,
-                selection,
-                [
-                    ChatMessage(role="system", content=system_prompt),
-                    ChatMessage(role="user", content=assistant_content),
-                ],
-                max_tokens=1100,
-                temperature=0.0,
-                response_model=EntityRegistrationEnvelope,
-            )
-            result.telemetry = dict(self._provider.last_telemetry or {})
-            envelope = EntityRegistrationEnvelope.model_validate(data)
+            if prepared is not None:
+                # This branch must stay model-free: the caller holds the barrier.
+                envelope = prepared.envelope
+                result.telemetry = dict(prepared.telemetry)
+            else:
+                data = await self._router.generate_json(
+                    self._provider,
+                    selection,
+                    [
+                        ChatMessage(role="system", content=system_prompt),
+                        ChatMessage(role="user", content=assistant_content),
+                    ],
+                    max_tokens=1100,
+                    temperature=0.0,
+                    response_model=EntityRegistrationEnvelope,
+                )
+                result.telemetry = dict(self._provider.last_telemetry or {})
+                envelope = EntityRegistrationEnvelope.model_validate(data)
         except (LLMProviderError, ValidationError) as exc:
             result.telemetry = {
                 **dict(self._provider.last_telemetry or {}),
@@ -265,7 +316,74 @@ class EntityRegistrar:
             if character:
                 character_locations[UUID(str(entity.id))] = character.current_location_id
 
+        signature = self._identity_signature(scene, entities, character_profiles)
+        if prepared is not None and prepared.identity_signature != signature:
+            result.conflicts.append({
+                "description": "NPC identity state changed while registrar models were running.",
+                "evidence": assistant_content[:400],
+                "error": "Registrar preflight snapshot became stale",
+            })
+            return result
         index = self._entity_index(entities)
+        if _prepare_only:
+            memo = PreparedEntityRegistration(
+                envelope=envelope,
+                telemetry=dict(result.telemetry),
+                identity_signature=signature,
+            )
+            # Work only against the immutable pre-write cast. Revalidate the
+            # signature under the write barrier; never replay a stale binding.
+            candidates = [
+                e for e in character_entities
+                if self._is_temporary_identity(e)
+                and e.id in scene.participants
+                and character_locations.get(e.id) == scene.location_id
+            ]
+            for mention in envelope.characters:
+                if not mention.persistent or not evidence_supported(
+                    mention.evidence, assistant_content,
+                ):
+                    continue
+                name = self._clean_name(mention.canonical_name)
+                if not name or index.get(identity_key(name)) is not None:
+                    continue
+                key = (name, mention.evidence)
+                contextual = resolve_character_candidates(
+                    character_entities,
+                    proposed_name=name, proposed_role=mention.role,
+                    temporary_name=mention.temporary_name,
+                    target_location_id=scene.location_id,
+                    character_locations=character_locations,
+                )
+                unique = {UUID(str(e.id)): e for e in contextual}
+                if len(unique) != 1 and candidates and mention.presence != "mentioned_only":
+                    memo.bindings[key] = await self._bind_personal_name_reveal(
+                        selection, assistant_content, mention,
+                        [character_profiles[str(e.id)] for e in candidates],
+                    )
+                elif len(unique) == 1 and mention.presence != "mentioned_only":
+                    existing = next(iter(unique.values()))
+                    if self._is_temporary_identity(existing):
+                        memo.confirmations[key] = await self._confirm_personal_name_reveal(
+                            selection, assistant_content, existing.canonical_name, mention,
+                        )
+                if self._inflected_twin_of_existing(name, character_entities):
+                    memo.adjacent_names[key] = await self._adjudicate_adjacent_name(
+                        selection, assistant_content, mention, character_entities,
+                        character_profiles,
+                    )
+            if promotion_only:
+                memo.omitted_reveal = await self._recover_omitted_name_reveal(
+                    selection=selection, assistant_content=assistant_content,
+                    source_turn_id=source_turn_id, scene=scene,
+                    character_entities=character_entities,
+                    character_profiles=character_profiles,
+                    character_locations=character_locations,
+                    extracted_mentions=envelope.characters,
+                    result=EntityRegistrationResult(),
+                    _prepare_only=True,
+                )
+            return memo
         for mention in envelope.characters:
             if not mention.persistent:
                 continue
@@ -333,9 +451,13 @@ class EntityRegistrar:
                         and character_locations.get(candidate.id) == scene.location_id
                     ]
                     if candidates:
-                        bound = await self._bind_personal_name_reveal(
-                            selection, assistant_content, mention,
-                            [character_profiles[str(candidate.id)] for candidate in candidates],
+                        bound = (
+                            prepared.bindings.get((name, mention.evidence))
+                            if prepared is not None
+                            else await self._bind_personal_name_reveal(
+                                selection, assistant_content, mention,
+                                [character_profiles[str(candidate.id)] for candidate in candidates],
+                            )
                         )
                         if bound:
                             bound_id, confirmed_evidence = bound
@@ -414,8 +536,12 @@ class EntityRegistrar:
                     # Neither an extractor's temporary flag nor a real but unrelated quotation
                     # authorizes merging a discourse referent into this physical participant.
                     if not confirmed_evidence and mention.presence != "mentioned_only":
-                        confirmed_evidence = await self._confirm_personal_name_reveal(
-                            selection, assistant_content, entity.canonical_name, mention,
+                        confirmed_evidence = (
+                            prepared.confirmations.get((name, mention.evidence))
+                            if prepared is not None
+                            else await self._confirm_personal_name_reveal(
+                                selection, assistant_content, entity.canonical_name, mention,
+                            )
                         )
                     if not confirmed_evidence:
                         result.conflicts.append({
@@ -462,9 +588,13 @@ class EntityRegistrar:
                     # veto a distinct person ("Макар" and "Макара" can coexist).
                     # Adjudicate against the published text and existing identity
                     # cards. An uncertain result becomes a visible canon gap.
-                    identity = await self._adjudicate_adjacent_name(
-                        selection, assistant_content, mention, character_entities,
-                        character_profiles,
+                    identity = (
+                        prepared.adjacent_names.get((name, mention.evidence), "uncertain")
+                        if prepared is not None
+                        else await self._adjudicate_adjacent_name(
+                            selection, assistant_content, mention, character_entities,
+                            character_profiles,
+                        )
                     )
                     if identity == "same":
                         continue
@@ -544,6 +674,8 @@ class EntityRegistrar:
                 character_locations=character_locations,
                 extracted_mentions=envelope.characters,
                 result=result,
+                _prepared_decision=prepared.omitted_reveal if prepared is not None else None,
+                _use_prepared=prepared is not None,
             )
 
         await self._session.flush()
@@ -564,7 +696,10 @@ class EntityRegistrar:
         self, *, selection, assistant_content, source_turn_id, scene,
         character_entities, character_profiles, character_locations,
         extracted_mentions, result,
-    ) -> None:
+        _prepare_only: bool = False,
+        _prepared_decision: PublishedNameRevealDecision | None = None,
+        _use_prepared: bool = False,
+    ) -> PublishedNameRevealDecision | None:
         """Ask a narrow verifier only if a temporary scene participant remains unnamed.
 
         The broad entity extractor may preserve the role label even when the published
@@ -594,31 +729,38 @@ class EntityRegistrar:
         cards = [card for card in cards if card is not None]
         if not cards:
             return
-        try:
-            data = await self._router.generate_json(
-                self._provider, selection,
-                [
-                    ChatMessage(role="system", content=(
-                        "Extract only an explicit personal-name self-identification in the "
-                        "published narrator response. Return is_explicit=false if nobody "
-                        "states their own name, if a name belongs to a third person, or if "
-                        "the speaker cannot be matched unambiguously to exactly one supplied "
-                        "existing NPC identity card. Never infer a name from a role or title. "
-                        "For a true reveal, return the exact short personal_name, the existing "
-                        "speaker's entity_id, and an exact verbatim evidence span containing "
-                        "that name. Do not create a character or use list order to guess."
-                    )),
-                    ChatMessage(role="user", content=json.dumps({
-                        "existing_candidates": [self._identity_card(card) for card in cards],
-                        "published_text": assistant_content,
-                    }, ensure_ascii=False)),
-                ],
-                max_tokens=300, temperature=0.0,
-                response_model=PublishedNameRevealDecision,
-            )
-            decision = PublishedNameRevealDecision.model_validate(data)
-        except (LLMProviderError, ValidationError, ValueError, TypeError):
-            return
+        if _use_prepared:
+            decision = _prepared_decision
+        else:
+            try:
+                data = await self._router.generate_json(
+                    self._provider, selection,
+                    [
+                        ChatMessage(role="system", content=(
+                            "Extract only an explicit personal-name self-identification in the "
+                            "published narrator response. Return is_explicit=false if nobody "
+                            "states their own name, if a name belongs to a third person, or if "
+                            "the speaker cannot be matched unambiguously to exactly one supplied "
+                            "existing NPC identity card. Never infer a name from a role or title. "
+                            "For a true reveal, return the exact short personal_name, the existing "
+                            "speaker's entity_id, and an exact verbatim evidence span containing "
+                            "that name. Do not create a character or use list order to guess."
+                        )),
+                        ChatMessage(role="user", content=json.dumps({
+                            "existing_candidates": [self._identity_card(card) for card in cards],
+                            "published_text": assistant_content,
+                        }, ensure_ascii=False)),
+                    ],
+                    max_tokens=300, temperature=0.0,
+                    response_model=PublishedNameRevealDecision,
+                )
+                decision = PublishedNameRevealDecision.model_validate(data)
+            except (LLMProviderError, ValidationError, ValueError, TypeError):
+                return None
+        if _prepare_only:
+            return decision
+        if decision is None:
+            return None
         if not decision.is_explicit:
             return
         evidence = (decision.evidence or "").strip()
