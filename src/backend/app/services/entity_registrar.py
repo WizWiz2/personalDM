@@ -184,10 +184,13 @@ class EntityRegistrar:
         *, promotion_only: bool = False,
     ) -> PreparedEntityRegistration | None:
         """All semantic inference outside the campaign write barrier."""
-        return await self.register_from_turn(
+        result = await self.register_from_turn(
             campaign_id, scene_id, source_turn_id, assistant_content,
             promotion_only=promotion_only, _prepare_only=True,
         )
+        # Extraction is fail-open: provider outages and empty scenes return the
+        # ordinary no-op registration result, not a prepared decision bundle.
+        return result if isinstance(result, PreparedEntityRegistration) else None
 
     async def register_from_turn(
         self,
