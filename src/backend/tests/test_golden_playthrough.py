@@ -16,8 +16,8 @@ from app.models.narration_validation import (
     NarrationValidationResult,
     NarrationViolation,
 )
-from app.models.turn_authority import PlannedNpcIntroduction
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
+from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.memory_scribe import MemoryScribe
 from app.services.thesis_curator import ThesisCurator
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
