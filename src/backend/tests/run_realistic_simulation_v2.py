@@ -1309,15 +1309,15 @@ async def run_realistic_simulation_v2() -> None:
                     dm_text = "[Generation failed: checkpoint interruption]"
                 else:
                     async for token in runner.run_turn_stream(
-                    campaign_id,
-                    TurnCreate(
-                        role="user",
-                        content=player_text,
-                        scene_id=runtime.scene_id,
-                        acting_character_id=actor_id,
-                        context_snapshot={"simulation": simulation_marker},
-                    ),
-                    existing_user_turn_id=existing_user_id,
+                        campaign_id,
+                        TurnCreate(
+                            role="user",
+                            content=player_text,
+                            scene_id=runtime.scene_id,
+                            acting_character_id=actor_id,
+                            context_snapshot={"simulation": simulation_marker},
+                        ),
+                        existing_user_turn_id=existing_user_id,
                     ):
                         dm_text += token
                 await session.commit()
