@@ -252,6 +252,44 @@ class PostTurnProcessor:
         row.locked_at = None
         await self._session.commit()
 
+    async def _register_without_locked_inference(
+        self, campaign_id: UUID, assistant, *, promotion_only: bool,
+    ) -> EntityRegistrationResult:
+        """LLM planning outside write lock, deterministic revalidated apply inside.
+
+        A published turn may be undone while the semantic model is running.
+        Both source status and the registrar's identity-state fingerprint are
+        checked under the barrier before any NPC mutation becomes durable.
+        """
+        if not assistant.scene_id:
+            return EntityRegistrationResult()
+        registrar = EntityRegistrar(self._session)
+        prepared = await registrar.prepare_from_turn(
+            campaign_id=campaign_id,
+            scene_id=assistant.scene_id,
+            source_turn_id=assistant.id,
+            assistant_content=assistant.content,
+            promotion_only=promotion_only,
+        )
+        # The preparation phase is read-only. Release its SQLite transaction
+        # before contending for the campaign's short write barrier.
+        await self._session.rollback()
+        if prepared is None:
+            return EntityRegistrationResult()
+        async with campaign_write_barrier.for_campaign(campaign_id):
+            if not await self._source_pair_is_active(assistant.id):
+                return EntityRegistrationResult()
+            result = await registrar.register_from_turn(
+                campaign_id=campaign_id,
+                scene_id=assistant.scene_id,
+                source_turn_id=assistant.id,
+                assistant_content=assistant.content,
+                promotion_only=promotion_only,
+                prepared=prepared,
+            )
+            await self._session.commit()
+        return result
+
     async def process_job_bounded(
         self,
         job_id: UUID,
@@ -418,25 +456,13 @@ class PostTurnProcessor:
                                 )
                         registration = EntityRegistrationResult()
                         if should_verify_identity:
-                            # add_participant below is fingerprinted by TurnWorldFrame.
-                            async with campaign_write_barrier.for_campaign(campaign_id):
-                                registration = await EntityRegistrar(self._session).register_from_turn(
-                                    campaign_id=campaign_id,
-                                    scene_id=assistant.scene_id,
-                                    source_turn_id=assistant.id,
-                                    assistant_content=assistant.content,
-                                    promotion_only=True,
-                                )
-                                await self._session.commit()
-                    else:
-                        async with campaign_write_barrier.for_campaign(campaign_id):
-                            registration = await EntityRegistrar(self._session).register_from_turn(
-                                campaign_id=campaign_id,
-                                scene_id=assistant.scene_id,
-                                source_turn_id=assistant.id,
-                                assistant_content=assistant.content,
+                            registration = await self._register_without_locked_inference(
+                                campaign_id, assistant, promotion_only=True,
                             )
-                            await self._session.commit()
+                    else:
+                        registration = await self._register_without_locked_inference(
+                            campaign_id, assistant, promotion_only=False,
+                        )
                         assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
                         if not assistant or assistant.status != "active":
                             await self._finish_without_side_effects(
