@@ -260,6 +260,15 @@ jobs:
                "canon_gaps": canon_gaps, "authority_validated": authority_validated},
               flush=True,
           )
+          actor_sample = db.execute(
+              "SELECT content, context_snapshot FROM turns WHERE campaign_id=? "
+              "AND role='assistant' AND acting_character_id IS NOT NULL LIMIT 1",
+              (campaign_id,),
+          ).fetchone()
+          if actor_sample:
+              actor_context = json.loads(actor_sample[1] or "{}")
+              print("SIM_ACTOR_SAMPLE", actor_sample[0][:320],
+                    "audit", actor_context.get("actor_memory_debug"), flush=True)
           assert characters == len(npc_names) + 1, (characters, len(npc_names))
           assert outcomes == state["phase_index"], (outcomes, state["phase_index"])
           assert proposals > 0, proposals
