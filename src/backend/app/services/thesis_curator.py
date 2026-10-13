@@ -133,7 +133,7 @@ class ThesisCurator:
         db_thesis = await self._lifecycle_thesis(thesis)
         if db_thesis is None:
             return fallback
-        from app.db.memory_operations_table import ThesisLifecycleProfile
+        from app.db.thesis_lifecycle_table import ThesisLifecycleProfile
 
         profile = await self._session.get(ThesisLifecycleProfile, db_thesis.id)
         return self._semantic_key(profile.semantic_key, thesis.text) if profile else fallback
