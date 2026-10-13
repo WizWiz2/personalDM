@@ -460,6 +460,7 @@ async def deterministic_generate_stream(self, messages, config, api_key=None, **
             }
             raise LLMProviderError("planned mock provider failure")
         if "You are roleplaying one specific character" in prompt:
+            CALLS["actor_prompt"] += 1
             # Actor-mode must contain actual attributed speech so the indexed
             # claim extractor can persist sourced beliefs. Narrator-mode remains
             # a neutral objective scene consequence.
@@ -468,6 +469,9 @@ async def deterministic_generate_stream(self, messages, config, api_key=None, **
                 "но не могу подтвердить слухи о его происхождении, — говорит собеседник."
             )
         else:
+            CALLS["narrator_prompt"] += 1
+            if CALLS["narrator_prompt"] == 1:
+                print("MOCK_FIRST_NARRATOR_PROMPT", prompt[:900].replace("\\n", " "))
             output = (
                 f"ДМ подтверждает конкретное последствие хода {CALLS['dm']}: группа получает "
                 "новое наблюдаемое свидетельство, меняет подход и на шаг приближается к цели сцены."
