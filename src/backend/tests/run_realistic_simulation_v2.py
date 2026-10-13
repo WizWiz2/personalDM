@@ -1288,7 +1288,27 @@ async def run_realistic_simulation_v2() -> None:
                     existing_user_id = UUID(existing_user.id)
                     await session.flush()
                 dm_text = ""
-                async for token in runner.run_turn_stream(
+                # CI-only test hook: persist one user input without its assistant
+                # output to exercise an idempotent restart at the same logical turn.
+                if (
+                    os.getenv("PDM_SIM_INJECT_ORPHAN_ONCE", "0") == "1"
+                    and state.logical_turn == 1
+                    and existing_user_id is None
+                ):
+                    await turns.create(
+                        campaign_id,
+                        TurnCreate(
+                            role="user",
+                            content=player_text,
+                            scene_id=runtime.scene_id,
+                            acting_character_id=actor_id,
+                            context_snapshot={"simulation": simulation_marker},
+                        ),
+                    )
+                    await session.commit()
+                    dm_text = "[Generation failed: checkpoint interruption]"
+                else:
+                    async for token in runner.run_turn_stream(
                     campaign_id,
                     TurnCreate(
                         role="user",
@@ -1298,8 +1318,8 @@ async def run_realistic_simulation_v2() -> None:
                         context_snapshot={"simulation": simulation_marker},
                     ),
                     existing_user_turn_id=existing_user_id,
-                ):
-                    dm_text += token
+                    ):
+                        dm_text += token
                 await session.commit()
                 user_row, assistant_row = await find_logical_pair(
                     session,
