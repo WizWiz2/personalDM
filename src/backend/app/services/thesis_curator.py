@@ -123,15 +123,20 @@ class ThesisCurator:
         return await self._session.get(SceneThesis, str(thesis.id))
 
     async def _existing_semantic_key(self, thesis) -> str:
+        """Read semantic identity without creating a profile before model inference.
+
+        Creating a missing lifecycle profile flushes an INSERT and holds SQLite's
+        writer lock across the potentially slow Curator LLM request. The write
+        phase (reconcile) creates missing profiles after inference instead.
+        """
         fallback = self._semantic_key(None, thesis.text)
         db_thesis = await self._lifecycle_thesis(thesis)
         if db_thesis is None:
             return fallback
-        profile = await MemoryOperationsService(self._session).ensure_thesis_profile(
-            db_thesis,
-            semantic_key=None,
-        )
-        return self._semantic_key(profile.semantic_key, thesis.text)
+        from app.db.memory_operations_table import ThesisLifecycleProfile
+
+        profile = await self._session.get(ThesisLifecycleProfile, db_thesis.id)
+        return self._semantic_key(profile.semantic_key, thesis.text) if profile else fallback
 
     async def _reinforce_profile(
         self,
