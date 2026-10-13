@@ -74,3 +74,43 @@ async def test_cancelled_memory_job_is_immediately_retryable(db_session):
     await db_session.refresh(job)
     assert job.status == "pending"
     assert job.locked_at is None
+
+
+@pytest.mark.asyncio
+async def test_post_turn_watchdog_marks_stalled_job_failed(db_session, monkeypatch):
+    """An unresponsive model must not strand the durable row in 'running'."""
+    from app.config import settings
+
+    campaign_id, turn_id = str(uuid4()), str(uuid4())
+    db_session.add(Campaign(id=campaign_id, name="Hung background memory"))
+    db_session.add(Turn(
+        id=turn_id, campaign_id=campaign_id, role="assistant",
+        content="Published turn", status="active",
+    ))
+    job = PostTurnJob(
+        campaign_id=campaign_id, assistant_turn_id=turn_id,
+        job_type="memory_scribe", status="running", attempts=1,
+    )
+    db_session.add(job)
+    await db_session.commit()
+    job_id = UUID(job.id)
+    processor = PostTurnProcessor(db_session)
+    monkeypatch.setattr(settings, "POST_TURN_JOB_TIMEOUT_SECONDS", 0.02)
+
+    async def stalled(_id, *, already_claimed=False):
+        assert already_claimed is True
+        await asyncio.sleep(60)
+
+    monkeypatch.setattr(processor, "process_job", stalled)
+    with pytest.raises(RuntimeError, match="timed out"):
+        await processor.process_job_bounded(job_id, already_claimed=True)
+
+    row = await db_session.get(PostTurnJob, str(job_id))
+    await db_session.refresh(row)
+    assert row.status == "failed"
+    assert "timed out" in row.error
+    assert row.locked_at is None
+    assert row.attempts == 1
+
+    retried = await PostTurnJobRepository(db_session).retry(job_id)
+    assert retried.status == "pending"
