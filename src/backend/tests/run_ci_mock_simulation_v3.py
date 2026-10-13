@@ -385,7 +385,7 @@ def _dispatch_json(prompt: str) -> str:
         and "[TURN PLANNER]" in prompt
     ):
         return _turn_authority_plan(prompt)
-    if "[TURN AUTHORITY VALIDATOR]" in prompt:
+    if "[TURN AUTHORITY VALIDATOR]" in prompt or "[FOUR BANS NARRATION CHECK]" in prompt:
         return _authority_verdict()
     if "[ACTOR CLAIM SEGMENT SELECTOR]" in prompt:
         return _actor_segment_selector(prompt)
