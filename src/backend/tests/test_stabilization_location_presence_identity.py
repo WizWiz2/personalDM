@@ -202,8 +202,9 @@ async def test_route_scoped_identity_does_not_merge_unrelated_numbered_locations
 @pytest.mark.asyncio
 async def test_delayed_scribe_cannot_rewind_player_after_next_scene_transition(db_session):
     """Repro guard: late scribe movement for scene A must not break frame B."""
-    from app.services.canon_applier import CanonApplier
-    from app.models.proposed_change import ChangeType
+    from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+    from app.models.proposed_change import ChangeType, ProposedChangeCreate
+    from app.services.post_turn_processor import PostTurnProcessor
     from app.services.turn_world_frame import TurnWorldFrame
 
     cid = uuid4()
@@ -237,13 +238,26 @@ async def test_delayed_scribe_cannot_rewind_player_after_next_scene_transition(d
     assert second is not None
     await db_session.commit()
 
-    await CanonApplier(db_session).apply(
-        cid, ChangeType.MOVEMENT,
-        {"character_id": str(hero.id), "location_id": str(first.target_location_id),
-         "description": "Запоздалое воспоминание о конторе"},
-        uuid4(),
+    observer_turn = await TurnRepository(db_session).create(
+        cid, TurnCreate(role="assistant", content="Ранее вошла в контору.",
+                        scene_id=first.target_scene_id),
     )
+    proposal_repo = ProposedChangeRepository(db_session)
+    [proposal] = await proposal_repo.create_batch(
+        observer_turn.id,
+        [ProposedChangeCreate(
+            change_type=ChangeType.MOVEMENT,
+            payload={"character_id": str(hero.id), "location_id": str(first.target_location_id),
+                     "description": "Запоздалое воспоминание о конторе"},
+        )],
+    )
+    applied, staged = await PostTurnProcessor(db_session)._auto_commit_proposals(
+        cid, observer_turn.id, [proposal],
+    )
+    assert (applied, staged) == (0, 1)
     await db_session.commit()
+    rejected = (await proposal_repo.get_for_turn(observer_turn.id))[0]
+    assert rejected.status == "rejected"
     player = await EntityRepository(db_session).get_character(hero.id)
     assert player.current_location_id == second.target_location_id
     frame = await TurnWorldFrame.capture(db_session, cid, second.target_scene_id)
