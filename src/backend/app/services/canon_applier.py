@@ -13,7 +13,7 @@ from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.narrative_detail_repo import NarrativeDetailRepository
 from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Campaign, Item, Turn
+from app.db.tables import Item, Turn
 from app.models.belief import BeliefCreate
 from app.models.character import CharacterUpdate
 from app.models.event import EventCreate
@@ -152,13 +152,6 @@ class CanonApplier:
     ) -> None:
         if change_type == ChangeType.CANON_GAP:
             raise ValueError("A canon gap is evidence of a missing delta and cannot be applied")
-
-        if change_type == ChangeType.MOVEMENT:
-            campaign = await self._session.get(Campaign, str(campaign_id))
-            if campaign and str(payload.get("character_id")) == campaign.player_character_id:
-                # Scribe is delayed prose interpretation, not a physical movement
-                # authority. It may finish *after* the player travelled again.
-                return
 
         if (
             change_type == ChangeType.ITEM_TRANSFER
