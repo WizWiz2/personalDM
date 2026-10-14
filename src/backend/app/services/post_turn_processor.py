@@ -360,7 +360,7 @@ class PostTurnProcessor:
             await self._session.commit()
 
         try:
-            assistant = await self._turns.get_by_id(assistant_turn_id)
+            assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
             if not assistant or assistant.role != "assistant":
                 raise ValueError("Assistant turn linked to job is missing")
             if assistant.status != "active":
