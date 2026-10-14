@@ -15,7 +15,7 @@ from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import Turn
+from app.db.tables import Campaign, Turn
 from app.models.proposed_change import ChangeType, ProposalAction
 from app.services import campaign_write_barrier
 from app.services.actor_turn_authority_guard import speech_spans
@@ -207,7 +207,9 @@ class PostTurnProcessor:
         applier = CanonApplier(self._session)
         applied = 0
         staged = 0
-        campaign = await self._campaigns.get_by_id(campaign_id)
+        player_character_id = await self._session.scalar(
+            select(Campaign.player_character_id).where(Campaign.id == str(campaign_id))
+        )
         for proposal in proposals:
             if proposal.status != "proposed":
                 staged += 1
@@ -224,8 +226,8 @@ class PostTurnProcessor:
             # delayed prose extraction (which may run after another player move).
             if (
                 change_type == ChangeType.MOVEMENT
-                and campaign is not None
-                and str(proposal.payload.get("character_id")) == str(campaign.player_character_id)
+                and player_character_id is not None
+                and str(proposal.payload.get("character_id")) == str(player_character_id)
             ):
                 await repo.resolve(proposal.id, ProposalAction(status="rejected"))
                 staged += 1
