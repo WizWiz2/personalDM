@@ -30,7 +30,8 @@ async def enrich_new_location_profiles(
     campaign_id: UUID,
     trigger_turn_id: UUID,
     assistant_content: str,
-) -> None:
+    prepare_only: bool = False,
+) -> list[tuple[UUID, str, dict]] | None:
     """Fill empty profiles after publication using a bounded typed descriptive pass.
 
     This is deliberately post-publication and only targets locations created by this turn. It
@@ -104,8 +105,19 @@ async def enrich_new_location_profiles(
             custom["profile_source"] = "turn_planner_destination_profile"
             pending_updates.append((UUID(str(location.id)), profile, custom))
 
-    # Re-read the location inside the short write phase; another turn may have
-    # already supplied its authoritative profile while models were running.
+    if prepare_only:
+        return pending_updates
+    await apply_location_profile_updates(session, pending_updates)
+    return None
+
+
+async def apply_location_profile_updates(
+    session: AsyncSession,
+    pending_updates: list[tuple[UUID, str, dict]],
+) -> None:
+    """Apply precomputed profile patches without any model inference."""
+    locations = LocationRepository(session)
+    # Re-read after inference: another turn may have already filled the profile.
     for location_id, profile, custom in pending_updates:
         current = await locations.get_by_id(location_id)
         if current is not None and not current.description:
