@@ -114,3 +114,46 @@ async def test_post_turn_watchdog_marks_stalled_job_failed(db_session, monkeypat
 
     retried = await PostTurnJobRepository(db_session).retry(job_id)
     assert retried.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_recover_stale_does_not_steal_recent_null_lock(db_session):
+    campaign_id, turn_id = str(uuid4()), str(uuid4())
+    db_session.add(Campaign(id=campaign_id, name="Live null lease"))
+    db_session.add(Turn(id=turn_id, campaign_id=campaign_id, role="assistant",
+                        content="ok", status="active"))
+    job = PostTurnJob(campaign_id=campaign_id, assistant_turn_id=turn_id,
+                      job_type="memory_scribe", status="running", locked_at=None,
+                      updated_at=datetime.utcnow())
+    db_session.add(job)
+    await db_session.commit()
+    assert await PostTurnJobRepository(db_session).recover_stale(60) == 0
+    await db_session.refresh(job)
+    assert job.status == "running"
+
+
+@pytest.mark.asyncio
+async def test_failed_job_auto_retry_is_delayed_and_bounded(db_session):
+    campaign_id, turn_id = str(uuid4()), str(uuid4())
+    db_session.add(Campaign(id=campaign_id, name="Retry budget"))
+    db_session.add(Turn(id=turn_id, campaign_id=campaign_id, role="assistant",
+                        content="ok", status="active"))
+    job = PostTurnJob(campaign_id=campaign_id, assistant_turn_id=turn_id,
+                      job_type="memory_scribe", status="failed", attempts=1,
+                      error="database is locked", updated_at=datetime.utcnow())
+    db_session.add(job)
+    await db_session.commit()
+    repo = PostTurnJobRepository(db_session)
+    assert await repo.requeue_failed(base_delay_seconds=10) == 0
+    job.updated_at = datetime.utcnow() - timedelta(seconds=30)
+    await db_session.commit()
+    assert await repo.requeue_failed(base_delay_seconds=10) == 1
+    await db_session.refresh(job)
+    assert job.status == "pending"
+    job.status = "failed"
+    job.attempts = repo.MAX_AUTO_ATTEMPTS
+    job.updated_at = datetime.utcnow() - timedelta(hours=1)
+    await db_session.commit()
+    assert await repo.requeue_failed(base_delay_seconds=1) == 0
+    await db_session.refresh(job)
+    assert job.status == "failed"

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -206,6 +207,7 @@ class PostTurnProcessor:
         applier = CanonApplier(self._session)
         applied = 0
         staged = 0
+        campaign = await self._campaigns.get_by_id(campaign_id)
         for proposal in proposals:
             if proposal.status != "proposed":
                 staged += 1
@@ -216,6 +218,16 @@ class PostTurnProcessor:
                 staged += 1
                 continue
             if change_type not in AUTO_COMMIT_CHANGE_TYPES:
+                staged += 1
+                continue
+            # Physical PC movement belongs to structured transitions, never to
+            # delayed prose extraction (which may run after another player move).
+            if (
+                change_type == ChangeType.MOVEMENT
+                and campaign is not None
+                and str(proposal.payload.get("character_id")) == str(campaign.player_character_id)
+            ):
+                await repo.resolve(proposal.id, ProposalAction(status="rejected"))
                 staged += 1
                 continue
             # Defense in depth: writer mode must never accept legacy objective semantic canon,
@@ -343,6 +355,7 @@ class PostTurnProcessor:
                 return
             row.status = "running"
             row.attempts += 1
+            row.locked_at = datetime.utcnow()
             row.error = None
             await self._session.commit()
 
@@ -388,6 +401,7 @@ class PostTurnProcessor:
                             source_turn_id=assistant.id,
                             user_content=user_turn.content,
                             assistant_content=assistant.content,
+                            serialize_writes=True,
                         )
             elif row.job_type == "memory_scribe":
                 proposal_repo = ProposedChangeRepository(self._session)
@@ -604,6 +618,14 @@ class PostTurnProcessor:
                         # Queue them behind the campaign write barrier; extraction already
                         # finished read-only above, so a turn never waits on memory models.
                         async with campaign_write_barrier.for_campaign(campaign_id):
+                            # A turn may be undone between read-only inference and
+                            # acquiring the barrier. Revalidate while holding it.
+                            if not await self._source_pair_is_active(assistant.id):
+                                await self._finish_without_side_effects(
+                                    job_id,
+                                    "skipped: turn was undone before memory apply",
+                                )
+                                return
                             created = await proposal_repo.create_batch(
                                 assistant.id,
                                 proposals,
@@ -678,7 +700,7 @@ class PostTurnProcessor:
 
 
 class PostTurnWorker:
-    """Small SQLite-backed worker suitable for the local desktop process."""
+    """SQLite-backed worker with independent durable recovery and bounded retries."""
 
     def __init__(self, poll_interval: float = 0.75):
         self.poll_interval = poll_interval
@@ -687,6 +709,32 @@ class PostTurnWorker:
     def stop(self) -> None:
         self._stop.set()
 
+    async def _recover_loop(self) -> None:
+        # Independent of the work coroutine: a hung or cancelled inline request
+        # must not prevent stale running rows from being discovered.
+        while not self._stop.is_set():
+            try:
+                async with AsyncSessionLocal() as session:
+                    repo = PostTurnJobRepository(session)
+                    recovered = await repo.recover_stale(
+                        stale_after_seconds=max(
+                            60, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
+                        ),
+                    )
+                    retried = await repo.requeue_failed()
+                    await session.commit()
+                    if recovered or retried:
+                        logger.warning(
+                            "Post-turn recovery: %d stale, %d failed requeued",
+                            recovered, retried,
+                        )
+            except Exception:
+                logger.exception("Post-turn durable recovery sweep failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=15.0)
+            except TimeoutError:
+                pass
+
     async def run(self) -> None:
         async with AsyncSessionLocal() as session:
             await PostTurnJobRepository(session).recover_stale(
@@ -694,26 +742,33 @@ class PostTurnWorker:
             )
             await session.commit()
 
-        while not self._stop.is_set():
-            processed = False
-            try:
-                async with AsyncSessionLocal() as session:
-                    repo = PostTurnJobRepository(session)
-                    job = await repo.claim_next()
-                    if job:
-                        await session.commit()
-                        processed = True
-                        await PostTurnProcessor(session).process_job_bounded(
-                            job.id,
-                            already_claimed=True,
-                        )
-            except Exception as exc:
-                logger.debug("Post-turn worker job failed: %s", exc, exc_info=True)
-            if not processed:
+        recovery_task = asyncio.create_task(
+            self._recover_loop(), name="post-turn-db-recovery"
+        )
+        try:
+            while not self._stop.is_set():
+                processed = False
                 try:
-                    await asyncio.wait_for(
-                        self._stop.wait(),
-                        timeout=self.poll_interval,
-                    )
-                except TimeoutError:
-                    pass
+                    async with AsyncSessionLocal() as session:
+                        repo = PostTurnJobRepository(session)
+                        job = await repo.claim_next()
+                        if job:
+                            await session.commit()
+                            processed = True
+                            await PostTurnProcessor(session).process_job_bounded(
+                                job.id,
+                                already_claimed=True,
+                            )
+                except Exception as exc:
+                    logger.debug("Post-turn worker job failed: %s", exc, exc_info=True)
+                if not processed:
+                    try:
+                        await asyncio.wait_for(
+                            self._stop.wait(),
+                            timeout=self.poll_interval,
+                        )
+                    except TimeoutError:
+                        pass
+        finally:
+            recovery_task.cancel()
+            await asyncio.gather(recovery_task, return_exceptions=True)

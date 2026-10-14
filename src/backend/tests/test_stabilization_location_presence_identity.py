@@ -197,3 +197,54 @@ async def test_route_scoped_identity_does_not_merge_unrelated_numbered_locations
     )
     assert unrelated is None or unrelated.id == warehouse_seven.id
     assert unrelated is None or unrelated.id != pier_seven.id
+
+
+@pytest.mark.asyncio
+async def test_delayed_scribe_cannot_rewind_player_after_next_scene_transition(db_session):
+    """Repro guard: late scribe movement for scene A must not break frame B."""
+    from app.services.canon_applier import CanonApplier
+    from app.models.proposed_change import ChangeType
+    from app.services.turn_world_frame import TurnWorldFrame
+
+    cid = uuid4()
+    campaigns, entities, locations = (
+        CampaignRepository(db_session), EntityRepository(db_session),
+        LocationRepository(db_session),
+    )
+    await campaigns.create(cid, CampaignCreate(name="Late-memory movement"))
+    origin = await locations.create(cid, LocationCreate(canonical_name="Двор"))
+    hero = await entities.create_character(cid, CharacterCreate(canonical_name="Вера"))
+    await campaigns.update(cid, CampaignUpdate(player_character_id=hero.id))
+    scene = await SceneRepository(db_session).create(
+        cid, SceneCreate(title="Двор", location_id=origin.id)
+    )
+    await SceneLifecycleService(db_session).activate(cid, scene.id)
+    await db_session.commit()
+
+    executor = SceneTransitionExecutor(db_session)
+    first = await executor.apply(cid, scene.id, None, SceneTransitionPlan(
+        required=True, transition_type="location_transition",
+        destination_location="Новая контора",
+        scene_title="Новая контора", reason="Вера входит в контору",
+    ))
+    assert first is not None
+    await db_session.commit()
+    second = await executor.apply(cid, first.target_scene_id, None, SceneTransitionPlan(
+        required=True, transition_type="location_transition",
+        destination_location="Пост",
+        scene_title="Пост", reason="Вера идёт на пост",
+    ))
+    assert second is not None
+    await db_session.commit()
+
+    await CanonApplier(db_session).apply(
+        cid, ChangeType.MOVEMENT,
+        {"character_id": str(hero.id), "location_id": str(first.target_location_id),
+         "description": "Запоздалое воспоминание о конторе"},
+        uuid4(),
+    )
+    await db_session.commit()
+    player = await EntityRepository(db_session).get_character(hero.id)
+    assert player.current_location_id == second.target_location_id
+    frame = await TurnWorldFrame.capture(db_session, cid, second.target_scene_id)
+    assert frame.player_location_id == second.target_location_id
