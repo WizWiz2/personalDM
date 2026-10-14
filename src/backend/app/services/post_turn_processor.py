@@ -415,21 +415,32 @@ class PostTurnProcessor:
                 campaign = await self._campaigns.get_by_id(campaign_id)
                 if assistant.parent_turn_id:
                     from app.services.location_profile_guard import (
+                        apply_location_profile_updates,
                         enrich_new_location_profiles,
                     )
 
-                    await enrich_new_location_profiles(
+                    # LLM profile generation is outside the write barrier.
+                    # Its short revalidated UPDATE is inside, never holding a
+                    # SQLite write transaction during another model call.
+                    pending_profiles = await enrich_new_location_profiles(
                         self._session,
                         campaign_id=campaign_id,
                         trigger_turn_id=UUID(str(assistant.parent_turn_id)),
                         assistant_content=assistant.content,
+                        prepare_only=True,
                     )
-                    # Profile enrichment may have flushed a location UPDATE.
-                    # Commit it before registrar/scribe LLM calls. Otherwise
-                    # their long inference holds SQLite's single-writer lock.
-                    # This card change is safe post-publication and must not
-                    # claim physical presence/scene state on its own.
-                    await self._session.commit()
+                    await self._session.rollback()
+                    if pending_profiles:
+                        async with campaign_write_barrier.for_campaign(campaign_id):
+                            if not await self._source_pair_is_active(assistant.id):
+                                await self._finish_without_side_effects(
+                                    job_id, "skipped: turn was undone during profile preparation",
+                                )
+                                return
+                            await apply_location_profile_updates(
+                                self._session, pending_profiles,
+                            )
+                            await self._session.commit()
                 else:
                     # Release any read snapshot before long model inference.
                     await self._session.rollback()
