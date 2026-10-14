@@ -360,7 +360,7 @@ class PostTurnProcessor:
             await self._session.commit()
 
         try:
-            assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
+            assistant = await self._turns.get_by_id(assistant_turn_id)
             if not assistant or assistant.role != "assistant":
                 raise ValueError("Assistant turn linked to job is missing")
             if assistant.status != "active":
@@ -381,6 +381,9 @@ class PostTurnProcessor:
                 )
                 return
 
+            # Keep immutable IDs outside ORM rows: rollback after read-only
+            # profile inference expires mapped attributes in async sessions.
+            assistant_turn_id = assistant.id
             campaign_id = UUID(row.campaign_id)
             usage_context_token = set_usage_context(
                 campaign_id=campaign_id,
@@ -488,7 +491,7 @@ class PostTurnProcessor:
                         registration = await self._register_without_locked_inference(
                             campaign_id, assistant, promotion_only=False,
                         )
-                        assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
+                        assistant = await self._turns.get_by_id(assistant_turn_id)
                         if not assistant or assistant.status != "active":
                             await self._finish_without_side_effects(
                                 job_id,
