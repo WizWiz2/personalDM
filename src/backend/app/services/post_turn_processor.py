@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -355,7 +355,7 @@ class PostTurnProcessor:
                 return
             row.status = "running"
             row.attempts += 1
-            row.locked_at = datetime.utcnow()
+            row.locked_at = datetime.now(UTC).replace(tzinfo=None)
             row.error = None
             await self._session.commit()
 
