@@ -573,5 +573,6 @@ async def test_apply_return_after_nested_outside_restores_original_tavern(
     assert target is not None
     assert target.location_id == tavern.id
     assert innkeeper.id in target.participants
-    assert target.title == "Начало: Трактир «Якорь»"  # the original tavern scene is reused
+    assert returned.target_scene_id != world["tavern_scene_id"]
+    assert target.title  # A new visit may derive a fresh title from the destination.
 

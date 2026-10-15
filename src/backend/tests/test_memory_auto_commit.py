@@ -113,3 +113,36 @@ async def test_normal_turn_uses_memory_auto_commit():
     processor = PostTurnProcessor(session)
 
     assert await processor._uses_external_proposal_resolution(uuid4()) is False
+
+
+@pytest.mark.asyncio
+async def test_scribe_cannot_auto_transfer_item_from_player_pocket(monkeypatch):
+    """F-14: a delayed prose guess must not silently change Item.current_owner_id."""
+    session = AsyncMock()
+    session.scalar.return_value = str(uuid4())
+    processor = PostTurnProcessor(session)
+    proposal = SimpleNamespace(
+        id=uuid4(),
+        status="proposed",
+        change_type=ChangeType.ITEM_TRANSFER.value,
+        payload={
+            "item_id": str(uuid4()),
+            "owner_id": str(uuid4()),
+            "description": "Scribe guessed the registrar took the bead",
+        },
+    )
+    applier = SimpleNamespace(apply=AsyncMock())
+    repo = SimpleNamespace(resolve=AsyncMock())
+    monkeypatch.setattr(
+        "app.services.post_turn_processor.CanonApplier", lambda _session: applier,
+    )
+    monkeypatch.setattr(
+        "app.services.post_turn_processor.ProposedChangeRepository",
+        lambda _session: repo,
+    )
+    applied, staged = await processor._auto_commit_proposals(
+        uuid4(), uuid4(), [proposal],
+    )
+    assert (applied, staged) == (0, 1)
+    applier.apply.assert_not_awaited()
+    assert repo.resolve.await_args.args[1].status == "rejected"

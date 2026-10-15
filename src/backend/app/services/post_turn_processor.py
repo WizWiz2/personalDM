@@ -222,12 +222,17 @@ class PostTurnProcessor:
             if change_type not in AUTO_COMMIT_CHANGE_TYPES:
                 staged += 1
                 continue
-            # Physical PC movement belongs to structured transitions, never to
-            # delayed prose extraction (which may run after another player move).
+            # Custody changes belong to executed inventory receipts, never to
+            # delayed prose extraction. A Scribe guess about possession may run
+            # after several later moves (QA-209 F-14: bead was stolen from PC).
+            # Likewise PC movement belongs to the structured transition executor.
             if (
-                change_type == ChangeType.MOVEMENT
-                and player_character_id is not None
-                and str(proposal.payload.get("character_id")) == str(player_character_id)
+                change_type == ChangeType.ITEM_TRANSFER
+                or (
+                    change_type == ChangeType.MOVEMENT
+                    and player_character_id is not None
+                    and str(proposal.payload.get("character_id")) == str(player_character_id)
+                )
             ):
                 await repo.resolve(proposal.id, ProposalAction(status="rejected"))
                 staged += 1

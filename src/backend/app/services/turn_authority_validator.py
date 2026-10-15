@@ -81,8 +81,14 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or
    voluntary actions beyond player_input. Rendering player_input itself, its result, and what the
    player character perceives is allowed.
-4. invalid_movement: prose moves anyone to another place without a typed trip in
-   scene_disposition/transition_type. Moving inside the current place is allowed.
+4. invalid_movement: prose physically moves anyone to another place without a
+   typed trip in scene_disposition/transition_type, OR stages the actual ongoing
+   scene at a different location than target_location (including an office,
+   cellar or a room not reached structurally). This is a movement violation
+   even when the narrator omits travel verbs. A player's wish to go somewhere
+   does not itself prove the character arrived; require a typed transition.
+   Mentions, memories and rumours about other places are allowed. Movement
+   within the authoritative current location is allowed.
 
 Present characters may speak, answer, refuse, stay silent, gesture, move inside the place, share
 opinions, claims or new information. None of that is required and none of it is a violation.
