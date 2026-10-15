@@ -31,6 +31,17 @@ class PlannedNpcIntroduction(BaseModel):
     arrives: bool = False
 
 
+class PlannedItemIntroduction(BaseModel):
+    """A significant physical object, justified by an approved current-turn outcome."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    canonical_name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=800)
+    evidence: str = Field(min_length=5, max_length=500)
+    owned_by_player: bool = False
+
+
 class ExistingNpcArrival(BaseModel):
     """A known character that may become present without being recreated as a new entity."""
 
@@ -74,6 +85,7 @@ class TurnAuthority(BaseModel):
     present_character_names: list[str] = Field(default_factory=list)
     known_absent_character_names: list[str] = Field(default_factory=list)
     allowed_new_npcs: list[PlannedNpcIntroduction] = Field(default_factory=list)
+    allowed_new_items: list[PlannedItemIntroduction] = Field(default_factory=list)
     allowed_existing_npc_arrivals: list[ExistingNpcArrival] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
 
@@ -211,6 +223,7 @@ class TurnAuthority(BaseModel):
             "known_absent_characters": self.known_absent_character_names,
             "established_state": self.established_state,
             "scene_time": self.scene_time,
+            "allowed_new_items": [item.canonical_name for item in self.allowed_new_items],
             "executed_steps": self.executed_steps(),
             "scene_disposition": self.scene_disposition,
             "transition_type": self.transition_type,
@@ -243,6 +256,7 @@ class TurnAuthority(BaseModel):
                 else None
             ),
             "objects_here": self.object_names,
+            "new_objects": [item.model_dump(mode="json") for item in self.allowed_new_items],
             "resolution": self.resolution,
             "observable_consequences": self.observable_consequences,
             "character_beats": self.character_beats,
@@ -255,4 +269,4 @@ class TurnAuthority(BaseModel):
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
 
-__all__ = ["ExistingNpcArrival", "PlannedNpcIntroduction", "TurnAuthority"]
+__all__ = ["ExistingNpcArrival", "PlannedItemIntroduction", "PlannedNpcIntroduction", "TurnAuthority"]

@@ -181,6 +181,22 @@ class TurnAuthorityService:
             present_character_names=present_names,
             known_absent_character_names=absent_names,
             allowed_new_npcs=npc_resolution.new_introductions,
+            allowed_new_items=(
+                [
+                    item for item in plan.item_introductions
+                    if item.evidence.casefold() in (
+                        " ".join([
+                            *plan.observable_consequences,
+                            *[
+                                str(step.observable_outcome or "")
+                                for step in plan.action_sequence.steps
+                                if step.resolution == "auto_success"
+                            ],
+                        ]).casefold()
+                    )
+                    and item.canonical_name.casefold() in item.evidence.casefold()
+                ] if plan else []
+            ),
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),

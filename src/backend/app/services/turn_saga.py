@@ -540,6 +540,9 @@ class TurnSaga:
                         "introduced_character_ids": [
                             str(value) for value in materialized_outcome.introduced_character_ids
                         ],
+                        "introduced_item_ids": [
+                            str(value) for value in materialized_outcome.introduced_item_ids
+                        ],
                         "arrived_existing_character_ids": [
                             str(value)
                             for value in materialized_outcome.arrived_existing_character_ids
@@ -591,6 +594,9 @@ class TurnSaga:
             )
             context_metadata["turn_materialization"]["introduced_character_ids"] = [
                 str(value) for value in materialized_outcome.introduced_character_ids
+            ]
+            context_metadata["turn_materialization"]["introduced_item_ids"] = [
+                str(value) for value in materialized_outcome.introduced_item_ids
             ]
             context_metadata["turn_authority"] = authority.model_dump(mode="json")
             context_metadata["turn_materialization"]["identity_updates"] = [

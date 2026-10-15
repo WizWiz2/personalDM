@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, 
 from app.config import settings
 from app.models.addressed_response import AddressedResponse
 from app.models.turn import ChatMessage
-from app.models.turn_authority import PlannedNpcIntroduction
+from app.models.turn_authority import PlannedItemIntroduction, PlannedNpcIntroduction
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.entity_identity import identity_key
 from app.services.player_intent_contract import expects_russian
@@ -120,6 +120,9 @@ class CoordinatedTurnPlan(TurnPlan):
         default_factory=list,
         max_length=4,
     )
+    item_introductions: list[PlannedItemIntroduction] = Field(
+        default_factory=list, max_length=4,
+    )
     addressed_response_requested: bool = False
     addressed_response: AddressedResponse | None = None
     personal_name_revealed: bool = False
@@ -207,6 +210,13 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   temporary_name and reason. When temporary_name=false, also provide personal_name_evidence: the
   exact current-turn or campaign statement that establishes the person's personal name. Leave it
   null for role/title-only identities.
+- item_introductions: significant NEW physical objects explicitly confirmed in this turn's
+  approved observable_consequences or successful structured step outcomes (e.g. a found journal,
+  a received key, a written note). Use exact canonical_name and a verbatim evidence substring
+  from the approved result, NOT from an unsupported player claim. Include owned_by_player=true
+  only when the approved outcome explicitly gives/takes it to the player. Do not create mundane
+  ambient clutter, speculative props, or an item already present in structured inventory.
+  Stable custody and identity matter more than extracting every sensory detail.
 - addressed_response_requested: true when the latest human input addresses, asks, tells, or
   otherwise expects a reply from a present cast member (canonical/display name or unique short
   role) or the selected addressed character. False is not a ban on other present-person behavior.

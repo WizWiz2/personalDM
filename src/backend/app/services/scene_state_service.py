@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
@@ -245,7 +245,12 @@ class SceneStateService:
                 await self._session.execute(
                     select(Entity)
                     .join(Item, Item.entity_id == Entity.id)
-                    .where(Item.current_location_id == str(location_id))
+                    .where(
+                        or_(
+                            Item.current_location_id == str(location_id),
+                            Item.current_owner_id == campaign.player_character_id,
+                        )
+                    )
                     .order_by(Entity.canonical_name)
                 )
             ).scalars().all()
