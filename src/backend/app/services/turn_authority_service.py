@@ -82,7 +82,10 @@ class TurnAuthorityService:
         )
 
         plot_source = getattr(target_state, "active_conflict", None)
-        if not plot_source and effective_scene_id and plan:
+        if (
+            not plot_source and effective_scene_id and plan
+            and callable(getattr(getattr(self, "_session", None), "execute", None))
+        ):
             theses = await SceneRepository(self._session).list_theses_by_scene(
                 effective_scene_id, active_only=True,
             )
