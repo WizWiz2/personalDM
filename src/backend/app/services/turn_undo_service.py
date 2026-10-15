@@ -10,6 +10,7 @@ from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
+from app.db.scene_state_table import SceneRuntimeState
 from app.db.tables import Campaign, Character, Entity, SceneThesis, Turn
 from app.services.scene_transition_executor import release_transition_target
 from app.services.action_sequence_executor import ActionSequenceExecutor
@@ -231,6 +232,20 @@ class TurnUndoService:
         await ActiveCanonReplayService(self._session).replay(campaign_id)
         await WorldReducer(self._session).rebuild(campaign_id)
         await self._remove_turn_introductions(campaign_id, assistant_turn_id)
+        # Undo latest completed turn also restores the preceding paced clock.
+        # A scene transition handles its own clock rollback separately; only
+        # snapshots actually advanced by publication carry world_clock_before.
+        row = await self._session.get(Turn, str(assistant_turn_id))
+        try:
+            payload = json.loads(row.context_snapshot or "{}") if row else {}
+            before = payload.get("world_clock_before") or {}
+        except (TypeError, ValueError):
+            before = {}
+        if before.get("scene_id"):
+            scene = await self._session.get(SceneRuntimeState, str(before["scene_id"]))
+            if scene is not None and isinstance(before.get("world_time_order"), int):
+                scene.world_time_order = before["world_time_order"]
+                scene.world_time_label = before.get("world_time_label")
         # Curator-created working-memory rows from the undone turn must not remain active.
         # Existing theses changed by a curator are not reconstructed here; unlike durable canon,
         # they are short-lived scene working memory and will be reconciled on the next active turn.
