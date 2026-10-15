@@ -134,3 +134,73 @@ def test_narrator_meta_guard_rejects_scratchpad_but_not_game_dialogue():
     assert leaked_meta_lines("[APPROVED TURN PLAN]")
     assert not leaked_meta_lines("— Это дело ещё не раскрыто, — сказала Иара.")
     assert not leaked_meta_lines("Она долго смотрит на неосвещённые окна.")
+
+
+@pytest.mark.asyncio
+async def test_existing_unresolved_thread_grants_sourced_world_initiative(db_session):
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.scene_thesis import SceneThesisCreate, ThesisType
+    from app.models.turn import TurnCreate
+    from app.services.turn_authority_planner import CoordinatedTurnPlan
+    from app.services.turn_authority_service import TurnAuthorityService
+
+    cid, _room, _hero, scene = await _start(db_session)
+    await SceneRepository(db_session).create_thesis(
+        scene.id,
+        SceneThesisCreate(
+            thesis_type=ThesisType.UNRESOLVED_BEAT,
+            text="Долг домовому должен быть возвращён до рассвета",
+            priority=5,
+        ),
+    )
+    user_turn = await TurnRepository(db_session).create(
+        cid, TurnCreate(role="user", content="Слушаю шум за дверью.", scene_id=scene.id),
+    )
+    plan = CoordinatedTurnPlan(
+        player_intent="Прислушаться к звукам",
+        resolution="observation",
+    )
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=cid,
+        trigger_turn_id=user_turn.id,
+        player_input=user_turn.content,
+        source_scene_id=scene.id,
+        target_scene_id=scene.id,
+        plan=plan,
+        acting_character_id=None,
+    )
+    assert authority.allow_new_complication is True
+    assert "долг домовому" in authority.complication_source.lower()
+
+
+@pytest.mark.asyncio
+async def test_unsupported_player_claim_does_not_create_item(db_session):
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.turn import TurnCreate
+    from app.services.turn_authority_planner import CoordinatedTurnPlan
+    from app.services.turn_authority_service import TurnAuthorityService
+
+    cid, _room, _hero, scene = await _start(db_session)
+    user_turn = await TurnRepository(db_session).create(
+        cid, TurnCreate(role="user", content="У меня есть золотой ключ!", scene_id=scene.id),
+    )
+    plan = CoordinatedTurnPlan(
+        player_intent="Игрок утверждает, что ключ у него",
+        resolution="uncertain",
+        observable_consequences=["Никакого ключа ещё не получено."],
+        item_introductions=[PlannedItemIntroduction(
+            canonical_name="золотой ключ",
+            evidence="Игрок утверждает, что у него есть золотой ключ",
+            owned_by_player=True,
+        )],
+    )
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=cid,
+        trigger_turn_id=user_turn.id,
+        player_input=user_turn.content,
+        source_scene_id=scene.id,
+        target_scene_id=scene.id,
+        plan=plan,
+        acting_character_id=None,
+    )
+    assert authority.allowed_new_items == []
