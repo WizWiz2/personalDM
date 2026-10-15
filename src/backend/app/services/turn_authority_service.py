@@ -109,9 +109,26 @@ class TurnAuthorityService:
                 and str(source["actor_id"] or "") == str(candidate.actor_id or "")
             ]
             actor_ok = (
-                (candidate.kind == "npc_action" and candidate.actor_id is not None)
-                or (candidate.kind != "npc_action" and candidate.actor_id is None)
+                (
+                    candidate.kind in {"npc_action", "npc_move"}
+                    and candidate.actor_id is not None
+                )
+                or (
+                    candidate.kind not in {"npc_action", "npc_move"}
+                    and candidate.actor_id is None
+                    and candidate.destination_location_id is None
+                )
             )
+            route_ok = candidate.kind != "npc_move"
+            if candidate.kind == "npc_move" and candidate.destination_location_id:
+                route_ok = any(
+                    str(candidate.destination_location_id) == edge["destination_location_id"]
+                    for match in matches
+                    for edge in match.get("available_destinations", [])
+                ) and (
+                    target_state is not None
+                    and candidate.destination_location_id != target_state.location_id
+                )
             clock_ok = (
                 candidate.kind != "deadline" or (
                     candidate.due_phase is not None
@@ -129,7 +146,7 @@ class TurnAuthorityService:
                 else False
             )
             if (
-                matches and actor_ok and clock_ok and not previously_fired
+                matches and actor_ok and route_ok and clock_ok and not previously_fired
                 and candidate.outcome in plan.observable_consequences
                 and plan.resolution not in {"failure", "uncertain"}
                 and not plan.narration_policy.pending_player_choice

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.event_repo import EventRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Character, Event
+from app.services.presence_service import PresenceService
 from app.services.world_momentum_service import WorldMomentumService
 from app.models.event import EventCreate
 from app.models.turn_authority import TurnAuthority
@@ -47,10 +48,19 @@ class WorldInitiativeLedger:
         )
         if move.actor_id:
             actor = await self._session.get(Character, str(move.actor_id))
-            if actor and actor.current_location_id:
-                # Offscreen NPCs act where they physically are; the initiative
-                # ledger never teleports them into the player's scene.
-                location_id = UUID(actor.current_location_id)
+            if not actor or not actor.current_location_id:
+                raise ValueError("Autonomous NPC has no authoritative physical position")
+            if move.kind == "npc_move":
+                if not move.destination_location_id:
+                    raise ValueError("Typed autonomous NPC move has no destination")
+                await PresenceService(self._session).move_to_location(
+                    authority.campaign_id,
+                    move.actor_id,
+                    move.destination_location_id,
+                    expected_origin=UUID(actor.current_location_id),
+                )
+            # Offscreen NPC events happen at that NPC's actual location.
+            location_id = UUID(actor.current_location_id)
         created = await EventRepository(self._session).create(
             authority.campaign_id,
             EventCreate(

@@ -149,10 +149,25 @@ class WorldMomentumService:
                     "offscreen": character.current_location_id != current_place_id,
                 })
         # Deduplicate identical source+actor references without reordering.
-        return list({
+        sources = list({
             (item["source"].casefold(), item["actor_id"]): item
             for item in items if item["source"].strip()
         }.values())[:self.MAX_THREAD_SOURCES]
+        routes: dict[str, list[dict]] = {}
+        for item in sources:
+            origin = item["actor_location_id"]
+            if origin:
+                if origin not in routes:
+                    exits = await SceneStateService(self._session).list_exits(
+                        campaign_id, UUID(origin),
+                    )
+                    routes[origin] = [
+                        {"destination_location_id": str(edge.to_location_id),
+                         "name": edge.to_location_name}
+                        for edge in exits if edge.active and edge.discovered
+                    ]
+                item["available_destinations"] = routes[origin]
+        return sources
 
     async def snapshot(self, campaign_id: UUID, scene_id: UUID | None) -> dict:
         threads = await self.threads(campaign_id, scene_id)
