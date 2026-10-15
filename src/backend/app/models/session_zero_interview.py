@@ -45,6 +45,7 @@ class SessionZeroWorldDraft(BaseModel):
     content_rating: str | None = None
     starting_location_name: str | None = None
     starting_situation: str | None = None
+    starting_day_part: Literal["dawn", "morning", "day", "evening", "night"] | None = None
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] = Field(
         default_factory=list,
@@ -99,6 +100,7 @@ class SessionZeroWorldPatch(BaseModel):
     content_rating: str | None = None
     starting_location_name: str | None = None
     starting_situation: str | None = None
+    starting_day_part: Literal["dawn", "morning", "day", "evening", "night"] | None = None
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] | None = None
     starter_presence_confirmed: bool | None = None

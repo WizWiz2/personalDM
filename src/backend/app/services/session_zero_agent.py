@@ -101,6 +101,10 @@ class SessionZeroAgent:
 - Ценности, страхи и желания можно аккуратно предложить как интерпретацию, но итоговая
   сводка будет показана игроку для подтверждения.
 - Не стирай и не переписывай подтверждённые данные без явной поправки игрока.
+- Если время начала явно оговорено, запиши world.starting_day_part:
+  dawn (рассвет), morning (утро), day (день), evening (вечер), night (ночь).
+  Если точного времени нет — оставь null, не выводи фазу из дедлайна
+  «до рассвета» и не выдумывай ночь из атмосферы.
 
 СТАРТОВОЕ ПРИСУТСТВИЕ NPC
 - Когда стартовая ситуация становится понятной, ОБЯЗАТЕЛЬНО запиши в
@@ -693,6 +697,7 @@ class SessionZeroInterviewService:
                     rules_system=world.rules_system,
                     world_summary=world.world_summary,
                     starting_situation=world.starting_situation,
+                    starting_day_part=world.starting_day_part,
                     starting_location_id=location.id,
                     starting_scene_title=(
                         world.starting_scene_title
