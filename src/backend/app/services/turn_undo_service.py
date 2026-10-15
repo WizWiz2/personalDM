@@ -249,6 +249,28 @@ class TurnUndoService:
         await self._session.execute(
             delete(Event).where(Event.id.in_(spawned_event_ids))
         )
+        # Remove the physical effect of an autonomous, published NPC move.
+        # Undo always operates on the last published pair, so the character must
+        # still occupy the exact recorded destination. Do not teleport an actor
+        # from an unexpected later position.
+        assistant_row = await self._session.get(Turn, str(assistant_turn_id))
+        try:
+            undo_metadata = (
+                json.loads(assistant_row.context_snapshot or "{}")
+                if assistant_row else {}
+            )
+        except (TypeError, ValueError):
+            undo_metadata = {}
+        move_before = undo_metadata.get("world_move_before") or {}
+        if move_before:
+            from app.services.presence_service import PresenceService
+
+            await PresenceService(self._session).move_to_location(
+                campaign_id,
+                UUID(move_before["actor_id"]),
+                UUID(move_before["origin_location_id"]),
+                expected_origin=UUID(move_before["destination_location_id"]),
+            )
         # Undo latest completed turn also restores the preceding paced clock.
         # A scene transition handles its own clock rollback separately; only
         # snapshots actually advanced by publication carry world_clock_before.

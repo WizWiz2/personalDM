@@ -149,8 +149,11 @@ class TurnSaga:
             "speak or act here, as {name as in the prose, kind: speech|act, evidence}, else null}. "
             "The approved_world_move, if present, is an executed independent "
             "story development tied to an existing conflict. Depict its specific "
-            "observable outcome, not a vague ominous hint, without adding new "
-            "people, object custody or physical movement. "
+            "observable outcome, not a vague ominous hint. A typed npc_move may "
+            "move ONLY its authorized existing actor along its authorized hop "
+            "outside the player scene; keep absent actors offscreen and do not "
+            "pretend the player witnessed their arrival. All other unsanctioned "
+            "people, item custody changes and physical movements remain forbidden. "
             "Everything else in the facts "
             "is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose in narrative_person, also "
@@ -763,6 +766,27 @@ class TurnSaga:
             if authority.world_move:
                 from app.services.world_initiative_ledger import WorldInitiativeLedger
 
+                # This is the compensating receipt for an autonomous *physical*
+                # NPC move. An event deletion alone cannot undo a change to
+                # characters.current_location_id (QA-209 regression).
+                if (
+                    authority.world_move.kind == "npc_move"
+                    and authority.world_move.actor_id
+                ):
+                    from app.db.tables import Character
+
+                    moved = await self._session.get(
+                        Character, str(authority.world_move.actor_id),
+                    )
+                    if moved is None or not moved.current_location_id:
+                        raise RuntimeError("Autonomous mover has no canonical origin")
+                    context_metadata["world_move_before"] = {
+                        "actor_id": str(authority.world_move.actor_id),
+                        "origin_location_id": moved.current_location_id,
+                        "destination_location_id": str(
+                            authority.world_move.destination_location_id
+                        ),
+                    }
                 await WorldInitiativeLedger(self._session).record(
                     authority, saved_assistant.id,
                 )
