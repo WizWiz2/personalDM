@@ -392,6 +392,24 @@ class SceneStateService:
         )
         await self._session.flush()
 
+    TIME_PHASES = ("dawn", "morning", "day", "evening", "night")
+    TURNS_PER_PHASE = 12
+
+    async def advance_published_turn(self, scene_id: UUID) -> str | None:
+        """Advance a lightweight turn-based clock after publication, never on retries.
+
+        An unspecified initial time stays unspecified until a structured time
+        transition establishes it. Turn order is not a substitute for real minutes.
+        """
+        runtime = await self.ensure_runtime_state(scene_id)
+        before = runtime.world_time_label
+        runtime.world_time_order += 1
+        if before in self.TIME_PHASES and runtime.world_time_order % self.TURNS_PER_PHASE == 0:
+            index = self.TIME_PHASES.index(before)
+            runtime.world_time_label = self.TIME_PHASES[(index + 1) % len(self.TIME_PHASES)]
+        await self._session.flush()
+        return runtime.world_time_label if runtime.world_time_label != before else None
+
     async def inherit_transition_state(
         self,
         source_scene_id: UUID | None,

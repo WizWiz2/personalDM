@@ -21,6 +21,7 @@ from app.providers.llm_provider import (
 )
 from app.services.actor_turn_authority_guard import _word_key, segment_actor_response
 from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narration_meta_guard import leaked_meta_lines
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.script_consistency import consistent_script, foreign_script_intrusions
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
@@ -280,6 +281,8 @@ class AuthorityNarrationPipeline:
         reason: str | None = None,
         beat: GrantedBeat | None = None,
     ) -> AuthorityNarrationResult:
+        if leaked_meta_lines(text):
+            raise NarrationValidationError("Narrator output contains internal model notes")
         text = consistent_script(text, authority.present_character_names)
         gate = await audit.finalize(
             run,
@@ -389,7 +392,11 @@ class AuthorityNarrationPipeline:
         async def validator_down(reason: str):
             # An unchecked draft stays off the surface while a typed outcome exists.
             # Fail-open publishes the draft only when there is nothing typed to show.
-            if settings.NARRATION_VALIDATOR_FAIL_OPEN and not NarrationPublicationGuard.has_typed_outcome(authority):
+            if (
+                settings.NARRATION_VALIDATOR_FAIL_OPEN
+                and not NarrationPublicationGuard.has_typed_outcome(authority)
+                and not leaked_meta_lines(draft)
+            ):
                 return await accepted(draft, "failed_open", 0, reason)
             return await self._fallback(
                 audit=audit,
@@ -419,7 +426,7 @@ class AuthorityNarrationPipeline:
             # repeat they disqualify the candidate from the surface, and the repair call
             # is told exactly which words to replace (playtest 2026-10-12: CJK tokens
             # reached published text because consistent_script only fixes mixed words).
-            intrusions = foreign_script_intrusions(draft)
+            intrusions = [*foreign_script_intrusions(draft), *leaked_meta_lines(draft)]
             # A missed beat grant is an unhonored initiative decoration, not a forbidden
             # fact. When only the beat failed, the four-ban validator still guards the
             # authority surface: validated prose must reach the player instead of the
@@ -469,7 +476,9 @@ class AuthorityNarrationPipeline:
             telemetry = {**telemetry, "repair_generation": repair_telemetry}
             repaired_failure = self._beat_failure(authority, repaired, repaired_beat)
             repeats = await self._repeats(campaign_id, repaired)
-            repaired_intrusions = foreign_script_intrusions(repaired)
+            repaired_intrusions = [
+                *foreign_script_intrusions(repaired), *leaked_meta_lines(repaired)
+            ]
             if repeats or repaired_intrusions:
                 repaired_result = None
             else:

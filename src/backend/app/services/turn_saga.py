@@ -652,6 +652,17 @@ class TurnSaga:
             )
             processor = PostTurnProcessor(self._session)
             await processor.enqueue(campaign_id, saved_assistant.id)
+            # A clock tick belongs to publication, never a failed/undone attempt.
+            # Explicit typed time_after already advanced its own transition state.
+            if effective_scene_id and not (
+                applied_transition and applied_transition.status == "prepared"
+                and plan and plan.scene_transition.time_after
+            ):
+                from app.services.scene_state_service import SceneStateService
+
+                await SceneStateService(self._session).advance_published_turn(
+                    effective_scene_id
+                )
             # Advance Game Master rhythm only after a successful published turn.
             try:
                 from app.services.master_service import MasterService

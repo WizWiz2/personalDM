@@ -216,10 +216,26 @@ class TurnAuthorityService:
                 list(plan.narration_policy.protected_player_decisions) if plan else []
             ),
             pending_player_choice=(plan.narration_policy.pending_player_choice if plan else None),
-            allow_new_complication=(
-                plan.narration_policy.allow_new_complication if plan else False
+            # Independent developments are permitted ONLY from an established
+            # conflict. The narrator still cannot materialize a new NPC/item.
+            allow_new_complication=bool(
+                plan and (
+                    plan.narration_policy.allow_new_complication
+                    or (
+                        getattr(target_state, "active_conflict", None)
+                        and plan.resolution not in {"failure", "uncertain"}
+                        and not plan.narration_policy.pending_player_choice
+                    )
+                )
             ),
-            complication_source=(plan.narration_policy.complication_source if plan else None),
+            complication_source=(
+                plan.narration_policy.complication_source
+                if plan and plan.narration_policy.allow_new_complication
+                else getattr(target_state, "active_conflict", None)
+                if plan and target_state and plan.resolution not in {"failure", "uncertain"}
+                and not plan.narration_policy.pending_player_choice
+                else None
+            ),
             action_sequence=executed_sequence,
         )
 

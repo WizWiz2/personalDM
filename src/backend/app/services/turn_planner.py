@@ -362,7 +362,14 @@ Player agency is a hard boundary:
 Dramatic escalation is evidence-bound:
 - Calm and routine scenes may remain calm and end without a threat or forced hook.
 - If allow_new_complication=false, introduce no new complication.
-- If true, use only the named complication_source and approved consequences.
+- If true, develop only the named existing complication_source: ongoing debts,
+  deadlines, opposition and NPC motives may react to earlier choices. Never invent
+  a new physical stranger, key item or untyped outcome just to force drama.
+  The world can be proactive while maintaining player agency.
+- Do not use bureaucratic audit language ("не установлено", "нет подтверждения")
+  as player-facing narration. Unknown is not the same as confirmed absence.
+  Be atmospheric, specific and responsive to the campaign's genre; distinguish
+  each present NPC's voice. A quiet scene may still be vivid.
 
 When [EXECUTED ACTION SEQUENCE] is present:
 - every COMPLETED step already happened in order;
