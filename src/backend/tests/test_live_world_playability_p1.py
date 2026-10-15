@@ -345,3 +345,13 @@ def test_kannada_decoder_noise_is_held_for_narrator_repair():
 
     assert foreign_script_intrusions("— Да, дверь закрыта. ಿವೃದ್ಧ")
     assert not foreign_script_intrusions("— Да, дверь закрыта. Гроссбух лежит рядом.")
+
+
+def test_mojibake_player_input_is_rejected_before_persisting():
+    """QA-209 F-18: a wrong Windows codepage must not silently alter user intent."""
+    from pydantic import ValidationError
+    from app.models.turn import TurnCreate
+
+    with pytest.raises(ValidationError, match="Input encoding looks corrupted"):
+        TurnCreate(role="user", content="Ð¡Ð¿Ñ€Ð°ÑˆÐ¸Ð²Ð°ÑŽ Ð¿Ñ€Ð¾ ÐºÐ½Ð¸Ð³Ñƒ.")
+    assert TurnCreate(role="user", content="Спрашиваю про книгу.").content
