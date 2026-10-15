@@ -26,6 +26,11 @@ from app.services.turn_outcome_materializer import (
 async def _start(db_session):
     cid = uuid4()
     await CampaignRepository(db_session).create(cid, CampaignCreate(name="P1 live world"))
+    # Create the draft BEFORE a playable scene exists: otherwise the legacy
+    # migration correctly locks Session Zero as already completed.
+    from app.services.session_zero_service import SessionZeroService
+
+    await SessionZeroService(db_session).ensure_setup(cid)
     room = await LocationRepository(db_session).create(
         cid, LocationCreate(canonical_name="Ночной архив")
     )
