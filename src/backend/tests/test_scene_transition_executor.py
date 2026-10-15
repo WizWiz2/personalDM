@@ -528,6 +528,7 @@ async def _nested_outside_topology(db_session: AsyncSession, campaign_name: str)
         "scenes": scenes,
         "executor": executor,
         "tavern": tavern,
+        "tavern_scene_id": tavern_scene.id,
         "innkeeper": innkeeper,
         "outskirts_id": outskirts_id,
         "nested_scene_id": leave_nested.target_scene_id,
