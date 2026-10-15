@@ -643,3 +643,36 @@ def test_due_deadline_never_overwrites_player_choice_or_fills_four_outcomes():
     )
     normal = PlayerIntentContract(summary="Наблюдаю", actions=[])
     assert apply_due_deadline(full, normal, due).world_move is None
+
+
+@pytest.mark.asyncio
+async def test_active_scene_does_not_resurrect_npc_at_different_location(db_session):
+    """Offscreen actors stay in physical reality; history retains old scene cast."""
+    from app.db.tables import Character
+    from app.services.scene_lifecycle import SceneLifecycleService
+
+    cid, _room, _hero, scene = await _start(db_session)
+    npc = await EntityRepository(db_session).create_character(
+        cid, CharacterCreate(canonical_name="Глашатай")
+    )
+    await SceneRepository(db_session).add_participant(
+        scene.id, npc.id, allow_movement=True,
+    )
+    assert npc.id in (await SceneStateService(db_session).get(cid, scene.id)).participant_ids
+
+    remote = await LocationRepository(db_session).create(
+        cid, LocationCreate(canonical_name="Дальний двор")
+    )
+    actor = await db_session.get(Character, str(npc.id))
+    actor.current_location_id = str(remote.id)
+    await db_session.flush()
+    current = await SceneStateService(db_session).get(cid, scene.id)
+    assert npc.id not in current.participant_ids
+
+    # Completed scenes remain provenance. A new visit reconstructs live cast.
+    next_scene = await SceneRepository(db_session).create(
+        cid, SceneCreate(title="Дальний двор", location_id=remote.id),
+    )
+    await SceneLifecycleService(db_session).activate(cid, next_scene.id)
+    old = await SceneStateService(db_session).get(cid, scene.id)
+    assert npc.id in old.participant_ids
