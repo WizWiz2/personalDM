@@ -245,12 +245,16 @@ class TurnOutcomeMaterializer:
             update={"speaker_id": authority.beat_owner_id, "speaker_name": authority.beat_owner_name,
                     "revealed_name": beat.revealed_name, "name_evidence": beat.evidence})
         try:
-            update = await self._reveal_identity(authority, source_turn_id)
+            update = await self._reveal_identity(
+                authority, source_turn_id, confirmed_by_published_beat=True,
+            )
         except ValueError:
             return outcome  # An established personal name is never overwritten.
         return replace(outcome, identity_updates=(*outcome.identity_updates, update)) if update else outcome
 
-    async def _reveal_identity(self, authority, source_turn_id) -> IdentityUpdate | None:
+    async def _reveal_identity(
+        self, authority, source_turn_id, *, confirmed_by_published_beat=False,
+    ) -> IdentityUpdate | None:
         response = authority.addressed_response
         if not response or not response.revealed_name:
             return None
@@ -263,8 +267,8 @@ class TurnOutcomeMaterializer:
         if identity_key(row.canonical_name) == identity_key(response.revealed_name):
             return None
         fields = json.loads(row.custom_fields or "{}")
-        if not fields.get("temporary_name"):
-            raise ValueError("Name revelation cannot overwrite an established personal identity")
+        if not fields.get("temporary_name") and not confirmed_by_published_beat:
+            return None  # Planner intent is not confirmation.
         known = await self._entities.list_by_campaign(authority.campaign_id)
         taken = {
             identity_key(name) for entity in known if entity.id != response.speaker_id
@@ -277,6 +281,16 @@ class TurnOutcomeMaterializer:
         )
         old_name = row.canonical_name
         aliases = json.loads(row.aliases or "[]")
+        if not fields.get("temporary_name"):
+            if identity_key(response.revealed_name) in {
+                identity_key(name) for name in aliases
+            }:
+                return None
+            # Alternate confirmed name of the same physical NPC; no duplicate entity.
+            aliases.append(response.revealed_name)
+            row.aliases = json.dumps(aliases, ensure_ascii=False)
+            await self._session.flush()
+            return update
         # A designation becomes an alias only if the player read it; a planner's role label
         # («Хозяин или служащий трактира») never shown in prose is no name.
         shown = " ".join([response.name_evidence or "", *(await self._session.execute(

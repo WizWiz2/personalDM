@@ -235,6 +235,9 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   Keep the existing participant's designation and ID in this plan. A name question is NOT a
   new physical participant: do not put the answer's future name in npc_introductions.
   The published response and its verified self-identification own the later name binding.
+  A name suggested by the player is a proposal, not NPC identity until a present
+  person confirms it. A different confirmed name for an established NPC is an
+  alias on their existing ID, never a second character.
 - response_ownership_reason: one concise semantic reason for addressed_response_requested.
 
 SYSTEMLESS RESOLUTION IS ABSOLUTE:

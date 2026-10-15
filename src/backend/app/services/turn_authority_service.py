@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.scene_repo import SceneRepository
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
@@ -79,6 +80,19 @@ class TurnAuthorityService:
             if effective_scene_id
             else None
         )
+
+        plot_source = getattr(target_state, "active_conflict", None)
+        if not plot_source and effective_scene_id and plan:
+            theses = await SceneRepository(self._session).list_theses_by_scene(
+                effective_scene_id, active_only=True,
+            )
+            threads = [
+                thesis for thesis in theses
+                if thesis.thesis_type in {"unresolved_beat", "tension"}
+                and thesis.priority >= 2
+            ]
+            if threads:
+                plot_source = max(threads, key=lambda thesis: thesis.priority).text
 
         present_names = list(target_state.participant_names) if target_state else []
         present_keys = {identity_key(value) for value in present_names}
@@ -222,7 +236,7 @@ class TurnAuthorityService:
                 plan and (
                     plan.narration_policy.allow_new_complication
                     or (
-                        getattr(target_state, "active_conflict", None)
+                        plot_source
                         and plan.resolution not in {"failure", "uncertain"}
                         and not plan.narration_policy.pending_player_choice
                     )
@@ -231,8 +245,8 @@ class TurnAuthorityService:
             complication_source=(
                 plan.narration_policy.complication_source
                 if plan and plan.narration_policy.allow_new_complication
-                else getattr(target_state, "active_conflict", None)
-                if plan and target_state and plan.resolution not in {"failure", "uncertain"}
+                else plot_source
+                if plan and plot_source and plan.resolution not in {"failure", "uncertain"}
                 and not plan.narration_policy.pending_player_choice
                 else None
             ),
