@@ -37,7 +37,7 @@ def consistent_script(text: str, names: Iterable[str] = ()) -> str:
 _INTRUDER_SCRIPTS = frozenset({
     "CJK", "HIRAGANA", "KATAKANA", "HANGUL", "THAI", "ARABIC", "HEBREW",
     # QA-209 F-15: standalone Kannada syllables leaked into Russian prose.
-    "KANNADA", "TELUGU", "MALAYALAM", "TAMIL", "DEVANAGARI", "BENGALI",
+    "KANNADA",
 })
 
 
