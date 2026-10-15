@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import Campaign, Character, Entity, Turn
+from app.models.turn import ChatMessage
+from app.services.world_momentum_service import WorldMomentumService
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -119,13 +123,44 @@ class TurnIntentPlanningPipeline:
             persist_rhythm=False,
         )
 
+        # A deterministic pacing signal and verified actor goals are fed into
+        # the *outcome* resolver. Narrator prose alone cannot move the world.
+        momentum = {"sources": [], "pressure_due": False, "quiet_turns": 0}
+        if isinstance(self._session, AsyncSession):
+            campaign = await self._session.get(Campaign, str(campaign_id))
+            scene_id = (
+                UUID(campaign.current_scene_id)
+                if campaign and campaign.current_scene_id else None
+            )
+            momentum = await WorldMomentumService(self._session).snapshot(
+                campaign_id, scene_id,
+            )
+        world_context = context_messages
+        if momentum["sources"] and context_messages:
+            first = context_messages[0]
+            source_context = (
+                "\n[ENGINE-VERIFIED ACTIVE WORLD THREADS]\n"
+                + json.dumps(momentum, ensure_ascii=False)
+                + "\npressure_due is pacing guidance, NOT permission to invent new "
+                  "actors or physical results. Choose a verified thread and its "
+                  "exact source and actor_id. An absent NPC acts only at their "
+                  "real location; never bring them into this scene without a "
+                  "typed transition. When due_phase is specified, compare it "
+                  "with the authoritative world_time_label. A quiet beat may "
+                  "still be appropriate where the world has no lawful move."
+            )
+            world_context = [
+                ChatMessage(role=first.role, content=first.content + source_context),
+                *context_messages[1:],
+            ]
+
         resident_slots = await self._compiler.resident_slots(campaign_id)
         decision = await self._compiler.resolve_known_travel(campaign_id, contract)
         outcome_owner = "route_graph" if decision is not None else "external_resolver"
         if decision is None:
             decision = await self._outcomes.resolve(
                 selection,
-                context_messages,
+                world_context,
                 user_input,
                 contract,
                 force_introduce_contact=director.forced_introduce_contact,
@@ -137,7 +172,7 @@ class TurnIntentPlanningPipeline:
             # forced contact-seeking gets its (optional) chance at a typed introduction.
             decision = await self._outcomes.resolve(
                 selection,
-                context_messages,
+                world_context,
                 user_input,
                 contract,
                 force_introduce_contact=True,
@@ -172,6 +207,7 @@ class TurnIntentPlanningPipeline:
         return plan, {
             "architecture": "frozen_player_intent_v1",
             "outcome_owner": outcome_owner,
+            "world_momentum": momentum,
             # Step-coverage telemetry: the compiler is 1:1 with the frozen contract, so any
             # gap between what the player committed and what is planned was created upstream
             # (ownership speech filter, information-request wipe, extraction cap). Surfacing
