@@ -107,9 +107,14 @@ INDEPENDENT STORY (world_move): During normal play, including turns with
 player actions, an established active_conflict, unresolved_beat, tension, or
 already-known NPC CharacterGoal may develop without player instruction.
 ENGINE-VERIFIED ACTIVE WORLD THREADS lists the precise sources and actor IDs.
-Use kind=pressure|information|deadline|npc_action; source must EXACTLY equal
+Use kind=pressure|information|deadline|npc_action|npc_move; source must EXACTLY equal
 one listed source; outcome must EXACTLY equal one of observable_consequences.
-For npc_action, actor_id must match an existing goal's actor_id. That actor can
+For npc_action and npc_move, actor_id must match an existing goal's actor_id.
+npc_move MUST include destination_location_id from that actor's listed
+available_destinations: ONE previously established, active graph edge. Do not
+move an NPC to the hero's current place or invent a location/route. The
+NPC's observed arrival into the hero's scene requires a separate authorized
+presence transition. For npc_action, that actor can
 act at their own current place, but cannot teleport to the player's location
 or speak there when physically absent. An offscreen development can only be
 reported indirectly where existing world communication makes that possible.
@@ -118,8 +123,9 @@ do not claim a deadline expired in any other phase. Deadlines are one-shot.
 If pressure_due=true and a legitimate story source exists, strongly prefer a
 specific, consequential world_move rather than another passive observation.
 Never invent a random threat just to hit a pressure quota.
-World moves must not directly introduce strangers, create physical items,
-change item custody, move characters, or decide a voluntary PC action.
+World moves must not introduce strangers, create items, change custody, or
+decide a PC action. Only npc_move authorizes a single existing NPC's movement
+along one typed known exit; no other world_move may move characters.
 Do not use them if there is an unresolved pending_player_choice.
 """;
 

@@ -52,11 +52,12 @@ class PlannedWorldMove(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    kind: Literal["pressure", "information", "deadline", "npc_action"]
+    kind: Literal["pressure", "information", "deadline", "npc_action", "npc_move"]
     source: str = Field(min_length=8, max_length=1000)
     outcome: str = Field(min_length=12, max_length=1000)
     # NPC autonomous action must be grounded in one persisted CharacterGoal.
     actor_id: UUID | None = None
+    destination_location_id: UUID | None = None  # NPC movement: exactly one known graph hop
     # Explicit clock phase for a scheduled deadline. Non-deadline beats leave it null.
     due_phase: Literal["dawn", "morning", "day", "evening", "night"] | None = None
 
