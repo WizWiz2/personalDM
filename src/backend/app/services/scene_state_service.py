@@ -407,13 +407,13 @@ class SceneStateService:
 
     TIME_PHASES = ("dawn", "morning", "day", "evening", "night")
     TURNS_PER_PHASE = 12
-    TIME_ALIASES = {
-        "рассвет": "dawn",
-        "утро": "morning",
-        "день": "day",
-        "вечер": "evening",
-        "ночь": "night",
-    }
+    TIME_ALIASES = (
+        ("рассвет", "dawn"),
+        ("утро", "morning"),
+        ("день", "day"),
+        ("вечер", "evening"),
+        ("ночь", "night"),
+    )
 
     @classmethod
     def normalize_day_part(cls, label: str | None) -> str | None:
@@ -422,7 +422,7 @@ class SceneStateService:
         label = label.casefold().strip()
         if label in cls.TIME_PHASES:
             return label
-        return cls.TIME_ALIASES.get(label)
+        return dict(cls.TIME_ALIASES).get(label)
 
     async def advance_published_turn(self, scene_id: UUID) -> str | None:
         """Advance a lightweight turn-based clock after publication, never on retries.
