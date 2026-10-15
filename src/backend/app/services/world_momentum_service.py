@@ -25,6 +25,7 @@ from app.db.tables import (
 
 class WorldMomentumService:
     QUIET_TURNS_THRESHOLD = 6
+    MAX_THREAD_SOURCES = 12
 
     def __init__(self, session: AsyncSession):
         self._session = session
@@ -147,7 +148,7 @@ class WorldMomentumService:
         return list({
             (item["source"].casefold(), item["actor_id"]): item
             for item in items if item["source"].strip()
-        }.values())
+        }.values())[:self.MAX_THREAD_SOURCES]
 
     async def snapshot(self, campaign_id: UUID, scene_id: UUID | None) -> dict:
         threads = await self.threads(campaign_id, scene_id)
