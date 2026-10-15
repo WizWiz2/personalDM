@@ -58,6 +58,20 @@ class WorldMomentumService:
                 "actor_location_id": None,
                 "offscreen": False,
             })
+        # Deadlines outrank optional actor threads and stale scene notes, and
+        # a completed deadline must never be fed back as an active pressure.
+        for deadline in await self._scheduled_deadlines(campaign_id):
+            if await self.deadline_already_triggered(campaign_id, deadline.source):
+                continue
+            items.append({
+                "source": deadline.source,
+                "actor_id": None,
+                "actor_name": None,
+                "actor_location_id": None,
+                "offscreen": False,
+                "due_phase": deadline.due_phase,
+            })
+
         theses = await SceneRepository(self._session).list_theses_by_scene(
             scene_id, active_only=True,
         )
@@ -70,16 +84,6 @@ class WorldMomentumService:
                     "actor_location_id": None,
                     "offscreen": False,
                 })
-
-        for deadline in await self._scheduled_deadlines(campaign_id):
-            items.append({
-                "source": deadline.source,
-                "actor_id": None,
-                "actor_name": None,
-                "actor_location_id": None,
-                "offscreen": False,
-                "due_phase": deadline.due_phase,
-            })
 
         current_scene = await SceneRepository(self._session).get_by_id(scene_id)
         current_place_id = str(current_scene.location_id) if current_scene and current_scene.location_id else None
@@ -154,7 +158,7 @@ class WorldMomentumService:
         threads = await self.threads(campaign_id, scene_id)
         if not threads:
             return {"sources": [], "pressure_due": False, "quiet_turns": 0,
-                    "world_time_label": None}
+                    "world_time_label": None, "automatic_deadline": None}
         rows = (
             await self._session.execute(
                 select(Turn.created_at).where(
