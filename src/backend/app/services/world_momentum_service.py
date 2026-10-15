@@ -13,6 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.scene_repo import SceneRepository
+from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
+from app.models.session_zero_interview import SessionZeroDeadline
+from app.services.scene_state_service import SceneStateService
 from app.db.scene_state_table import SceneRuntimeState
 from app.db.tables import (
     Campaign, Character, CharacterGoal, Entity, Event, Scene, SceneParticipant,
@@ -25,6 +28,18 @@ class WorldMomentumService:
 
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def _scheduled_deadlines(self, campaign_id: UUID) -> list[SessionZeroDeadline]:
+        setups = CampaignSetupRepository(self._session)
+        setup = await setups.get(campaign_id)
+        custom = setups.decode_dict(setup.custom_fields) if setup else {}
+        result = []
+        for raw in (custom.get("scheduled_deadlines") or [])[:4]:
+            try:
+                result.append(SessionZeroDeadline.model_validate(raw))
+            except (ValueError, TypeError):
+                continue
+        return result
 
     async def threads(self, campaign_id: UUID, scene_id: UUID | None) -> list[dict]:
         if scene_id is None:
@@ -54,6 +69,16 @@ class WorldMomentumService:
                     "actor_location_id": None,
                     "offscreen": False,
                 })
+
+        for deadline in await self._scheduled_deadlines(campaign_id):
+            items.append({
+                "source": deadline.source,
+                "actor_id": None,
+                "actor_name": None,
+                "actor_location_id": None,
+                "offscreen": False,
+                "due_phase": deadline.due_phase,
+            })
 
         current_scene = await SceneRepository(self._session).get_by_id(scene_id)
         current_place_id = str(current_scene.location_id) if current_scene and current_scene.location_id else None
@@ -153,12 +178,31 @@ class WorldMomentumService:
             await self._session.get(SceneRuntimeState, str(scene_id))
             if scene_id else None
         )
+        phase = SceneStateService.normalize_day_part(
+            runtime.world_time_label if runtime else None
+        )
+        due = None
+        for deadline in await self._scheduled_deadlines(campaign_id):
+            if (
+                deadline.due_phase == phase
+                and not await self.deadline_already_triggered(
+                    campaign_id, deadline.source,
+                )
+            ):
+                due = {
+                    "kind": "deadline",
+                    "source": deadline.source,
+                    "outcome": deadline.consequence,
+                    "due_phase": deadline.due_phase,
+                }
+                break
         return {
             "sources": threads,
             "pressure_due": len(rows) >= self.QUIET_TURNS_THRESHOLD
                             and last_independent is None,
             "quiet_turns": quiet_turns,
-            "world_time_label": runtime.world_time_label if runtime else None,
+            "world_time_label": phase,
+            "automatic_deadline": due,
         }
 
     async def deadline_already_triggered(
