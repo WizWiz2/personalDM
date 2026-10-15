@@ -652,17 +652,26 @@ class TurnSaga:
             )
             processor = PostTurnProcessor(self._session)
             await processor.enqueue(campaign_id, saved_assistant.id)
-            # A clock tick belongs to publication, never a failed/undone attempt.
-            # Explicit typed time_after already advanced its own transition state.
+            # The turn-based clock is reversible on /undo. Persist a pre-tick
+            # checkpoint with the same assistant pair that owns the tick.
             if effective_scene_id and not (
                 applied_transition and applied_transition.status == "prepared"
                 and plan and plan.scene_transition.time_after
             ):
                 from app.services.scene_state_service import SceneStateService
 
-                await SceneStateService(self._session).advance_published_turn(
-                    effective_scene_id
-                )
+                clock = SceneStateService(self._session)
+                before = await clock.ensure_runtime_state(effective_scene_id)
+                context_metadata["world_clock_before"] = {
+                    "scene_id": str(effective_scene_id),
+                    "world_time_order": before.world_time_order,
+                    "world_time_label": before.world_time_label,
+                }
+                await clock.advance_published_turn(effective_scene_id)
+                if assistant_row:
+                    assistant_row.context_snapshot = json.dumps(
+                        context_metadata, ensure_ascii=False,
+                    )
             # Advance Game Master rhythm only after a successful published turn.
             try:
                 from app.services.master_service import MasterService

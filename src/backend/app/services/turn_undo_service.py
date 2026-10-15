@@ -250,7 +250,7 @@ class TurnUndoService:
             await self._session.execute(
                 select(Entity).where(
                     Entity.campaign_id == str(campaign_id),
-                    Entity.entity_type == "character",
+                    Entity.entity_type.in_(("character", "item")),
                 )
             )
         ).scalars().all()
@@ -279,11 +279,16 @@ class TurnUndoService:
                 and fields.get("source_turn_id") == turn_key
             )
             if planned or extracted:
-                from app.db.tables import SceneParticipant
+                from app.db.tables import Item, SceneParticipant
 
-                await self._session.execute(
-                    delete(SceneParticipant).where(SceneParticipant.entity_id == entity.id)
-                )
+                if entity.entity_type == "item":
+                    item = await self._session.get(Item, entity.id)
+                    if item is not None:
+                        await self._session.delete(item)
+                else:
+                    await self._session.execute(
+                        delete(SceneParticipant).where(SceneParticipant.entity_id == entity.id)
+                    )
                 await self._session.delete(entity)
         await self._session.flush()
 
