@@ -132,7 +132,9 @@ async def test_revisit_uses_existing_route_identity_and_restores_known_resident(
 
     assert result is not None
     assert result.target_location_id == pier.id
-    assert result.target_scene_id == old_pier_scene.id  # one scene per place
+    assert result.target_scene_id != old_pier_scene.id  # fresh visit, same location
+    previous = await scenes.get_by_id(old_pier_scene.id)
+    assert previous is not None and previous.status == "completed"
     assert len(await locations.list_by_campaign(campaign_id)) == len(before_locations)
     assert not any(
         location.canonical_name == "Седьмой причал"
