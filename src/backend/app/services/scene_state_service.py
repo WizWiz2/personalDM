@@ -219,6 +219,16 @@ class SceneStateService:
                 .order_by(Entity.canonical_name)
             )
         ).all()
+        if scene.status == "active" and location_id:
+            # SceneParticipant on completed scenes is historical provenance.
+            # An ACTIVE scene, however, must expose only current physical
+            # occupants: a past membership row cannot teleport an NPC back
+            # after Scribe or structured actions moved them elsewhere.
+            participant_rows = [
+                (entity, character) for entity, character in participant_rows
+                if character is None
+                or character.current_location_id == str(location_id)
+            ]
         participant_ids = [UUID(entity.id) for entity, _ in participant_rows]
         participant_names = []
         identity_changed = False
