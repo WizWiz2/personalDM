@@ -182,7 +182,7 @@ class MetaCommandRunner:
             persona_suffix = await MasterService(self._session).narrator_persona_suffix(
                 campaign_id
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             # Persona decoration must never block the read-only meta channel.
             logger.debug("Optional persona decoration unavailable", exc_info=True)
         messages = [
