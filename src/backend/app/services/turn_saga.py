@@ -310,7 +310,10 @@ class TurnSaga:
         plan, metadata = await self._plan(
             campaign_id=campaign_id,
             user_input=turn_create.content,
-            messages=[*messages, feedback],
+            messages=(
+                [messages[0], feedback, *messages[1:]]
+                if messages else [feedback]
+            ),
             role_router=role_router,
             primary_config=primary_config,
         )
