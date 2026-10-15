@@ -302,3 +302,38 @@ async def test_world_move_without_observable_outcome_does_not_commit(db_session)
         plan=plan, acting_character_id=None,
     )
     assert result.world_move is None
+
+
+@pytest.mark.asyncio
+async def test_production_frozen_intent_compiler_keeps_item_and_world_move(db_session):
+    """PR #208 fields must actually traverse the production compiler, not legacy Planner."""
+    from app.models.player_intent import PlayerIntentContract
+    from app.models.turn_authority import PlannedWorldMove
+    from app.services.action_plan_compiler import ActionPlanCompiler
+    from app.services.turn_outcome_resolver import (
+        TurnOutcomeDecisionDraft, normalize_outcome_draft,
+    )
+
+    cid, _room, _hero, _scene = await _start(db_session)
+    source = "Утрата регистрационного журнала угрожает сделке"
+    event = "Срок регистрации истёк, и долг начал увеличиваться."
+    draft = TurnOutcomeDecisionDraft(
+        action_outcomes=[],
+        observable_consequences=[
+            "Вера получает медный ключ от архивариуса.",
+            event,
+        ],
+        item_introductions=[PlannedItemIntroduction(
+            canonical_name="медный ключ",
+            evidence="Вера получает медный ключ от архивариуса.",
+            owned_by_player=True,
+        )],
+        world_move=PlannedWorldMove(
+            kind="deadline", source=source, outcome=event,
+        ),
+    )
+    contract = PlayerIntentContract(summary="Слушаю архивариуса.", actions=[])
+    normalized = normalize_outcome_draft(draft, contract)
+    plan = await ActionPlanCompiler(db_session).compile(cid, contract, normalized)
+    assert plan.item_introductions[0].canonical_name == "медный ключ"
+    assert plan.world_move is not None and plan.world_move.outcome == event
