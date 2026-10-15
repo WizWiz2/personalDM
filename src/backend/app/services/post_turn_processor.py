@@ -222,6 +222,20 @@ class PostTurnProcessor:
             if change_type not in AUTO_COMMIT_CHANGE_TYPES:
                 staged += 1
                 continue
+            # A published, sourced world initiative has already created its
+            # unique durable Event. A delayed Scribe pass on the same prose must
+            # not create another event for that one consequence.
+            if change_type == ChangeType.EVENT:
+                assistant = await self._session.get(Turn, str(source_turn_id))
+                raw_snapshot = getattr(assistant, "context_snapshot", None)
+                try:
+                    snapshot = json.loads(raw_snapshot) if isinstance(raw_snapshot, str) else raw_snapshot
+                except (ValueError, TypeError):
+                    snapshot = None
+                if isinstance(snapshot, dict) and snapshot.get("approved_world_move"):
+                    await repo.resolve(proposal.id, ProposalAction(status="rejected"))
+                    staged += 1
+                    continue
             # Custody changes belong to executed inventory receipts, never to
             # delayed prose extraction. A Scribe guess about possession may run
             # after several later moves (QA-209 F-14: bead was stolen from PC).

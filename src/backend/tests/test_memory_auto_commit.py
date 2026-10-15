@@ -146,3 +146,38 @@ async def test_scribe_cannot_auto_transfer_item_from_player_pocket(monkeypatch):
     assert (applied, staged) == (0, 1)
     applier.apply.assert_not_awaited()
     assert repo.resolve.await_args.args[1].status == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_scribe_cannot_duplicate_approved_world_initiative_event(monkeypatch):
+    """Only the frozen world-move ledger records the selected independent event."""
+    import json
+
+    session = AsyncMock()
+    session.scalar.return_value = str(uuid4())
+    session.get.return_value = SimpleNamespace(context_snapshot=json.dumps({
+        "approved_world_move": {
+            "kind": "deadline",
+            "source": "Долг должен быть уплачен до рассвета",
+            "outcome": "Срок платежа истёк.",
+        }
+    }))
+    processor = PostTurnProcessor(session)
+    proposal = SimpleNamespace(
+        id=uuid4(),
+        status="proposed",
+        change_type=ChangeType.EVENT.value,
+        payload={"description": "Срок платежа истёк.", "event_type": "deadline"},
+    )
+    applier = SimpleNamespace(apply=AsyncMock())
+    repo = SimpleNamespace(resolve=AsyncMock())
+    monkeypatch.setattr(
+        "app.services.post_turn_processor.CanonApplier", lambda _session: applier,
+    )
+    monkeypatch.setattr(
+        "app.services.post_turn_processor.ProposedChangeRepository",
+        lambda _session: repo,
+    )
+    assert await processor._auto_commit_proposals(uuid4(), uuid4(), [proposal]) == (0, 1)
+    applier.apply.assert_not_awaited()
+    assert repo.resolve.await_args.args[1].status == "rejected"
