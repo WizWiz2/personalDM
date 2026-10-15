@@ -18,6 +18,7 @@ class PlannedNpcIntroduction(BaseModel):
     # Preserve a proposed existing name before temporary-role normalization.
     identity_reference: str | None = Field(default=None, max_length=120)
     role: str | None = Field(default=None, max_length=200)
+    current_goal: str | None = Field(default=None, max_length=500)
     description: str | None = Field(default=None, max_length=800)
     appearance: str | None = Field(default=None, max_length=800)
     voice: str | None = Field(default=None, max_length=400)

@@ -189,6 +189,10 @@ class TurnOutcomeMaterializer:
                 description=introduction.description or introduction.role,
                 appearance=introduction.appearance,
                 voice=introduction.voice,
+                current_intentions=(
+                    [introduction.current_goal]
+                    if introduction.current_goal else []
+                ),
                 custom_fields={
                     "introduced_by": "turn_authority",
                     "introduction_turn_id": str(source_turn_id),

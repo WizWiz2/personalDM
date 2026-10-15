@@ -189,6 +189,7 @@ class OutcomeNpcIntroduction(BaseModel):
     canonical_name: str = Field(min_length=2, max_length=120)
     identity_reference: str | None = Field(default=None, max_length=120)
     role: str = Field(min_length=2, max_length=200)
+    current_goal: str | None = Field(default=None, max_length=500)
     description: str = Field(min_length=32, max_length=800)
     appearance: str = Field(min_length=32, max_length=800)
     voice: str | None = Field(default=None, max_length=400)

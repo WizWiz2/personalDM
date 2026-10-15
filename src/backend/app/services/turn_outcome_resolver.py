@@ -72,6 +72,10 @@ Only physically present people may respond. Existing identities must never be re
 or moved from another scene. A question about a present person's name creates no NPC. A genuinely new
 encounter needs a typed npc_introductions entry before anyone speaks/appears: short grounded role,
 concrete description/appearance, temporary_name=true; stable names require personal_name_evidence.
+When introducing a genuine NPC whose immediate objective is known from the
+world situation, set current_goal to a concrete, independently actionable aim
+grounded in established circumstances (not a generic job title). Do not
+fabricate hidden motives for a stranger when none are established.
 Travel/inventory/wait without contact normally introduce nobody. For contact-seeking with a
 player-only cast you may introduce a grounded local person (never an absent known character); finding
 nobody is also a valid result. Anyone who appears must be typed in npc_introductions.
@@ -256,6 +260,7 @@ class OutcomeNpcIntroductionDraft(BaseModel):
 
     canonical_name: str = Field(min_length=2, max_length=120)
     role: str = Field(min_length=2, max_length=120)
+    current_goal: str | None = Field(default=None, max_length=500)
     description: str = Field(min_length=32, max_length=800)
     appearance: str = Field(min_length=32, max_length=800)
     voice: str | None = None
@@ -696,6 +701,7 @@ def normalize_outcome_draft(
                 "description": description,
                 "appearance": appearance,
                 "voice": _compact(npc.voice) or None,
+                "current_goal": _compact(npc.current_goal) or None,
                 "temporary_name": temporary_name,
                 "personal_name_evidence": evidence if not temporary_name else None,
                 "reason": reason,

@@ -415,6 +415,7 @@ class ActionPlanCompiler:
                 description=item.description,
                 appearance=item.appearance,
                 voice=item.voice,
+                current_goal=item.current_goal,
                 temporary_name=item.temporary_name,
                 personal_name_evidence=item.personal_name_evidence,
                 reason=item.reason,

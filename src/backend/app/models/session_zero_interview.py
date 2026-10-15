@@ -20,6 +20,7 @@ class SessionZeroStarterNPC(BaseModel):
     )
     description: str | None = Field(default=None, max_length=600)
     reason: str | None = Field(default=None, max_length=400)
+    current_goal: str | None = Field(default=None, max_length=500)
     present_at_start: bool = True
 
     @model_validator(mode="after")
