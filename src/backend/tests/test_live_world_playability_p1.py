@@ -232,7 +232,10 @@ async def test_structured_world_move_records_only_sourced_published_consequence(
     user_turn = await TurnRepository(db_session).create(
         cid, TurnCreate(role="user", content="Ожидаю дальнейших событий.", scene_id=scene.id),
     )
-    move = PlannedWorldMove(kind="deadline", source=source, outcome=effect)
+    runtime = await SceneStateService(db_session).ensure_runtime_state(scene.id)
+    runtime.world_time_label = "dawn"
+    await db_session.flush()
+    move = PlannedWorldMove(kind="deadline", source=source, outcome=effect, due_phase="dawn")
     plan = CoordinatedTurnPlan(
         player_intent="Ожидаю",
         resolution="observation",
@@ -256,6 +259,8 @@ async def test_structured_world_move_records_only_sourced_published_consequence(
     events = await EventRepository(db_session).list_by_campaign(cid)
     assert len([e for e in events if e.event_type == "world_initiative:deadline"]) == 1
     assert published_turn_id in events[0].source_turns
+    # A second, different turn cannot repeatedly expire the SAME deadline.
+    assert await ledger.record(authority, uuid4()) is None
 
     invented = plan.model_copy(update={
         "world_move": move.model_copy(update={"source": "Неизвестный внешний заговор"})
@@ -355,3 +360,125 @@ def test_mojibake_player_input_is_rejected_before_persisting():
     with pytest.raises(ValidationError, match="Input encoding looks corrupted"):
         TurnCreate(role="user", content="Ð¡Ð¿Ñ€Ð°ÑˆÐ¸Ð²Ð°ÑŽ Ð¿Ñ€Ð¾ ÐºÐ½Ð¸Ð³Ñƒ.")
     assert TurnCreate(role="user", content="Спрашиваю про книгу.").content
+
+
+@pytest.mark.asyncio
+async def test_existing_npc_goal_produces_grounded_autonomous_action(db_session):
+    """Known NPC goal -> typed independent action -> Event with actor, not teleport."""
+    from app.db.tables import CharacterGoal
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.db.repositories.event_repo import EventRepository
+    from app.models.turn import TurnCreate
+    from app.models.turn_authority import PlannedWorldMove
+    from app.services.turn_authority_planner import CoordinatedTurnPlan
+    from app.services.turn_authority_service import TurnAuthorityService
+    from app.services.world_momentum_service import WorldMomentumService
+    from app.services.world_initiative_ledger import WorldInitiativeLedger
+
+    cid, room, _hero, scene = await _start(db_session)
+    npc = await EntityRepository(db_session).create_character(
+        cid, CharacterCreate(canonical_name="Марта", current_location_id=room.id)
+    )
+    await SceneRepository(db_session).add_participant(
+        scene.id, npc.id, allow_movement=True,
+    )
+    goal = "Марта намерена взыскать старый долг с гильдии"
+    db_session.add(CharacterGoal(
+        character_id=str(npc.id), description=goal, priority=10,
+        status="active", is_secret=False,
+    ))
+    await db_session.flush()
+    threads = await WorldMomentumService(db_session).threads(cid, scene.id)
+    assert any(t["source"] == goal and t["actor_id"] == str(npc.id) for t in threads)
+
+    outcome = "Марта официально предъявила гильдии счёт за просроченный товар."
+    user = await TurnRepository(db_session).create(
+        cid, TurnCreate(role="user", content="Проверяю записи.", scene_id=scene.id),
+    )
+    move = PlannedWorldMove(
+        kind="npc_action", source=goal, outcome=outcome, actor_id=npc.id,
+    )
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=cid, trigger_turn_id=user.id, player_input=user.content,
+        source_scene_id=scene.id, target_scene_id=scene.id,
+        plan=CoordinatedTurnPlan(
+            player_intent="Проверяю записи", resolution="observation",
+            observable_consequences=[outcome], world_move=move,
+        ),
+        acting_character_id=None,
+    )
+    assert authority.world_move is not None
+    await WorldInitiativeLedger(db_session).record(authority, uuid4())
+    events = await EventRepository(db_session).list_by_campaign(cid)
+    assert len(events) == 1
+    assert npc.id in events[0].participant_ids
+    assert events[0].location_id == room.id
+
+    # The PC cannot impersonate an NPC; no free-floating "actor_id".
+    forged = move.model_copy(update={"actor_id": _hero.id})
+    rejected = await TurnAuthorityService(db_session).build(
+        campaign_id=cid, trigger_turn_id=user.id, player_input=user.content,
+        source_scene_id=scene.id, target_scene_id=scene.id,
+        plan=CoordinatedTurnPlan(
+            player_intent="Проверяю записи", resolution="observation",
+            observable_consequences=[outcome], world_move=forged,
+        ),
+        acting_character_id=None,
+    )
+    assert rejected.world_move is None
+
+
+@pytest.mark.asyncio
+async def test_deadline_cannot_fire_before_authoritative_phase(db_session):
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.scene_thesis import SceneThesisCreate, ThesisType
+    from app.models.turn import TurnCreate
+    from app.models.turn_authority import PlannedWorldMove
+    from app.services.turn_authority_planner import CoordinatedTurnPlan
+    from app.services.turn_authority_service import TurnAuthorityService
+
+    cid, _room, _hero, scene = await _start(db_session)
+    source = "Контракт требует расплатиться до рассвета"
+    consequence = "С наступлением рассвета контракт объявлен просроченным."
+    await SceneRepository(db_session).create_thesis(
+        scene.id, SceneThesisCreate(
+            thesis_type=ThesisType.UNRESOLVED_BEAT, text=source, priority=5,
+        ),
+    )
+    runtime = await SceneStateService(db_session).ensure_runtime_state(scene.id)
+    runtime.world_time_label = "night"
+    await db_session.flush()
+    user = await TurnRepository(db_session).create(
+        cid, TurnCreate(role="user", content="Слежу за временем.", scene_id=scene.id),
+    )
+    move = PlannedWorldMove(
+        kind="deadline", source=source, outcome=consequence, due_phase="dawn",
+    )
+    async def authority_for_move():
+        return await TurnAuthorityService(db_session).build(
+            campaign_id=cid, trigger_turn_id=user.id, player_input=user.content,
+            source_scene_id=scene.id, target_scene_id=scene.id,
+            plan=CoordinatedTurnPlan(
+                player_intent="Слежу за временем", resolution="observation",
+                observable_consequences=[consequence], world_move=move,
+            ), acting_character_id=None,
+        )
+    before = await authority_for_move()
+    assert before.world_move is None
+    assert consequence not in before.observable_consequences
+    runtime.world_time_label = "dawn"
+    await db_session.flush()
+    after = await authority_for_move()
+    assert after.world_move == move
+
+
+@pytest.mark.asyncio
+async def test_russian_night_label_advances_to_dawn(db_session):
+    cid, _room, _hero, scene = await _start(db_session)
+    clock = SceneStateService(db_session)
+    runtime = await clock.ensure_runtime_state(scene.id)
+    runtime.world_time_label = "ночь"
+    runtime.world_time_order = 0
+    for _ in range(clock.TURNS_PER_PHASE):
+        await clock.advance_published_turn(scene.id)
+    assert runtime.world_time_label == "dawn"

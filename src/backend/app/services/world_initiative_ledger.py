@@ -55,7 +55,7 @@ class WorldInitiativeLedger:
             authority.campaign_id,
             EventCreate(
                 event_type=f"world_initiative:{move.kind}",
-                description=f"{move.source}\\n{move.outcome}",
+                description=f"{move.source}\n{move.outcome}",
                 world_time=authority.scene_time,
                 location_id=location_id,
                 participant_ids=[move.actor_id] if move.actor_id else [],

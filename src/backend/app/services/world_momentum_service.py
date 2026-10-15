@@ -6,7 +6,6 @@ the selected event before narration and the world initiative ledger publishes it
 """
 from __future__ import annotations
 
-import json
 from uuid import UUID
 
 from sqlalchemy import select

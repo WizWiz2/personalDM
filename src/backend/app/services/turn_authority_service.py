@@ -116,7 +116,9 @@ class TurnAuthorityService:
                 candidate.kind != "deadline" or (
                     candidate.due_phase is not None
                     and target_state is not None
-                    and target_state.world_time_label == candidate.due_phase
+                    and SceneStateService.normalize_day_part(
+                        target_state.world_time_label
+                    ) == candidate.due_phase
                 )
             )
             previously_fired = (
