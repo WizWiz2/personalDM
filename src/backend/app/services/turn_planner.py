@@ -259,8 +259,10 @@ Authoritative scene state:
 - [AUTHORITATIVE SCENE STATE] is exhaustive for physical presence and structured locations.
 - Only present characters may physically act/speak here unless coordinated Planner explicitly types
   a new/arriving character.
-- Only structured objects may be treated as already significant physical objects. Neutral literary
-  texture may later be added by Narrator without becoming canon.
+- Only structured objects may be treated as already significant physical objects.
+  Objects carried by the player stay available without being on the ground. Newly
+  approved critical objects must be represented in item_introductions, never lost
+  as a prose-only acquisition. Neutral literary texture remains non-canonical.
 - A completed change of room/building/district/journey endpoint requires structured transition.
 - Explicit player-selected plausible movement may create/discover a destination/route only through
   the transition executor; never hide travel in prose fields.

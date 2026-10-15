@@ -255,6 +255,16 @@ class SceneStateService:
                 )
             ).scalars().all()
 
+        held_ids = set(
+            (
+                await self._session.execute(
+                    select(Item.entity_id).where(
+                        Item.current_owner_id == campaign.player_character_id,
+                    )
+                )
+            ).scalars().all()
+        ) if campaign.player_character_id else set()
+
         exits = (
             await self.list_exits(campaign_id, location_id)
             if location_id
@@ -300,6 +310,9 @@ class SceneStateService:
             participant_names=participant_names,
             object_ids=[UUID(item.id) for item in object_rows],
             object_names=[item.canonical_name for item in object_rows],
+            player_inventory_names=[
+                item.canonical_name for item in object_rows if item.id in held_ids
+            ],
             available_exits=exits,
             invariant_errors=errors,
         )
@@ -449,10 +462,13 @@ class SceneStateService:
             + (f" ({item.access_rule})" if item.access_rule else "")
             for item in state.available_exits
         ) or "none recorded"
+        carried = set(state.player_inventory_names)
         objects = ", ".join(
             f"{name} [id={object_id}]"
             for object_id, name in zip(state.object_ids, state.object_names)
+            if name not in carried
         ) or "none recorded"
+        inventory = ", ".join(state.player_inventory_names) or "none recorded"
         return (
             "[AUTHORITATIVE SCENE STATE]\n"
             f"Scene: {state.scene_title} ({state.scene_status})\n"
@@ -463,6 +479,7 @@ class SceneStateService:
             f"Active conflict: {state.active_conflict or 'none'}\n"
             f"Physically present characters: {participants}\n"
             f"Objects physically here: {objects}\n"
+            f"Objects carried by the player: {inventory}\n"
             f"Available exits: {exits}\n"
             + SCENE_RENDERER_RULES
         )
