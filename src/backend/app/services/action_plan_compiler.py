@@ -438,6 +438,8 @@ class ActionPlanCompiler:
                 protected_player_decisions=contract.protected_player_decisions,
             ),
             npc_introductions=introductions,
+            item_introductions=list(decision.item_introductions),
+            world_move=decision.world_move,
             addressed_response_requested=contract.addressed_response_requested,
             personal_name_revealed=False,
             identity_reveal_requested=contract.identity_reveal_requested,

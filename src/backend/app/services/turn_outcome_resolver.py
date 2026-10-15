@@ -27,6 +27,7 @@ from app.models.player_intent import (
     TurnResolution,
 )
 from app.models.turn import ChatMessage
+from app.models.turn_authority import PlannedItemIntroduction, PlannedWorldMove
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
 from app.services.entity_identity import identity_key
@@ -88,7 +89,26 @@ response_speaker_name as the CURRENT designation so identity binds to the same e
 reveal or change an already established personal name. Otherwise both revelation fields null.
 For world_state_question state the existing state in observable_consequences without performing it.
 No complication without a grounded complication_source.
-"""
+
+DURABLE ITEMS (item_introductions): A NEW significant physical item confirmed
+by the exact approved observable_consequences/auto_success action result (a
+found journal, uniquely named key, received note) must have a typed
+item_introductions entry with canonical_name, evidence (verbatim substring
+containing the name), owned_by_player only when that same outcome confirms
+possession. If an item already exists with its ID in authoritative world state,
+DO NOT recreate it. Unconfirmed player claims and casual background scenery
+are not item introductions.
+
+INDEPENDENT STORY (world_move): On quiet player turns with actions=[] and an
+established active_conflict/unresolved_beat/tension, you may develop that thread
+without waiting for a player order. A world_move uses kind=pressure|information|
+deadline, source exactly quoted from the established thread, outcome exactly
+one of observable_consequences. The outcome must be meaningful and specific,
+not merely mysterious noises. No arbitrary violence, new NPC, physical object,
+item transfer, character travel or PC decision in world_move: these require
+their own approved structural permissions. Leave world_move=null when no
+established source exists or the player is awaiting an unresolved choice.
+""";
 
 _PROFILE_PROMPT = """[NEW DESTINATION PROFILE ENRICHMENT]
 Return exactly DestinationProfilePatchSet, one patch per requested action index. Each request is a
@@ -275,6 +295,8 @@ class TurnOutcomeDecisionDraft(BaseModel):
 
     action_outcomes: list[ActionOutcomeDraft] = Field(max_length=8)
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
+    item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
+    world_move: PlannedWorldMove | None = None
     resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     response_speaker_name: str | None = Field(default=None, max_length=120)
@@ -685,6 +707,12 @@ def normalize_outcome_draft(
         {
             "action_outcomes": public_outcomes,
             "npc_introductions": introductions,
+            "item_introductions": [
+                item.model_dump(mode="json") for item in draft.item_introductions
+            ],
+            "world_move": (
+                draft.world_move.model_dump(mode="json") if draft.world_move else None
+            ),
             "resolution": draft.resolution,
             "addressed_response": AddressedResponse(
                 speaker_name=response_speaker,
