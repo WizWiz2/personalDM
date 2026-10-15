@@ -133,7 +133,9 @@ class TurnSaga:
             "1. Do not put a person physically into the scene unless they are in present_characters, "
             "allowed_new_npcs, allowed_existing_npc_arrivals, or one person beat_owner brings in "
             "through executed_steps. Mentioning anyone else is fine.\n"
-            "2. Do not contradict established_state, scene_time or executed_steps.\n"
+            "2. Do not contradict established_state, scene_time, approved new_objects, "
+            "or executed_steps. A received item remains in the hero's inventory even "
+            "when it is no longer on the ground.\n"
             "3. Do not write the player character's speech, decisions, thoughts, feelings or "
             "voluntary actions beyond player_input.\n"
             "4. Do not move anyone to another place without a typed trip "
@@ -149,7 +151,13 @@ class TurnSaga:
             "is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose in narrative_person, also "
             "where the facts name the protagonist in third person; usually 2-3 paragraphs, "
-            "and stop before the player's next choice."
+            "and stop before the player's next choice. Make established scenes feel alive: use "
+            "concrete sensory details, characterful dialogue, changing responses and meaningful "
+            "consequences of the known conflict. If complication_source is present, the already "
+            "established tension may develop on its own; do not invent unsanctioned people or "
+            "items. Unknown facts are not confirmed absences. Never describe the validation "
+            "process in-world (no 'не установлено', 'не подтверждено' as mechanical audit). "
+            "Respect the chosen campaign genre instead of defaulting to bureaucratic refusals."
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),

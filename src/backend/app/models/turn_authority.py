@@ -265,6 +265,7 @@ class TurnAuthority(BaseModel):
             "dramatic_mode": self.dramatic_mode,
             "pending_player_choice": self.pending_player_choice,
             "allow_new_complication": self.allow_new_complication,
+            "complication_source": self.complication_source,
         }
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 

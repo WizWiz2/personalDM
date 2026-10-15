@@ -89,7 +89,7 @@ class TurnAuthorityService:
             threads = [
                 thesis for thesis in theses
                 if thesis.thesis_type in {"unresolved_beat", "tension"}
-                and thesis.priority >= 2
+                and thesis.priority >= 0
             ]
             if threads:
                 plot_source = max(threads, key=lambda thesis: thesis.priority).text
