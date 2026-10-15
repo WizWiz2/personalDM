@@ -268,6 +268,108 @@ class TurnSaga:
                 "telemetry": planner.telemetry,
             }
 
+    async def _retry_authority_after_invalid_npc(
+        self,
+        *,
+        campaign_id: UUID,
+        trigger_turn_id: UUID,
+        source_scene_id: UUID | None,
+        turn_create: TurnCreate,
+        messages: list[ChatMessage],
+        role_router: RoleModelRouter,
+        primary_config,
+        first_error: str,
+    ):
+        """One bounded semantic replan after an out-of-place NPC authority conflict.
+
+        F-20 (QA-209): the planner occasionally tries to summon a known NPC
+        from a different location. Rejecting the plan is correct, but consuming
+        the user's only attempt is not. Roll back any *uncommitted* transition
+        and replan once with the precise structural explanation.
+        """
+        await self._session.rollback()
+        feedback = ChatMessage(
+            role="system",
+            content=(
+                "[CONTROL-PLAN REPAIR, NOT PLAYER INPUT]\n"
+                "The previous plan was rejected by physical authority. "
+                + first_error[:900]
+                + "\nKeep the original player's exact last input unchanged. "
+                  "A known person at another location cannot speak or appear here "
+                  "without a typed completed arrival/movement. Do NOT recreate them "
+                  "as a new NPC. Either encode a genuinely justified structural "
+                  "arrival, or leave them absent and resolve the player's action "
+                  "from the actual present scene. Do not imply arrival in narration "
+                  "unless the location transition is approved."
+            ),
+        )
+        plan, metadata = await self._plan(
+            campaign_id=campaign_id,
+            user_input=turn_create.content,
+            messages=[*messages, feedback],
+            role_router=role_router,
+            primary_config=primary_config,
+        )
+        metadata = {
+            **metadata,
+            "authority_repair": {"trigger": "known_absent_npc", "attempts": 1,
+                                 "first_error": first_error[:700]},
+        }
+        await self._set_phase(
+            (await self._generation_runs.start_or_resume(campaign_id, trigger_turn_id)).id,
+            GenerationPhase.PLANNED,
+        )
+        target_scene_id = source_scene_id
+        applied = None
+        transition_metadata = {
+            "status": "not_required",
+            "source_scene_id": str(source_scene_id) if source_scene_id else None,
+        }
+        if plan.scene_transition.required or any(
+            step.transition.transition_type == "location_transition"
+            for step in plan.action_sequence.steps
+        ):
+            await InitialWorldStateService(self._session).ensure_snapshot(
+                campaign_id, exclude_turn_id=trigger_turn_id,
+            )
+        executor = SceneTransitionExecutor(self._session)
+        if plan.scene_transition.required:
+            try:
+                applied = await executor.apply(
+                    campaign_id, source_scene_id, trigger_turn_id,
+                    plan.scene_transition,
+                )
+            except ValueError as exc:
+                raise TurnPlanningError(
+                    f"Authority repair planned an invalid transition: {exc}"
+                ) from exc
+            if applied:
+                target_scene_id = applied.target_scene_id
+                transition_metadata = {
+                    "status": "prepared",
+                    "transition_id": str(applied.transition_id),
+                    "source_scene_id": (
+                        str(applied.source_scene_id) if applied.source_scene_id else None
+                    ),
+                    "target_scene_id": str(applied.target_scene_id),
+                    "source_location_id": (
+                        str(applied.source_location_id) if applied.source_location_id else None
+                    ),
+                    "target_location_id": (
+                        str(applied.target_location_id) if applied.target_location_id else None
+                    ),
+                }
+        authority = await TurnAuthorityService(self._session).build(
+            campaign_id=campaign_id,
+            trigger_turn_id=trigger_turn_id,
+            player_input=turn_create.content,
+            source_scene_id=source_scene_id,
+            target_scene_id=target_scene_id,
+            plan=plan,
+            acting_character_id=turn_create.acting_character_id,
+        )
+        return plan, metadata, executor, applied, target_scene_id, transition_metadata, authority
+
     async def _rollback_materialization(
         self,
         materializer: TurnOutcomeMaterializer | None,
@@ -481,7 +583,34 @@ class TurnSaga:
                     acting_character_id=turn_create.acting_character_id,
                 )
             except TurnAuthorityError as exc:
-                raise TurnPlanningError(f"Turn authority rejected before narration: {exc}") from exc
+                # One controlled repair for the F-20 class only. A persisted
+                # existing transition is not ours to rewrite.
+                if (
+                    "Известный персонаж не может появиться без структурного перемещения" not in str(exc)
+                    or existing_transition is not None
+                ):
+                    raise TurnPlanningError(
+                        f"Turn authority rejected before narration: {exc}"
+                    ) from exc
+                try:
+                    (
+                        plan, planner_metadata, transition_executor, applied_transition,
+                        effective_scene_id, transition_metadata, authority,
+                    ) = await self._retry_authority_after_invalid_npc(
+                        campaign_id=campaign_id,
+                        trigger_turn_id=user_turn.id,
+                        source_scene_id=source_scene_id,
+                        turn_create=turn_create,
+                        messages=messages,
+                        role_router=role_router,
+                        primary_config=primary_config,
+                        first_error=str(exc),
+                    )
+                except (TurnAuthorityError, TurnPlanningError, ValueError) as repair_exc:
+                    raise TurnPlanningError(
+                        "Authority plan still invalid after one bounded repair: "
+                        f"{repair_exc}"
+                    ) from repair_exc
 
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(
