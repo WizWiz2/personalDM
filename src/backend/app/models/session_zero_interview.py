@@ -31,6 +31,16 @@ class SessionZeroStarterNPC(BaseModel):
         return self
 
 
+class SessionZeroDeadline(BaseModel):
+    """Publicly agreed story deadline with an explicit consequence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=8, max_length=1000)
+    due_phase: Literal["dawn", "morning", "day", "evening", "night"]
+    consequence: str = Field(min_length=12, max_length=1000)
+
+
 class SessionZeroWorldDraft(BaseModel):
     setting_name: str | None = None
     genre: str | None = None
@@ -47,6 +57,7 @@ class SessionZeroWorldDraft(BaseModel):
     starting_location_name: str | None = None
     starting_situation: str | None = None
     starting_day_part: Literal["dawn", "morning", "day", "evening", "night"] | None = None
+    scheduled_deadlines: list[SessionZeroDeadline] = Field(default_factory=list, max_length=4)
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] = Field(
         default_factory=list,
@@ -102,6 +113,7 @@ class SessionZeroWorldPatch(BaseModel):
     starting_location_name: str | None = None
     starting_situation: str | None = None
     starting_day_part: Literal["dawn", "morning", "day", "evening", "night"] | None = None
+    scheduled_deadlines: list[SessionZeroDeadline] | None = None
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] | None = None
     starter_presence_confirmed: bool | None = None
