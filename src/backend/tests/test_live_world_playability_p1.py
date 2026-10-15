@@ -337,3 +337,11 @@ async def test_production_frozen_intent_compiler_keeps_item_and_world_move(db_se
     plan = await ActionPlanCompiler(db_session).compile(cid, contract, normalized)
     assert plan.item_introductions[0].canonical_name == "медный ключ"
     assert plan.world_move is not None and plan.world_move.outcome == event
+
+
+def test_kannada_decoder_noise_is_held_for_narrator_repair():
+    """QA-209 F-15: Indian-script garbage was not captured by CJK-only gate."""
+    from app.services.script_consistency import foreign_script_intrusions
+
+    assert foreign_script_intrusions("— Да, дверь закрыта. ಿವೃದ್ಧ")
+    assert not foreign_script_intrusions("— Да, дверь закрыта. Гроссбух лежит рядом.")
