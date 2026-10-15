@@ -555,3 +555,86 @@ async def test_session_zero_explicit_day_part_roundtrip(db_session):
     info = await service.get(cid)
     assert info.starting_day_part == "night"
     assert info.custom_fields["starting_day_part"] == "night"
+
+
+@pytest.mark.asyncio
+async def test_scheduled_deadline_persists_and_fires_once_via_frozen_pipeline(db_session):
+    """Typed SZ deadline -> current time -> decision -> compiled authority -> Event."""
+    from app.db.repositories.event_repo import EventRepository
+    from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
+    from app.models.session_zero import SessionZeroUpdate
+    from app.services.session_zero_service import SessionZeroService
+    from app.services.world_momentum_service import WorldMomentumService
+    from app.services.turn_intent_pipeline import apply_due_deadline
+    from app.services.action_plan_compiler import ActionPlanCompiler
+    from app.services.turn_authority_service import TurnAuthorityService
+    from app.services.world_initiative_ledger import WorldInitiativeLedger
+
+    cid, _room, hero, scene = await _start(db_session)
+    source = "Гильдия обязана закрыть долг перед архивом до рассвета"
+    effect = "На рассвете гильдия теряет право выкупа документа."
+    await SessionZeroService(db_session).update(
+        cid, SessionZeroUpdate(custom_fields={
+            "scheduled_deadlines": [{
+                "source": source, "due_phase": "dawn",
+                "consequence": effect,
+            }],
+        }),
+    )
+    clock = await SceneStateService(db_session).ensure_runtime_state(scene.id)
+    clock.world_time_label = "night"
+    await db_session.flush()
+    monitor = WorldMomentumService(db_session)
+    assert (await monitor.snapshot(cid, scene.id))["automatic_deadline"] is None
+    clock.world_time_label = "dawn"
+    await db_session.flush()
+    due = await monitor.snapshot(cid, scene.id)
+    assert due["automatic_deadline"]["outcome"] == effect
+
+    contract = PlayerIntentContract(summary="Читаю архивную опись", actions=[])
+    decision = TurnOutcomeDecision(
+        resolution="observation",
+        observable_consequences=["На листе видна печать архива."],
+    )
+    injected = apply_due_deadline(decision, contract, due)
+    assert injected.world_move.source == source
+    assert effect in injected.observable_consequences
+    planned = await ActionPlanCompiler(db_session).compile(cid, contract, injected)
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=cid, trigger_turn_id=uuid4(),
+        player_input="Читаю архивную опись",
+        source_scene_id=scene.id, target_scene_id=scene.id,
+        plan=planned, acting_character_id=None,
+    )
+    assert authority.world_move is not None
+    published = uuid4()
+    await WorldInitiativeLedger(db_session).record(authority, published)
+    assert (await monitor.snapshot(cid, scene.id))["automatic_deadline"] is None
+    events = await EventRepository(db_session).list_by_campaign(cid)
+    assert len(events) == 1
+    assert events[0].source_turns == [published]
+    assert effect in events[0].description
+
+
+def test_due_deadline_never_overwrites_player_choice_or_fills_four_outcomes():
+    from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
+    from app.services.turn_intent_pipeline import apply_due_deadline
+
+    due = {"automatic_deadline": {
+        "kind": "deadline", "source": "Срок договора заканчивается на рассвете",
+        "due_phase": "dawn", "outcome": "Договор лишился силы после рассвета.",
+    }}
+    choice = PlayerIntentContract(
+        summary="Выбираю путь", actions=[],
+        pending_player_choice="Остаться или покинуть помещение?",
+    )
+    decision = TurnOutcomeDecision(
+        resolution="observation", observable_consequences=["Затих ветер."],
+    )
+    assert apply_due_deadline(decision, choice, due).world_move is None
+    full = TurnOutcomeDecision(
+        resolution="observation",
+        observable_consequences=["Первый.", "Второй.", "Третий.", "Четвёртый."],
+    )
+    normal = PlayerIntentContract(summary="Наблюдаю", actions=[])
+    assert apply_due_deadline(full, normal, due).world_move is None
