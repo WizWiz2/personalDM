@@ -204,3 +204,101 @@ async def test_unsupported_player_claim_does_not_create_item(db_session):
         acting_character_id=None,
     )
     assert authority.allowed_new_items == []
+
+
+@pytest.mark.asyncio
+async def test_structured_world_move_records_only_sourced_published_consequence(db_session):
+    """The world's independent move becomes a durable Event, not only pretty prose."""
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.db.repositories.event_repo import EventRepository
+    from app.models.scene_thesis import SceneThesisCreate, ThesisType
+    from app.models.turn import TurnCreate
+    from app.models.turn_authority import PlannedWorldMove
+    from app.services.turn_authority_planner import CoordinatedTurnPlan
+    from app.services.turn_authority_service import TurnAuthorityService
+    from app.services.world_initiative_ledger import WorldInitiativeLedger
+
+    cid, _room, _hero, scene = await _start(db_session)
+    source = "Долг домовому должен быть возвращён до рассвета"
+    effect = "На двери проявилась отметка: до рассвета остался один час."
+    await SceneRepository(db_session).create_thesis(
+        scene.id,
+        SceneThesisCreate(
+            thesis_type=ThesisType.UNRESOLVED_BEAT,
+            text=source,
+            priority=5,
+        ),
+    )
+    user_turn = await TurnRepository(db_session).create(
+        cid, TurnCreate(role="user", content="Ожидаю дальнейших событий.", scene_id=scene.id),
+    )
+    move = PlannedWorldMove(kind="deadline", source=source, outcome=effect)
+    plan = CoordinatedTurnPlan(
+        player_intent="Ожидаю",
+        resolution="observation",
+        observable_consequences=[effect],
+        world_move=move,
+    )
+    service = TurnAuthorityService(db_session)
+    authority = await service.build(
+        campaign_id=cid, trigger_turn_id=user_turn.id,
+        player_input=user_turn.content,
+        source_scene_id=scene.id, target_scene_id=scene.id,
+        plan=plan, acting_character_id=None,
+    )
+    assert authority.world_move == move
+    assert authority.narrator_payload()["approved_world_move"]["outcome"] == effect
+    ledger = WorldInitiativeLedger(db_session)
+    published_turn_id = uuid4()
+    first = await ledger.record(authority, published_turn_id)
+    second = await ledger.record(authority, published_turn_id)
+    assert first == second
+    events = await EventRepository(db_session).list_by_campaign(cid)
+    assert len([e for e in events if e.event_type == "world_initiative:deadline"]) == 1
+    assert published_turn_id in events[0].source_turns
+
+    invented = plan.model_copy(update={
+        "world_move": move.model_copy(update={"source": "Неизвестный внешний заговор"})
+    })
+    blocked = await service.build(
+        campaign_id=cid, trigger_turn_id=user_turn.id,
+        player_input=user_turn.content,
+        source_scene_id=scene.id, target_scene_id=scene.id,
+        plan=invented, acting_character_id=None,
+    )
+    assert blocked.world_move is None
+    assert effect not in blocked.observable_consequences
+
+
+@pytest.mark.asyncio
+async def test_world_move_without_observable_outcome_does_not_commit(db_session):
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.scene_thesis import SceneThesisCreate, ThesisType
+    from app.models.turn import TurnCreate
+    from app.models.turn_authority import PlannedWorldMove
+    from app.services.turn_authority_planner import CoordinatedTurnPlan
+    from app.services.turn_authority_service import TurnAuthorityService
+
+    cid, _room, _hero, scene = await _start(db_session)
+    source = "У стен старой башни нарастает конфликт с гильдией"
+    await SceneRepository(db_session).create_thesis(
+        scene.id,
+        SceneThesisCreate(thesis_type=ThesisType.TENSION, text=source, priority=5),
+    )
+    turn = await TurnRepository(db_session).create(
+        cid, TurnCreate(role="user", content="Жду.", scene_id=scene.id),
+    )
+    plan = CoordinatedTurnPlan(
+        player_intent="Жду", resolution="observation",
+        world_move=PlannedWorldMove(
+            kind="pressure", source=source,
+            outcome="Посыльный гильдии передал стражникам новое распоряжение.",
+        ),
+        observable_consequences=["Над улицей горит фонарь."],
+    )
+    result = await TurnAuthorityService(db_session).build(
+        campaign_id=cid, trigger_turn_id=turn.id,
+        player_input=turn.content, source_scene_id=scene.id, target_scene_id=scene.id,
+        plan=plan, acting_character_id=None,
+    )
+    assert result.world_move is None
