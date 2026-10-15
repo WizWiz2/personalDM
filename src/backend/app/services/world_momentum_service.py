@@ -6,6 +6,7 @@ the selected event before narration and the world initiative ledger publishes it
 """
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from sqlalchemy import select
@@ -84,6 +85,39 @@ class WorldMomentumService:
                 "actor_location_id": character.current_location_id,
                 "offscreen": character.current_location_id != current_place_id,
             })
+        # Character cards already store short-term intentions. Use them even
+        # when the richer CharacterGoal table has no rows (common for NPCs
+        # introduced mid-game). Never invent an agenda from their job title.
+        actor_rows = await self._session.execute(
+            select(Entity, Character)
+            .join(Character, Character.entity_id == Entity.id)
+            .where(
+                Entity.campaign_id == str(campaign_id),
+                Entity.entity_type == "character",
+                Entity.id != (campaign.player_character_id or ""),
+                Entity.id.in_(seen_ids),
+                Character.current_location_id.is_not(None),
+            )
+            .order_by(Entity.canonical_name)
+            .limit(25)
+        )
+        for entity, character in actor_rows.all():
+            try:
+                intentions = json.loads(character.current_intentions or "[]")
+            except (ValueError, TypeError):
+                intentions = []
+            if not isinstance(intentions, list):
+                continue
+            for statement in intentions[:2]:
+                if not isinstance(statement, str) or len(statement.strip()) < 8:
+                    continue
+                items.append({
+                    "source": statement.strip(),
+                    "actor_id": entity.id,
+                    "actor_name": entity.canonical_name,
+                    "actor_location_id": character.current_location_id,
+                    "offscreen": character.current_location_id != current_place_id,
+                })
         # Deduplicate identical source+actor references without reordering.
         return list({
             (item["source"].casefold(), item["actor_id"]): item
