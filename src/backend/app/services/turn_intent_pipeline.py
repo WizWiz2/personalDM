@@ -10,6 +10,8 @@ from app.db.repositories.location_repo import LocationRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import Campaign, Character, Entity, Turn
 from app.models.turn import ChatMessage
+from app.models.turn_authority import PlannedWorldMove
+from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
 from app.services.world_momentum_service import WorldMomentumService
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
@@ -29,6 +31,36 @@ from app.services.turn_outcome_resolver import (
 from app.services.turn_planner import ActionSequencePlan, TurnPlanningError
 
 _INSTALLED = False
+
+
+def apply_due_deadline(
+    decision: TurnOutcomeDecision,
+    contract: PlayerIntentContract,
+    momentum: dict,
+) -> TurnOutcomeDecision:
+    """A mutually established deadline expires deterministically at its phase.
+
+    The outcome was frozen in session zero, so no model is authorized to revise
+    the consequence. Never erase another successful user outcome to make room.
+    """
+    due = momentum.get("automatic_deadline")
+    if not isinstance(due, dict) or contract.pending_player_choice:
+        return decision
+    if decision.resolution in {"failure", "uncertain"}:
+        return decision
+    existing = list(decision.observable_consequences)
+    consequence = due["outcome"]
+    if consequence not in existing and len(existing) >= 4:
+        return decision
+    if consequence not in existing:
+        existing.append(consequence)
+    move = PlannedWorldMove.model_validate(due)
+    return decision.model_copy(update={
+        "world_move": move,
+        "observable_consequences": existing,
+        "allow_new_complication": True,
+        "complication_source": due["source"],
+    })
 
 
 class TurnIntentPlanningPipeline:
@@ -202,6 +234,7 @@ class TurnIntentPlanningPipeline:
             substance_active=committed_travel,
         )
         decision = decision.model_copy(update={"narration_guidance": guidance})
+        decision = apply_due_deadline(decision, contract, momentum)
 
         plan = await self._compiler.compile(campaign_id, contract, decision)
         return plan, {
