@@ -97,6 +97,14 @@ class TurnAuthorityService:
             if threads:
                 plot_source = max(threads, key=lambda thesis: thesis.priority).text
 
+        world_move = None
+        if plan and plan.world_move and plot_source and not plan.action_sequence.steps:
+            candidate = plan.world_move
+            grounded = candidate.source.casefold().strip() == plot_source.casefold().strip()
+            approved = candidate.outcome in plan.observable_consequences
+            if grounded and approved and not plan.narration_policy.pending_player_choice:
+                world_move = candidate
+
         present_names = list(target_state.participant_names) if target_state else []
         present_keys = {identity_key(value) for value in present_names}
 
@@ -216,12 +224,18 @@ class TurnAuthorityService:
             ),
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
+            world_move=world_move,
             resolution=(plan.resolution if plan else "conversation"),
             identity_reveal_requested=(
                 bool(plan and (plan.personal_name_revealed or plan.identity_reveal_requested))
             ),
             dramatic_mode=(plan.narration_policy.dramatic_mode if plan else "calm"),
-            observable_consequences=(list(plan.observable_consequences) if plan else []),
+            observable_consequences=(
+                [
+                    value for value in plan.observable_consequences
+                    if not (plan.world_move and world_move is None and value == plan.world_move.outcome)
+                ] if plan else []
+            ),
             character_beats=(list(plan.character_beats) if plan else []),
             addressed_response=(
                 planned_response.model_copy(deep=True)

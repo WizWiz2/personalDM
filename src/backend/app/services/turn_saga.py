@@ -624,6 +624,16 @@ class TurnSaga:
                 ),
             )
 
+            if authority.world_move:
+                from app.services.world_initiative_ledger import WorldInitiativeLedger
+
+                await WorldInitiativeLedger(self._session).record(
+                    authority, saved_assistant.id,
+                )
+                context_metadata["approved_world_move"] = authority.world_move.model_dump(
+                    mode="json"
+                )
+
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(
                     applied_transition.transition_id

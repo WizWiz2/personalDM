@@ -10,7 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, 
 from app.config import settings
 from app.models.addressed_response import AddressedResponse
 from app.models.turn import ChatMessage
-from app.models.turn_authority import PlannedItemIntroduction, PlannedNpcIntroduction
+from app.models.turn_authority import (
+    PlannedItemIntroduction,
+    PlannedNpcIntroduction,
+    PlannedWorldMove,
+)
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.entity_identity import identity_key
 from app.services.player_intent_contract import expects_russian
@@ -123,6 +127,7 @@ class CoordinatedTurnPlan(TurnPlan):
     item_introductions: list[PlannedItemIntroduction] = Field(
         default_factory=list, max_length=4,
     )
+    world_move: PlannedWorldMove | None = None
     addressed_response_requested: bool = False
     addressed_response: AddressedResponse | None = None
     personal_name_revealed: bool = False
@@ -210,6 +215,17 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   temporary_name and reason. When temporary_name=false, also provide personal_name_evidence: the
   exact current-turn or campaign statement that establishes the person's personal name. Leave it
   null for role/title-only identities.
+- world_move: an optional INDEPENDENT, GROUNDED change in the current story.
+  Use only for an already established active_conflict or active unresolved_beat/tension
+  quoted VERBATIM in source. kind is pressure|information|deadline.
+  Set outcome to a concrete, specific observable consequence, copied EXACTLY into
+  observable_consequences. It must not duplicate an existing recorded world event.
+  Do NOT use a world_move alongside an action_sequence, an unresolved pending_player_choice,
+  or for new people, objects, custody changes, physical movement, an extra PC action,
+  an arbitrary attack, or a generic ominous sound. Those require independent typed
+  structural authority. If there is no established source, leave world_move=null.
+  An NPC can react to a prior promise, threat, deadline or clue without being puppeted by
+  the player, but only with such a grounded, resolvable outcome.
 - item_introductions: significant NEW physical objects explicitly confirmed in this turn's
   approved observable_consequences or successful structured step outcomes (e.g. a found journal,
   a received key, a written note). Use exact canonical_name and a verbatim evidence substring

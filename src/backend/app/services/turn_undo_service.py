@@ -11,7 +11,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
 from app.db.scene_state_table import SceneRuntimeState
-from app.db.tables import Campaign, Character, Entity, SceneThesis, Turn
+from app.db.tables import Campaign, Character, Entity, Event, SceneThesis, Turn
 from app.services.scene_transition_executor import release_transition_target
 from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.active_canon_replay import ActiveCanonReplayService
@@ -232,6 +232,16 @@ class TurnUndoService:
         await ActiveCanonReplayService(self._session).replay(campaign_id)
         await WorldReducer(self._session).rebuild(campaign_id)
         await self._remove_turn_introductions(campaign_id, assistant_turn_id)
+        # These world developments are attached to the published assistant pair,
+        # never to an earlier plan. /undo must retract them without touching
+        # independent events created by the player or by the Scribe.
+        await self._session.execute(
+            delete(Event).where(
+                Event.campaign_id == str(campaign_id),
+                Event.event_type.like("world_initiative:%"),
+                Event.source_turns == json.dumps([str(assistant_turn_id)]),
+            )
+        )
         # Undo latest completed turn also restores the preceding paced clock.
         # A scene transition handles its own clock rollback separately; only
         # snapshots actually advanced by publication carry world_clock_before.

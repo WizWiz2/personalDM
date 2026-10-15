@@ -42,6 +42,20 @@ class PlannedItemIntroduction(BaseModel):
     owned_by_player: bool = False
 
 
+class PlannedWorldMove(BaseModel):
+    """A sourced, nonphysical independent development of an existing story thread.
+
+    Physical moves, NPC introductions and item custody remain owned by their
+    respective structured executors; a story beat alone cannot mutate them.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["pressure", "information", "deadline"]
+    source: str = Field(min_length=8, max_length=1000)
+    outcome: str = Field(min_length=12, max_length=1000)
+
+
 class ExistingNpcArrival(BaseModel):
     """A known character that may become present without being recreated as a new entity."""
 
@@ -86,6 +100,7 @@ class TurnAuthority(BaseModel):
     known_absent_character_names: list[str] = Field(default_factory=list)
     allowed_new_npcs: list[PlannedNpcIntroduction] = Field(default_factory=list)
     allowed_new_items: list[PlannedItemIntroduction] = Field(default_factory=list)
+    world_move: PlannedWorldMove | None = None
     allowed_existing_npc_arrivals: list[ExistingNpcArrival] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
 
@@ -224,6 +239,9 @@ class TurnAuthority(BaseModel):
             "established_state": self.established_state,
             "scene_time": self.scene_time,
             "allowed_new_items": [item.canonical_name for item in self.allowed_new_items],
+            "approved_world_move": (
+                self.world_move.model_dump(mode="json") if self.world_move else None
+            ),
             "executed_steps": self.executed_steps(),
             "scene_disposition": self.scene_disposition,
             "transition_type": self.transition_type,
@@ -257,6 +275,9 @@ class TurnAuthority(BaseModel):
             ),
             "objects_here": self.object_names,
             "new_objects": [item.model_dump(mode="json") for item in self.allowed_new_items],
+            "approved_world_move": (
+                self.world_move.model_dump(mode="json") if self.world_move else None
+            ),
             "resolution": self.resolution,
             "observable_consequences": self.observable_consequences,
             "character_beats": self.character_beats,
@@ -270,4 +291,4 @@ class TurnAuthority(BaseModel):
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
 
-__all__ = ["ExistingNpcArrival", "PlannedItemIntroduction", "PlannedNpcIntroduction", "TurnAuthority"]
+__all__ = ["ExistingNpcArrival", "PlannedItemIntroduction", "PlannedNpcIntroduction", "PlannedWorldMove", "TurnAuthority"]
