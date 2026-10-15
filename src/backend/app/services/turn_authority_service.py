@@ -13,6 +13,7 @@ from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
 from app.services.outcome_fact_authority import established_state_lines, established_subjects
 from app.services.turn_authority_planner import CoordinatedTurnPlan
+from app.services.world_momentum_service import WorldMomentumService
 from app.services.turn_authority_resolvers import (
     ActorResolver,
     AuthorityResolutionError,
@@ -98,11 +99,39 @@ class TurnAuthorityService:
                 plot_source = max(threads, key=lambda thesis: thesis.priority).text
 
         world_move = None
-        if plan and plan.world_move and plot_source and not plan.action_sequence.steps:
+        if plan and plan.world_move and effective_scene_id:
             candidate = plan.world_move
-            grounded = candidate.source.casefold().strip() == plot_source.casefold().strip()
-            approved = candidate.outcome in plan.observable_consequences
-            if grounded and approved and not plan.narration_policy.pending_player_choice:
+            momentum = WorldMomentumService(self._session)
+            authorized = await momentum.threads(campaign_id, effective_scene_id)
+            matches = [
+                source for source in authorized
+                if source["source"].casefold().strip() == candidate.source.casefold().strip()
+                and str(source["actor_id"] or "") == str(candidate.actor_id or "")
+            ]
+            actor_ok = (
+                (candidate.kind == "npc_action" and candidate.actor_id is not None)
+                or (candidate.kind != "npc_action" and candidate.actor_id is None)
+            )
+            clock_ok = (
+                candidate.kind != "deadline" or (
+                    candidate.due_phase is not None
+                    and target_state is not None
+                    and target_state.world_time_label == candidate.due_phase
+                )
+            )
+            previously_fired = (
+                await momentum.deadline_already_triggered(
+                    campaign_id, candidate.source,
+                )
+                if matches and candidate.kind == "deadline" and clock_ok
+                else False
+            )
+            if (
+                matches and actor_ok and clock_ok and not previously_fired
+                and candidate.outcome in plan.observable_consequences
+                and plan.resolution not in {"failure", "uncertain"}
+                and not plan.narration_policy.pending_player_choice
+            ):
                 world_move = candidate
 
         present_names = list(target_state.participant_names) if target_state else []
@@ -251,7 +280,8 @@ class TurnAuthorityService:
             # conflict. The narrator still cannot materialize a new NPC/item.
             allow_new_complication=bool(
                 plan and (
-                    plan.narration_policy.allow_new_complication
+                    world_move is not None
+                    or plan.narration_policy.allow_new_complication
                     or (
                         plot_source
                         and plan.resolution not in {"failure", "uncertain"}
@@ -260,7 +290,8 @@ class TurnAuthorityService:
                 )
             ),
             complication_source=(
-                plan.narration_policy.complication_source
+                world_move.source
+                if world_move else plan.narration_policy.complication_source
                 if plan and plan.narration_policy.allow_new_complication
                 else plot_source
                 if plan and plot_source and plan.resolution not in {"failure", "uncertain"}
