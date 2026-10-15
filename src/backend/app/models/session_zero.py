@@ -26,6 +26,7 @@ class SessionZeroUpdate(BaseModel):
     rules_system: str | None = None
     world_summary: str | None = None
     starting_situation: str | None = None
+    starting_day_part: Literal["dawn", "morning", "day", "evening", "night"] | None = None
     starting_location_id: UUID | None = None
     starting_scene_title: str | None = None
     play_style: str | None = None
@@ -48,6 +49,7 @@ class SessionZeroRead(BaseModel):
     rules_system: str | None = None
     world_summary: str | None = None
     starting_situation: str | None = None
+    starting_day_part: Literal["dawn", "morning", "day", "evening", "night"] | None = None
     starting_location_id: UUID | None = None
     starting_location_name: str | None = None
     starting_scene_title: str | None = None
