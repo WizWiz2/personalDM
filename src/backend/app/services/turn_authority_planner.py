@@ -46,6 +46,7 @@ ReviewDefectKind = Literal[
     "missing_travel",
     "redundant_travel",
     "missing_contact",
+    "missing_item",
     "identity",
     "missing_committed_action",
     "other",
@@ -404,6 +405,14 @@ Return repair_required only when the proposed typed plan semantically violates o
   Если план уже описывает непрерывное прибытие в конечную локацию, не раскладывай это прибытие на
   отдельный шаг «подойти к человеку у стойки»: typed location_transition покрывает весь заявленный
   путь до конечной локации.
+- DURABLE ITEMS: if a completed approved outcome explicitly creates, acquires or discovers
+  a significant, individually identifiable physical object that must persist (a key, ledger,
+  named letter, unique clue) and the object is not in the authoritative inventory or in
+  item_introductions, require missing_item repair. Its exact textual evidence must come
+  from approved observable_consequences/structured completed steps, not solely from a
+  player's unverified claim. Do NOT demand canonical item rows for background cups,
+  ordinary dust, scenery, or ambiguous metaphor. Do not authorize an object solely
+  to make the story interesting.
 - CONTACT/IDENTITY: when contact with an unspecified person is resolved positively, a previously
   unknown physical responder must be typed in npc_introductions. When the human actively seeks or
   addresses local people and the physical allowlist is player-only, empty no-contact is a defect:
@@ -979,7 +988,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                         "blocking_reason and no location_transition; do not demand a successful "
                         "transition there. When verdict is repair_required, defect_kinds must classify "
                         "the issues (missing_travel, redundant_travel, missing_contact, identity, "
-                        "missing_committed_action, other).\n\n"
+                        "missing_committed_action, missing_item, other).\n\n"
                         "[AUTHORITATIVE PHYSICAL PRESENCE ALLOWLIST]\n"
                         "Only these characters are currently present: "
                         + ", ".join(present_names or [])

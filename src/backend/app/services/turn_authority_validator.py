@@ -78,6 +78,11 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    a confirmed new physical item in allowed_new_items, or the result of an executed
    step (a completed step happened, a blocked step did not). Do not deny the existence
    or possession of a confirmed item merely because it is not on the floor.
+   Also do not physically introduce a new UNIQUE PLOT-SIGNIFICANT object (a named key,
+   ledger, document or irreplaceable clue) that is absent from both objects_here and
+   allowed_new_items, or transfer its custody without an executed inventory step.
+   Ordinary backdrop objects, sensory scenery and things mentioned in dialogue are not
+   violations. Do not confuse unknown physical presence with confirmed absence.
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or
    voluntary actions beyond player_input. Rendering player_input itself, its result, and what the
    player character perceives is allowed.

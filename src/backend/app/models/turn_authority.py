@@ -239,6 +239,7 @@ class TurnAuthority(BaseModel):
             "established_state": self.established_state,
             "scene_time": self.scene_time,
             "allowed_new_items": [item.canonical_name for item in self.allowed_new_items],
+            "objects_here": self.object_names,
             "approved_world_move": (
                 self.world_move.model_dump(mode="json") if self.world_move else None
             ),
