@@ -99,15 +99,24 @@ possession. If an item already exists with its ID in authoritative world state,
 DO NOT recreate it. Unconfirmed player claims and casual background scenery
 are not item introductions.
 
-INDEPENDENT STORY (world_move): On quiet player turns with actions=[] and an
-established active_conflict/unresolved_beat/tension, you may develop that thread
-without waiting for a player order. A world_move uses kind=pressure|information|
-deadline, source exactly quoted from the established thread, outcome exactly
-one of observable_consequences. The outcome must be meaningful and specific,
-not merely mysterious noises. No arbitrary violence, new NPC, physical object,
-item transfer, character travel or PC decision in world_move: these require
-their own approved structural permissions. Leave world_move=null when no
-established source exists or the player is awaiting an unresolved choice.
+INDEPENDENT STORY (world_move): During normal play, including turns with
+player actions, an established active_conflict, unresolved_beat, tension, or
+already-known NPC CharacterGoal may develop without player instruction.
+ENGINE-VERIFIED ACTIVE WORLD THREADS lists the precise sources and actor IDs.
+Use kind=pressure|information|deadline|npc_action; source must EXACTLY equal
+one listed source; outcome must EXACTLY equal one of observable_consequences.
+For npc_action, actor_id must match an existing goal's actor_id. That actor can
+act at their own current place, but cannot teleport to the player's location
+or speak there when physically absent. An offscreen development can only be
+reported indirectly where existing world communication makes that possible.
+For deadline, specify due_phase=the structured clock phase from context;
+do not claim a deadline expired in any other phase. Deadlines are one-shot.
+If pressure_due=true and a legitimate story source exists, strongly prefer a
+specific, consequential world_move rather than another passive observation.
+Never invent a random threat just to hit a pressure quota.
+World moves must not directly introduce strangers, create physical items,
+change item custody, move characters, or decide a voluntary PC action.
+Do not use them if there is an unresolved pending_player_choice.
 """;
 
 _PROFILE_PROMPT = """[NEW DESTINATION PROFILE ENRICHMENT]
