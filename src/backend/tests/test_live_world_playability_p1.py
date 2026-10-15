@@ -482,3 +482,76 @@ async def test_russian_night_label_advances_to_dawn(db_session):
     for _ in range(clock.TURNS_PER_PHASE):
         await clock.advance_published_turn(scene.id)
     assert runtime.world_time_label == "dawn"
+
+
+@pytest.mark.asyncio
+async def test_newly_introduced_npc_goal_becomes_live_actor_intention(db_session):
+    from app.models.turn_authority import PlannedNpcIntroduction
+    from app.services.world_momentum_service import WorldMomentumService
+
+    cid, _room, hero, scene = await _start(db_session)
+    goal = "Лида пытается договориться с архивом до закрытия дверей"
+    authority = TurnAuthority(
+        campaign_id=cid, trigger_turn_id=uuid4(), player_character_id=hero.id,
+        target_scene_id=scene.id, player_input="Кто сидит за стойкой?",
+        allowed_new_npcs=[PlannedNpcIntroduction(
+            canonical_name="Лида", role="архивист", description="Лида работает в архиве.",
+            reason="Лида дежурит за стойкой и отвечает на обращение.",
+            current_goal=goal,
+        )],
+    )
+    outcome = await TurnOutcomeMaterializer(db_session).materialize(
+        authority, source_turn_id=uuid4(),
+    )
+    assert len(outcome.introduced_character_ids) == 1
+    npc = await EntityRepository(db_session).get_character(
+        outcome.introduced_character_ids[0]
+    )
+    assert goal in npc.current_intentions
+    threads = await WorldMomentumService(db_session).threads(cid, scene.id)
+    assert any(
+        t["source"] == goal and t["actor_id"] == str(npc.id)
+        for t in threads
+    )
+
+
+@pytest.mark.asyncio
+async def test_world_pressure_signal_requires_real_sources_and_six_turns(db_session):
+    from app.db.repositories.turn_repo import TurnRepository
+    from app.models.scene_thesis import SceneThesisCreate, ThesisType
+    from app.models.turn import TurnCreate
+    from app.services.world_momentum_service import WorldMomentumService
+
+    cid, _room, _hero, scene = await _start(db_session)
+    monitor = WorldMomentumService(db_session)
+    assert (await monitor.snapshot(cid, scene.id))["pressure_due"] is False
+    await SceneRepository(db_session).create_thesis(
+        scene.id, SceneThesisCreate(
+            thesis_type=ThesisType.UNRESOLVED_BEAT,
+            text="Договор с архивом истекает на рассвете",
+            priority=5,
+        ),
+    )
+    for index in range(monitor.QUIET_TURNS_THRESHOLD):
+        await TurnRepository(db_session).create(
+            cid, TurnCreate(
+                role="assistant", scene_id=scene.id,
+                content=f"Ход {index}: игрок исследует архив.",
+            ),
+        )
+    state = await monitor.snapshot(cid, scene.id)
+    assert state["pressure_due"] is True
+    assert state["sources"][0]["source"] == "Договор с архивом истекает на рассвете"
+
+
+@pytest.mark.asyncio
+async def test_session_zero_explicit_day_part_roundtrip(db_session):
+    from app.models.session_zero import SessionZeroUpdate
+    from app.services.session_zero_service import SessionZeroService
+
+    cid, _room, _hero, _scene = await _start(db_session)
+    service = SessionZeroService(db_session)
+    await service.update(cid, SessionZeroUpdate(starting_day_part="night"))
+    info = await service.get(cid)
+    assert info.starting_day_part == "night"
+    assert info.custom_fields["starting_day_part"] == "night"
