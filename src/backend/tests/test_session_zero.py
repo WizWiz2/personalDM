@@ -104,6 +104,7 @@ def test_incomplete_character_card_is_diagnostic_not_completion_gate(
             "world_summary": "Прибрежные города живут торговлей и старыми клятвами.",
             "starting_situation": "На площади ищут людей для опасной работы.",
             "starting_location_id": location["id"],
+            "starting_day_part": "night",
             "boundaries": [],
             "boundaries_confirmed": True,
             "player_character_id": hero["id"],
@@ -124,6 +125,15 @@ def test_incomplete_character_card_is_diagnostic_not_completion_gate(
     assert result["setup"]["status"] == "completed"
     assert result["character_card"]["ready_for_play"] is False
     assert "goals" in result["character_card"]["missing_fields"]
+
+    # QA-210 F-22: playable bootstrap must not erase the explicit opening phase.
+    scene_id = result["scene"]["id"]
+    state = client.get(
+        f"/api/campaigns/{campaign['id']}/scenes/{scene_id}/state"
+    )
+    assert state.status_code == 200, state.text
+    assert state.json()["world_time_label"] == "night"
+    assert state.json()["world_time_order"] == 0
 
 
 def test_session_zero_atomically_creates_playable_start(client: TestClient):

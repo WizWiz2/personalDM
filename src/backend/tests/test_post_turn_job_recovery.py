@@ -215,3 +215,24 @@ async def test_periodic_sweep_recovers_durable_jobs_without_worker_restart(tmp_p
             assert (two.status, two.attempts) == ("pending", 1)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_idle_recovery_sweep_does_not_acquire_sqlite_write_lock(db_session):
+    """QA-210 F-29: no unconditional UPDATE while the foreground publishes."""
+    from sqlalchemy import event as sqlalchemy_event
+
+    statements = []
+    engine = db_session.bind.sync_engine
+
+    def record_statement(_conn, _cursor, statement, _parameters, _context, _many):
+        if "post_turn_jobs" in statement.lower():
+            statements.append(statement.lower().lstrip())
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", record_statement)
+    try:
+        assert await PostTurnJobRepository(db_session).recover_stale() == 0
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", record_statement)
+    assert any(statement.startswith("select") for statement in statements)
+    assert not any(statement.startswith("update") for statement in statements)

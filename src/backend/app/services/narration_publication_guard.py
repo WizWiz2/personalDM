@@ -41,6 +41,22 @@ class NarrationPublicationGuard:
             "validated_surface": False,
         }
 
+    @staticmethod
+    def include_critical_world_outcome(authority: TurnAuthority, text: str) -> str:
+        """A committed deadline must not disappear behind a scene-transition line.
+
+        The narrative can paraphrase a deadline, but the approved typed outcome
+        must remain visibly present. This is deterministic publication, not an
+        extra opportunity for the model to change the outcome.
+        """
+        move = authority.world_move
+        if move is None or move.kind != "deadline":
+            return text
+        outcome = move.outcome.strip()
+        if not outcome or outcome.casefold() in text.casefold():
+            return text
+        return f"{text.rstrip()}\n\n{outcome}"
+
     @classmethod
     def render_authority(cls, authority: TurnAuthority) -> str:
         """Plain text of the typed outcome: executed steps, else the resolved consequences."""
