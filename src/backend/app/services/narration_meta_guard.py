@@ -9,6 +9,12 @@ _INTERNAL = (
     re.compile(r"(?im)^\s*\[/?(?:AUTHORITATIVE SCENE STATE|INTER-AGENT|APPROVED TURN PLAN|SYSTEM PROMPT)\]"),
     re.compile(r"(?im)^\s*<\|(?:im_start|im_end|assistant|analysis|final)\|>"),
     re.compile(r"(?im)^\s*(?:as an ai language model|как языковая модель(?: ии)?)\b"),
+
+    # QA-210 F-24/F-27: a promise of a later answer is not narrative prose.
+    re.compile(r"(?i)\b(?:narrator|planner|resolver|validator)(?:-ом)?\b"),
+    re.compile(r"(?i)ожидает подачи|перечисление[^\n]{0,100}оста[её]тся за[^\n]{0,50}ответом"),
+    # QA-210 F-25: decoder's private-use symbols are not legitimate text.
+    re.compile(r"[\uE000-\uF8FF]"),
 )
 
 
