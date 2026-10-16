@@ -244,17 +244,6 @@ class SessionZeroService:
             )
         ).scene
 
-        # Use the explicit setup clock instead of an ambiguous opening label.
-        day_part = self._setups.decode_dict(row.custom_fields).get("starting_day_part")
-        if day_part in {"dawn", "morning", "day", "evening", "night"}:
-            from app.services.scene_state_service import SceneStateService
-
-            runtime = await SceneStateService(self._session).ensure_runtime_state(
-                scene.id
-            )
-            if not runtime.world_time_label or runtime.world_time_label == "Начало приключения":
-                runtime.world_time_label = day_part
-
         existing_notes = await self._scenes.list_theses_by_scene(
             scene.id,
             active_only=True,
@@ -284,6 +273,17 @@ class SessionZeroService:
             starting_situation=row.starting_situation or thesis_text,
             tone=row.tone,
         )
+
+        # Bootstrap intentionally provides a generic clock for legacy setups.
+        # Apply the explicit session-zero phase AFTER bootstrap or it is overwritten.
+        day_part = self._setups.decode_dict(row.custom_fields).get("starting_day_part")
+        if day_part in {"dawn", "morning", "day", "evening", "night"}:
+            from app.services.scene_state_service import SceneStateService
+
+            runtime = await SceneStateService(self._session).ensure_runtime_state(scene.id)
+            if not runtime.world_time_label or runtime.world_time_label == "Начало приключения":
+                runtime.world_time_label = day_part
+            await self._session.flush()
 
         campaign.description = (
             campaign.description
