@@ -297,7 +297,7 @@ async def test_undo_replay_preserves_independent_gm_move_and_its_event(db_sessio
     character.current_location_id = str(gm_destination)
     event = await EventRepository(db_session).create(
         cid, EventCreate(
-            event_type="movement", description="Гус ушёл в трактир",
+            event_type="gm_movement", description="Гус ушёл в трактир",
             location_id=gm_destination, participant_ids=[actor],
         ), source_turns=[],
     )
