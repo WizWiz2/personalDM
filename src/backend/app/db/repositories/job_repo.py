@@ -179,20 +179,30 @@ class PostTurnJobRepository(BaseRepository):
 
     async def recover_stale(self, stale_after_seconds: int = 300) -> int:
         threshold = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
+        # An SQLite UPDATE takes the single-writer lock even if it updates zero rows.
+        # Recovery sweeps run every 15 seconds: avoid competing with foreground
+        # publication when there is no stale work to reclaim.
+        stale_condition = and_(
+            PostTurnJob.status == "running",
+            or_(
+                PostTurnJob.locked_at < threshold,
+                and_(
+                    PostTurnJob.locked_at.is_(None),
+                    PostTurnJob.updated_at < threshold,
+                ),
+            ),
+        )
+        candidate = await self._session.execute(
+            select(PostTurnJob.id).where(stale_condition).limit(1)
+        )
+        if candidate.scalar_one_or_none() is None:
+            return 0
+
+        # Re-check the predicate atomically: another worker may have claimed
+        # or finished the row after the inexpensive read.
         result = await self._session.execute(
             update(PostTurnJob)
-            .where(
-                PostTurnJob.status == "running",
-                # Older workers could leave a running row without a lock timestamp. Treat that
-                # state as stale too; otherwise the desktop restart can never reclaim the job.
-                or_(
-                    PostTurnJob.locked_at < threshold,
-                    and_(
-                        PostTurnJob.locked_at.is_(None),
-                        PostTurnJob.updated_at < threshold,
-                    ),
-                ),
-            )
+            .where(stale_condition)
             .values(status="pending", locked_at=None, error="Recovered after worker restart")
         )
         await self._session.flush()
