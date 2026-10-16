@@ -214,6 +214,11 @@ class FactRepository(BaseRepository):
             else "assert"
         )
         cardinality = cardinality if cardinality in {"single", "multi"} else "single"
+        # scene_state can describe a single-valued state or a set of simultaneously
+        # true observations. The memory kind alone cannot decide cardinality:
+        # ("кровь", "находится") may refer to two distinct unregistered puddles.
+        # Let the semantic taxonomy/scribe supply cardinality until a typed slot
+        # contract can prove exclusivity. Explicit revise still supersedes history.
         current = await self.find_current_by_key(
             campaign_id,
             data.subject,
@@ -222,14 +227,27 @@ class FactRepository(BaseRepository):
             scene_id=data.scene_id,
             memory_kind=data.memory_kind,
         )
-        if data.subject_entity_id and data.memory_kind == "scene_state" and cardinality == "single":
-            # An entity's scene state is one value under any wording: the newest supersedes by its
-            # typed subject (B5 kept «занят на кухне» while the attendant stood at the counter).
-            current += [
+        # A free-text subject is NOT physical identity. Two registered objects
+        # may have the same label ("лодка", "лужа крови") in the same scene.
+        # Typed assertions can only supersede facts about that exact entity.
+        # Untyped assertions cannot implicitly overwrite a registered entity.
+        current = [
+            fact for fact in current
+            if fact.subject_entity_id == data.subject_entity_id
+        ]
+        if data.subject_entity_id:
+            # Match the same typed entity even when the storyteller changes its
+            # surface designation. Keep unrelated predicates and scopes intact.
+            seen_ids = {fact.id for fact in current}
+            current.extend(
                 fact for fact in await self.list_active(campaign_id, scene_id=data.scene_id)
                 if fact.subject_entity_id == data.subject_entity_id
-                and fact.memory_kind == "scene_state" and fact not in current
-            ]
+                and fact.memory_kind == data.memory_kind
+                and fact.scope == data.scope
+                and fact.scene_id == data.scene_id
+                and self.normalize(fact.predicate) == self.normalize(data.predicate)
+                and fact.id not in seen_ids
+            )
         object_key = self.normalize(data.object_value)
         truth_key = self.normalize(data.truth_status)
 

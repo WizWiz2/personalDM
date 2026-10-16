@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID
@@ -267,3 +268,43 @@ async def test_te2_shadow_failure_is_terminal_and_retryable(db_session, monkeypa
     retried = await PostTurnJobRepository(db_session).retry(shadow.id)
     assert retried is not None
     assert retried.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_registrar_model_preflight_does_not_hold_campaign_write_barrier(
+    db_session, monkeypatch,
+):
+    from app.services.campaign_write_barrier import for_campaign
+    from app.services.entity_registrar import EntityRegistrar, EntityRegistrationResult
+
+    campaign, assistant = await create_turn_fixture(db_session)
+    await db_session.commit()
+    campaign_id = UUID(campaign.id)
+    lock = for_campaign(campaign_id)
+    started, release = asyncio.Event(), asyncio.Event()
+    applied = []
+
+    async def preflight(*args, **kwargs):
+        assert not lock.locked()
+        started.set()
+        await release.wait()
+        return object()
+
+    async def apply(*args, **kwargs):
+        assert lock.locked()
+        applied.append(True)
+        return EntityRegistrationResult()
+
+    monkeypatch.setattr(EntityRegistrar, "prepare_from_turn", preflight)
+    monkeypatch.setattr(EntityRegistrar, "register_from_turn", apply)
+    processor = PostTurnProcessor(db_session)
+    work = asyncio.create_task(processor._register_without_locked_inference(
+        campaign_id, assistant, promotion_only=False,
+    ))
+    await asyncio.wait_for(started.wait(), timeout=3)
+    async with asyncio.timeout(3):
+        async with lock:
+            assert not work.done()
+    release.set()
+    await work
+    assert applied == [True]

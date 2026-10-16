@@ -176,8 +176,14 @@ class GameApplication:
             except (json.JSONDecodeError, ValueError, TypeError):
                 actor_id = None
 
-        await self._turns.mark_alternative(assistant_turn_id)
-        await self._session.commit()
+        # Regeneration must replace both the prose AND its structured effects.
+        # Otherwise the old movement, discoveries and introductions remain
+        # materialized while the same user action executes a second time.
+        latest_pair = await self._turns.get_latest_undoable_pair(campaign_id)
+        if latest_pair is None or latest_pair[1].id != assistant_turn_id:
+            raise TurnRegenerationError(
+                "Only the latest active narrative turn can be regenerated"
+            )
         regeneration_input = TurnCreate(
             role="user",
             content=user_turn.content,
@@ -186,13 +192,20 @@ class GameApplication:
             parent_turn_id=user_turn.parent_turn_id,
             model_name=user_turn.model_name,
         )
+        try:
+            undone = await TurnUndoService(self._session).undo_last_pair(campaign_id)
+            if not undone:
+                raise TurnRegenerationError("Unable to undo the original turn")
+            await self._session.commit()
+        except Exception:
+            await self._session.rollback()
+            raise
         VisualRuntimeGate.preempt_for_turn()
         return GameInputRoute(
             channel="narrative",
             stream=TurnRunner(self._session).run_turn_stream(
                 campaign_id,
                 regeneration_input,
-                existing_user_turn_id=user_turn.id,
             ),
         )
 

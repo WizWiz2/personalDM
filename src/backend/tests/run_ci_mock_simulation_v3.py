@@ -8,6 +8,7 @@ import os
 import re
 from collections import Counter
 from pathlib import Path
+from typing import get_args
 
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 
@@ -385,7 +386,7 @@ def _dispatch_json(prompt: str) -> str:
         and "[TURN PLANNER]" in prompt
     ):
         return _turn_authority_plan(prompt)
-    if "[TURN AUTHORITY VALIDATOR]" in prompt:
+    if "[TURN AUTHORITY VALIDATOR]" in prompt or "[FOUR BANS NARRATION CHECK]" in prompt:
         return _authority_verdict()
     if "[ACTOR CLAIM SEGMENT SELECTOR]" in prompt:
         return _actor_segment_selector(prompt)
@@ -423,7 +424,29 @@ def _consume_dm_failure_budget() -> bool:
 
 
 async def deterministic_generate_json(self, messages, config, api_key=None, **kwargs):
-    output = _dispatch_json(_all_text(messages))
+    response_model = kwargs.get("response_model")
+    if getattr(response_model, "__name__", "") == "GrantedNarration":
+        # Under an NPC beat, production requests strict JSON rather than a
+        # streaming narrator completion. Exercise that same typed transport.
+        beat_model = response_model.model_fields["beat"].annotation
+        owner_id = get_args(beat_model.model_fields["cast_id"].annotation)[0]
+        CALLS["granted_npc_beat"] += 1
+        evidence = (
+            "Я лично видел свежую отметку на стене. "
+            "Никто из караула не объяснил, откуда она взялась"
+        )
+        output = json.dumps({
+            "prose": f"— {evidence}, — говорит проводник.",
+            "beat": {
+                "cast_id": owner_id,
+                "kind": "speech",
+                "evidence": evidence,
+                "revealed_name": None,
+                "newcomer": None,
+            },
+        }, ensure_ascii=False)
+    else:
+        output = _dispatch_json(_all_text(messages))
     self.last_telemetry = {
         "status": "completed",
         "finish_reason": "stop",
@@ -459,10 +482,23 @@ async def deterministic_generate_stream(self, messages, config, api_key=None, **
                 "mock": True,
             }
             raise LLMProviderError("planned mock provider failure")
-        output = (
-            f"ДМ подтверждает конкретное последствие хода {CALLS['dm']}: группа получает "
-            "новое наблюдаемое свидетельство, меняет подход и на шаг приближается к цели сцены."
-        )
+        if "You are roleplaying one specific character" in prompt:
+            CALLS["actor_prompt"] += 1
+            # Actor-mode must contain actual attributed speech so the indexed
+            # claim extractor can persist sourced beliefs. Narrator-mode remains
+            # a neutral objective scene consequence.
+            output = (
+                f"— Я лично видел след номер {CALLS['dm']} у входа, "
+                "но не могу подтвердить слухи о его происхождении, — говорит собеседник."
+            )
+        else:
+            CALLS["narrator_prompt"] += 1
+            if CALLS["narrator_prompt"] == 1:
+                print("MOCK_FIRST_NARRATOR_PROMPT", prompt[:900].replace("\\n", " "))
+            output = (
+                f"ДМ подтверждает конкретное последствие хода {CALLS['dm']}: группа получает "
+                "новое наблюдаемое свидетельство, меняет подход и на шаг приближается к цели сцены."
+            )
     self.last_telemetry = {
         "status": "completed",
         "finish_reason": "stop",

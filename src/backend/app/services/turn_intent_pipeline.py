@@ -172,6 +172,15 @@ class TurnIntentPlanningPipeline:
         return plan, {
             "architecture": "frozen_player_intent_v1",
             "outcome_owner": outcome_owner,
+            # Step-coverage telemetry: the compiler is 1:1 with the frozen contract, so any
+            # gap between what the player committed and what is planned was created upstream
+            # (ownership speech filter, information-request wipe, extraction cap). Surfacing
+            # it per turn separates "planner dropped it" from "intent never had it"
+            # (playtest 2026-10-12: silent multi-action truncation).
+            "action_coverage": {
+                "requested_actions": len(contract.actions),
+                "planned_steps": len(plan.action_sequence.steps),
+            },
             "intent_contract": contract.model_dump(mode="json"),
             "outcome_decision": decision.model_dump(mode="json"),
             "intent_audit": list(self._intent.audit),

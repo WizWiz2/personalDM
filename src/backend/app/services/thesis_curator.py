@@ -14,10 +14,11 @@ from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import SceneThesis
+from app.db.tables import Scene, SceneThesis, Turn
 from app.models.scene_thesis import SceneThesisCreate, SceneThesisUpdate, ThesisType
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services import campaign_write_barrier
 from app.services.memory_operations import MemoryOperationsService
 from app.services.role_model_router import ModelRole, RoleModelRouter
 
@@ -123,15 +124,20 @@ class ThesisCurator:
         return await self._session.get(SceneThesis, str(thesis.id))
 
     async def _existing_semantic_key(self, thesis) -> str:
+        """Read semantic identity without creating a profile before model inference.
+
+        Creating a missing lifecycle profile flushes an INSERT and holds SQLite's
+        writer lock across the potentially slow Curator LLM request. The write
+        phase (reconcile) creates missing profiles after inference instead.
+        """
         fallback = self._semantic_key(None, thesis.text)
         db_thesis = await self._lifecycle_thesis(thesis)
         if db_thesis is None:
             return fallback
-        profile = await MemoryOperationsService(self._session).ensure_thesis_profile(
-            db_thesis,
-            semantic_key=None,
-        )
-        return self._semantic_key(profile.semantic_key, thesis.text)
+        from app.db.thesis_lifecycle_table import ThesisLifecycleProfile
+
+        profile = await self._session.get(ThesisLifecycleProfile, db_thesis.id)
+        return self._semantic_key(profile.semantic_key, thesis.text) if profile else fallback
 
     async def _reinforce_profile(
         self,
@@ -216,6 +222,8 @@ class ThesisCurator:
         source_turn_id: UUID,
         user_content: str,
         assistant_content: str,
+        *,
+        serialize_writes: bool = False,
     ) -> ThesisReconcileResult | None:
         if not scene_id or not assistant_content.strip():
             return None
@@ -402,12 +410,35 @@ visual_state, music_mood
                 ):
                     structured_resolutions.add(thesis.id)
 
-        return await self.reconcile(
-            scene_id,
-            source_turn_id,
-            envelope.desired_active,
-            resolve_thesis_ids=structured_resolutions,
-        )
+        if not serialize_writes:
+            return await self.reconcile(
+                scene_id, source_turn_id, envelope.desired_active,
+                resolve_thesis_ids=structured_resolutions,
+            )
+
+        # Everything above is read/inference. Drop the snapshot before the
+        # short write transaction; never keep a SQLite writer open across LLM.
+        await self._session.rollback()
+        async with campaign_write_barrier.for_campaign(campaign_id):
+            source = await self._session.get(Turn, str(source_turn_id))
+            parent = (
+                await self._session.get(Turn, source.parent_turn_id)
+                if source and source.parent_turn_id else None
+            )
+            current_scene = await self._session.get(Scene, str(scene_id))
+            if (
+                not source or source.status != "active"
+                or not parent or parent.status != "active"
+                or not current_scene or current_scene.status != "active"
+            ):
+                await self._session.rollback()
+                return None
+            result = await self.reconcile(
+                scene_id, source_turn_id, envelope.desired_active,
+                resolve_thesis_ids=structured_resolutions,
+            )
+            await self._session.commit()
+            return result
 
     @staticmethod
     def _validate_envelope(

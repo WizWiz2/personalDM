@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -14,8 +15,9 @@ from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import Turn
+from app.db.tables import Campaign, Turn
 from app.models.proposed_change import ChangeType, ProposalAction
+from app.services import campaign_write_barrier
 from app.services.actor_turn_authority_guard import speech_spans
 from app.services.canon_applier import CanonApplier
 from app.services.continuity_checker import ContinuityChecker
@@ -119,7 +121,7 @@ class PostTurnProcessor:
             if job.status not in {"pending", "failed"}:
                 continue
             try:
-                await self.process_job(job.id)
+                await self.process_job_bounded(job.id)
             except Exception as exc:
                 # process_job has already stored a durable failed status and error.
                 # A post-turn control-model outage must never turn a saved narrative
@@ -205,6 +207,9 @@ class PostTurnProcessor:
         applier = CanonApplier(self._session)
         applied = 0
         staged = 0
+        player_character_id = await self._session.scalar(
+            select(Campaign.player_character_id).where(Campaign.id == str(campaign_id))
+        )
         for proposal in proposals:
             if proposal.status != "proposed":
                 staged += 1
@@ -215,6 +220,16 @@ class PostTurnProcessor:
                 staged += 1
                 continue
             if change_type not in AUTO_COMMIT_CHANGE_TYPES:
+                staged += 1
+                continue
+            # Physical PC movement belongs to structured transitions, never to
+            # delayed prose extraction (which may run after another player move).
+            if (
+                change_type == ChangeType.MOVEMENT
+                and player_character_id is not None
+                and str(proposal.payload.get("character_id")) == str(player_character_id)
+            ):
+                await repo.resolve(proposal.id, ProposalAction(status="rejected"))
                 staged += 1
                 continue
             # Defense in depth: writer mode must never accept legacy objective semantic canon,
@@ -251,6 +266,71 @@ class PostTurnProcessor:
         row.locked_at = None
         await self._session.commit()
 
+    async def _register_without_locked_inference(
+        self, campaign_id: UUID, assistant, *, promotion_only: bool,
+    ) -> EntityRegistrationResult:
+        """LLM planning outside write lock, deterministic revalidated apply inside.
+
+        A published turn may be undone while the semantic model is running.
+        Both source status and the registrar's identity-state fingerprint are
+        checked under the barrier before any NPC mutation becomes durable.
+        """
+        if not assistant.scene_id:
+            return EntityRegistrationResult()
+        registrar = EntityRegistrar(self._session)
+        prepared = await registrar.prepare_from_turn(
+            campaign_id=campaign_id,
+            scene_id=assistant.scene_id,
+            source_turn_id=assistant.id,
+            assistant_content=assistant.content,
+            promotion_only=promotion_only,
+        )
+        # The preparation phase is read-only. Release its SQLite transaction
+        # before contending for the campaign's short write barrier.
+        await self._session.rollback()
+        if prepared is None:
+            return EntityRegistrationResult()
+        async with campaign_write_barrier.for_campaign(campaign_id):
+            if not await self._source_pair_is_active(assistant.id):
+                return EntityRegistrationResult()
+            result = await registrar.register_from_turn(
+                campaign_id=campaign_id,
+                scene_id=assistant.scene_id,
+                source_turn_id=assistant.id,
+                assistant_content=assistant.content,
+                promotion_only=promotion_only,
+                prepared=prepared,
+            )
+            await self._session.commit()
+        return result
+
+    async def process_job_bounded(
+        self,
+        job_id: UUID,
+        *,
+        already_claimed: bool = False,
+    ) -> None:
+        """A hung provider must never leave a job permanently in running.
+
+        The inner process_job responds to cancellation with a rollback and a
+        retryable status. A wall-clock timeout then records a terminal failure
+        so resume/health checks can distinguish it from healthy slow work.
+        """
+        budget = max(0.01, float(settings.POST_TURN_JOB_TIMEOUT_SECONDS))
+        try:
+            await asyncio.wait_for(
+                self.process_job(job_id, already_claimed=already_claimed),
+                timeout=budget,
+            )
+        except TimeoutError as exc:
+            await self._session.rollback()
+            await self._jobs.finish(
+                job_id,
+                error=f"Post-turn job timed out after {budget:g} seconds",
+            )
+            await self._session.commit()
+            raise RuntimeError(f"Post-turn job {job_id} timed out") from exc
+
     async def process_job(
         self,
         job_id: UUID,
@@ -277,6 +357,7 @@ class PostTurnProcessor:
                 return
             row.status = "running"
             row.attempts += 1
+            row.locked_at = datetime.now(UTC).replace(tzinfo=None)
             row.error = None
             await self._session.commit()
 
@@ -302,6 +383,9 @@ class PostTurnProcessor:
                 )
                 return
 
+            # Keep immutable IDs outside ORM rows: rollback after read-only
+            # profile inference expires mapped attributes in async sessions.
+            assistant_turn_id = assistant.id
             campaign_id = UUID(row.campaign_id)
             usage_context_token = set_usage_context(
                 campaign_id=campaign_id,
@@ -322,6 +406,7 @@ class PostTurnProcessor:
                             source_turn_id=assistant.id,
                             user_content=user_turn.content,
                             assistant_content=assistant.content,
+                            serialize_writes=True,
                         )
             elif row.job_type == "memory_scribe":
                 proposal_repo = ProposedChangeRepository(self._session)
@@ -335,15 +420,35 @@ class PostTurnProcessor:
                 campaign = await self._campaigns.get_by_id(campaign_id)
                 if assistant.parent_turn_id:
                     from app.services.location_profile_guard import (
+                        apply_location_profile_updates,
                         enrich_new_location_profiles,
                     )
 
-                    await enrich_new_location_profiles(
+                    # LLM profile generation is outside the write barrier.
+                    # Its short revalidated UPDATE is inside, never holding a
+                    # SQLite write transaction during another model call.
+                    pending_profiles = await enrich_new_location_profiles(
                         self._session,
                         campaign_id=campaign_id,
                         trigger_turn_id=UUID(str(assistant.parent_turn_id)),
                         assistant_content=assistant.content,
+                        prepare_only=True,
                     )
+                    await self._session.rollback()
+                    if pending_profiles:
+                        async with campaign_write_barrier.for_campaign(campaign_id):
+                            if not await self._source_pair_is_active(assistant.id):
+                                await self._finish_without_side_effects(
+                                    job_id, "skipped: turn was undone during profile preparation",
+                                )
+                                return
+                            await apply_location_profile_updates(
+                                self._session, pending_profiles,
+                            )
+                            await self._session.commit()
+                else:
+                    # Release any read snapshot before long model inference.
+                    await self._session.rollback()
                 if not existing:
                     # TurnAuthority owns first-time NPC introductions and the materializer
                     # commits them before this job exists.  The registrar is still useful
@@ -381,23 +486,14 @@ class PostTurnProcessor:
                                 )
                         registration = EntityRegistrationResult()
                         if should_verify_identity:
-                            registration = await EntityRegistrar(self._session).register_from_turn(
-                                campaign_id=campaign_id,
-                                scene_id=assistant.scene_id,
-                                source_turn_id=assistant.id,
-                                assistant_content=assistant.content,
-                                promotion_only=True,
+                            registration = await self._register_without_locked_inference(
+                                campaign_id, assistant, promotion_only=True,
                             )
-                            await self._session.commit()
                     else:
-                        registration = await EntityRegistrar(self._session).register_from_turn(
-                            campaign_id=campaign_id,
-                            scene_id=assistant.scene_id,
-                            source_turn_id=assistant.id,
-                            assistant_content=assistant.content,
+                        registration = await self._register_without_locked_inference(
+                            campaign_id, assistant, promotion_only=False,
                         )
-                        await self._session.commit()
-                        assistant = await self._turns.get_by_id(UUID(row.assistant_turn_id))
+                        assistant = await self._turns.get_by_id(assistant_turn_id)
                         if not assistant or assistant.status != "active":
                             await self._finish_without_side_effects(
                                 job_id,
@@ -533,19 +629,33 @@ class PostTurnProcessor:
                         return
 
                     if proposals:
-                        created = await proposal_repo.create_batch(
-                            assistant.id,
-                            proposals,
-                        )
-                        if await self._uses_external_proposal_resolution(user_turn.id):
-                            applied_count = 0
-                            staged_count = len(created)
-                        else:
-                            applied_count, staged_count = await self._auto_commit_proposals(
-                                campaign_id,
+                        # MOVEMENT/presence proposals below mutate exactly the rows the
+                        # in-flight turn fingerprints between capture and publication.
+                        # Queue them behind the campaign write barrier; extraction already
+                        # finished read-only above, so a turn never waits on memory models.
+                        async with campaign_write_barrier.for_campaign(campaign_id):
+                            # A turn may be undone between read-only inference and
+                            # acquiring the barrier. Revalidate while holding it.
+                            if not await self._source_pair_is_active(assistant.id):
+                                await self._finish_without_side_effects(
+                                    job_id,
+                                    "skipped: turn was undone before memory apply",
+                                )
+                                return
+                            created = await proposal_repo.create_batch(
                                 assistant.id,
-                                created,
+                                proposals,
                             )
+                            if await self._uses_external_proposal_resolution(user_turn.id):
+                                applied_count = 0
+                                staged_count = len(created)
+                            else:
+                                applied_count, staged_count = await self._auto_commit_proposals(
+                                    campaign_id,
+                                    assistant.id,
+                                    created,
+                                )
+                            await self._session.commit()
                         logger.debug(
                             "Memory Scribe turn %s: extracted=%d auto_committed=%d staged=%d",
                             assistant.id,
@@ -606,7 +716,7 @@ class PostTurnProcessor:
 
 
 class PostTurnWorker:
-    """Small SQLite-backed worker suitable for the local desktop process."""
+    """SQLite-backed worker with independent durable recovery and bounded retries."""
 
     def __init__(self, poll_interval: float = 0.75):
         self.poll_interval = poll_interval
@@ -615,31 +725,66 @@ class PostTurnWorker:
     def stop(self) -> None:
         self._stop.set()
 
-    async def run(self) -> None:
-        async with AsyncSessionLocal() as session:
-            await PostTurnJobRepository(session).recover_stale()
-            await session.commit()
-
+    async def _recover_loop(self) -> None:
+        # Independent of the work coroutine: a hung or cancelled inline request
+        # must not prevent stale running rows from being discovered.
         while not self._stop.is_set():
-            processed = False
             try:
                 async with AsyncSessionLocal() as session:
                     repo = PostTurnJobRepository(session)
-                    job = await repo.claim_next()
-                    if job:
-                        await session.commit()
-                        processed = True
-                        await PostTurnProcessor(session).process_job(
-                            job.id,
-                            already_claimed=True,
-                        )
-            except Exception as exc:
-                logger.debug("Post-turn worker job failed: %s", exc, exc_info=True)
-            if not processed:
-                try:
-                    await asyncio.wait_for(
-                        self._stop.wait(),
-                        timeout=self.poll_interval,
+                    recovered = await repo.recover_stale(
+                        stale_after_seconds=max(
+                            60, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
+                        ),
                     )
-                except TimeoutError:
-                    pass
+                    retried = await repo.requeue_failed()
+                    await session.commit()
+                    if recovered or retried:
+                        logger.warning(
+                            "Post-turn recovery: %d stale, %d failed requeued",
+                            recovered, retried,
+                        )
+            except Exception:
+                logger.exception("Post-turn durable recovery sweep failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=15.0)
+            except TimeoutError:
+                pass
+
+    async def run(self) -> None:
+        async with AsyncSessionLocal() as session:
+            await PostTurnJobRepository(session).recover_stale(
+                stale_after_seconds=max(900, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60),
+            )
+            await session.commit()
+
+        recovery_task = asyncio.create_task(
+            self._recover_loop(), name="post-turn-db-recovery"
+        )
+        try:
+            while not self._stop.is_set():
+                processed = False
+                try:
+                    async with AsyncSessionLocal() as session:
+                        repo = PostTurnJobRepository(session)
+                        job = await repo.claim_next()
+                        if job:
+                            await session.commit()
+                            processed = True
+                            await PostTurnProcessor(session).process_job_bounded(
+                                job.id,
+                                already_claimed=True,
+                            )
+                except Exception as exc:
+                    logger.debug("Post-turn worker job failed: %s", exc, exc_info=True)
+                if not processed:
+                    try:
+                        await asyncio.wait_for(
+                            self._stop.wait(),
+                            timeout=self.poll_interval,
+                        )
+                    except TimeoutError:
+                        pass
+        finally:
+            recovery_task.cancel()
+            await asyncio.gather(recovery_task, return_exceptions=True)

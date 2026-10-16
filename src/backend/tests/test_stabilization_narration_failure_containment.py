@@ -161,7 +161,10 @@ async def test_repair_generation_failure_finalizes_validation_audit_and_preserve
 
 @pytest.mark.asyncio
 async def test_unhonored_beat_gets_one_repair_then_the_typed_fallback(db_session, monkeypatch):
-    """Grant → beat check fails → one repair carrying the failure → still failing → projection."""
+    """Grant → beat check fails → one repair still failing → projection.
+
+    Beat tolerance keeps the validator in the loop: the fallback now requires the
+    validator to reject the draft, not just the beat miss (playtest 2026-10-12)."""
     import app.services.authority_narration_pipeline as module
 
     campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Beat grant"))
@@ -181,12 +184,27 @@ async def test_unhonored_beat_gets_one_repair_then_the_typed_fallback(db_session
             sent.append(messages)
             return {"prose": coin, "beat": {"cast_id": str(host), "kind": "act", "evidence": coin}}
 
-    async def never_validate(*args, **kwargs):
-        raise AssertionError("a failed beat skips the four-ban validator")
+    from app.models.narration_validation import NarrationValidationResult, NarrationViolation
+
+    def _verdict(value: str) -> NarrationValidationResult:
+        if value == "pass":
+            return NarrationValidationResult(verdict="pass")
+        return NarrationValidationResult(
+            verdict="repair_required",
+            summary="Нарушен запрет: приписанный герою поступок.",
+            violations=[NarrationViolation(
+                violation_type="player_agency",
+                evidence="полтинник",
+                correction="убрать действие, принадлежащее герою игрока",
+            )],
+        )
+
+    async def reject(*args, **kwargs):
+        return _verdict("repair_required")
 
     decisions: list[tuple[str, str]] = []
     monkeypatch.setattr(module, "record_decision", lambda step, outcome, *a, **k: decisions.append((step, outcome)))
-    monkeypatch.setattr(TurnAuthorityValidator, "validate", never_validate)
+    monkeypatch.setattr(TurnAuthorityValidator, "validate", reject)
     authority = _authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id).model_copy(
         update={"beat_owner_id": host, "beat_owner_name": "Фёдор Андреевич Климов"}
     )
@@ -204,6 +222,160 @@ async def test_unhonored_beat_gets_one_repair_then_the_typed_fallback(db_session
     ]
     assert result.text == "Дверь оказывается открыта."
     assert result.validation_status == "safe_fallback"
+    # The real ban rejection outranks the optional beat mismatch in the audit.
+    assert "Нарушен запрет" in result.telemetry["narration_validation"]["reason"]
+    assert "beat grant" not in result.telemetry["narration_validation"]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_beat_miss_with_clean_bans_publishes_the_candidate(db_session, monkeypatch):
+    """Playtest 2026-10-12: an otherwise-clean draft must not be discarded because the
+    initiative beat was not honored — the four-ban verdict decides publication."""
+    import app.services.authority_narration_pipeline as module
+
+    campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Beat tolerant"))
+    user_turn = await TurnRepository(db_session).create(
+        campaign.id, TurnCreate(role="user", content="Кладу полтинник на стойку.")
+    )
+    await db_session.commit()
+    host = uuid4()
+    coin = "Серебряный полтинник ложится на стойку перед Фёдором Андреевичем."
+
+    class FakeRouter:
+        async def resolve(self, *args, **kwargs):
+            return SimpleNamespace(config=SimpleNamespace(model_name="m"), source="control_default")
+
+        async def generate_json(self, provider, selection, messages, **kwargs):
+            return {"prose": coin, "beat": {"cast_id": str(host), "kind": "act", "evidence": coin}}
+
+    from app.models.narration_validation import NarrationValidationResult
+
+    async def accept(*args, **kwargs):
+        return NarrationValidationResult(verdict="pass")
+
+    decisions: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, "record_decision", lambda step, outcome, *a, **k: decisions.append((step, outcome)))
+    monkeypatch.setattr(TurnAuthorityValidator, "validate", accept)
+    authority = _authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id).model_copy(
+        update={"beat_owner_id": host, "beat_owner_name": "Фёдор Андреевич Климов"}
+    )
+    result = await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
+        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
+        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+        narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="m"), source="x"),
+        authority=authority,
+    )
+
+    assert result.text == coin
+    assert result.validation_status == "passed"
+    assert result.beat is None
+    assert decisions == [("beat", "unhonored"), ("publish", "validated_candidate")]
+    reason = result.telemetry["narration_validation"].get("reason")
+    assert reason is not None and reason.startswith("beat_unhonored:")
+
+
+@pytest.mark.asyncio
+async def test_foreign_script_garbage_goes_to_repair_not_the_surface(db_session, monkeypatch):
+    """Playtest 2026-10-12: CJK noise must never be published even when the validator
+    would pass it; the repair call names the offending words."""
+    import app.services.authority_narration_pipeline as module
+
+    campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Script gate"))
+    user_turn = await TurnRepository(db_session).create(
+        campaign.id, TurnCreate(role="user", content="Оглядываюсь вокруг.")
+    )
+    await db_session.commit()
+    host = uuid4()
+    noisy = "Причал тонет в тумане. 码头 пахнет смолой."
+    clean = "Причал тонет в тумане. Пристань пахнет смолой."
+    sent: list[list[ChatMessage]] = []
+
+    class FakeRouter:
+        async def resolve(self, *args, **kwargs):
+            return SimpleNamespace(config=SimpleNamespace(model_name="m"), source="control_default")
+
+        async def generate_json(self, provider, selection, messages, **kwargs):
+            sent.append(messages)
+            prose = noisy if len(sent) == 1 else clean
+            return {"prose": prose, "beat": {
+                "cast_id": str(host), "kind": "act", "evidence": prose,
+            }}
+
+    from app.models.narration_validation import NarrationValidationResult
+
+    async def accept(*args, **kwargs):
+        return NarrationValidationResult(verdict="pass")
+
+    decisions: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, "record_decision", lambda step, outcome, *a, **k: decisions.append((step, outcome)))
+    monkeypatch.setattr(TurnAuthorityValidator, "validate", accept)
+    authority = _authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id).model_copy(
+        update={"beat_owner_id": host, "beat_owner_name": "Фёдор Андреевич Климов"}
+    )
+    result = await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
+        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
+        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+        narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="m"), source="x"),
+        authority=authority,
+    )
+
+    assert len(sent) == 2
+    assert "码头" in sent[1][-1].content
+    assert result.text == clean
+    assert result.validation_status == "repaired"
+    assert "码头" not in result.text
+
+
+
+@pytest.mark.asyncio
+async def test_foreign_script_still_present_after_repair_falls_back_safely(db_session, monkeypatch):
+    """A repeated CJK intrusion is rejected without dereferencing a missing validator result."""
+    import app.services.authority_narration_pipeline as module
+    from app.models.narration_validation import NarrationValidationResult
+
+    campaign = await CampaignService(db_session).create_campaign(
+        CampaignCreate(name="Persistent script noise")
+    )
+    user_turn = await TurnRepository(db_session).create(
+        campaign.id, TurnCreate(role="user", content="Смотрю на причал.")
+    )
+    await db_session.commit()
+    host = uuid4()
+    noisy = "Причал тонет в тумане. 码头 пахнет смолой."
+    calls = []
+
+    class FakeRouter:
+        async def resolve(self, *args, **kwargs):
+            return SimpleNamespace(config=SimpleNamespace(model_name="m"), source="test")
+
+        async def generate_json(self, provider, selection, messages, **kwargs):
+            calls.append(messages)
+            return {"prose": noisy, "beat": {
+                "cast_id": str(host), "kind": "act", "evidence": noisy,
+            }}
+
+    async def accept(*args, **kwargs):
+        return NarrationValidationResult(verdict="pass")
+
+    monkeypatch.setattr(TurnAuthorityValidator, "validate", accept)
+    monkeypatch.setattr(module, "record_decision", lambda *a, **k: None)
+    authority = _authority(
+        campaign_id=campaign.id, trigger_turn_id=user_turn.id
+    ).model_copy(update={
+        "beat_owner_id": host, "beat_owner_name": "Смотритель",
+    })
+    result = await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
+        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
+        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+        narrator_selection=SimpleNamespace(
+            config=SimpleNamespace(model_name="m"), source="test"
+        ),
+        authority=authority,
+    )
+
+    assert len(calls) == 2
+    assert result.validation_status == "safe_fallback"
+    assert "码头" not in result.text
 
 
 @pytest.mark.asyncio

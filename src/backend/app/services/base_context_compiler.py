@@ -1,4 +1,5 @@
 import json
+import logging
 from uuid import UUID
 
 from sqlalchemy import select
@@ -29,6 +30,9 @@ except ImportError:
 
     def count_tokens(text: str) -> int:
         return max(1, len(text) // 3)
+
+
+logger = logging.getLogger(__name__)
 
 
 class ContextCompiler:
@@ -333,8 +337,7 @@ class ContextCompiler:
                         content=f"{system_msg.content}{persona_suffix}",
                     )
             except Exception:
-                # Master selection must never block narration compilation.
-                pass
+                logger.exception("Unable to compile optional master persona for %s", campaign_id)
         current_budget_used = count_tokens(system_msg.content)
         reserved_user_tokens = (
             count_tokens(current_user_content)
