@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.memory_taxonomy_table import NarrativeDetail
@@ -99,7 +99,9 @@ class ActiveCanonReplayService:
                 .join(EventParticipant, EventParticipant.event_id == Event.id)
                 .where(
                     Event.campaign_id == str(campaign_id),
-                    Event.event_type == "movement",
+                    # Legacy executor movement also used source_turns=[].
+                    # Only explicitly marked GM commands are independent.
+                    Event.event_type == "gm_movement",
                     Event.source_turns == "[]",
                     Event.location_id.is_not(None),
                 )
@@ -209,7 +211,7 @@ class ActiveCanonReplayService:
                 Event.source_turns.is_not(None),
                 # Unattributed GM events are independent of turn-derived
                 # proposals; do not silently delete their historical record.
-                Event.source_turns != "[]",
+                or_(Event.source_turns != "[]", Event.event_type != "gm_movement"),
                 Event.event_type.not_in(["scene_outcome", "scenario_pulse"]),
                 Event.id.not_in(truth_event_ids),
             )
