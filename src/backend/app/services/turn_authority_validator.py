@@ -74,8 +74,10 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    quotes. Unnamed, non-speaking background (a crowd, patrons, passers-by) is allowed.
    MENTIONING someone who is not here is allowed: names in dialogue, memories, rumours, elsewhere.
    Set known_absent_name to the exact known_absent_characters entry when it is one, else null.
-2. canon_conflict: prose denies or overwrites an established_state entry, scene_time or the result of an
-   executed step (a completed step happened, a blocked step did not).
+2. canon_conflict: prose denies or overwrites an established_state entry, scene_time,
+   a confirmed new physical item in allowed_new_items, or the result of an executed
+   step (a completed step happened, a blocked step did not). Do not deny the existence
+   or possession of a confirmed item merely because it is not on the floor.
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or
    voluntary actions beyond player_input. Rendering player_input itself, its result, and what the
    player character perceives is allowed.

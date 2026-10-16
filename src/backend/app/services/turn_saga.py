@@ -133,7 +133,9 @@ class TurnSaga:
             "1. Do not put a person physically into the scene unless they are in present_characters, "
             "allowed_new_npcs, allowed_existing_npc_arrivals, or one person beat_owner brings in "
             "through executed_steps. Mentioning anyone else is fine.\n"
-            "2. Do not contradict established_state, scene_time or executed_steps.\n"
+            "2. Do not contradict established_state, scene_time, approved new_objects, "
+            "or executed_steps. A received item remains in the hero's inventory even "
+            "when it is no longer on the ground.\n"
             "3. Do not write the player character's speech, decisions, thoughts, feelings or "
             "voluntary actions beyond player_input.\n"
             "4. Do not move anyone to another place without a typed trip "
@@ -149,7 +151,13 @@ class TurnSaga:
             "is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose in narrative_person, also "
             "where the facts name the protagonist in third person; usually 2-3 paragraphs, "
-            "and stop before the player's next choice."
+            "and stop before the player's next choice. Make established scenes feel alive: use "
+            "concrete sensory details, characterful dialogue, changing responses and meaningful "
+            "consequences of the known conflict. If complication_source is present, the already "
+            "established tension may develop on its own; do not invent unsanctioned people or "
+            "items. Unknown facts are not confirmed absences. Never describe the validation "
+            "process in-world (no 'не установлено', 'не подтверждено' as mechanical audit). "
+            "Respect the chosen campaign genre instead of defaulting to bureaucratic refusals."
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
@@ -540,6 +548,9 @@ class TurnSaga:
                         "introduced_character_ids": [
                             str(value) for value in materialized_outcome.introduced_character_ids
                         ],
+                        "introduced_item_ids": [
+                            str(value) for value in materialized_outcome.introduced_item_ids
+                        ],
                         "arrived_existing_character_ids": [
                             str(value)
                             for value in materialized_outcome.arrived_existing_character_ids
@@ -591,6 +602,9 @@ class TurnSaga:
             )
             context_metadata["turn_materialization"]["introduced_character_ids"] = [
                 str(value) for value in materialized_outcome.introduced_character_ids
+            ]
+            context_metadata["turn_materialization"]["introduced_item_ids"] = [
+                str(value) for value in materialized_outcome.introduced_item_ids
             ]
             context_metadata["turn_authority"] = authority.model_dump(mode="json")
             context_metadata["turn_materialization"]["identity_updates"] = [
@@ -646,6 +660,26 @@ class TurnSaga:
             )
             processor = PostTurnProcessor(self._session)
             await processor.enqueue(campaign_id, saved_assistant.id)
+            # The turn-based clock is reversible on /undo. Persist a pre-tick
+            # checkpoint with the same assistant pair that owns the tick.
+            if effective_scene_id and not (
+                applied_transition and applied_transition.status == "prepared"
+                and plan and plan.scene_transition.time_after
+            ):
+                from app.services.scene_state_service import SceneStateService
+
+                clock = SceneStateService(self._session)
+                before = await clock.ensure_runtime_state(effective_scene_id)
+                context_metadata["world_clock_before"] = {
+                    "scene_id": str(effective_scene_id),
+                    "world_time_order": before.world_time_order,
+                    "world_time_label": before.world_time_label,
+                }
+                await clock.advance_published_turn(effective_scene_id)
+                if assistant_row:
+                    assistant_row.context_snapshot = json.dumps(
+                        context_metadata, ensure_ascii=False,
+                    )
             # Advance Game Master rhythm only after a successful published turn.
             try:
                 from app.services.master_service import MasterService

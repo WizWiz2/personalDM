@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.scene_repo import SceneRepository
 from app.models.turn_authority import TurnAuthority
 from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
@@ -79,6 +80,22 @@ class TurnAuthorityService:
             if effective_scene_id
             else None
         )
+
+        plot_source = getattr(target_state, "active_conflict", None)
+        if (
+            not plot_source and effective_scene_id and plan
+            and callable(getattr(getattr(self, "_session", None), "execute", None))
+        ):
+            theses = await SceneRepository(self._session).list_theses_by_scene(
+                effective_scene_id, active_only=True,
+            )
+            threads = [
+                thesis for thesis in theses
+                if thesis.thesis_type in {"unresolved_beat", "tension"}
+                and thesis.priority >= 0
+            ]
+            if threads:
+                plot_source = max(threads, key=lambda thesis: thesis.priority).text
 
         present_names = list(target_state.participant_names) if target_state else []
         present_keys = {identity_key(value) for value in present_names}
@@ -181,6 +198,22 @@ class TurnAuthorityService:
             present_character_names=present_names,
             known_absent_character_names=absent_names,
             allowed_new_npcs=npc_resolution.new_introductions,
+            allowed_new_items=(
+                [
+                    item for item in plan.item_introductions
+                    if item.evidence.casefold() in (
+                        " ".join([
+                            *plan.observable_consequences,
+                            *[
+                                str(step.observable_outcome or "")
+                                for step in plan.action_sequence.steps
+                                if step.resolution == "auto_success"
+                            ],
+                        ]).casefold()
+                    )
+                    and item.canonical_name.casefold() in item.evidence.casefold()
+                ] if plan else []
+            ),
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
             resolution=(plan.resolution if plan else "conversation"),
@@ -200,10 +233,26 @@ class TurnAuthorityService:
                 list(plan.narration_policy.protected_player_decisions) if plan else []
             ),
             pending_player_choice=(plan.narration_policy.pending_player_choice if plan else None),
-            allow_new_complication=(
-                plan.narration_policy.allow_new_complication if plan else False
+            # Independent developments are permitted ONLY from an established
+            # conflict. The narrator still cannot materialize a new NPC/item.
+            allow_new_complication=bool(
+                plan and (
+                    plan.narration_policy.allow_new_complication
+                    or (
+                        plot_source
+                        and plan.resolution not in {"failure", "uncertain"}
+                        and not plan.narration_policy.pending_player_choice
+                    )
+                )
             ),
-            complication_source=(plan.narration_policy.complication_source if plan else None),
+            complication_source=(
+                plan.narration_policy.complication_source
+                if plan and plan.narration_policy.allow_new_complication
+                else plot_source
+                if plan and plot_source and plan.resolution not in {"failure", "uncertain"}
+                and not plan.narration_policy.pending_player_choice
+                else None
+            ),
             action_sequence=executed_sequence,
         )
 

@@ -55,6 +55,7 @@ class SceneStateRead(BaseModel):
     participant_names: list[str] = Field(default_factory=list)
     object_ids: list[UUID] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
+    player_inventory_names: list[str] = Field(default_factory=list)
     available_exits: list[LocationExitRead] = Field(default_factory=list)
     invariant_errors: list[str] = Field(default_factory=list)
 

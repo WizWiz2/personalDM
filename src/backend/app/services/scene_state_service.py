@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
@@ -245,10 +245,25 @@ class SceneStateService:
                 await self._session.execute(
                     select(Entity)
                     .join(Item, Item.entity_id == Entity.id)
-                    .where(Item.current_location_id == str(location_id))
+                    .where(
+                        or_(
+                            Item.current_location_id == str(location_id),
+                            Item.current_owner_id == campaign.player_character_id,
+                        )
+                    )
                     .order_by(Entity.canonical_name)
                 )
             ).scalars().all()
+
+        held_ids = set(
+            (
+                await self._session.execute(
+                    select(Item.entity_id).where(
+                        Item.current_owner_id == campaign.player_character_id,
+                    )
+                )
+            ).scalars().all()
+        ) if campaign.player_character_id else set()
 
         exits = (
             await self.list_exits(campaign_id, location_id)
@@ -295,6 +310,9 @@ class SceneStateService:
             participant_names=participant_names,
             object_ids=[UUID(item.id) for item in object_rows],
             object_names=[item.canonical_name for item in object_rows],
+            player_inventory_names=[
+                item.canonical_name for item in object_rows if item.id in held_ids
+            ],
             available_exits=exits,
             invariant_errors=errors,
         )
@@ -387,6 +405,24 @@ class SceneStateService:
         )
         await self._session.flush()
 
+    TIME_PHASES = ("dawn", "morning", "day", "evening", "night")
+    TURNS_PER_PHASE = 12
+
+    async def advance_published_turn(self, scene_id: UUID) -> str | None:
+        """Advance a lightweight turn-based clock after publication, never on retries.
+
+        An unspecified initial time stays unspecified until a structured time
+        transition establishes it. Turn order is not a substitute for real minutes.
+        """
+        runtime = await self.ensure_runtime_state(scene_id)
+        before = runtime.world_time_label
+        runtime.world_time_order += 1
+        if before in self.TIME_PHASES and runtime.world_time_order % self.TURNS_PER_PHASE == 0:
+            index = self.TIME_PHASES.index(before)
+            runtime.world_time_label = self.TIME_PHASES[(index + 1) % len(self.TIME_PHASES)]
+        await self._session.flush()
+        return runtime.world_time_label if runtime.world_time_label != before else None
+
     async def inherit_transition_state(
         self,
         source_scene_id: UUID | None,
@@ -426,10 +462,13 @@ class SceneStateService:
             + (f" ({item.access_rule})" if item.access_rule else "")
             for item in state.available_exits
         ) or "none recorded"
+        carried = set(state.player_inventory_names)
         objects = ", ".join(
             f"{name} [id={object_id}]"
             for object_id, name in zip(state.object_ids, state.object_names)
+            if name not in carried
         ) or "none recorded"
+        inventory = ", ".join(state.player_inventory_names) or "none recorded"
         return (
             "[AUTHORITATIVE SCENE STATE]\n"
             f"Scene: {state.scene_title} ({state.scene_status})\n"
@@ -440,6 +479,7 @@ class SceneStateService:
             f"Active conflict: {state.active_conflict or 'none'}\n"
             f"Physically present characters: {participants}\n"
             f"Objects physically here: {objects}\n"
+            f"Objects carried by the player: {inventory}\n"
             f"Available exits: {exits}\n"
             + SCENE_RENDERER_RULES
         )
