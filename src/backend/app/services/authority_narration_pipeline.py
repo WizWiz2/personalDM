@@ -284,6 +284,7 @@ class AuthorityNarrationPipeline:
         if leaked_meta_lines(text):
             raise NarrationValidationError("Narrator output contains internal model notes")
         text = consistent_script(text, authority.present_character_names)
+        text = NarrationPublicationGuard.include_critical_world_outcome(authority, text)
         gate = await audit.finalize(
             run,
             status="repaired" if status == "safe_fallback" else status,
