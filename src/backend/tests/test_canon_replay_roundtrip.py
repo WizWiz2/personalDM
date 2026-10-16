@@ -258,3 +258,62 @@ async def test_restore_keeps_a_character_introduced_after_the_checkpoint(db_sess
 
     assert (await db_session.get(Character, str(host_id))).current_location_id == str(inn_id)
     assert (await db_session.get(Character, str(hero_id))).current_location_id == str(inn_id)
+
+
+@pytest.mark.asyncio
+async def test_undo_replay_preserves_independent_gm_move_and_its_event(db_session: AsyncSession):
+    """QA-210 F-30: a direct /move command must survive unrelated turn undo."""
+    from app.db.repositories.event_repo import EventRepository
+    from app.models.event import EventCreate
+    from app.services.active_canon_replay import ActiveCanonReplayService
+
+    cid, actor, origin, story_destination, gm_destination = (uuid4() for _ in range(5))
+    db_session.add(Campaign(id=str(cid), name="Independent GM move"))
+    for entity_id, kind, name in (
+        (actor, "character", "Гус Фонарь"),
+        (origin, "location", "Причал"),
+        (story_destination, "location", "Касса"),
+        (gm_destination, "location", "Мокрая Крыса"),
+    ):
+        db_session.add(Entity(
+            id=str(entity_id), campaign_id=str(cid),
+            entity_type=kind, canonical_name=name,
+        ))
+    db_session.add(Character(entity_id=str(actor), current_location_id=str(origin)))
+    await db_session.flush()
+
+    # A normal turn causes the legacy state checkpoint to exist.
+    turn_id, _ = await _add_proposal(db_session, cid, ChangeType.MOVEMENT, {
+        "character_id": str(actor),
+        "location_id": str(story_destination),
+    })
+    await CanonApplier(db_session).apply(cid, ChangeType.MOVEMENT, {
+        "character_id": str(actor),
+        "location_id": str(story_destination),
+    }, turn_id)
+
+    # Unrelated direct GM command comes later; unlike the turn, it has no source.
+    character = await db_session.get(Character, str(actor))
+    character.current_location_id = str(gm_destination)
+    event = await EventRepository(db_session).create(
+        cid, EventCreate(
+            event_type="movement", description="Гус ушёл в трактир",
+            location_id=gm_destination, participant_ids=[actor],
+        ), source_turns=[],
+    )
+    await db_session.flush()
+
+    undone_turn = await db_session.get(Turn, str(turn_id))
+    undone_turn.status = "undone"
+    await ActiveCanonReplayService(db_session).replay(cid)
+    await db_session.refresh(character)
+    assert character.current_location_id == str(gm_destination)
+    saved_event = await EventRepository(db_session).get_by_id(event.id)
+    assert saved_event is not None
+    assert saved_event.source_turns == []
+    assert saved_event.participant_ids == [actor]
+
+    # The same independent command must also be idempotent on repeated replay.
+    await ActiveCanonReplayService(db_session).replay(cid)
+    await db_session.refresh(character)
+    assert character.current_location_id == str(gm_destination)
