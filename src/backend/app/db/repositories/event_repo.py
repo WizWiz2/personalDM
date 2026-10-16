@@ -69,7 +69,9 @@ class EventRepository(BaseRepository):
         return EventRead(
             id=UUID(db_event.id),
             campaign_id=UUID(db_event.campaign_id),
-            event_type=db_event.event_type,
+            # Public API keeps the legacy movement type; provenance remains
+            # explicit in the persisted event for safe independent GM undo.
+            event_type="movement" if db_event.event_type == "gm_movement" else db_event.event_type,
             description=db_event.description,
             world_time=db_event.world_time,
             location_id=(UUID(db_event.location_id) if db_event.location_id else None),
