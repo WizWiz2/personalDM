@@ -147,6 +147,13 @@ class TurnSaga:
             "subject is beat_owner, revealed_name: the personal name beat_owner gives for themself "
             "in that beat, nominative, else null, newcomer: the person beat_owner brought in, if they "
             "speak or act here, as {name as in the prose, kind: speech|act, evidence}, else null}. "
+            "The approved_world_move, if present, is an executed independent "
+            "story development tied to an existing conflict. Depict its specific "
+            "observable outcome, not a vague ominous hint. A typed npc_move may "
+            "move ONLY its authorized existing actor along its authorized hop "
+            "outside the player scene; keep absent actors offscreen and do not "
+            "pretend the player witnessed their arrival. All other unsanctioned "
+            "people, item custody changes and physical movements remain forbidden. "
             "Everything else in the facts "
             "is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose in narrative_person, also "
@@ -267,6 +274,111 @@ class TurnSaga:
                 "plan": fallback.model_dump(mode="json"),
                 "telemetry": planner.telemetry,
             }
+
+    async def _retry_authority_after_invalid_npc(
+        self,
+        *,
+        campaign_id: UUID,
+        trigger_turn_id: UUID,
+        source_scene_id: UUID | None,
+        turn_create: TurnCreate,
+        messages: list[ChatMessage],
+        role_router: RoleModelRouter,
+        primary_config,
+        first_error: str,
+    ):
+        """One bounded semantic replan after an out-of-place NPC authority conflict.
+
+        F-20 (QA-209): the planner occasionally tries to summon a known NPC
+        from a different location. Rejecting the plan is correct, but consuming
+        the user's only attempt is not. Roll back any *uncommitted* transition
+        and replan once with the precise structural explanation.
+        """
+        await self._session.rollback()
+        feedback = ChatMessage(
+            role="system",
+            content=(
+                "[CONTROL-PLAN REPAIR, NOT PLAYER INPUT]\n"
+                "The previous plan was rejected by physical authority. "
+                + first_error[:900]
+                + "\nKeep the original player's exact last input unchanged. "
+                  "A known person at another location cannot speak or appear here "
+                  "without a typed completed arrival/movement. Do NOT recreate them "
+                  "as a new NPC. Either encode a genuinely justified structural "
+                  "arrival, or leave them absent and resolve the player's action "
+                  "from the actual present scene. Do not imply arrival in narration "
+                  "unless the location transition is approved."
+            ),
+        )
+        plan, metadata = await self._plan(
+            campaign_id=campaign_id,
+            user_input=turn_create.content,
+            messages=(
+                [messages[0], feedback, *messages[1:]]
+                if messages else [feedback]
+            ),
+            role_router=role_router,
+            primary_config=primary_config,
+        )
+        metadata = {
+            **metadata,
+            "authority_repair": {"trigger": "known_absent_npc", "attempts": 1,
+                                 "first_error": first_error[:700]},
+        }
+        await self._set_phase(
+            (await self._generation_runs.start_or_resume(campaign_id, trigger_turn_id)).id,
+            GenerationPhase.PLANNED,
+        )
+        target_scene_id = source_scene_id
+        applied = None
+        transition_metadata = {
+            "status": "not_required",
+            "source_scene_id": str(source_scene_id) if source_scene_id else None,
+        }
+        if plan.scene_transition.required or any(
+            step.transition.transition_type == "location_transition"
+            for step in plan.action_sequence.steps
+        ):
+            await InitialWorldStateService(self._session).ensure_snapshot(
+                campaign_id, exclude_turn_id=trigger_turn_id,
+            )
+        executor = SceneTransitionExecutor(self._session)
+        if plan.scene_transition.required:
+            try:
+                applied = await executor.apply(
+                    campaign_id, source_scene_id, trigger_turn_id,
+                    plan.scene_transition,
+                )
+            except ValueError as exc:
+                raise TurnPlanningError(
+                    f"Authority repair planned an invalid transition: {exc}"
+                ) from exc
+            if applied:
+                target_scene_id = applied.target_scene_id
+                transition_metadata = {
+                    "status": "prepared",
+                    "transition_id": str(applied.transition_id),
+                    "source_scene_id": (
+                        str(applied.source_scene_id) if applied.source_scene_id else None
+                    ),
+                    "target_scene_id": str(applied.target_scene_id),
+                    "source_location_id": (
+                        str(applied.source_location_id) if applied.source_location_id else None
+                    ),
+                    "target_location_id": (
+                        str(applied.target_location_id) if applied.target_location_id else None
+                    ),
+                }
+        authority = await TurnAuthorityService(self._session).build(
+            campaign_id=campaign_id,
+            trigger_turn_id=trigger_turn_id,
+            player_input=turn_create.content,
+            source_scene_id=source_scene_id,
+            target_scene_id=target_scene_id,
+            plan=plan,
+            acting_character_id=turn_create.acting_character_id,
+        )
+        return plan, metadata, executor, applied, target_scene_id, transition_metadata, authority
 
     async def _rollback_materialization(
         self,
@@ -481,7 +593,34 @@ class TurnSaga:
                     acting_character_id=turn_create.acting_character_id,
                 )
             except TurnAuthorityError as exc:
-                raise TurnPlanningError(f"Turn authority rejected before narration: {exc}") from exc
+                # One controlled repair for the F-20 class only. A persisted
+                # existing transition is not ours to rewrite.
+                if (
+                    "Известный персонаж не может появиться без структурного перемещения" not in str(exc)
+                    or existing_transition is not None
+                ):
+                    raise TurnPlanningError(
+                        f"Turn authority rejected before narration: {exc}"
+                    ) from exc
+                try:
+                    (
+                        plan, planner_metadata, transition_executor, applied_transition,
+                        effective_scene_id, transition_metadata, authority,
+                    ) = await self._retry_authority_after_invalid_npc(
+                        campaign_id=campaign_id,
+                        trigger_turn_id=user_turn.id,
+                        source_scene_id=source_scene_id,
+                        turn_create=turn_create,
+                        messages=messages,
+                        role_router=role_router,
+                        primary_config=primary_config,
+                        first_error=str(exc),
+                    )
+                except (TurnAuthorityError, TurnPlanningError, ValueError) as repair_exc:
+                    raise TurnPlanningError(
+                        "Authority plan still invalid after one bounded repair: "
+                        f"{repair_exc}"
+                    ) from repair_exc
 
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(
@@ -623,6 +762,37 @@ class TurnSaga:
                     token_count=token_count,
                 ),
             )
+
+            if authority.world_move:
+                from app.services.world_initiative_ledger import WorldInitiativeLedger
+
+                # This is the compensating receipt for an autonomous *physical*
+                # NPC move. An event deletion alone cannot undo a change to
+                # characters.current_location_id (QA-209 regression).
+                if (
+                    authority.world_move.kind == "npc_move"
+                    and authority.world_move.actor_id
+                ):
+                    from app.db.tables import Character
+
+                    moved = await self._session.get(
+                        Character, str(authority.world_move.actor_id),
+                    )
+                    if moved is None or not moved.current_location_id:
+                        raise RuntimeError("Autonomous mover has no canonical origin")
+                    context_metadata["world_move_before"] = {
+                        "actor_id": str(authority.world_move.actor_id),
+                        "origin_location_id": moved.current_location_id,
+                        "destination_location_id": str(
+                            authority.world_move.destination_location_id
+                        ),
+                    }
+                await WorldInitiativeLedger(self._session).record(
+                    authority, saved_assistant.id,
+                )
+                context_metadata["approved_world_move"] = authority.world_move.model_dump(
+                    mode="json"
+                )
 
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(

@@ -264,6 +264,9 @@ Authoritative scene state:
   approved critical objects must be represented in item_introductions, never lost
   as a prose-only acquisition. Neutral literary texture remains non-canonical.
 - A completed change of room/building/district/journey endpoint requires structured transition.
+  If a committed trip lacks an approved transition, do not stage the story at
+  that destination or let its NPCs interact from there: keep the scene at the
+  authoritative source location and describe the actual obstacle/attempt.
 - Explicit player-selected plausible movement may create/discover a destination/route only through
   the transition executor; never hide travel in prose fields.
 - A sentence that explicitly names departure and destination (including return language such as

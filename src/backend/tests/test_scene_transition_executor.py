@@ -528,6 +528,7 @@ async def _nested_outside_topology(db_session: AsyncSession, campaign_name: str)
         "scenes": scenes,
         "executor": executor,
         "tavern": tavern,
+        "tavern_scene_id": tavern_scene.id,
         "innkeeper": innkeeper,
         "outskirts_id": outskirts_id,
         "nested_scene_id": leave_nested.target_scene_id,
@@ -573,5 +574,35 @@ async def test_apply_return_after_nested_outside_restores_original_tavern(
     assert target is not None
     assert target.location_id == tavern.id
     assert innkeeper.id in target.participants
-    assert target.title == "Начало: Трактир «Якорь»"  # the original tavern scene is reused
+    assert returned.target_scene_id != world["tavern_scene_id"]
+    assert target.title  # A new visit may derive a fresh title from the destination.
 
+
+
+@pytest.mark.asyncio
+async def test_return_does_not_reanimate_historical_cast_after_npc_departure(
+    db_session: AsyncSession,
+):
+    """QA-209 F-16: historical presence is evidence, not current location."""
+    from app.db.tables import Character
+
+    world = await _nested_outside_topology(db_session, "Revisit historical cast")
+    innkeeper = world["innkeeper"]
+    row = await db_session.get(Character, str(innkeeper.id))
+    assert row is not None
+    row.current_location_id = str(world["outskirts_id"])
+    await db_session.flush()
+
+    returned = await world["executor"].apply(
+        world["campaign_id"],
+        world["nested_scene_id"],
+        world["user"].id,
+        _live_return_plan(),
+    )
+    assert returned is not None
+    assert returned.target_scene_id != world["tavern_scene_id"]
+    current = await world["scenes"].get_by_id(returned.target_scene_id)
+    historical = await world["scenes"].get_by_id(world["tavern_scene_id"])
+    assert innkeeper.id in historical.participants
+    assert innkeeper.id not in current.participants
+    assert returned.target_location_id == world["tavern"].id

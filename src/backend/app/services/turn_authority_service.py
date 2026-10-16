@@ -13,6 +13,7 @@ from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
 from app.services.outcome_fact_authority import established_state_lines, established_subjects
 from app.services.turn_authority_planner import CoordinatedTurnPlan
+from app.services.world_momentum_service import WorldMomentumService
 from app.services.turn_authority_resolvers import (
     ActorResolver,
     AuthorityResolutionError,
@@ -96,6 +97,61 @@ class TurnAuthorityService:
             ]
             if threads:
                 plot_source = max(threads, key=lambda thesis: thesis.priority).text
+
+        world_move = None
+        if plan and plan.world_move and effective_scene_id:
+            candidate = plan.world_move
+            momentum = WorldMomentumService(self._session)
+            authorized = await momentum.threads(campaign_id, effective_scene_id)
+            matches = [
+                source for source in authorized
+                if source["source"].casefold().strip() == candidate.source.casefold().strip()
+                and str(source["actor_id"] or "") == str(candidate.actor_id or "")
+            ]
+            actor_ok = (
+                (
+                    candidate.kind in {"npc_action", "npc_move"}
+                    and candidate.actor_id is not None
+                )
+                or (
+                    candidate.kind not in {"npc_action", "npc_move"}
+                    and candidate.actor_id is None
+                    and candidate.destination_location_id is None
+                )
+            )
+            route_ok = candidate.kind != "npc_move"
+            if candidate.kind == "npc_move" and candidate.destination_location_id:
+                route_ok = any(
+                    str(candidate.destination_location_id) == edge["destination_location_id"]
+                    for match in matches
+                    for edge in match.get("available_destinations", [])
+                ) and (
+                    target_state is not None
+                    and candidate.destination_location_id != target_state.location_id
+                )
+            clock_ok = (
+                candidate.kind != "deadline" or (
+                    candidate.due_phase is not None
+                    and target_state is not None
+                    and SceneStateService.normalize_day_part(
+                        target_state.world_time_label
+                    ) == candidate.due_phase
+                )
+            )
+            previously_fired = (
+                await momentum.deadline_already_triggered(
+                    campaign_id, candidate.source,
+                )
+                if matches and candidate.kind == "deadline" and clock_ok
+                else False
+            )
+            if (
+                matches and actor_ok and route_ok and clock_ok and not previously_fired
+                and candidate.outcome in plan.observable_consequences
+                and plan.resolution not in {"failure", "uncertain"}
+                and not plan.narration_policy.pending_player_choice
+            ):
+                world_move = candidate
 
         present_names = list(target_state.participant_names) if target_state else []
         present_keys = {identity_key(value) for value in present_names}
@@ -216,12 +272,18 @@ class TurnAuthorityService:
             ),
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
+            world_move=world_move,
             resolution=(plan.resolution if plan else "conversation"),
             identity_reveal_requested=(
                 bool(plan and (plan.personal_name_revealed or plan.identity_reveal_requested))
             ),
             dramatic_mode=(plan.narration_policy.dramatic_mode if plan else "calm"),
-            observable_consequences=(list(plan.observable_consequences) if plan else []),
+            observable_consequences=(
+                [
+                    value for value in plan.observable_consequences
+                    if not (plan.world_move and world_move is None and value == plan.world_move.outcome)
+                ] if plan else []
+            ),
             character_beats=(list(plan.character_beats) if plan else []),
             addressed_response=(
                 planned_response.model_copy(deep=True)
@@ -237,7 +299,8 @@ class TurnAuthorityService:
             # conflict. The narrator still cannot materialize a new NPC/item.
             allow_new_complication=bool(
                 plan and (
-                    plan.narration_policy.allow_new_complication
+                    world_move is not None
+                    or plan.narration_policy.allow_new_complication
                     or (
                         plot_source
                         and plan.resolution not in {"failure", "uncertain"}
@@ -246,7 +309,8 @@ class TurnAuthorityService:
                 )
             ),
             complication_source=(
-                plan.narration_policy.complication_source
+                world_move.source
+                if world_move else plan.narration_policy.complication_source
                 if plan and plan.narration_policy.allow_new_complication
                 else plot_source
                 if plan and plot_source and plan.resolution not in {"failure", "uncertain"}

@@ -222,12 +222,31 @@ class PostTurnProcessor:
             if change_type not in AUTO_COMMIT_CHANGE_TYPES:
                 staged += 1
                 continue
-            # Physical PC movement belongs to structured transitions, never to
-            # delayed prose extraction (which may run after another player move).
+            # A published, sourced world initiative has already created its
+            # unique durable Event. A delayed Scribe pass on the same prose must
+            # not create another event for that one consequence.
+            if change_type == ChangeType.EVENT:
+                assistant = await self._session.get(Turn, str(source_turn_id))
+                raw_snapshot = getattr(assistant, "context_snapshot", None)
+                try:
+                    snapshot = json.loads(raw_snapshot) if isinstance(raw_snapshot, str) else raw_snapshot
+                except (ValueError, TypeError):
+                    snapshot = None
+                if isinstance(snapshot, dict) and snapshot.get("approved_world_move"):
+                    await repo.resolve(proposal.id, ProposalAction(status="rejected"))
+                    staged += 1
+                    continue
+            # Custody changes belong to executed inventory receipts, never to
+            # delayed prose extraction. A Scribe guess about possession may run
+            # after several later moves (QA-209 F-14: bead was stolen from PC).
+            # Likewise PC movement belongs to the structured transition executor.
             if (
-                change_type == ChangeType.MOVEMENT
-                and player_character_id is not None
-                and str(proposal.payload.get("character_id")) == str(player_character_id)
+                change_type == ChangeType.ITEM_TRANSFER
+                or (
+                    change_type == ChangeType.MOVEMENT
+                    and player_character_id is not None
+                    and str(proposal.payload.get("character_id")) == str(player_character_id)
+                )
             ):
                 await repo.resolve(proposal.id, ProposalAction(status="rejected"))
                 staged += 1

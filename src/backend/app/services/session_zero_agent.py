@@ -101,10 +101,21 @@ class SessionZeroAgent:
 - Ценности, страхи и желания можно аккуратно предложить как интерпретацию, но итоговая
   сводка будет показана игроку для подтверждения.
 - Не стирай и не переписывай подтверждённые данные без явной поправки игрока.
+- У мира могут быть объективные сроки. Если участники согласовали конкретный
+  дедлайн, запиши world.scheduled_deadlines: точное условие/источник (source),
+  фазу суток (due_phase) и последствия неисполнения (consequence). Покажи это
+  в итоговой сводке до подтверждения. Не добавляй срок без установленной фазы
+  и не выдумывай уже наступившее наказание.
+- Если время начала явно оговорено, запиши world.starting_day_part:
+  dawn (рассвет), morning (утро), day (день), evening (вечер), night (ночь).
+  Если точного времени нет — оставь null, не выводи фазу из дедлайна
+  «до рассвета» и не выдумывай ночь из атмосферы.
 
 СТАРТОВОЕ ПРИСУТСТВИЕ NPC
 - Когда стартовая ситуация становится понятной, ОБЯЗАТЕЛЬНО запиши в
   world.starter_npcs полный список NPC, которые физически присутствуют в первой сцене,
+  current_goal укажи только если из согласованной начальной ситуации понятно,
+  чего этот NPC хочет добиться в ближайшее время; роль/профессию не выдавай за цель.
   name_kind=personal только для установленного личного имени; для неизвестного посетителя,
   условного обозначения или роли — name_kind=provisional и name=null. Не заполняй имя заглушкой.
   и одновременно поставь world.starter_presence_confirmed=true.
@@ -627,6 +638,10 @@ class SessionZeroInterviewService:
                 f"Первая цель: {character.first_goal or '—'}",
                 f"Старт: {world.starting_location_name or '—'} — "
                 f"{world.starting_situation or '—'}",
+                "Сроки: " + ("; ".join(
+                    f"{deadline.source} — {deadline.due_phase}: {deadline.consequence}"
+                    for deadline in world.scheduled_deadlines
+                ) or "не установлены"),
                 f"Кто уже в стартовой сцене: {'; '.join(starter_people) or 'никого кроме героя'}",
             ]
         )
@@ -680,6 +695,9 @@ class SessionZeroInterviewService:
             setup = await self._session_zero.get(campaign_id)
             custom = dict(setup.custom_fields)
             custom[self.STATE_KEY] = state.model_dump(mode="json")
+            custom["scheduled_deadlines"] = [
+                deadline.model_dump(mode="json") for deadline in world.scheduled_deadlines
+            ]
             await self._session_zero.update(
                 campaign_id,
                 SessionZeroUpdate(
@@ -693,6 +711,7 @@ class SessionZeroInterviewService:
                     rules_system=world.rules_system,
                     world_summary=world.world_summary,
                     starting_situation=world.starting_situation,
+                    starting_day_part=world.starting_day_part,
                     starting_location_id=location.id,
                     starting_scene_title=(
                         world.starting_scene_title

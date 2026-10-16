@@ -219,6 +219,16 @@ class SceneStateService:
                 .order_by(Entity.canonical_name)
             )
         ).all()
+        if scene.status == "active" and location_id:
+            # SceneParticipant on completed scenes is historical provenance.
+            # An ACTIVE scene, however, must expose only current physical
+            # occupants: a past membership row cannot teleport an NPC back
+            # after Scribe or structured actions moved them elsewhere.
+            participant_rows = [
+                (entity, character) for entity, character in participant_rows
+                if character is None
+                or character.current_location_id == str(location_id)
+            ]
         participant_ids = [UUID(entity.id) for entity, _ in participant_rows]
         participant_names = []
         identity_changed = False
@@ -407,6 +417,22 @@ class SceneStateService:
 
     TIME_PHASES = ("dawn", "morning", "day", "evening", "night")
     TURNS_PER_PHASE = 12
+    TIME_ALIASES = (
+        ("рассвет", "dawn"),
+        ("утро", "morning"),
+        ("день", "day"),
+        ("вечер", "evening"),
+        ("ночь", "night"),
+    )
+
+    @classmethod
+    def normalize_day_part(cls, label: str | None) -> str | None:
+        if not label:
+            return None
+        label = label.casefold().strip()
+        if label in cls.TIME_PHASES:
+            return label
+        return dict(cls.TIME_ALIASES).get(label)
 
     async def advance_published_turn(self, scene_id: UUID) -> str | None:
         """Advance a lightweight turn-based clock after publication, never on retries.
@@ -415,7 +441,9 @@ class SceneStateService:
         transition establishes it. Turn order is not a substitute for real minutes.
         """
         runtime = await self.ensure_runtime_state(scene_id)
-        before = runtime.world_time_label
+        before = self.normalize_day_part(runtime.world_time_label)
+        if before and runtime.world_time_label != before:
+            runtime.world_time_label = before
         runtime.world_time_order += 1
         if before in self.TIME_PHASES and runtime.world_time_order % self.TURNS_PER_PHASE == 0:
             index = self.TIME_PHASES.index(before)
@@ -440,7 +468,8 @@ class SceneStateService:
         )
         target.world_time_order = (source.world_time_order if source else 0) + 1
         # The clock is the typed part of day; elapsed_time stays narration, never label text.
-        target.world_time_label = time_after or (source.world_time_label if source else None)
+        inherited = time_after or (source.world_time_label if source else None)
+        target.world_time_label = self.normalize_day_part(inherited) or inherited
         target.scene_goal = scene_goal if scene_goal is not None else (
             source.scene_goal if source else None
         )

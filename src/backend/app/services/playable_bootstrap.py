@@ -259,7 +259,7 @@ class PlayableBootstrapService:
                 biography=f"На старте кампании выступает как {role}.",
                 backstory_public=f"{role}; физически присутствует в первой сцене.",
                 current_location_id=location_id,
-                current_intentions=[reason],
+                current_intentions=[self._clean(spec.current_goal) or reason],
                 custom_fields={
                     "source": self.STRUCTURED_SOURCE,
                     "temporary_name": not bool(self._clean(spec.name)),

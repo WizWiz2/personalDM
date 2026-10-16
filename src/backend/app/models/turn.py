@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 TurnRole = Literal[
@@ -28,6 +28,28 @@ class TurnCreate(BaseModel):
     model_name: str | None = None
     context_snapshot: dict | None = None
     token_count: int | None = None
+
+    @model_validator(mode="after")
+    def reject_obvious_encoding_corruption(self):
+        """Fail rather than silently reinterpret the player's actions (QA-209 F-18).
+
+        Some Windows PowerShell 5.1 clients send UTF-8 decoded as a Western
+        code page: 'Спрашиваю' becomes 'Ð¡Ð¿Ñ€Ð°...'. The provider may
+        reconstruct the intent, but the audit/DB then cannot prove what the
+        user actually requested. Reject only high-density telltale corruption.
+        """
+        if self.role not in {"user", "meta_user"}:
+            return self
+        value = self.content or ""
+        for start in range(0, len(value), 40):
+            chunk = value[start:start + 100]
+            hits = chunk.count("Ð") + chunk.count("Ñ")
+            if hits >= 6 and hits * 5 >= len(chunk):
+                raise ValueError(
+                    "Input encoding looks corrupted (UTF-8 decoded as Windows codepage). "
+                    "Resend the original text as UTF-8."
+                )
+        return self
 
 
 class TurnRead(BaseModel):

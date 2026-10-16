@@ -250,3 +250,66 @@ async def test_undo_retires_a_place_the_undone_turn_catalogued(db_session: Async
     statuses = {place.canonical_name: place.status
                 for place in await locations.list_by_campaign(campaign_id)}
     assert statuses == {"Переулок": "active", "Стойка": "inactive"}
+
+
+@pytest.mark.asyncio
+async def test_undo_reverses_structured_offscreen_npc_movement(db_session: AsyncSession):
+    """An undone world initiative must not leave an NPC at an unearned location."""
+    import json
+
+    from app.db.tables import Character, Event, Turn
+    from app.models.turn_authority import PlannedWorldMove
+    from app.services.world_initiative_ledger import WorldInitiativeLedger
+
+    cid, _player, scene, user, assistant = await _base_turn(db_session)
+    source = await SceneRepository(db_session).get_location_id(scene.id)
+    destination = await LocationRepository(db_session).create(
+        cid, LocationCreate(canonical_name="Мост"),
+    )
+    npc = await EntityRepository(db_session).create_character(
+        cid, CharacterCreate(canonical_name="Лана", current_location_id=source),
+    )
+    await SceneRepository(db_session).add_participant(
+        scene.id, npc.id, allow_movement=True,
+    )
+    original = await db_session.get(Character, str(npc.id))
+    assert original.current_location_id == str(source)
+
+    move = PlannedWorldMove(
+        kind="npc_move", source="Лана ищет следы на мосту",
+        outcome="Лана уходит на мост по известной дороге.",
+        actor_id=npc.id, destination_location_id=destination.id,
+    )
+    authority = TurnAuthority(
+        campaign_id=cid, trigger_turn_id=user.id, player_input=user.content,
+        source_scene_id=scene.id, target_scene_id=scene.id,
+        world_move=move,
+    )
+    await WorldInitiativeLedger(db_session).record(authority, assistant.id)
+    await db_session.refresh(original)
+    assert original.current_location_id == str(destination.id)
+
+    saved = await db_session.get(Turn, str(assistant.id))
+    saved.context_snapshot = json.dumps({
+        "world_move_before": {
+            "actor_id": str(npc.id),
+            "origin_location_id": str(source),
+            "destination_location_id": str(destination.id),
+        },
+        "approved_world_move": move.model_dump(mode="json"),
+    }, ensure_ascii=False)
+    await db_session.commit()
+
+    assert await TurnUndoService(db_session).undo_last_pair(cid)
+    await db_session.commit()
+    await db_session.refresh(original)
+    assert original.current_location_id == str(source)
+    matching = (
+        await db_session.execute(
+            select(Event).where(
+                Event.campaign_id == str(cid),
+                Event.event_type == "world_initiative:npc_move",
+            )
+        )
+    ).scalars().all()
+    assert not matching

@@ -80,6 +80,39 @@ class PresenceService:
         await self._session.flush()
         return True
 
+    async def move_to_location(
+        self,
+        campaign_id: UUID,
+        entity_id: UUID,
+        destination_location_id: UUID,
+        *,
+        expected_origin: UUID,
+    ) -> bool:
+        """A typed NPC world-event may change position without opening a PC scene.
+
+        The caller MUST approve route and actor goal before reaching this writer.
+        The origin comparison is the final defense against stale concurrent turns.
+        SceneParticipant on completed scenes remains historical evidence.
+        """
+        entity = await self._session.get(Entity, str(entity_id))
+        destination = await self._session.get(Entity, str(destination_location_id))
+        actor = await self._session.get(Character, str(entity_id))
+        if (
+            not entity or not destination or not actor
+            or entity.campaign_id != str(campaign_id)
+            or destination.campaign_id != str(campaign_id)
+            or entity.entity_type != "character" or destination.entity_type != "location"
+            or entity.status in {"dead", "destroyed"}
+        ):
+            raise ValueError("Structured NPC move references invalid world entities")
+        if actor.current_location_id != str(expected_origin):
+            raise ValueError("Structured NPC movement origin is stale")
+        if destination_location_id == expected_origin:
+            raise ValueError("Structured NPC movement must change physical location")
+        actor.current_location_id = str(destination_location_id)
+        await self._session.flush()
+        return True
+
     async def move_to_scene(self, scene_id: UUID, entity_id: UUID) -> bool:
         return await self.add_participant(
             scene_id,

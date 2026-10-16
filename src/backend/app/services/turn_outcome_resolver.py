@@ -27,6 +27,7 @@ from app.models.player_intent import (
     TurnResolution,
 )
 from app.models.turn import ChatMessage
+from app.models.turn_authority import PlannedItemIntroduction, PlannedWorldMove
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
 from app.services.entity_identity import identity_key
@@ -71,6 +72,10 @@ Only physically present people may respond. Existing identities must never be re
 or moved from another scene. A question about a present person's name creates no NPC. A genuinely new
 encounter needs a typed npc_introductions entry before anyone speaks/appears: short grounded role,
 concrete description/appearance, temporary_name=true; stable names require personal_name_evidence.
+When introducing a genuine NPC whose immediate objective is known from the
+world situation, set current_goal to a concrete, independently actionable aim
+grounded in established circumstances (not a generic job title). Do not
+fabricate hidden motives for a stranger when none are established.
 Travel/inventory/wait without contact normally introduce nobody. For contact-seeking with a
 player-only cast you may introduce a grounded local person (never an absent known character); finding
 nobody is also a valid result. Anyone who appears must be typed in npc_introductions.
@@ -88,7 +93,41 @@ response_speaker_name as the CURRENT designation so identity binds to the same e
 reveal or change an already established personal name. Otherwise both revelation fields null.
 For world_state_question state the existing state in observable_consequences without performing it.
 No complication without a grounded complication_source.
-"""
+
+DURABLE ITEMS (item_introductions): A NEW significant physical item confirmed
+by the exact approved observable_consequences/auto_success action result (a
+found journal, uniquely named key, received note) must have a typed
+item_introductions entry with canonical_name, evidence (verbatim substring
+containing the name), owned_by_player only when that same outcome confirms
+possession. If an item already exists with its ID in authoritative world state,
+DO NOT recreate it. Unconfirmed player claims and casual background scenery
+are not item introductions.
+
+INDEPENDENT STORY (world_move): During normal play, including turns with
+player actions, an established active_conflict, unresolved_beat, tension, or
+already-known NPC CharacterGoal may develop without player instruction.
+ENGINE-VERIFIED ACTIVE WORLD THREADS lists the precise sources and actor IDs.
+Use kind=pressure|information|deadline|npc_action|npc_move; source must EXACTLY equal
+one listed source; outcome must EXACTLY equal one of observable_consequences.
+For npc_action and npc_move, actor_id must match an existing goal's actor_id.
+npc_move MUST include destination_location_id from that actor's listed
+available_destinations: ONE previously established, active graph edge. Do not
+move an NPC to the hero's current place or invent a location/route. The
+NPC's observed arrival into the hero's scene requires a separate authorized
+presence transition. For npc_action, that actor can
+act at their own current place, but cannot teleport to the player's location
+or speak there when physically absent. An offscreen development can only be
+reported indirectly where existing world communication makes that possible.
+For deadline, specify due_phase=the structured clock phase from context;
+do not claim a deadline expired in any other phase. Deadlines are one-shot.
+If pressure_due=true and a legitimate story source exists, strongly prefer a
+specific, consequential world_move rather than another passive observation.
+Never invent a random threat just to hit a pressure quota.
+World moves must not introduce strangers, create items, change custody, or
+decide a PC action. Only npc_move authorizes a single existing NPC's movement
+along one typed known exit; no other world_move may move characters.
+Do not use them if there is an unresolved pending_player_choice.
+""";
 
 _PROFILE_PROMPT = """[NEW DESTINATION PROFILE ENRICHMENT]
 Return exactly DestinationProfilePatchSet, one patch per requested action index. Each request is a
@@ -227,6 +266,7 @@ class OutcomeNpcIntroductionDraft(BaseModel):
 
     canonical_name: str = Field(min_length=2, max_length=120)
     role: str = Field(min_length=2, max_length=120)
+    current_goal: str | None = Field(default=None, max_length=500)
     description: str = Field(min_length=32, max_length=800)
     appearance: str = Field(min_length=32, max_length=800)
     voice: str | None = None
@@ -275,6 +315,8 @@ class TurnOutcomeDecisionDraft(BaseModel):
 
     action_outcomes: list[ActionOutcomeDraft] = Field(max_length=8)
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
+    item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
+    world_move: PlannedWorldMove | None = None
     resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     response_speaker_name: str | None = Field(default=None, max_length=120)
@@ -665,6 +707,7 @@ def normalize_outcome_draft(
                 "description": description,
                 "appearance": appearance,
                 "voice": _compact(npc.voice) or None,
+                "current_goal": _compact(npc.current_goal) or None,
                 "temporary_name": temporary_name,
                 "personal_name_evidence": evidence if not temporary_name else None,
                 "reason": reason,
@@ -685,6 +728,12 @@ def normalize_outcome_draft(
         {
             "action_outcomes": public_outcomes,
             "npc_introductions": introductions,
+            "item_introductions": [
+                item.model_dump(mode="json") for item in draft.item_introductions
+            ],
+            "world_move": (
+                draft.world_move.model_dump(mode="json") if draft.world_move else None
+            ),
             "resolution": draft.resolution,
             "addressed_response": AddressedResponse(
                 speaker_name=response_speaker,

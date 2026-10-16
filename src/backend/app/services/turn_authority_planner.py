@@ -10,7 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, 
 from app.config import settings
 from app.models.addressed_response import AddressedResponse
 from app.models.turn import ChatMessage
-from app.models.turn_authority import PlannedItemIntroduction, PlannedNpcIntroduction
+from app.models.turn_authority import (
+    PlannedItemIntroduction,
+    PlannedNpcIntroduction,
+    PlannedWorldMove,
+)
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.entity_identity import identity_key
 from app.services.player_intent_contract import expects_russian
@@ -42,6 +46,7 @@ ReviewDefectKind = Literal[
     "missing_travel",
     "redundant_travel",
     "missing_contact",
+    "missing_item",
     "identity",
     "missing_committed_action",
     "other",
@@ -123,6 +128,7 @@ class CoordinatedTurnPlan(TurnPlan):
     item_introductions: list[PlannedItemIntroduction] = Field(
         default_factory=list, max_length=4,
     )
+    world_move: PlannedWorldMove | None = None
     addressed_response_requested: bool = False
     addressed_response: AddressedResponse | None = None
     personal_name_revealed: bool = False
@@ -210,6 +216,17 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   temporary_name and reason. When temporary_name=false, also provide personal_name_evidence: the
   exact current-turn or campaign statement that establishes the person's personal name. Leave it
   null for role/title-only identities.
+- world_move: an optional INDEPENDENT, GROUNDED change in the current story.
+  Use only for an already established active_conflict or active unresolved_beat/tension
+  quoted VERBATIM in source. kind is pressure|information|deadline.
+  Set outcome to a concrete, specific observable consequence, copied EXACTLY into
+  observable_consequences. It must not duplicate an existing recorded world event.
+  Do NOT use a world_move alongside an action_sequence, an unresolved pending_player_choice,
+  or for new people, objects, custody changes, physical movement, an extra PC action,
+  an arbitrary attack, or a generic ominous sound. Those require independent typed
+  structural authority. If there is no established source, leave world_move=null.
+  An NPC can react to a prior promise, threat, deadline or clue without being puppeted by
+  the player, but only with such a grounded, resolvable outcome.
 - item_introductions: significant NEW physical objects explicitly confirmed in this turn's
   approved observable_consequences or successful structured step outcomes (e.g. a found journal,
   a received key, a written note). Use exact canonical_name and a verbatim evidence substring
@@ -388,6 +405,14 @@ Return repair_required only when the proposed typed plan semantically violates o
   Если план уже описывает непрерывное прибытие в конечную локацию, не раскладывай это прибытие на
   отдельный шаг «подойти к человеку у стойки»: typed location_transition покрывает весь заявленный
   путь до конечной локации.
+- DURABLE ITEMS: if a completed approved outcome explicitly creates, acquires or discovers
+  a significant, individually identifiable physical object that must persist (a key, ledger,
+  named letter, unique clue) and the object is not in the authoritative inventory or in
+  item_introductions, require missing_item repair. Its exact textual evidence must come
+  from approved observable_consequences/structured completed steps, not solely from a
+  player's unverified claim. Do NOT demand canonical item rows for background cups,
+  ordinary dust, scenery, or ambiguous metaphor. Do not authorize an object solely
+  to make the story interesting.
 - CONTACT/IDENTITY: when contact with an unspecified person is resolved positively, a previously
   unknown physical responder must be typed in npc_introductions. When the human actively seeks or
   addresses local people and the physical allowlist is player-only, empty no-contact is a defect:
@@ -963,7 +988,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                         "blocking_reason and no location_transition; do not demand a successful "
                         "transition there. When verdict is repair_required, defect_kinds must classify "
                         "the issues (missing_travel, redundant_travel, missing_contact, identity, "
-                        "missing_committed_action, other).\n\n"
+                        "missing_committed_action, missing_item, other).\n\n"
                         "[AUTHORITATIVE PHYSICAL PRESENCE ALLOWLIST]\n"
                         "Only these characters are currently present: "
                         + ", ".join(present_names or [])

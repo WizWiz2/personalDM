@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.addressed_response import AddressedResponse
+from app.models.turn_authority import PlannedItemIntroduction, PlannedWorldMove
 
 
 # Scene clock authority: a typed part of day, never a phrase copied from the player.
@@ -188,6 +189,7 @@ class OutcomeNpcIntroduction(BaseModel):
     canonical_name: str = Field(min_length=2, max_length=120)
     identity_reference: str | None = Field(default=None, max_length=120)
     role: str = Field(min_length=2, max_length=200)
+    current_goal: str | None = Field(default=None, max_length=500)
     description: str = Field(min_length=32, max_length=800)
     appearance: str = Field(min_length=32, max_length=800)
     voice: str | None = Field(default=None, max_length=400)
@@ -212,6 +214,8 @@ class TurnOutcomeDecision(BaseModel):
 
     action_outcomes: list[ActionOutcomeDecision] = Field(default_factory=list, max_length=8)
     npc_introductions: list[OutcomeNpcIntroduction] = Field(default_factory=list, max_length=4)
+    item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
+    world_move: PlannedWorldMove | None = None
 
     # These fields constrain narration/external consequences only; they cannot add player actions.
     resolution: TurnResolution = "success"
