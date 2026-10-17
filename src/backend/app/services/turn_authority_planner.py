@@ -231,7 +231,9 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   approved observable_consequences or successful structured step outcomes (e.g. a found journal,
   a received key, a written note). Use exact canonical_name and a verbatim evidence substring
   from the approved result, NOT from an unsupported player claim. Include owned_by_player=true
-  only when the approved outcome explicitly gives/takes it to the player. Do not create mundane
+  only when the approved outcome explicitly gives/takes it to the player. Add placement_detail
+  only for an exact physical sublocation established by the approved result, never guess.
+  Do not create mundane
   ambient clutter, speculative props, or an item already present in structured inventory.
   Stable custody and identity matter more than extracting every sensory detail.
 - addressed_response_requested: true when the latest human input addresses, asks, tells, or
