@@ -14,7 +14,7 @@ from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.goal_repo import GoalRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import Entity, Item
+from app.db.tables import Entity, Item, ItemCustodyCommand
 from app.models.belief import BeliefCreate, BeliefRead
 from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
 from app.models.entity import EntityStatus, EntityType
@@ -478,6 +478,15 @@ async def transfer_item(
     db_item.placement_detail = (
         command.placement_detail.strip() if command.placement_detail else None
     )
+    # GM action is independent of the player's last published pair. Its receipt
+    # must survive /undo and canon replay, unlike a derived post-turn mutation.
+    session.add(ItemCustodyCommand(
+        campaign_id=str(campaign_id), item_id=str(item_id),
+        owner_id=db_item.current_owner_id,
+        location_id=db_item.current_location_id,
+        placement_detail=db_item.placement_detail,
+        source_turn_id=str(command.source_turn_id) if command.source_turn_id else None,
+    ))
     await session.flush()
     await session.commit()
     return {
