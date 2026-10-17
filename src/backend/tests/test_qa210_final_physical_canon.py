@@ -210,3 +210,34 @@ async def test_reposition_within_room_changes_position_without_changing_custody(
     # Reverting the receipt restores the old position instead of teleported prose.
     item.placement_detail = receipt.item_previous_placement_detail
     assert item.placement_detail == "под полотном"
+
+
+@pytest.mark.asyncio
+async def test_gm_item_transfer_is_replayed_after_checkpoint_undo(db_session):
+    from app.db.tables import ItemCustodyCommand
+    from app.services.active_canon_replay import ActiveCanonReplayService
+
+    cid, room, hero, scene = await _start(db_session)
+    entity = await EntityRepository(db_session).create(
+        cid, EntityCreate(entity_type=EntityType.ITEM, canonical_name="Жетон Яна"),
+    )
+    db_session.add(Item(
+        entity_id=str(entity.id), current_location_id=str(room.id),
+        placement_detail="на теле Яна",
+    ))
+    await db_session.flush()
+    await InitialWorldStateService(db_session).ensure_snapshot(cid)
+    item = await db_session.get(Item, str(entity.id))
+    item.current_owner_id = str(hero.id)
+    item.current_location_id = None
+    item.placement_detail = None
+    db_session.add(ItemCustodyCommand(
+        campaign_id=str(cid), item_id=str(entity.id),
+        owner_id=str(hero.id), location_id=None, placement_detail=None,
+    ))
+    await db_session.flush()
+    assert item.current_owner_id == str(hero.id)
+    await ActiveCanonReplayService(db_session).replay(cid)
+    assert item.current_owner_id == str(hero.id)
+    assert item.current_location_id is None
+    assert item.placement_detail is None
