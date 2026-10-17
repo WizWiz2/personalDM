@@ -73,6 +73,7 @@ class InitialWorldStateService:
                 row.entity_id: {
                     "current_owner_id": row.current_owner_id,
                     "current_location_id": row.current_location_id,
+                    "placement_detail": row.placement_detail,
                 }
                 for row in items
             },
@@ -146,6 +147,7 @@ class InitialWorldStateService:
                 raise ValueError(f"Initial item state is invalid for {row.entity_id}")
             row.current_owner_id = owner_id
             row.current_location_id = location_id
+            row.placement_detail = state.get("placement_detail")
 
         await self._session.flush()
         return snapshot
