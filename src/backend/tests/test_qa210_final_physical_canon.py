@@ -180,3 +180,33 @@ async def test_rename_and_undo_reuses_same_npc_id(db_session):
         intro("Гус Фонарь"), source_turn_id=uuid4(),
     )
     assert regenerated.introduced_character_ids == (original_id,)
+
+
+@pytest.mark.asyncio
+async def test_reposition_within_room_changes_position_without_changing_custody(db_session):
+    cid, room, hero, scene = await _start(db_session)
+    entity = await EntityRepository(db_session).create(
+        cid, EntityCreate(entity_type=EntityType.ITEM, canonical_name="Жетон Яна"),
+    )
+    db_session.add(Item(
+        entity_id=str(entity.id),
+        current_location_id=str(room.id),
+        placement_detail="под полотном",
+    ))
+    await db_session.flush()
+    executor = ActionSequenceExecutor(db_session)
+    receipt = SimpleNamespace()
+    step = SimpleNamespace(
+        item_id=entity.id, inventory_operation="reposition",
+        inventory_target_id=None, item_placement_detail="под подошвой героя",
+    )
+    await executor._apply_inventory_step(cid, scene.id, uuid4(), step, receipt)
+    item = await db_session.get(Item, str(entity.id))
+    assert item.current_owner_id is None
+    assert item.current_location_id == str(room.id)
+    assert item.placement_detail == "под подошвой героя"
+    assert receipt.item_previous_placement_detail == "под полотном"
+    assert receipt.item_result_placement_detail == "под подошвой героя"
+    # Reverting the receipt restores the old position instead of teleported prose.
+    item.placement_detail = receipt.item_previous_placement_detail
+    assert item.placement_detail == "под полотном"
