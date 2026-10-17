@@ -237,17 +237,23 @@ class ActionSequenceExecutor:
         )
         operation = step.inventory_operation
         if operation == "take":
-            if item.current_location_id != (str(location_id) if location_id else None):
+            if not location_id or item.current_owner_id is not None or item.current_location_id != str(location_id):
                 raise InventoryExecutionError("Item is not physically present in the current scene")
             result_owner, result_location = str(campaign.player_character_id), None
-        elif operation == "drop" or operation == "place":
+        elif operation in {"drop", "place"}:
+            # F26: a "place" or "drop" plan cannot move an object merely because
+            # the planner can refer to its ID. Only the current holder can release it.
+            if item.current_owner_id != str(campaign.player_character_id):
+                raise InventoryExecutionError("Cannot place an item the player does not hold")
             if not location_id:
                 raise InventoryExecutionError("Cannot place an item in a scene without a location")
             result_owner, result_location = None, str(location_id)
         else:  # give
+            if item.current_owner_id != str(campaign.player_character_id):
+                raise InventoryExecutionError("Cannot give an item the player does not hold")
             target = await self._session.get(Entity, str(step.inventory_target_id))
-            if not target or target.campaign_id != str(campaign_id):
-                raise InventoryExecutionError("Inventory transfer target is outside the campaign")
+            if not target or target.campaign_id != str(campaign_id) or target.entity_type != "character":
+                raise InventoryExecutionError("Inventory recipient must be a character in the campaign")
             result_owner, result_location = str(step.inventory_target_id), None
 
         db_step.item_id = str(step.item_id)

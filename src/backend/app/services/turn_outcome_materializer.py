@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select
@@ -182,6 +182,13 @@ class TurnOutcomeMaterializer:
         )
 
     async def _create(self, authority: TurnAuthority, introduction, source_turn_id: UUID):
+        # An undone NPC introduction can be re-published in a new turn.
+        # Reserve its ID by campaign + normalized identity, not by the new
+        # random turn ID: external GM links and client caches then remain valid.
+        stable_id = uuid5(
+            authority.campaign_id,
+            f"personaldm:npc:{identity_key(introduction.canonical_name)}",
+        )
         character = await self._entities.create_character(
             authority.campaign_id,
             CharacterCreate(
@@ -203,6 +210,7 @@ class TurnOutcomeMaterializer:
                     **({"slot_id": introduction.resident_slot} if introduction.resident_slot else {}),
                 },
             ),
+            stable_entity_id=stable_id,
         )
         await self._scenes.add_participant(
             authority.target_scene_id,

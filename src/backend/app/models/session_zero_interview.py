@@ -41,6 +41,20 @@ class SessionZeroDeadline(BaseModel):
     consequence: str = Field(min_length=12, max_length=1000)
 
 
+class SessionZeroStarterItem(BaseModel):
+    """Unique, physically present opening prop explicitly established in Session Zero.
+
+    A future clue, a rumour, or an item merely desired by the player is not here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    canonical_name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=800)
+    initial_placement: str | None = Field(default=None, max_length=300)
+    held_by_player: bool = False
+    present_at_start: bool = True
+
+
 class SessionZeroWorldDraft(BaseModel):
     setting_name: str | None = None
     genre: str | None = None
@@ -68,6 +82,7 @@ class SessionZeroWorldDraft(BaseModel):
         ),
     )
     starter_presence_confirmed: bool = False
+    starter_items: list[SessionZeroStarterItem] = Field(default_factory=list, max_length=6)
     starting_exit_allowed: bool = Field(
         default=False,
         description="The agreed opening establishes an ordinary accessible route outside. False for sealed, trapped or unknown starts.",
@@ -117,6 +132,7 @@ class SessionZeroWorldPatch(BaseModel):
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] | None = None
     starter_presence_confirmed: bool | None = None
+    starter_items: list[SessionZeroStarterItem] | None = None
     starting_exit_allowed: bool | None = None
 
 

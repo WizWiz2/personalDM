@@ -107,8 +107,11 @@ class EntityRepository(BaseRepository):
         self,
         campaign_id: UUID,
         data: CharacterCreate,
+        *,
+        stable_entity_id: UUID | None = None,
     ) -> CharacterRead:
         db_entity = Entity(
+            **({"id": str(stable_entity_id)} if stable_entity_id is not None else {}),
             campaign_id=str(campaign_id),
             entity_type=EntityType.CHARACTER.value,
             canonical_name=data.canonical_name,

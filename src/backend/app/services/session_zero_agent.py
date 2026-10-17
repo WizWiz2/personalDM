@@ -134,6 +134,17 @@ class SessionZeroAgent:
 - Не используй профессию или отдельное слово как доказательство физического присутствия:
   решай присутствие по смыслу всей стартовой ситуации.
 
+СТАРТОВЫЕ СЮЖЕТНЫЕ ПРЕДМЕТЫ
+- world.starter_items — до шести уникальных физических предметов, чьё существование
+  и место прямо согласованы в начальной сцене: жетон на теле, письмо на столе,
+  ключ в руке героя. Для каждого сохрани canonical_name, description и
+  initial_placement (где именно находится в пределах сцены).
+- held_by_player=true ставь ТОЛЬКО если герой уже держит предмет на старте.
+- Не записывай слухи о вещах, будущее возможное сокровище, обычный декор,
+  предположения, ненайденные предметы или объекты лишь из целей персонажа.
+- При отсутствии подтверждённых предметов ставь starter_items=[]; не создавай
+  сюжетные предметы, чтобы искусственно оживить старт.
+
 ИНСТРУМЕНТЫ
 1. update_session_zero — скрыто обновляет только новые данные текущего хода.
    Передай patch с секциями world и character. Не копируй карточку целиком.
@@ -643,6 +654,10 @@ class SessionZeroInterviewService:
                     for deadline in world.scheduled_deadlines
                 ) or "не установлены"),
                 f"Кто уже в стартовой сцене: {'; '.join(starter_people) or 'никого кроме героя'}",
+                "Сюжетные предметы в стартовой сцене: " + ("; ".join(
+                    f"{item.canonical_name} ({item.initial_placement or 'расположение не уточнено'})"
+                    for item in world.starter_items if item.present_at_start
+                ) or "не установлены"),
             ]
         )
 
@@ -697,6 +712,10 @@ class SessionZeroInterviewService:
             custom[self.STATE_KEY] = state.model_dump(mode="json")
             custom["scheduled_deadlines"] = [
                 deadline.model_dump(mode="json") for deadline in world.scheduled_deadlines
+            ]
+            custom["starter_items"] = [
+                item.model_dump(mode="json")
+                for item in world.starter_items if item.present_at_start
             ]
             await self._session_zero.update(
                 campaign_id,
