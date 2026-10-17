@@ -261,10 +261,16 @@ class ActionSequenceExecutor:
         db_step.item_operation = operation
         db_step.item_previous_owner_id = item.current_owner_id
         db_step.item_previous_location_id = item.current_location_id
+        db_step.item_previous_placement_detail = item.placement_detail
         db_step.item_result_owner_id = result_owner
         db_step.item_result_location_id = result_location
+        db_step.item_result_placement_detail = (
+            step.item_placement_detail.strip() if operation == "place"
+            and getattr(step, "item_placement_detail", None) else None
+        )
         item.current_owner_id = result_owner
         item.current_location_id = result_location
+        item.placement_detail = db_step.item_result_placement_detail
         await self._session.flush()
 
     async def get(self, sequence_id: UUID) -> ActionSequenceExecution:
@@ -408,6 +414,7 @@ class ActionSequenceExecutor:
                 if item:
                     item.current_owner_id = step.item_previous_owner_id
                     item.current_location_id = step.item_previous_location_id
+                    item.placement_detail = step.item_previous_placement_detail
 
         sequence.status = final_status
         sequence.undone_at = datetime.utcnow()
