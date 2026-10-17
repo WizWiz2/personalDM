@@ -372,6 +372,32 @@ class Entity(Base):
     )
 
 
+class ItemCustodyCommand(Base):
+    """Independent GM physical item transfer, replayed after a canon rebuild."""
+
+    __tablename__ = "item_custody_commands"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_turn_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "NOT (owner_id IS NOT NULL AND location_id IS NOT NULL)",
+            name="ck_custody_command_single_position",
+        ),
+    )
+
+
 class NpcIdentityAnchor(Base):
     """Identity alias to stable NPC ID; retained after undo of the introducing turn."""
 
