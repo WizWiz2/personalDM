@@ -457,7 +457,9 @@ async def transfer_item(
         EntityType.ITEM.value,
     )
     if command.owner_id:
-        await _require_entity(session, campaign_id, command.owner_id)
+        await _require_entity(
+            session, campaign_id, command.owner_id, EntityType.CHARACTER.value
+        )
     if command.location_id:
         await _require_entity(
             session,
