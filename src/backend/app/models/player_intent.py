@@ -47,8 +47,9 @@ class PlayerActionIntent(BaseModel):
 
     # Inventory authority is identity based. IDs must come from authoritative context.
     item_id: UUID | None = None
-    inventory_operation: Literal["take", "drop", "give", "place"] | None = None
+    inventory_operation: Literal["take", "drop", "give", "place", "reposition"] | None = None
     inventory_target_id: UUID | None = None
+    item_placement_detail: str | None = Field(default=None, max_length=300)
 
     # Time authority. These fields describe what the player committed to waiting/resting through;
     # the compiler later turns them into a time transition when the outcome permits it.
@@ -71,10 +72,15 @@ class PlayerActionIntent(BaseModel):
             self.item_id,
             self.inventory_operation,
             self.inventory_target_id,
+            self.item_placement_detail,
         )
         if self.action_type == "inventory":
             if self.item_id is None or self.inventory_operation is None:
                 raise ValueError("inventory intent requires item_id and inventory_operation")
+            if self.item_placement_detail and self.inventory_operation not in {"place", "reposition"}:
+                raise ValueError("placement detail requires place or reposition intent")
+            if self.inventory_operation == "reposition" and not self.item_placement_detail:
+                raise ValueError("reposition requires exact placement detail")
             if self.inventory_operation == "give" and self.inventory_target_id is None:
                 raise ValueError("give intent requires inventory_target_id")
         elif any(value is not None for value in inventory_values):

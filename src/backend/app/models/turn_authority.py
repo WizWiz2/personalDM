@@ -41,6 +41,7 @@ class PlannedItemIntroduction(BaseModel):
     description: str | None = Field(default=None, max_length=800)
     evidence: str = Field(min_length=5, max_length=500)
     owned_by_player: bool = False
+    placement_detail: str | None = Field(default=None, max_length=300)
 
 
 class PlannedWorldMove(BaseModel):

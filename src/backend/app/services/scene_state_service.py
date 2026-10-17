@@ -253,7 +253,7 @@ class SceneStateService:
         if location_id:
             object_rows = (
                 await self._session.execute(
-                    select(Entity)
+                    select(Entity, Item)
                     .join(Item, Item.entity_id == Entity.id)
                     .where(
                         or_(
@@ -263,7 +263,7 @@ class SceneStateService:
                     )
                     .order_by(Entity.canonical_name)
                 )
-            ).scalars().all()
+            ).all()
 
         held_ids = set(
             (
@@ -318,10 +318,14 @@ class SceneStateService:
             active_conflict=runtime.active_conflict,
             participant_ids=participant_ids,
             participant_names=participant_names,
-            object_ids=[UUID(item.id) for item in object_rows],
-            object_names=[item.canonical_name for item in object_rows],
+            object_ids=[UUID(entity.id) for entity, _ in object_rows],
+            object_names=[entity.canonical_name for entity, _ in object_rows],
+            object_placements={
+                entity.id: item.placement_detail
+                for entity, item in object_rows if item.placement_detail
+            },
             player_inventory_names=[
-                item.canonical_name for item in object_rows if item.id in held_ids
+                entity.canonical_name for entity, _ in object_rows if entity.id in held_ids
             ],
             available_exits=exits,
             invariant_errors=errors,
@@ -494,6 +498,8 @@ class SceneStateService:
         carried = set(state.player_inventory_names)
         objects = ", ".join(
             f"{name} [id={object_id}]"
+            + (f" [exact placement: {state.object_placements[str(object_id)]}]"
+               if str(object_id) in state.object_placements else "")
             for object_id, name in zip(state.object_ids, state.object_names)
             if name not in carried
         ) or "none recorded"

@@ -243,6 +243,7 @@ class PlayableBootstrapService:
                 physical_properties=spec.description,
                 current_owner_id=str(player_character_id) if spec.held_by_player else None,
                 current_location_id=None if spec.held_by_player else str(location_id),
+                placement_detail=spec.initial_placement if not spec.held_by_player else None,
                 is_unique=True,
             )
         )

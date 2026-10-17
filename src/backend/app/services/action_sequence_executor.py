@@ -240,6 +240,12 @@ class ActionSequenceExecutor:
             if not location_id or item.current_owner_id is not None or item.current_location_id != str(location_id):
                 raise InventoryExecutionError("Item is not physically present in the current scene")
             result_owner, result_location = str(campaign.player_character_id), None
+        elif operation == "reposition":
+            if not location_id or item.current_owner_id is not None or item.current_location_id != str(location_id):
+                raise InventoryExecutionError("Cannot reposition item outside current location")
+            if not getattr(step, "item_placement_detail", None):
+                raise InventoryExecutionError("Reposition requires exact new placement")
+            result_owner, result_location = None, str(location_id)
         elif operation in {"drop", "place"}:
             # F26: a "place" or "drop" plan cannot move an object merely because
             # the planner can refer to its ID. Only the current holder can release it.
@@ -254,6 +260,9 @@ class ActionSequenceExecutor:
             target = await self._session.get(Entity, str(step.inventory_target_id))
             if not target or target.campaign_id != str(campaign_id) or target.entity_type != "character":
                 raise InventoryExecutionError("Inventory recipient must be a character in the campaign")
+            recipient = await self._session.get(Character, str(step.inventory_target_id))
+            if not location_id or not recipient or recipient.current_location_id != str(location_id):
+                raise InventoryExecutionError("Recipient must be physically present in the current location")
             result_owner, result_location = str(step.inventory_target_id), None
 
         db_step.item_id = str(step.item_id)
@@ -261,10 +270,16 @@ class ActionSequenceExecutor:
         db_step.item_operation = operation
         db_step.item_previous_owner_id = item.current_owner_id
         db_step.item_previous_location_id = item.current_location_id
+        db_step.item_previous_placement_detail = item.placement_detail
         db_step.item_result_owner_id = result_owner
         db_step.item_result_location_id = result_location
+        db_step.item_result_placement_detail = (
+            step.item_placement_detail.strip() if operation in {"place", "reposition"}
+            and getattr(step, "item_placement_detail", None) else None
+        )
         item.current_owner_id = result_owner
         item.current_location_id = result_location
+        item.placement_detail = db_step.item_result_placement_detail
         await self._session.flush()
 
     async def get(self, sequence_id: UUID) -> ActionSequenceExecution:
@@ -408,6 +423,7 @@ class ActionSequenceExecutor:
                 if item:
                     item.current_owner_id = step.item_previous_owner_id
                     item.current_location_id = step.item_previous_location_id
+                    item.placement_detail = step.item_previous_placement_detail
 
         sequence.status = final_status
         sequence.undone_at = datetime.utcnow()

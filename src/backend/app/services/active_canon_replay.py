@@ -11,6 +11,8 @@ from app.db.memory_taxonomy_table import NarrativeDetail
 from app.db.tables import (
     Belief,
     Character,
+    Item,
+    ItemCustodyCommand,
     Event,
     EventParticipant,
     Fact,
@@ -114,6 +116,22 @@ class ActiveCanonReplayService:
                 "external_move",
                 (actor_id, event.location_id),
             ))
+        # Manual GM transfers are separate commands, not derived narration.
+        # Reject those explicitly attributed to an undone assistant turn.
+        commands = (await self._session.execute(
+            select(ItemCustodyCommand).where(
+                ItemCustodyCommand.campaign_id == str(campaign_id)
+            )
+        )).scalars().all()
+        for command in commands:
+            if command.source_turn_id:
+                source = await self._session.get(Turn, command.source_turn_id)
+                if not source or source.status != "active":
+                    continue
+            timeline.append((
+                command.created_at, command.id, "gm_item",
+                (command.item_id, command.owner_id, command.location_id, command.placement_detail),
+            ))
         timeline.sort(key=lambda item: (item[0], item[1]))
 
         # Stateful changes (movement/item transfer) have a checkpoint captured before the
@@ -132,6 +150,14 @@ class ActiveCanonReplayService:
                 character = await self._session.get(Character, actor_id)
                 if character is not None:
                     character.current_location_id = location_id
+                continue
+            if kind == "gm_item":
+                item_id, owner_id, location_id, placement_detail = data
+                item = await self._session.get(Item, item_id)
+                if item is not None:
+                    item.current_owner_id = owner_id
+                    item.current_location_id = location_id
+                    item.placement_detail = placement_detail
                 continue
             change_type, payload, source_turn_id = data
             await applier.apply(
