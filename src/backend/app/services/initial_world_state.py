@@ -140,7 +140,11 @@ class InitialWorldStateService:
             )
         ).scalars().all()
         for row in items:
-            state = item_state.get(row.entity_id, {})
+            # Introductions created after the baseline have no saved starting
+            # position. Do not erase their currently committed custody on replay.
+            if row.entity_id not in item_state:
+                continue
+            state = item_state[row.entity_id]
             owner_id = state.get("current_owner_id")
             location_id = state.get("current_location_id")
             if owner_id and location_id:
