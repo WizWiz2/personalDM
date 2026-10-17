@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Entity, Item, SceneParticipant, Turn
+from app.db.tables import Entity, Item, NpcIdentityAnchor, SceneParticipant, Turn
 from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
 from app.models.entity import EntityCreate, EntityType
@@ -168,6 +168,10 @@ class TurnOutcomeMaterializer:
                         else str(location_id) if location_id else None
                     ),
                     is_unique=True,
+                    placement_detail=(
+                        getattr(introduction, "placement_detail", None)
+                        if not introduction.owned_by_player else None
+                    ),
                 )
             )
             item_ids.append(item.id)
@@ -185,10 +189,18 @@ class TurnOutcomeMaterializer:
         # An undone NPC introduction can be re-published in a new turn.
         # Reserve its ID by campaign + normalized identity, not by the new
         # random turn ID: external GM links and client caches then remain valid.
-        stable_id = uuid5(
-            authority.campaign_id,
-            f"personaldm:npc:{identity_key(introduction.canonical_name)}",
+        alias_key = identity_key(introduction.canonical_name)
+        anchor = await self._session.get(
+            NpcIdentityAnchor, (str(authority.campaign_id), alias_key),
         )
+        stable_id = (
+            UUID(anchor.entity_id) if anchor
+            else uuid5(authority.campaign_id, f"personaldm:npc:{alias_key}")
+        )
+        # An alias of a still-present person must resolve to that person,
+        # never silently collide with or spawn another physical NPC.
+        if await self._session.get(Entity, str(stable_id)):
+            raise ValueError("NPC stable identity already belongs to an existing entity")
         character = await self._entities.create_character(
             authority.campaign_id,
             CharacterCreate(
@@ -212,6 +224,14 @@ class TurnOutcomeMaterializer:
             ),
             stable_entity_id=stable_id,
         )
+        if anchor is None:
+            self._session.add(
+                NpcIdentityAnchor(
+                    campaign_id=str(authority.campaign_id),
+                    identity_key=alias_key,
+                    entity_id=str(character.id),
+                )
+            )
         await self._scenes.add_participant(
             authority.target_scene_id,
             character.id,
@@ -293,6 +313,23 @@ class TurnOutcomeMaterializer:
         )
         old_name = row.canonical_name
         aliases = json.loads(row.aliases or "[]")
+        # Persist both established identities beyond an undo of the name reveal.
+        # This is an identity anchor, not a new character or a canon fact.
+        for value in (old_name, response.revealed_name):
+            alias_key = identity_key(value)
+            anchor = await self._session.get(
+                NpcIdentityAnchor, (str(authority.campaign_id), alias_key),
+            )
+            if anchor is not None and anchor.entity_id != row.id:
+                raise ValueError("The confirmed NPC alias belongs to another identity")
+            if anchor is None:
+                self._session.add(
+                    NpcIdentityAnchor(
+                        campaign_id=str(authority.campaign_id),
+                        identity_key=alias_key,
+                        entity_id=row.id,
+                    )
+                )
         if not fields.get("temporary_name"):
             if identity_key(response.revealed_name) in {
                 identity_key(name) for name in aliases
