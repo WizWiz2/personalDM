@@ -23,6 +23,7 @@ from app.models.goal import GoalCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import ModelRole, RoleModelRouter
+from app.services.legacy_item_reconciliation import LegacyItemReconciliation, LegacyItemReconciliationRequest
 
 router = APIRouter(tags=["world-state"])
 
@@ -485,6 +486,19 @@ async def transfer_item(
         "location_id": command.location_id,
         "placement_detail": db_item.placement_detail,
     }
+
+
+@router.post("/api/campaigns/{campaign_id}/items/reconcile-legacy")
+async def reconcile_legacy_item(
+    campaign_id: UUID,
+    request: LegacyItemReconciliationRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    """Preview by default; only an explicit GM approval writes a missing Item."""
+    try:
+        return await LegacyItemReconciliation(session).reconcile(campaign_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post(
