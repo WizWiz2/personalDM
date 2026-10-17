@@ -654,6 +654,10 @@ class SessionZeroInterviewService:
                     for deadline in world.scheduled_deadlines
                 ) or "не установлены"),
                 f"Кто уже в стартовой сцене: {'; '.join(starter_people) or 'никого кроме героя'}",
+                "Сюжетные предметы в стартовой сцене: " + ("; ".join(
+                    f"{item.canonical_name} ({item.initial_placement or 'расположение не уточнено'})"
+                    for item in world.starter_items if item.present_at_start
+                ) or "не установлены"),
             ]
         )
 
