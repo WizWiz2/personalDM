@@ -76,7 +76,7 @@ _ACTION_TYPES = {
     "inventory",
     "other",
 }
-_INVENTORY_OPERATIONS = {"take", "drop", "give", "place"}
+_INVENTORY_OPERATIONS = {"take", "drop", "give", "place", "reposition"}
 
 
 class PlayerActionIntentDraft(BaseModel):
