@@ -30,8 +30,23 @@ def upgrade() -> None:
             sa.PrimaryKeyConstraint("campaign_id", "identity_key"),
         )
 
+    if "item_custody_commands" not in inspector.get_table_names():
+        op.create_table(
+            "item_custody_commands",
+            sa.Column("id", sa.String(36), primary_key=True),
+            sa.Column("campaign_id", sa.String(36), sa.ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False),
+            sa.Column("item_id", sa.String(36), sa.ForeignKey("entities.id", ondelete="CASCADE"), nullable=False),
+            sa.Column("owner_id", sa.String(36), nullable=True),
+            sa.Column("location_id", sa.String(36), nullable=True),
+            sa.Column("placement_detail", sa.Text(), nullable=True),
+            sa.Column("source_turn_id", sa.String(36), nullable=True),
+            sa.Column("created_at", sa.DateTime(), nullable=False),
+            sa.CheckConstraint("NOT (owner_id IS NOT NULL AND location_id IS NOT NULL)", name="ck_custody_command_single_position"),
+        )
+
 
 def downgrade() -> None:
+    op.drop_table("item_custody_commands")
     op.drop_table("npc_identity_anchors")
     op.drop_column("action_steps", "item_result_placement_detail")
     op.drop_column("action_steps", "item_previous_placement_detail")
