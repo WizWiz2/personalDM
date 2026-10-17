@@ -101,12 +101,15 @@ class MovementCommand(BaseModel):
 class ItemTransferCommand(BaseModel):
     owner_id: UUID | None = None
     location_id: UUID | None = None
+    placement_detail: str | None = Field(default=None, max_length=300)
     source_turn_id: UUID | None = None
 
     @model_validator(mode="after")
     def one_destination(self):
         if self.owner_id and self.location_id:
             raise ValueError("item can have an owner or a location, not both")
+        if self.placement_detail and not self.location_id:
+            raise ValueError("item placement detail requires a location")
         return self
 
 
@@ -471,12 +474,16 @@ async def transfer_item(
     db_item.current_location_id = (
         str(command.location_id) if command.location_id else None
     )
+    db_item.placement_detail = (
+        command.placement_detail.strip() if command.placement_detail else None
+    )
     await session.flush()
     await session.commit()
     return {
         "item_id": item_entity.id,
         "owner_id": command.owner_id,
         "location_id": command.location_id,
+        "placement_detail": db_item.placement_detail,
     }
 
 
