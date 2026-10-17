@@ -86,6 +86,7 @@ class ActionStepPlan(BaseModel):
     item_id: UUID | None = None
     inventory_operation: Literal["take", "drop", "give", "place"] | None = None
     inventory_target_id: UUID | None = None
+    item_placement_detail: str | None = Field(default=None, max_length=300)
     transition: SceneTransitionPlan = Field(default_factory=SceneTransitionPlan)
 
     @model_validator(mode="before")
@@ -103,6 +104,7 @@ class ActionStepPlan(BaseModel):
             data.get("item_id"),
             data.get("inventory_operation"),
             data.get("inventory_target_id"),
+            data.get("item_placement_detail"),
         )
         if not any(value is not None for value in inventory_fields):
             return data
@@ -140,6 +142,8 @@ class ActionStepPlan(BaseModel):
                 raise ValueError(
                     "completed inventory steps require item_id and inventory_operation"
                 )
+        if self.item_placement_detail and self.inventory_operation != "place":
+            raise ValueError("item_placement_detail requires inventory_operation=place")
         if self.inventory_operation == "give" and self.inventory_target_id is None:
             raise ValueError("give inventory steps require inventory_target_id")
         return self
