@@ -356,6 +356,7 @@ class ActionPlanCompiler:
             item_id=action.item_id,
             inventory_operation=action.inventory_operation,
             inventory_target_id=action.inventory_target_id,
+            item_placement_detail=action.item_placement_detail,
             transition=transition,
         )
 
