@@ -15,6 +15,7 @@ from app.services.legacy_item_reconciliation import (
     LegacyItemReconciliation, LegacyItemReconciliationRequest,
 )
 from app.services.scene_state_service import SceneStateService
+from app.services.entity_identity import identity_key
 from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.location_repo import LocationRepository
@@ -172,7 +173,7 @@ async def test_rename_and_undo_reuses_same_npc_id(db_session):
         first, uuid4(), confirmed_by_published_beat=True,
     )
     assert await db_session.get(
-        NpcIdentityAnchor, (str(cid), "гус фонарь"),
+        NpcIdentityAnchor, (str(cid), identity_key("Гус Фонарь")),
     ) is not None
     await materializer.rollback(outcome)
     assert await db_session.get(Entity, str(original_id)) is None
