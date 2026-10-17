@@ -1,13 +1,13 @@
 """Canonical item placement detail and durable aliases of introduced NPCs.
 
 Revision ID: a9d0e1f2a3b4
-Revises: a8c9d0e1f2a3
+Revises: f3a4b5c6d7e8
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "a9d0e1f2a3b4"
-down_revision = "a8c9d0e1f2a3"
+down_revision = "f3a4b5c6d7e8"
 branch_labels = None
 depends_on = None
 
