@@ -84,7 +84,7 @@ class ActionStepPlan(BaseModel):
     # Inventory mutations are resolved by entity id, never by a runtime word/substring match.
     # The planner receives ids for objects physically present in the scene.
     item_id: UUID | None = None
-    inventory_operation: Literal["take", "drop", "give", "place"] | None = None
+    inventory_operation: Literal["take", "drop", "give", "place", "reposition"] | None = None
     inventory_target_id: UUID | None = None
     item_placement_detail: str | None = Field(default=None, max_length=300)
     transition: SceneTransitionPlan = Field(default_factory=SceneTransitionPlan)
@@ -142,8 +142,10 @@ class ActionStepPlan(BaseModel):
                 raise ValueError(
                     "completed inventory steps require item_id and inventory_operation"
                 )
-        if self.item_placement_detail and self.inventory_operation != "place":
-            raise ValueError("item_placement_detail requires inventory_operation=place")
+        if self.item_placement_detail and self.inventory_operation not in {"place", "reposition"}:
+            raise ValueError("placement detail requires place or reposition operation")
+        if self.inventory_operation == "reposition" and self.resolution == "auto_success" and not self.item_placement_detail:
+            raise ValueError("reposition requires exact placement detail")
         if self.inventory_operation == "give" and self.inventory_target_id is None:
             raise ValueError("give inventory steps require inventory_target_id")
         return self
