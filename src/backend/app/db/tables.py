@@ -372,6 +372,18 @@ class Entity(Base):
     )
 
 
+class NpcIdentityAnchor(Base):
+    """Identity alias to stable NPC ID; retained after undo of the introducing turn."""
+
+    __tablename__ = "npc_identity_anchors"
+
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True
+    )
+    identity_key: Mapped[str] = mapped_column(String(250), primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+
+
 class Character(Base):
     __tablename__ = "characters"
 
