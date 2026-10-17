@@ -16,7 +16,37 @@ from app.services.legacy_item_reconciliation import (
 )
 from app.services.scene_state_service import SceneStateService
 from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
-from test_live_world_playability_p1 import _start
+from app.db.repositories.campaign_repo import CampaignRepository
+from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.scene_repo import SceneRepository
+from app.models.campaign import CampaignCreate, CampaignUpdate
+from app.models.character import CharacterCreate
+from app.models.location import LocationCreate
+from app.models.scene import SceneCreate
+from app.services.scene_lifecycle import SceneLifecycleService
+
+
+async def _start(db_session):
+    cid = uuid4()
+    await CampaignRepository(db_session).create(
+        cid, CampaignCreate(name="QA-210 final physical canon"),
+    )
+    from app.services.session_zero_service import SessionZeroService
+    await SessionZeroService(db_session).ensure_setup(cid)
+    room = await LocationRepository(db_session).create(
+        cid, LocationCreate(canonical_name="Портовый склад"),
+    )
+    hero = await EntityRepository(db_session).create_character(
+        cid, CharacterCreate(canonical_name="Вера"),
+    )
+    await CampaignRepository(db_session).update(
+        cid, CampaignUpdate(player_character_id=hero.id),
+    )
+    scene = await SceneRepository(db_session).create(
+        cid, SceneCreate(title="Портовый склад", location_id=room.id),
+    )
+    await SceneLifecycleService(db_session).activate(cid, scene.id)
+    return cid, room, hero, scene
 
 
 @pytest.mark.asyncio
