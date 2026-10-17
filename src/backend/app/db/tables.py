@@ -441,6 +441,7 @@ class Item(Base):
         String(36), ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
     )
     is_unique: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     lore: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     base_entity = relationship(
