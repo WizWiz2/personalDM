@@ -56,9 +56,10 @@ ordered actions of their own types — never collapse "запишу X, пото�
 and never drop the later act because an earlier act dominates the sentence. Connectives alone are
 not proof of multiplicity; a commitment the human actually stated is.
 Success and blockers are resolved only AFTER this extraction, including for known impossible attempts.
-Inventory: take/drop/place/give with exact contextual IDs; give also needs inventory_target_id.
+Inventory: take/drop/place/give/reposition with exact contextual IDs; give also needs inventory_target_id.
 drop releases the item into the place; place deliberately positions it on/in a named surface/container.
-For place, copy the explicitly requested exact destination surface into item_placement_detail.
+For place or reposition, copy the explicitly requested exact destination surface into item_placement_detail.
+Reposition changes position within the same room without transferring ownership.
 Do not guess a surface. If no surface was specified leave null.
 Other actions carry no inventory fields. rest/wait carry time only when supplied by the human.
 Seeking local people sets addressed_response_requested=true, retaining any real movement;
@@ -154,7 +155,7 @@ class _MovementWire(_ActionWire):
 class _InventoryWire(_ActionWire):
     action_type: Literal["inventory"]
     item_id: UUID
-    inventory_operation: Literal["take", "drop", "place"]
+    inventory_operation: Literal["take", "drop", "place", "reposition"]
     item_placement_detail: str | None = Field(default=None, max_length=300)
 
 
@@ -249,7 +250,7 @@ class ActionOwnershipDecision(BaseModel):
     actor_role: Literal["speaker", "addressee"]
     action_type: IntentActionType | None = None
     item_id: UUID | None = None
-    inventory_operation: Literal["take", "drop", "place", "give"] | None = None
+    inventory_operation: Literal["take", "drop", "place", "reposition", "give"] | None = None
     inventory_target_id: UUID | None = None
     elapsed_time: str | None = None
     time_after: DayPart | None = None
@@ -345,7 +346,7 @@ def _intent_semantic_review_wire(
         item_id: Literal[items] if items else UUID = Field(
             description="Select the exact registered item's ID."
         )
-        inventory_operation: Literal["take", "drop", "place"]
+        inventory_operation: Literal["take", "drop", "place", "reposition"]
         inventory_target_id: None = None
         elapsed_time: None = None
         time_after: None = None
@@ -466,7 +467,8 @@ otherwise return null. This corrects classification only: preserve order, actor 
 Independently select action_type by the act's durable effect, regardless of the extraction's label.
 Any change of a registered item's owner or physical placement is inventory, including placing it
 on furniture and withdrawing the hand. Select item_id from the catalog and the take/drop/place/give
-operation; give also selects inventory_target_id. This is NOT an interaction/other action.
+operation; give also selects inventory_target_id. Reposition a registered item within the same location using a typed
+reposition operation and exact placement detail. This is NOT an interaction/other action.
 Rest or waiting with elapsed time is rest/wait: preserve elapsed_time and time_after from the input.
 Other domains keep inventory and temporal fields null. Speech uses action_type=null.
 
@@ -582,7 +584,7 @@ def _normalized_action(
                 "inventory_target_id": inventory_target_id if operation == "give" else None,
                 "item_placement_detail": (
                     _compact(action.item_placement_detail)[:300] or None
-                    if operation == "place" else None
+                    if operation in {"place", "reposition"} else None
                 ),
             }
         )
