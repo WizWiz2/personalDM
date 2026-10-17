@@ -260,6 +260,9 @@ class ActionSequenceExecutor:
             target = await self._session.get(Entity, str(step.inventory_target_id))
             if not target or target.campaign_id != str(campaign_id) or target.entity_type != "character":
                 raise InventoryExecutionError("Inventory recipient must be a character in the campaign")
+            recipient = await self._session.get(Character, str(step.inventory_target_id))
+            if not location_id or not recipient or recipient.current_location_id != str(location_id):
+                raise InventoryExecutionError("Recipient must be physically present in the current location")
             result_owner, result_location = str(step.inventory_target_id), None
 
         db_step.item_id = str(step.item_id)
