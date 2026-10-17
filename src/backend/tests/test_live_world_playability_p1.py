@@ -13,7 +13,7 @@ from app.models.campaign import CampaignCreate, CampaignUpdate
 from app.models.character import CharacterCreate
 from app.models.location import LocationCreate
 from app.models.scene import SceneCreate
-from app.models.turn_authority import PlannedItemIntroduction, TurnAuthority
+from app.models.turn_authority import PlannedItemIntroduction, PlannedNpcIntroduction, TurnAuthority
 from app.services.narration_meta_guard import leaked_meta_lines
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.scene_state_service import SceneStateService
@@ -676,3 +676,43 @@ async def test_active_scene_does_not_resurrect_npc_at_different_location(db_sess
     await SceneLifecycleService(db_session).activate(cid, next_scene.id)
     old = await SceneStateService(db_session).get(cid, scene.id)
     assert npc.id in old.participant_ids
+
+
+@pytest.mark.asyncio
+async def test_qa210_undo_and_reintroduction_preserve_npc_id(db_session):
+    """F31: a regenerated introduction must not change an NPC's external ID."""
+    cid, _room, hero, scene = await _start(db_session)
+    materializer = TurnOutcomeMaterializer(db_session)
+
+    def authority(name: str):
+        return TurnAuthority(
+            campaign_id=cid,
+            trigger_turn_id=uuid4(),
+            player_character_id=hero.id,
+            target_scene_id=scene.id,
+            player_input="Позвать ночного сторожа.",
+            allowed_new_npcs=[
+                PlannedNpcIntroduction(
+                    canonical_name=name,
+                    role="Ночной сторож",
+                    reason="Сторож появился у ограды причала.",
+                )
+            ],
+        )
+
+    first = await materializer.materialize(authority("Гус Фонарь"), source_turn_id=uuid4())
+    assert len(first.introduced_character_ids) == 1
+    original_id = first.introduced_character_ids[0]
+    assert await db_session.get(Entity, str(original_id)) is not None
+
+    await materializer.rollback(first)
+    assert await db_session.get(Entity, str(original_id)) is None
+
+    regenerated = await materializer.materialize(
+        authority("Гус Фонарь"), source_turn_id=uuid4(),
+    )
+    assert regenerated.introduced_character_ids == (original_id,)
+    other = await materializer.materialize(
+        authority("Другой сторож"), source_turn_id=uuid4(),
+    )
+    assert other.introduced_character_ids[0] != original_id
