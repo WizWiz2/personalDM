@@ -716,3 +716,84 @@ async def test_qa210_undo_and_reintroduction_preserve_npc_id(db_session):
         authority("Другой сторож"), source_turn_id=uuid4(),
     )
     assert other.introduced_character_ids[0] != original_id
+
+
+@pytest.mark.asyncio
+async def test_qa210_session_zero_jeton_is_a_real_item_not_a_placeholder(db_session):
+    """F23: an explicitly agreed plot token must exist before the first player turn."""
+    from app.models.session_zero import SessionZeroUpdate
+    from app.services.playable_bootstrap import PlayableBootstrapService
+    from app.services.session_zero_service import SessionZeroService
+
+    cid, room, hero, scene = await _start(db_session)
+    await SessionZeroService(db_session).update(
+        cid,
+        SessionZeroUpdate(custom_fields={
+            "starter_items": [{
+                "canonical_name": "Жетон Вельда",
+                "description": "Номер стёрт, металл мокрый.",
+                "initial_placement": "На одежде Яна Вельда у сходней",
+                "held_by_player": False,
+            }],
+        }),
+    )
+    bootstrap = PlayableBootstrapService(db_session)
+    first = await bootstrap.ensure(
+        cid, scene.id, player_character_id=hero.id,
+        starting_location_id=room.id,
+        starting_situation="Жетон лежит на теле у сходней.",
+    )
+    state = await SceneStateService(db_session).get(cid, scene.id)
+    assert "Жетон Вельда" in state.object_names
+    assert "Заметная деталь" not in state.object_names
+    assert first.created_object_id is not None
+    assert (await db_session.get(Item, str(first.created_object_id))).current_location_id == str(room.id)
+    second = await bootstrap.ensure(
+        cid, scene.id, player_character_id=hero.id,
+        starting_location_id=room.id,
+        starting_situation="Жетон лежит на теле у сходней.",
+    )
+    assert second.created_object_id is None
+    assert len((await EntityRepository(db_session).list_by_campaign(cid, "item"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_qa210_items_cannot_teleport_from_another_holders_custody(db_session):
+    """F26: place, drop and give require actual possession, not a plausible plan."""
+    from types import SimpleNamespace
+
+    from app.models.entity import EntityCreate, EntityType
+    from app.services.action_sequence_executor import (
+        ActionSequenceExecutor, InventoryExecutionError,
+    )
+
+    cid, room, hero, scene = await _start(db_session)
+    entity = await EntityRepository(db_session).create(
+        cid, EntityCreate(entity_type=EntityType.ITEM, canonical_name="Жетон Вельда"),
+    )
+    row = Item(entity_id=str(entity.id), current_location_id=str(room.id))
+    db_session.add(row)
+    await db_session.flush()
+    executor = ActionSequenceExecutor(db_session)
+    receipt = SimpleNamespace()
+
+    def step(operation):
+        return SimpleNamespace(
+            item_id=entity.id,
+            inventory_operation=operation,
+            inventory_target_id=hero.id,
+        )
+
+    for operation in ("place", "drop", "give"):
+        with pytest.raises(InventoryExecutionError, match="does not hold"):
+            await executor._apply_inventory_step(cid, scene.id, uuid4(), step(operation), receipt)
+        assert row.current_location_id == str(room.id)
+        assert row.current_owner_id is None
+
+    await executor._apply_inventory_step(cid, scene.id, uuid4(), step("take"), receipt)
+    assert row.current_owner_id == str(hero.id)
+    await executor._apply_inventory_step(cid, scene.id, uuid4(), step("place"), receipt)
+    assert row.current_location_id == str(room.id)
+    assert row.current_owner_id is None
+    with pytest.raises(InventoryExecutionError, match="does not hold"):
+        await executor._apply_inventory_step(cid, scene.id, uuid4(), step("place"), receipt)
