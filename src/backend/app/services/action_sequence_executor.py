@@ -392,6 +392,14 @@ class ActionSequenceExecutor:
             campaign_id,
             final_scene_id,
         )
+        # The player may not be listed as a SceneParticipant. Keep physical
+        # location consistent with the authoritative scene on sequence apply.
+        location_id = await self._scenes.get_location_id(final_scene_id)
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        if location_id and campaign and campaign.player_character_id:
+            player = await self._session.get(Character, campaign.player_character_id)
+            if player:
+                player.current_location_id = str(location_id)
 
     async def _compensate(
         self,
@@ -442,6 +450,14 @@ class ActionSequenceExecutor:
                 campaign_id,
                 source_scene_id,
             )
+            # F-39: scene participants do not necessarily include the player.
+            # Restore the playable character explicitly on sequence undo.
+            source_location_id = await self._scenes.get_location_id(source_scene_id)
+            campaign = await self._session.get(Campaign, transition.campaign_id)
+            if source_location_id and campaign and campaign.player_character_id:
+                player = await self._session.get(Character, campaign.player_character_id)
+                if player:
+                    player.current_location_id = str(source_location_id)
         else:
             campaign = await self._session.get(Campaign, transition.campaign_id)
             if campaign:
