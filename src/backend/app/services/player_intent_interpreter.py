@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import reduce
 from operator import or_
 from typing import Any, Literal
@@ -509,6 +510,72 @@ def _destination_binding_wire(indices: list[int], references: dict[str, str]):
     )
 
 
+# QA-213 F-32: a narrow deterministic rescue for unambiguous first-person
+# physical placement that a control model mislabeled as generic interaction.
+# Never bind a new item from prose: only trusted UUID/name catalog entries qualify.
+_PLACEMENT_VERB = re.compile(
+    r"\b(?:кладу|укладываю|положу|положил|положила|ставлю|поставлю|"
+    r"перекладываю|переставляю|помещаю|оставляю)\b", re.I
+)
+_PLACEMENT_SURFACE = re.compile(
+    r"\b(?:между|под|на|за|возле|рядом с|около|у)\s+\S.{0,260}$", re.I
+)
+_TOKEN = re.compile(r"[а-яёa-z0-9]+", re.I)
+
+
+def _repair_unambiguous_local_placement(
+    draft: PlayerIntentContractDraft,
+    player_input: str,
+    context_messages: list[ChatMessage],
+) -> bool:
+    owned = action_reference_catalog(context_messages, "Player-owned items:")
+    floor = action_reference_catalog(context_messages, "Objects physically here:")
+    catalog = {**floor, **owned}
+    if not catalog or not draft.actions:
+        return False
+
+    repaired = False
+    for action in draft.actions:
+        if action.actor_role != "speaker" or action.action_type == "inventory":
+            continue
+        if action.action_type not in {"interaction", "other"}:
+            continue
+        phrase = action.intent if len(draft.actions) > 1 else player_input
+        verb = _PLACEMENT_VERB.search(phrase)
+        if not verb or re.search(r"\bне\s+$", phrase[:verb.start()], re.I):
+            continue
+        tail = phrase[verb.end():]
+        # Contextual "in a backpack" is a carried-container operation and not
+        # the room-placement mutation implemented by place/reposition.
+        if re.search(r"\bв\s+(?:сумк|рюкзак|карман)", tail, re.I):
+            continue
+        surface = _PLACEMENT_SURFACE.search(tail)
+        if not surface:
+            continue
+        words = _TOKEN.findall(tail.casefold())
+        matching = []
+        for item_id, name in catalog.items():
+            tokens = _TOKEN.findall(name.casefold())
+            if not tokens:
+                continue
+            head = tokens[-1]
+            stem = head.rstrip("аеёиоуыэюя") if len(head) > 4 else head
+            if len(stem) >= 4 and any(word.startswith(stem) for word in words):
+                matching.append(item_id)
+        if len(matching) != 1:
+            continue  # Ambiguity or absent catalog evidence is never guessed.
+        item_id = matching[0]
+        action.action_type = "inventory"
+        action.item_id = item_id
+        action.inventory_operation = "place" if item_id in owned else "reposition"
+        action.inventory_target_id = None
+        action.item_placement_detail = surface.group(0).strip().rstrip(".")
+        repaired = True
+    if repaired:
+        draft.information_request_only = False
+    return repaired
+
+
 def _compact(value: object) -> str:
     return " ".join(str(value or "").split())
 
@@ -1001,6 +1068,8 @@ class PlayerIntentInterpreter:
             await self._bind_destinations(
                 selection, draft, player_input, references, context_messages, location_catalog,
             )
+            if _repair_unambiguous_local_placement(draft, player_input, context_messages):
+                self.audit.append({"phase": "grounded_placement_repair", "reason": "unambiguous_catalog_item"})
             contract = normalize_intent_draft(draft, player_input)
             self.audit.append(
                 {
