@@ -319,6 +319,19 @@ class NpcIntroductionResolver:
                     f"{introduction.canonical_name}: {candidate_names}"
                 )
             if not unique_matches:
+                # F-36: a typed resident slot has exactly one keeper even when
+                # the resolver proposed two different role descriptions in
+                # the same turn, before either new NPC has reached the DB.
+                # Do not guess equivalence from profession alone: only the
+                # authoritative shared slot proves these labels co-refer.
+                earlier_keeper = next((
+                    item for item in new_introductions
+                    if introduction.resident_slot
+                    and item.resident_slot == introduction.resident_slot
+                ), None)
+                if earlier_keeper is not None:
+                    bound.update(dict.fromkeys(designations, earlier_keeper.canonical_name))
+                    continue
                 # Campaign-unique labels via shared contract: never twin another live
                 # canonical_name; collide → needs_name status + human failsoft label.
                 base = introduction.canonical_name
