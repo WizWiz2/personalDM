@@ -11,6 +11,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Entity, Item, Scene
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
+from app.services.initial_world_state import InitialWorldStateService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.scene_transition_executor import (
@@ -72,6 +73,15 @@ class ActionSequenceExecutor:
             return existing
         if not plan.steps:
             raise ValueError("Action sequence has no steps")
+
+        # A replay baseline must predate *all* structured physical mutations.
+        # In particular it cannot first be captured by an asynchronous Scribe
+        # after a successful hand-off, or undo would erase the recipient.
+        if any(
+            step.action_type == "inventory" and step.resolution == "auto_success"
+            for step in plan.steps
+        ):
+            await InitialWorldStateService(self._session).ensure_snapshot(campaign_id)
 
         sequence = ActionSequence(
             campaign_id=str(campaign_id),
