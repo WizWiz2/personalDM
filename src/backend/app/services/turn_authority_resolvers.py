@@ -309,6 +309,27 @@ class NpcIntroductionResolver:
                     target_location_id=target_location_id,
                     character_locations=character_locations,
                 )
+            # F-36: a unique temporary "Местный кузнец" already
+            # placed in the same establishment must not become a second
+            # "Кузнец" merely because the player entered its child room.
+            # Do not resolve distant NPCs, promoted names, or generic roles
+            # shared by more than one candidate.
+            if not matches and introduction.temporary_name and target_location_id:
+                proposal_key = identity_key(introduction.canonical_name)
+                role_key = identity_key(introduction.role)
+                if role_key and proposal_key == role_key:
+                    local_role_holders = [
+                        entity for entity in all_characters
+                        if (entity.custom_fields or {}).get("temporary_name")
+                        and character_locations.get(UUID(str(entity.id))) == target_location_id
+                        and identity_key(entity.canonical_name).split()[-1:] == [role_key]
+                    ]
+                    if len(local_role_holders) == 1:
+                        matches = local_role_holders
+                    elif len(local_role_holders) > 1:
+                        raise AuthorityResolutionError(
+                            "Ambiguous existing temporary NPC role in this establishment"
+                        )
             unique_matches = {UUID(str(entity.id)): entity for entity in matches}
             if len(unique_matches) > 1:
                 candidate_names = ", ".join(
