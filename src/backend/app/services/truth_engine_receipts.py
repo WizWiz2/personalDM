@@ -342,7 +342,7 @@ class StructuredReceiptEventCompiler:
                 "skipped": "Действие пропущено.",
                 "undone": "Действие отменено.",
             }
-            public_reason = (step.public_blocking_reason or "").strip()
+            public_reason = (getattr(step, "public_blocking_reason", None) or "").strip()
             return public_reason or localized.get(step.status, "Действие не выполнено.")
         return step.observable_outcome or step.intent or "Действие выполнено."
 
