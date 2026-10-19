@@ -784,11 +784,17 @@ class PostTurnWorker:
                 pass
 
     async def run(self) -> None:
-        async with AsyncSessionLocal() as session:
-            await PostTurnJobRepository(session).recover_stale(
-                stale_after_seconds=max(900, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60),
+        # The initial sweep is best effort: SQLite contention here must never
+        # prevent the independent periodic recovery task from being started.
+        try:
+            await self._recover_operation(
+                "recover_stale",
+                stale_after_seconds=max(
+                    900, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
+                ),
             )
-            await session.commit()
+        except Exception:
+            logger.exception("Post-turn startup recovery failed; periodic recovery remains active")
 
         recovery_task = asyncio.create_task(
             self._recover_loop(), name="post-turn-db-recovery"
