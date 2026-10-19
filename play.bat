@@ -44,7 +44,7 @@ python src\backend\launcher.py --migrate-user-data
 if errorlevel 1 goto :err_data
 echo [Setup] Checking database schema...
 pushd src\backend
-alembic upgrade head
+python -m app.db.startup_migrations
 set "MIGRATION_RC=%ERRORLEVEL%"
 popd
 if not "%MIGRATION_RC%"=="0" goto :err_migrations
