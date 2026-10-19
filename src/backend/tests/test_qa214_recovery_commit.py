@@ -48,3 +48,36 @@ async def test_stale_recovery_is_committed_before_retry_failed_job_lock():
     session.commit.assert_awaited_once()
     repo.recover_stale.assert_awaited_once()
     repo.requeue_failed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovery_loop_retries_after_transient_sqlite_lock():
+    worker = PostTurnWorker()
+    session = _Session()
+    repo = MagicMock()
+    repo.recover_stale = AsyncMock(side_effect=[
+        OperationalError("UPDATE", {}, Exception("database is locked")), 1,
+    ])
+    repo.requeue_failed = AsyncMock(return_value=0)
+    polls = []
+
+    async def next_tick(awaitable, *, timeout):
+        awaitable.close()
+        polls.append(timeout)
+        if len(polls) == 2:
+            worker.stop()
+
+    with patch(
+        "app.services.post_turn_processor.AsyncSessionLocal",
+        return_value=session,
+    ), patch(
+        "app.services.post_turn_processor.PostTurnJobRepository",
+        return_value=repo,
+    ), patch(
+        "app.services.post_turn_processor.asyncio.wait_for",
+        side_effect=next_tick,
+    ):
+        await worker._recover_loop()
+    assert polls == [2.0, 15.0]
+    assert repo.recover_stale.await_count == 2
+    repo.requeue_failed.assert_awaited_once()
