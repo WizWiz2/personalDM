@@ -3,9 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, literal_column
-
-from app.db.tables import Turn
+from sqlalchemy import literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application import (
@@ -20,6 +18,7 @@ from app.db.engine import get_session
 from app.db.repositories.job_repo import GenerationRunRepository, PostTurnJobRepository
 from app.db.repositories.llm_usage_repo import LLMUsageRepository
 from app.db.repositories.turn_repo import TurnRepository
+from app.db.tables import Turn
 from app.models.jobs import GenerationRunRead
 from app.models.turn import TurnCreate, TurnRead
 from app.services.detached_turn_dispatcher import (
