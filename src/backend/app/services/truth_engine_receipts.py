@@ -344,7 +344,7 @@ class StructuredReceiptEventCompiler:
             }
             public_reason = (getattr(step, "public_blocking_reason", None) or "").strip()
             if public_reason:
-                return public_reason
+                return f"{step.status.upper()}: {public_reason}"
             reason = (getattr(step, "blocking_reason", None) or "").strip()
             # Preserve concrete world blockers from the resolver. Filter only
             # internal executor exception messages with known machine prefixes.
@@ -355,8 +355,8 @@ class StructuredReceiptEventCompiler:
                 "item is not physically present",
             )
             if reason and not reason.casefold().startswith(internal_prefixes):
-                return reason
-            return localized.get(step.status, "Действие не выполнено.")
+                return f"{step.status.upper()}: {reason}"
+            return f"{step.status.upper()}: {localized.get(step.status, 'Действие не выполнено.')}"
         return step.observable_outcome or step.intent or "Действие выполнено."
 
     async def _ensure_baseline(
