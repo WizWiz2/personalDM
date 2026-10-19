@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from time import perf_counter
 from collections.abc import AsyncIterator
 from uuid import UUID
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 from app.db.repositories.generation_lifecycle_repo import GenerationLifecycleRepository
 from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
@@ -892,6 +895,12 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
         except Exception as exc:
+            # F-37: even if a streaming client disconnects before the final
+            # telemetry transaction, the production log must preserve this failure.
+            logger.exception(
+                "Narrative generation failed for campaign=%s user_turn=%s run=%s",
+                campaign_id, user_turn.id, generation_run.id,
+            )
             record_decision(
                 "final",
                 "failed",
