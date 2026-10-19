@@ -75,3 +75,22 @@ def test_a_negative_instruction_does_not_move_items():
     assert not _repair_unambiguous_local_placement(
         draft, text, _context(owned=f"письмо [id={letter}]")
     )
+
+
+def test_enrich_typed_place_that_forgot_surface():
+    letter = uuid4()
+    text = "Кладу письмо между лампой и стеной."
+    draft = PlayerIntentContractDraft(
+        summary=text,
+        actions=[PlayerActionIntentDraft(
+            action_type="inventory", intent=text, item_id=str(letter),
+            inventory_operation="place", item_placement_detail=None,
+        )],
+    )
+    assert _repair_unambiguous_local_placement(
+        draft, text, _context(owned=f"письмо [id={letter}]"),
+    )
+    action = normalize_intent_draft(draft, text).actions[0]
+    assert action.item_id == letter
+    assert action.inventory_operation == "place"
+    assert action.item_placement_detail == "между лампой и стеной"
