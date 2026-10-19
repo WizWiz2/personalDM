@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -748,6 +749,7 @@ class PostTurnWorker:
         # Independent of the work coroutine: a hung or cancelled inline request
         # must not prevent stale running rows from being discovered.
         while not self._stop.is_set():
+            next_poll = 15.0
             try:
                 async with AsyncSessionLocal() as session:
                     repo = PostTurnJobRepository(session)
@@ -767,10 +769,17 @@ class PostTurnWorker:
                             "Post-turn recovery: %d stale, %d failed requeued",
                             recovered, retried,
                         )
+            except OperationalError as exc:
+                # F-41: WAL write-locks are transient. Keep the independent
+                # reclaimer alive and retry promptly rather than leaving
+                # orphaned running jobs untouched for another long interval.
+                logger.warning("Post-turn recovery hit SQLite contention: %s", exc)
+                next_poll = 2.0
             except Exception:
                 logger.exception("Post-turn durable recovery sweep failed")
+                next_poll = 5.0
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=15.0)
+                await asyncio.wait_for(self._stop.wait(), timeout=next_poll)
             except TimeoutError:
                 pass
 
