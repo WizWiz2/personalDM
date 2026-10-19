@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from functools import reduce
 from operator import or_
 from typing import Any, Literal
@@ -648,6 +649,23 @@ def normalize_intent_draft(
     )
 
 
+class PlacementRecoveryDecision(BaseModel):
+    """Bounded second look ONLY when a physically catalogued object is being placed."""
+    model_config = ConfigDict(extra="forbid")
+    recovered: bool
+    item_id: UUID | None = None
+    evidence_quote: str | None = None
+    destination_quote: str | None = None
+    actor_role: Literal["speaker", "addressee"] = "speaker"
+
+
+# This is a *trigger for semantic verification*, never lexical authority to move items.
+_MISSING_PLACEMENT_TRIGGER = re.compile(
+    r"(?iu)\\b(?:кладу|клад\\w+|полож\\w+|ставлю|постав\\w+|перестав\\w+|"
+    r"переклад\\w+|убираю|убер\\w+|перемещаю)\\b"
+)
+
+
 class PlayerIntentInterpreter:
     """Structured extraction, independent syntax adjudication, then normalization.
 
@@ -959,6 +977,69 @@ class PlayerIntentInterpreter:
             if action.action_type == "movement" and reference in references:
                 action.destination_location = references[reference]
 
+    async def _recover_missing_placement(
+        self, selection, draft: PlayerIntentContractDraft,
+        player_input: str, context_messages: list[ChatMessage],
+    ) -> None:
+        """QA-213 F-32: repair an omitted *explicit* item placement before freezing intent.
+
+        The model selects only an existing item ID and exact player-input evidence.
+        Whether to release a held item or reposition an unowned object is determined
+        by the authoritative owned/scene catalogs, not by model-authored custody.
+        """
+        if (len(draft.actions) >= 8 or
+            any(action.action_type == "inventory" for action in draft.actions) or
+            not _MISSING_PLACEMENT_TRIGGER.search(player_input)):
+            return
+        owned = action_reference_catalog(context_messages, "Player-owned items:")
+        here = action_reference_catalog(context_messages, "Objects physically here:")
+        items = {**here, **owned}
+        if not items:
+            return
+        try:
+            data = await self._router.generate_json(
+                self._provider, selection,
+                [ChatMessage(role="system", content=(
+                    "Determine whether the player explicitly moves ONE catalogued physical item "
+                    "to an exact surface in their latest message. Do not invent an act, object, "
+                    "surface or player ownership. Mere description, speech, negation or an NPC "
+                    "being asked to move the object is NOT the player's physical action. "
+                    "Select item_id ONLY from the supplied catalog. Quote the exact evidence "
+                    "of the act and the exact destination substring from the player's message. "
+                    "If unclear, recovered=false. Return PlacementRecoveryDecision."
+                )),
+                 ChatMessage(role="user", content=json.dumps({
+                     "player_input": player_input, "owned": owned,
+                     "physically_here": here,
+                     "already_extracted_actions": [
+                         a.model_dump(mode="json") for a in draft.actions
+                     ],
+                 }, ensure_ascii=False))],
+                max_tokens=300, temperature=0.0,
+                response_model=PlacementRecoveryDecision,
+            )
+            evidence = PlacementRecoveryDecision.model_validate(data)
+        except (LLMProviderError, ValueError, TypeError) as exc:
+            self.audit.append({"phase": "placement_recovery", "status": "failed",
+                               "error": str(exc)[:200]})
+            return
+        item_id = str(evidence.item_id) if evidence.item_id else ""
+        quote = (evidence.evidence_quote or "").strip()
+        destination = (evidence.destination_quote or "").strip()
+        if not (evidence.recovered and evidence.actor_role == "speaker"
+                and item_id in items and quote and quote in player_input
+                and destination and destination in quote):
+            self.audit.append({"phase": "placement_recovery", "status": "not_verified"})
+            return
+        draft.actions.append(PlayerActionIntentDraft(
+            action_type="inventory", actor_role="speaker", intent=quote,
+            item_id=item_id,
+            inventory_operation="place" if item_id in owned else "reposition",
+            item_placement_detail=destination,
+        ))
+        self.audit.append({"phase": "placement_recovery", "status": "verified",
+                           "item_id": item_id, "destination": destination})
+
     async def interpret(
         self,
         selection: RoleModelSelection,
@@ -998,6 +1079,7 @@ class PlayerIntentInterpreter:
             )
             draft = PlayerIntentContractDraft.model_validate(data)
             await self._review_semantic_ownership(selection, player_input, draft, context_messages)
+            await self._recover_missing_placement(selection, draft, player_input, context_messages)
             await self._bind_destinations(
                 selection, draft, player_input, references, context_messages, location_catalog,
             )
