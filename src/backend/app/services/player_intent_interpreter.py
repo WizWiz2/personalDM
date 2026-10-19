@@ -536,9 +536,13 @@ def _repair_unambiguous_local_placement(
 
     repaired = False
     for action in draft.actions:
-        if action.actor_role != "speaker" or action.action_type == "inventory":
+        if action.actor_role != "speaker":
             continue
-        if action.action_type not in {"interaction", "other"}:
+        typed_placement = action.action_type == "inventory"
+        if typed_placement:
+            if action.inventory_operation not in {"place", "reposition"} or action.item_placement_detail:
+                continue
+        elif action.action_type not in {"interaction", "other"}:
             continue
         phrase = action.intent if len(draft.actions) > 1 else player_input
         verb = _PLACEMENT_VERB.search(phrase)
@@ -566,11 +570,14 @@ def _repair_unambiguous_local_placement(
         item_id = matching[0]
         if stow and item_id not in owned:
             continue  # Placing a floor item in one's own bag requires an explicit take.
+        if typed_placement and str(action.item_id) != item_id:
+            continue  # Do not rewrite a model's already-bound item identity.
         action.action_type = "inventory"
         action.item_id = item_id
-        action.inventory_operation = (
-            "reposition" if stow or item_id not in owned else "place"
-        )
+        if not typed_placement or stow:
+            action.inventory_operation = (
+                "reposition" if stow or item_id not in owned else "place"
+            )
         action.inventory_target_id = None
         action.item_placement_detail = surface.group(0).strip().rstrip(".")
         repaired = True
