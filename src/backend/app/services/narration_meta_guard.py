@@ -13,7 +13,9 @@ _INTERNAL = (
     # QA-210 F-24/F-27: a promise of a later answer is not narrative prose.
     re.compile(r"(?i)\b(?:narrator|planner|resolver|validator)(?:-ом)?\b"),
     re.compile(r"(?i)ожидает подачи|перечисление[^\n]{0,100}оста[её]тся за[^\n]{0,50}ответом"),
-    # QA-213 t7: authorial comments about writing are not in-world fiction.\n    re.compile(r"(?i)\\bхроника не жд[её]т вдохновения\\b"),\n    # QA-210 F-25: decoder's private-use symbols are not legitimate text.
+    # QA-213 t7: authorial comments about writing are not in-world fiction.
+    re.compile(r"(?i)\bхроника не жд[её]т вдохновения\b"),
+    # QA-210 F-25: decoder's private-use symbols are not legitimate text.
     re.compile(r"[\uE000-\uF8FF]"),
 )
 
