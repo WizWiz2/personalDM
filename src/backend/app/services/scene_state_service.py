@@ -420,7 +420,10 @@ class SceneStateService:
         await self._session.flush()
 
     TIME_PHASES = ("dawn", "morning", "day", "evening", "night")
-    TURNS_PER_PHASE = 12
+    # F-34: twelve chat messages is not a sensible default for an entire
+    # night before dawn. Explicit rest/wait time transitions still take precedence.
+    # Automatic progression remains a fallback pacing mechanism, not real minutes.
+    TURNS_PER_PHASE = 36
     TIME_ALIASES = (
         ("рассвет", "dawn"),
         ("утро", "morning"),
