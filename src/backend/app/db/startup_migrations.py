@@ -117,3 +117,7 @@ async def upgrade_schema_before_startup() -> None:
     # Alembic's env.py uses asyncio.run. Execute it in a worker thread rather
     # than inside FastAPI's running event loop.
     await asyncio.to_thread(_migrate_sqlite)
+
+
+if __name__ == "__main__":
+    _migrate_sqlite()
