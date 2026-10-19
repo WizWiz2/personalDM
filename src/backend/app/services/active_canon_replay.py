@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.memory_taxonomy_table import NarrativeDetail
 from app.db.tables import (
     Belief,
@@ -132,6 +133,28 @@ class ActiveCanonReplayService:
                 command.created_at, command.id, "gm_item",
                 (command.item_id, command.owner_id, command.location_id, command.placement_detail),
             ))
+        # F-35: confirmed action-sequence item moves are another durable source
+        # of physical truth. Undo must replay surviving completed receipts, not
+        # restore a snapshot and then replay *only* Scribe/GM commands. In particular,
+        # an unrelated /undo must never give the player a key already handed to an NPC.
+        item_receipts = (await self._session.execute(
+            select(ActionSequence, ActionStep)
+            .join(ActionStep, ActionStep.sequence_id == ActionSequence.id)
+            .join(Turn, Turn.id == ActionSequence.trigger_turn_id)
+            .where(
+                ActionSequence.campaign_id == str(campaign_id),
+                ActionSequence.status == "applied",
+                Turn.status == "active",
+                ActionStep.status == "completed",
+                ActionStep.item_id.is_not(None),
+            )
+        )).all()
+        for sequence, step in item_receipts:
+            timeline.append((
+                step.created_at, step.id, "item_receipt",
+                (step.item_id, step.item_result_owner_id,
+                 step.item_result_location_id, step.item_result_placement_detail),
+            ))
         timeline.sort(key=lambda item: (item[0], item[1]))
 
         # Stateful changes (movement/item transfer) have a checkpoint captured before the
@@ -151,7 +174,7 @@ class ActiveCanonReplayService:
                 if character is not None:
                     character.current_location_id = location_id
                 continue
-            if kind == "gm_item":
+            if kind in {"gm_item", "item_receipt"}:
                 item_id, owner_id, location_id, placement_detail = data
                 item = await self._session.get(Item, item_id)
                 if item is not None:
