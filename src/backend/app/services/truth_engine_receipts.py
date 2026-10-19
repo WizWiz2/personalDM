@@ -101,7 +101,7 @@ class StructuredReceiptEventCompiler:
             subject_entity_id=player_id,
             value={"entity_id": transition.source_location_id},
             event_key=f"baseline:entity_location:{player_id}",
-            description="Imported pre-TE2 entity location baseline.",
+            description="Исходное местонахождение персонажа установлено по сохранённому состоянию мира.",
             participant_ids=[player_id],
             location_id=UUID(transition.source_location_id),
         )
@@ -141,7 +141,7 @@ class StructuredReceiptEventCompiler:
                     subject_entity_id=player_id,
                     value={"entity_id": transition.source_location_id},
                     event_key=f"baseline:entity_location:{player_id}",
-                    description="Imported pre-TE2 entity location baseline.",
+                    description="Исходное местонахождение персонажа установлено по сохранённому состоянию мира.",
                     participant_ids=[player_id],
                     location_id=UUID(transition.source_location_id),
                 )
@@ -173,7 +173,7 @@ class StructuredReceiptEventCompiler:
                     subject_entity_id=item_id,
                     value=previous_value,
                     event_key=f"baseline:item_position:{item_id}",
-                    description="Imported pre-TE2 item position baseline.",
+                    description="Исходное положение предмета установлено по сохранённому состоянию мира.",
                     participant_ids=participants,
                     location_id=(
                         UUID(step.item_previous_location_id)
