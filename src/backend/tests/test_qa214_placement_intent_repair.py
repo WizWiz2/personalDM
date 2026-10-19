@@ -55,8 +55,16 @@ def test_ambiguous_item_or_carried_container_is_not_invented():
     assert not _repair_unambiguous_local_placement(ambiguous, ambiguous.summary, context)
     assert ambiguous.actions[0].action_type == "interaction"
     carried = _draft("Убираю письмо в сумку.")
-    assert not _repair_unambiguous_local_placement(
+    assert _repair_unambiguous_local_placement(
         carried, carried.summary, _context(owned=f"письмо [id={a}]")
+    )
+    result = normalize_intent_draft(carried, carried.summary).actions[0]
+    assert result.item_id == a
+    assert result.inventory_operation == "reposition"
+    assert result.item_placement_detail == "в сумку"
+    floor = _draft("Убираю письмо в сумку.")
+    assert not _repair_unambiguous_local_placement(
+        floor, floor.summary, _context(floor=f"письмо [id={a}]")
     )
 
 
