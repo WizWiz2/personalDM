@@ -13,6 +13,7 @@ import sqlite3
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy.engine import make_url
 
 from app.config import settings
@@ -62,6 +63,11 @@ def _migrate_sqlite() -> None:
     if not ini.is_file() or not script_dir.is_dir():
         raise RuntimeError("Alembic migration resources are missing from PersonalDM installation")
 
+    cfg = Config(str(ini))
+    cfg.set_main_option("script_location", str(script_dir))
+    cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+    head = ScriptDirectory.from_config(cfg).get_current_head()
+
     original_exists = db.exists()
     with sqlite3.connect(db) as conn:
         rows = conn.execute(
@@ -69,6 +75,13 @@ def _migrate_sqlite() -> None:
         ).fetchall()
         tables = {name for name, in rows}
         columns = lambda name: {r[1] for r in conn.execute(f"PRAGMA table_info({name})")}
+        # A current DB must not generate another full backup on every start.
+        if "alembic_version" in tables:
+            revisions = {
+                row[0] for row in conn.execute("SELECT version_num FROM alembic_version")
+            }
+            if revisions == {head}:
+                return
         decision = (
             "versioned"
             if "alembic_version" in tables
@@ -91,9 +104,6 @@ def _migrate_sqlite() -> None:
             with sqlite3.connect(destination) as backup:
                 conn.backup(backup)
 
-    cfg = Config(str(ini))
-    cfg.set_main_option("script_location", str(script_dir))
-    cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
     if decision not in {"versioned", "empty"}:
         command.stamp(cfg, decision)
     command.upgrade(cfg, "head")
