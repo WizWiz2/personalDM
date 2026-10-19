@@ -3,6 +3,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select, literal_column
+
+from app.db.tables import Turn
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application import (
@@ -218,6 +221,59 @@ async def undo_last_pair(
             detail="The latest active narrative turns are not a user/assistant pair",
         )
     return {"success": True}
+
+
+@router.post("/{turn_id}/retry", response_class=StreamingResponse)
+async def retry_failed_turn(
+    campaign_id: UUID,
+    turn_id: UUID,
+    session: AsyncSession = Depends(get_session),
+):
+    """F-37: retry one failed source turn without inventing a second user action.
+
+    Only the newest failed user turn is eligible: replaying an older action
+    after later world mutations would violate causality. Reuse its immutable
+    persisted text and ID so GenerationRun.start_or_resume stays idempotent.
+    """
+    turn = await session.get(Turn, str(turn_id))
+    if not turn or turn.campaign_id != str(campaign_id) or turn.role != "user":
+        raise HTTPException(status_code=404, detail="Failed user turn not found")
+    generation = await GenerationRunRepository(session).get_by_user_turn(turn_id)
+    if turn.status != "failed" or not generation or generation.status != "failed":
+        raise HTTPException(status_code=409, detail="Only failed user turns can be retried")
+    newest_user_turn_id = (
+        await session.execute(
+            select(Turn.id).where(
+                Turn.campaign_id == str(campaign_id),
+                Turn.role == "user",
+            ).order_by(
+                Turn.created_at.desc(), literal_column("turns.rowid").desc(),
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if newest_user_turn_id != str(turn_id):
+        raise HTTPException(status_code=409, detail="Cannot retry a turn after newer user actions")
+
+    # Re-enable its existing source turn rather than creating an indistinguishable
+    # duplicate. The saga marks it failed again if this attempt also fails.
+    turn.status = "active"
+    await session.commit()
+    route = await GameApplication(session).route_input(
+        campaign_id,
+        TurnCreate(
+            role="user",
+            content=turn.content,
+            scene_id=UUID(turn.scene_id) if turn.scene_id else None,
+            acting_character_id=UUID(turn.acting_character_id) if turn.acting_character_id else None,
+            model_name=turn.model_name,
+        ),
+        existing_user_turn_id=turn_id,
+    )
+    return StreamingResponse(
+        route.stream,
+        media_type="text/plain; charset=utf-8",
+        headers={"X-PersonalDM-Channel": route.channel},
+    )
 
 
 @router.post("/{turn_id}/regenerate", response_class=StreamingResponse)
