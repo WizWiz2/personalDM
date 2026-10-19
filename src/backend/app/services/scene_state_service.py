@@ -502,7 +502,17 @@ class SceneStateService:
             for object_id, name in zip(state.object_ids, state.object_names)
             if name not in carried
         ) or "none recorded"
-        inventory = ", ".join(state.player_inventory_names) or "none recorded"
+        # F-32: a carried item can be tucked into a named bag or pocket
+        # without ever leaving player custody; keep this exact location in
+        # narrator/intent context alongside the item name.
+        inventory = ", ".join(
+            name + (
+                f" [exact placement: {state.object_placements[str(item_id)]}]"
+                if str(item_id) in state.object_placements else ""
+            )
+            for item_id, name in zip(state.object_ids, state.object_names)
+            if name in carried
+        ) or ", ".join(state.player_inventory_names) or "none recorded"
         return (
             "[AUTHORITATIVE SCENE STATE]\n"
             f"Scene: {state.scene_title} ({state.scene_status})\n"
