@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.memory_taxonomy_table import NarrativeDetail
 from app.db.tables import (
     Belief,
@@ -92,6 +93,39 @@ class ActiveCanonReplayService:
                 (change_type, payload, UUID(turn.id)),
             ))
 
+        # F-35: structured inventory receipts are first-class physical history.
+        # Replay must restore these completed steps, not just Scribe proposals.
+        # Otherwise /undo of an unrelated later turn resets custody to the old
+        # baseline, silently reverting transfers the engine already committed.
+        physical_steps = (
+            await self._session.execute(
+                select(ActionSequence, ActionStep)
+                .join(ActionStep, ActionStep.sequence_id == ActionSequence.id)
+                .join(Turn, Turn.id == ActionSequence.trigger_turn_id)
+                .where(
+                    ActionSequence.campaign_id == str(campaign_id),
+                    ActionSequence.status == "applied",
+                    Turn.status == "active",
+                    ActionStep.status == "completed",
+                    ActionStep.action_type == "inventory",
+                    ActionStep.item_id.is_not(None),
+                )
+                .order_by(ActionSequence.created_at, ActionStep.step_index)
+            )
+        ).all()
+        for sequence, step in physical_steps:
+            timeline.append((
+                sequence.created_at,
+                f"{sequence.id}:{step.step_index:04d}",
+                "structured_item",
+                (
+                    step.item_id,
+                    step.item_result_owner_id,
+                    step.item_result_location_id,
+                    step.item_result_placement_detail,
+                ),
+            ))
+
         # EventRepository stores source_turns=[] as the JSON string "[]".
         # A movement without a source turn is a direct GM command and must
         # survive regenerating/undoing a completely separate player turn.
@@ -150,6 +184,14 @@ class ActiveCanonReplayService:
                 character = await self._session.get(Character, actor_id)
                 if character is not None:
                     character.current_location_id = location_id
+                continue
+            if kind == "structured_item":
+                item_id, owner_id, location_id, placement_detail = data
+                item = await self._session.get(Item, item_id)
+                if item is not None:
+                    item.current_owner_id = owner_id
+                    item.current_location_id = location_id
+                    item.placement_detail = placement_detail
                 continue
             if kind == "gm_item":
                 item_id, owner_id, location_id, placement_detail = data
