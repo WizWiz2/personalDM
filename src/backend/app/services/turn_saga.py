@@ -521,12 +521,14 @@ class TurnSaga:
             await self._set_phase(generation_run.id, GenerationPhase.PLANNED)
 
             if plan:
-                # Capture the pre-turn projection before scene transitions or action steps mutate
-                # character locations. Canon replay uses this checkpoint for a correct undo.
-                if plan and (
+                # Capture the pre-turn physical projection before *any* structured mutation.
+                # F-35: inventory-only turns must not establish a baseline AFTER changing
+                # custody; otherwise /undo can resurrect an obsolete item owner.
+                if (
                     plan.scene_transition.required
                     or any(
-                        step.transition.transition_type == "location_transition"
+                        step.action_type == "inventory"
+                        or step.transition.transition_type == "location_transition"
                         for step in plan.action_sequence.steps
                     )
                 ):
