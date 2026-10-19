@@ -22,7 +22,17 @@ class NarrationPublicationGuard:
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
         text = (candidate or "").strip()
-        if text and validation is not None and validation.verdict == "pass":
+        # QA-213 F-33: a semantic "pass" alone cannot certify a failed
+        # inventory mutation. On a blocked physical step publish the typed
+        # outcome, not a fluent account of an item hand-off that never occurred.
+        steps = (authority.action_sequence or {}).get("steps") or []
+        blocked_inventory = any(
+            isinstance(step, dict)
+            and step.get("action_type") == "inventory"
+            and step.get("status") == "blocked"
+            for step in steps
+        )
+        if text and not blocked_inventory and validation is not None and validation.verdict == "pass":
             return text, {
                 "mode": "validated_candidate",
                 "candidate_characters": len(candidate or ""),
