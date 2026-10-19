@@ -66,6 +66,8 @@ async def test_unrelated_undo_replays_active_structured_item_transfer(
 
     # Undo of the *actual* owning step should restore the original custody.
     sequence.status = "undone"
+    # Production undo flushes the compensated ActionSequence before replay.
+    await db_session.flush()
     await replay.replay(cid)
     await db_session.refresh(item)
     assert item.current_owner_id == str(hero)
