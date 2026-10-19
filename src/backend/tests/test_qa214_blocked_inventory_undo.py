@@ -13,7 +13,6 @@ async def test_compensation_ignores_item_receipts_for_blocked_and_skipped_steps(
     # Blocked/skipped steps can carry item IDs and uninitialized previous-state
     # fields, but those fields must never be applied to the persistent item.
     session = MagicMock()
-    session.execute = AsyncMock()
     session.get = AsyncMock()
     session.flush = AsyncMock()
     steps = [
@@ -26,7 +25,10 @@ async def test_compensation_ignores_item_receipts_for_blocked_and_skipped_steps(
         )
         for status in ("blocked", "skipped")
     ]
-    session.execute.return_value.scalars.return_value.all.return_value = steps
+    # AsyncSession.execute() must await to a synchronous Result object.
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = steps
+    session.execute = AsyncMock(return_value=result)
     sequence = SimpleNamespace(id=str(uuid4()), status="applied", undone_at=None)
     executor = ActionSequenceExecutor(session)
     await executor._compensate(sequence, "undone")
