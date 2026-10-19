@@ -32,8 +32,8 @@ class NarrationPublicationGuard:
         ):
             return False
         if not re.search(
-            r"(?i)\\b(?:взял[аи]?|забрал[аи]?|передал[аи]?|"
-            r"переложил[аи]?|положил[аи]?|убрал[аи]?|сунул[аи]?)\\b",
+            r"(?i)\b(?:взял[аи]?|забрал[аи]?|передал[аи]?|"
+            r"переложил[аи]?|положил[аи]?|убрал[аи]?|сунул[аи]?)\b",
             candidate,
         ):
             return False
@@ -47,7 +47,7 @@ class NarrationPublicationGuard:
             tokens = re.findall(r"[а-яёa-z0-9]+", name.casefold())
             for token in tokens:
                 stem = token.rstrip("аеёиоуыэюя") if len(token) > 4 else token
-                if len(stem) >= 4 and re.search(r"(?i)\\b" + re.escape(stem), candidate):
+                if len(stem) >= 4 and re.search(r"(?i)\b" + re.escape(stem), candidate):
                     return True
         # A blocked offscreen item can be absent from the scene's object list.
         # Exact substantive words shared with the player's attempted item action
@@ -59,7 +59,7 @@ class NarrationPublicationGuard:
             from_input = re.findall(r"[а-яёa-z0-9]{5,}", authority.player_input.casefold())
             for token in from_input:
                 stem = token.rstrip("аеёиоуыэюя")
-                if len(stem) >= 4 and re.search(r"(?i)\\b" + re.escape(stem), candidate):
+                if len(stem) >= 4 and re.search(r"(?i)\b" + re.escape(stem), candidate):
                     return True
         return False
 
