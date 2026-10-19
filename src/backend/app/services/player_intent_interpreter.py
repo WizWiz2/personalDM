@@ -515,10 +515,10 @@ def _destination_binding_wire(indices: list[int], references: dict[str, str]):
 # Never bind a new item from prose: only trusted UUID/name catalog entries qualify.
 _PLACEMENT_VERB = re.compile(
     r"\b(?:кладу|укладываю|положу|положил|положила|ставлю|поставлю|"
-    r"перекладываю|переставляю|помещаю|оставляю)\b", re.I
+    r"перекладываю|переставляю|помещаю|оставляю|убираю)\b", re.I
 )
 _PLACEMENT_SURFACE = re.compile(
-    r"\b(?:между|под|на|за|возле|рядом с|около|у)\s+\S.{0,260}$", re.I
+    r"\b(?:между|под|на|за|возле|рядом с|около|у|в)\s+\S.{0,260}$", re.I
 )
 _TOKEN = re.compile(r"[а-яёa-z0-9]+", re.I)
 
@@ -545,10 +545,9 @@ def _repair_unambiguous_local_placement(
         if not verb or re.search(r"\bне\s+$", phrase[:verb.start()], re.I):
             continue
         tail = phrase[verb.end():]
-        # Contextual "in a backpack" is a carried-container operation and not
-        # the room-placement mutation implemented by place/reposition.
-        if re.search(r"\bв\s+(?:сумк|рюкзак|карман)", tail, re.I):
-            continue
+        # A specifically named carried container is a custody-preserving
+        # reposition, but only of a registered item already owned by the hero.
+        stow = bool(re.search(r"\bв\s+(?:сумк|рюкзак|карман)", tail, re.I))
         surface = _PLACEMENT_SURFACE.search(tail)
         if not surface:
             continue
@@ -565,9 +564,13 @@ def _repair_unambiguous_local_placement(
         if len(matching) != 1:
             continue  # Ambiguity or absent catalog evidence is never guessed.
         item_id = matching[0]
+        if stow and item_id not in owned:
+            continue  # Placing a floor item in one's own bag requires an explicit take.
         action.action_type = "inventory"
         action.item_id = item_id
-        action.inventory_operation = "place" if item_id in owned else "reposition"
+        action.inventory_operation = (
+            "reposition" if stow or item_id not in owned else "place"
+        )
         action.inventory_target_id = None
         action.item_placement_detail = surface.group(0).strip().rstrip(".")
         repaired = True
