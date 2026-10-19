@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -744,27 +745,39 @@ class PostTurnWorker:
     def stop(self) -> None:
         self._stop.set()
 
-    async def _recover_loop(self) -> None:
-        # Independent of the work coroutine: a hung or cancelled inline request
-        # must not prevent stale running rows from being discovered.
-        while not self._stop.is_set():
+    async def _recover_operation(self, method: str, **kwargs) -> int:
+        """Retry one durable recovery write with a NEW session on SQLite contention.
+
+        Recovering stale jobs and requeuing failed jobs are independent transactions:
+        a lock on the latter must not roll back successful reclaim of the former.
+        """
+        for attempt in range(4):
             try:
                 async with AsyncSessionLocal() as session:
-                    repo = PostTurnJobRepository(session)
-                    recovered = await repo.recover_stale(
-                        stale_after_seconds=max(
-                            60, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
-                        ),
-                    )
-                    retried = await repo.requeue_failed()
+                    result = await getattr(PostTurnJobRepository(session), method)(**kwargs)
                     await session.commit()
-                    if recovered or retried:
-                        logger.warning(
-                            "Post-turn recovery: %d stale, %d failed requeued",
-                            recovered, retried,
-                        )
-            except Exception:
-                logger.exception("Post-turn durable recovery sweep failed")
+                    return result
+            except OperationalError as exc:
+                if "database is locked" not in str(exc).lower() or attempt == 3:
+                    raise
+                await asyncio.sleep(0.2 * (2 ** attempt))
+        return 0
+
+    async def _recover_loop(self) -> None:
+        # Never exit the independent recovery loop on a transient database lock.
+        while not self._stop.is_set():
+            for method, kwargs in (
+                ("recover_stale", {"stale_after_seconds": max(
+                    60, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
+                )}),
+                ("requeue_failed", {}),
+            ):
+                try:
+                    changed = await self._recover_operation(method, **kwargs)
+                    if changed:
+                        logger.warning("Post-turn recovery: %s recovered %d jobs", method, changed)
+                except Exception:
+                    logger.exception("Post-turn durable recovery sweep failed (%s)", method)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=15.0)
             except TimeoutError:
