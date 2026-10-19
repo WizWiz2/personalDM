@@ -9,6 +9,6 @@ def test_blocked_item_receipt_uses_localized_public_surface():
         intent="Ставлю монету под каблук.", resolution="blocked",
         status="blocked", blocking_reason="Cannot reposition item outside current location",
     )
-    assert StructuredReceiptEventCompiler._observed_step_outcome(step) == "Действие заблокировано."
+    assert StructuredReceiptEventCompiler._observed_step_outcome(step) == "BLOCKED: Действие заблокировано."
     step.public_blocking_reason = "Монета находится в другой локации."
-    assert StructuredReceiptEventCompiler._observed_step_outcome(step) == "Монета находится в другой локации."
+    assert StructuredReceiptEventCompiler._observed_step_outcome(step) == "BLOCKED: Монета находится в другой локации."
