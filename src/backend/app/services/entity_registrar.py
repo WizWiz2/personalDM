@@ -591,8 +591,14 @@ class EntityRegistrar:
                         if candidate.id in scene.participants
                         and character_locations.get(candidate.id) == scene.location_id
                         and (candidate.custom_fields or {}).get("introduction_turn_id") == str(source_turn_id)
-                        and identity_key((candidate.custom_fields or {}).get("role")) == identity_key(mention.role)
                         and identity_key(mention.role)
+                        and (
+                            identity_key((candidate.custom_fields or {}).get("role")) == identity_key(mention.role)
+                            or identity_key((candidate.custom_fields or {}).get("role")).startswith(
+                                identity_key(mention.role) + " "
+                            )
+                            or identity_key(candidate.canonical_name).startswith(identity_key(name) + " ")
+                        )
                     ]
                     if same_turn:
                         if len(same_turn) == 1:
