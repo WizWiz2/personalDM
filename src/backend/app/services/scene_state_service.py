@@ -420,7 +420,6 @@ class SceneStateService:
         await self._session.flush()
 
     TIME_PHASES = ("dawn", "morning", "day", "evening", "night")
-    TURNS_PER_PHASE = 12
     TIME_ALIASES = (
         ("рассвет", "dawn"),
         ("утро", "morning"),
@@ -449,9 +448,9 @@ class SceneStateService:
         if before and runtime.world_time_label != before:
             runtime.world_time_label = before
         runtime.world_time_order += 1
-        if before in self.TIME_PHASES and runtime.world_time_order % self.TURNS_PER_PHASE == 0:
-            index = self.TIME_PHASES.index(before)
-            runtime.world_time_label = self.TIME_PHASES[(index + 1) % len(self.TIME_PHASES)]
+        # F-34: dialogue count is not elapsed time. A long nighttime conversation
+        # must not silently become dawn (and fire a deadline) after 12 replies.
+        # The phase changes only via an explicitly approved time transition.
         await self._session.flush()
         return runtime.world_time_label if runtime.world_time_label != before else None
 
