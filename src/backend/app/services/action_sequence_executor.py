@@ -248,31 +248,31 @@ class ActionSequenceExecutor:
         operation = step.inventory_operation
         if operation == "take":
             if not location_id or item.current_owner_id is not None or item.current_location_id != str(location_id):
-                raise InventoryExecutionError("Item is not physically present in the current scene")
+                raise InventoryExecutionError("Предмет физически отсутствует в текущей сцене")
             result_owner, result_location = str(campaign.player_character_id), None
         elif operation == "reposition":
             if not location_id or item.current_owner_id is not None or item.current_location_id != str(location_id):
-                raise InventoryExecutionError("Cannot reposition item outside current location")
+                raise InventoryExecutionError("Нельзя переставить предмет вне текущей локации")
             if not getattr(step, "item_placement_detail", None):
-                raise InventoryExecutionError("Reposition requires exact new placement")
+                raise InventoryExecutionError("Для перестановки необходимо указать точное место")
             result_owner, result_location = None, str(location_id)
         elif operation in {"drop", "place"}:
             # F26: a "place" or "drop" plan cannot move an object merely because
             # the planner can refer to its ID. Only the current holder can release it.
             if item.current_owner_id != str(campaign.player_character_id):
-                raise InventoryExecutionError("Cannot place an item the player does not hold")
+                raise InventoryExecutionError("Нельзя положить предмет, которым герой не владеет")
             if not location_id:
-                raise InventoryExecutionError("Cannot place an item in a scene without a location")
+                raise InventoryExecutionError("Нельзя положить предмет в сцене без локации")
             result_owner, result_location = None, str(location_id)
         else:  # give
             if item.current_owner_id != str(campaign.player_character_id):
-                raise InventoryExecutionError("Cannot give an item the player does not hold")
+                raise InventoryExecutionError("Нельзя передать предмет, которым герой не владеет")
             target = await self._session.get(Entity, str(step.inventory_target_id))
             if not target or target.campaign_id != str(campaign_id) or target.entity_type != "character":
-                raise InventoryExecutionError("Inventory recipient must be a character in the campaign")
+                raise InventoryExecutionError("Получателем предмета должен быть существующий персонаж кампании")
             recipient = await self._session.get(Character, str(step.inventory_target_id))
             if not location_id or not recipient or recipient.current_location_id != str(location_id):
-                raise InventoryExecutionError("Recipient must be physically present in the current location")
+                raise InventoryExecutionError("Получатель должен физически находиться в текущей локации")
             result_owner, result_location = str(step.inventory_target_id), None
 
         db_step.item_id = str(step.item_id)
