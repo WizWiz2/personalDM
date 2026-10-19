@@ -424,9 +424,12 @@ class ActionSequenceExecutor:
                         transition,
                         final_status,
                     )
+            # Only completed steps changed inventory. Blocked and skipped steps
+            # have no physical effects and must not restore stale snapshots.
+            applied_inventory = step.status == "completed" and bool(step.item_id)
             if step.status in {"completed", "blocked", "skipped"}:
                 step.status = final_status
-            if step.item_id and step.status == final_status:
+            if applied_inventory:
                 item = await self._session.get(Item, step.item_id)
                 if item:
                     item.current_owner_id = step.item_previous_owner_id
