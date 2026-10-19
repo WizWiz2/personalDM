@@ -101,7 +101,7 @@ class StructuredReceiptEventCompiler:
             subject_entity_id=player_id,
             value={"entity_id": transition.source_location_id},
             event_key=f"baseline:entity_location:{player_id}",
-            description="Imported pre-TE2 entity location baseline.",
+            description="Начальное подтверждённое положение персонажа.",
             participant_ids=[player_id],
             location_id=UUID(transition.source_location_id),
         )
@@ -141,7 +141,7 @@ class StructuredReceiptEventCompiler:
                     subject_entity_id=player_id,
                     value={"entity_id": transition.source_location_id},
                     event_key=f"baseline:entity_location:{player_id}",
-                    description="Imported pre-TE2 entity location baseline.",
+                    description="Начальное подтверждённое положение персонажа.",
                     participant_ids=[player_id],
                     location_id=UUID(transition.source_location_id),
                 )
@@ -173,7 +173,7 @@ class StructuredReceiptEventCompiler:
                     subject_entity_id=item_id,
                     value=previous_value,
                     event_key=f"baseline:item_position:{item_id}",
-                    description="Imported pre-TE2 item position baseline.",
+                    description="Начальное подтверждённое положение предмета.",
                     participant_ids=participants,
                     location_id=(
                         UUID(step.item_previous_location_id)
@@ -203,7 +203,7 @@ class StructuredReceiptEventCompiler:
         return CanonicalEventCreate(
             event_key=f"scene_transition:{transition.id}",
             event_type=self._transition_event_type(transition.transition_type),
-            description=transition.reason or f"Applied {transition.transition_type}",
+            description=transition.reason or "Переход выполнен.",
             source_kind="executor_receipt",
             source_turn_id=(UUID(transition.trigger_turn_id) if transition.trigger_turn_id else None),
             world_time=transition.time_after,
@@ -335,8 +335,16 @@ class StructuredReceiptEventCompiler:
         # A planned successful outcome is not evidence when execution blocked that step.
         # All downstream semantic readers must see the execution verdict, not the stale plan.
         if step.status != "completed":
-            return f"{step.status.upper()}: {step.blocking_reason or 'Action did not complete.'}"
-        return step.observable_outcome or step.intent or f"Structured action step {step.step_index}"
+            # F-40: machine statuses and internal English exception text belong in
+            # receipt payload/debugger, never in the human-readable canon feed.
+            localized = {
+                "blocked": "Действие заблокировано.",
+                "skipped": "Действие пропущено.",
+                "undone": "Действие отменено.",
+            }
+            public_reason = (step.public_blocking_reason or "").strip()
+            return public_reason or localized.get(step.status, "Действие не выполнено.")
+        return step.observable_outcome or step.intent or "Действие выполнено."
 
     async def _ensure_baseline(
         self,
