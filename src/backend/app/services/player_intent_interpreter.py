@@ -1031,12 +1031,24 @@ class PlayerIntentInterpreter:
                 and destination and destination in quote):
             self.audit.append({"phase": "placement_recovery", "status": "not_verified"})
             return
-        draft.actions.append(PlayerActionIntentDraft(
+        recovered_action = PlayerActionIntentDraft(
             action_type="inventory", actor_role="speaker", intent=quote,
             item_id=item_id,
             inventory_operation="place" if item_id in owned else "reposition",
             item_placement_detail=destination,
-        ))
+        )
+        # A first-pass generic interaction describing this same placement is
+        # replaced, not executed as a second invented voluntary action.
+        replaced = False
+        for index, prior in enumerate(draft.actions):
+            prior_intent = prior.intent.strip()
+            if (prior.action_type in {"interaction", "other"}
+                    and prior_intent and (prior_intent in quote or quote in prior_intent)):
+                draft.actions[index] = recovered_action
+                replaced = True
+                break
+        if not replaced:
+            draft.actions.append(recovered_action)
         self.audit.append({"phase": "placement_recovery", "status": "verified",
                            "item_id": item_id, "destination": destination})
 
