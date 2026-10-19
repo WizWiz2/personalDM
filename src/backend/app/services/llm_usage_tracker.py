@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
@@ -8,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.repositories.llm_usage_repo import LLMUsageRepository
@@ -82,14 +84,24 @@ async def close_usage_context(token: Token) -> None:
 async def _flush(factory, label: str, context: LLMUsageContext, rows: list, write) -> None:
     if not rows:
         return
-    try:
-        async with factory() as session:
-            repository = LLMUsageRepository(session)
-            for row in rows:
-                await write(repository, context, row)
-            await session.commit()
-    except Exception as exc:  # telemetry must never break gameplay
-        logger.warning("%s write failed: %s", label, exc, exc_info=True)
+    # Secondary telemetry writes may race the memory worker under SQLite WAL.
+    # Start a fresh transaction after a lock (a failed session cannot be reused).
+    for attempt in range(4):
+        try:
+            async with factory() as session:
+                repository = LLMUsageRepository(session)
+                for row in rows:
+                    await write(repository, context, row)
+                await session.commit()
+            return
+        except OperationalError as exc:
+            if "database is locked" not in str(exc).lower() or attempt == 3:
+                logger.warning("%s write failed: %s", label, exc, exc_info=True)
+                return
+            await asyncio.sleep(0.15 * (2 ** attempt))
+        except Exception as exc:  # telemetry must never break gameplay
+            logger.warning("%s write failed: %s", label, exc, exc_info=True)
+            return
 
 
 def record_decision(
