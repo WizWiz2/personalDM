@@ -661,7 +661,7 @@ class PlacementRecoveryDecision(BaseModel):
 
 # This is a *trigger for semantic verification*, never lexical authority to move items.
 _MISSING_PLACEMENT_TRIGGER = re.compile(
-    r"(?iu)\b(?:кладу|клад\w+|полож\w+|ставлю|постав\w+|перестав\w+|"
+    r"(?iu)\b(?:кладу|клад\w+|уклад\w+|полож\w+|ставлю|постав\w+|перестав\w+|"
     r"переклад\w+|убираю|убер\w+|перемещаю)\b"
 )
 
