@@ -756,6 +756,10 @@ class PostTurnWorker:
                             60, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
                         ),
                     )
+                    # F-41: commit reclaimed running jobs immediately.
+                    # If retrying an unrelated failed job encounters a SQLite
+                    # lock, those stale jobs must still become pending.
+                    await session.commit()
                     retried = await repo.requeue_failed()
                     await session.commit()
                     if recovered or retried:
