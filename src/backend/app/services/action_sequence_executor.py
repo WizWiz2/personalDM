@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from uuid import UUID
 
 from sqlalchemy import select
@@ -251,11 +252,18 @@ class ActionSequenceExecutor:
                 raise InventoryExecutionError("Item is not physically present in the current scene")
             result_owner, result_location = str(campaign.player_character_id), None
         elif operation == "reposition":
-            if not location_id or item.current_owner_id is not None or item.current_location_id != str(location_id):
-                raise InventoryExecutionError("Cannot reposition item outside current location")
-            if not getattr(step, "item_placement_detail", None):
+            detail = (getattr(step, "item_placement_detail", None) or "").strip()
+            if not detail:
                 raise InventoryExecutionError("Reposition requires exact new placement")
-            result_owner, result_location = None, str(location_id)
+            # F-32: a carried letter put in a bag stays in the player's custody.
+            # This is NOT a room drop and must not transfer ownership.
+            stow = bool(re.match(r"(?i)^в\s+(?:сумк|рюкзак|карман)", detail))
+            if stow and item.current_owner_id == str(campaign.player_character_id):
+                result_owner, result_location = str(campaign.player_character_id), None
+            elif location_id and item.current_owner_id is None and item.current_location_id == str(location_id) and not stow:
+                result_owner, result_location = None, str(location_id)
+            else:
+                raise InventoryExecutionError("Cannot reposition item outside current location")
         elif operation in {"drop", "place"}:
             # F26: a "place" or "drop" plan cannot move an object merely because
             # the planner can refer to its ID. Only the current holder can release it.
