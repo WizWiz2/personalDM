@@ -41,3 +41,33 @@ def test_noninventory_validated_scene_remains_prose():
     )
     assert published == candidate
     assert metadata["mode"] == "validated_candidate"
+
+
+def test_false_unreceipted_npc_coin_transfer_is_not_published():
+    authority = TurnAuthority(
+        campaign_id=uuid4(), trigger_turn_id=uuid4(),
+        player_input="Спрашиваю Зеню о монете.",
+        object_names=["Монета"],
+        observable_consequences=["Зеня отказывается отвечать о монете."],
+        action_sequence={"steps": []},
+    )
+    candidate = "Зеня убрал монету в карман."
+    published, metadata = NarrationPublicationGuard.publish(
+        authority, candidate, NarrationValidationResult(verdict="pass"),
+    )
+    assert published == "Зеня отказывается отвечать о монете."
+    assert metadata["candidate_discarded"] is True
+
+
+def test_static_description_of_item_without_transfer_is_allowed():
+    authority = TurnAuthority(
+        campaign_id=uuid4(), trigger_turn_id=uuid4(),
+        player_input="Смотрю на монету.", object_names=["Монета"],
+        observable_consequences=["Монета лежит на столе."],
+    )
+    text = "Монета лежит на столе, рядом с пыльной лампой."
+    published, metadata = NarrationPublicationGuard.publish(
+        authority, text, NarrationValidationResult(verdict="pass"),
+    )
+    assert published == text
+    assert metadata["mode"] == "validated_candidate"
