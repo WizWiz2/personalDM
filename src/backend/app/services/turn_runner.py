@@ -210,7 +210,7 @@ def player_facing_stream_item(item: str) -> str:
     """Hide planner and validator diagnostics. The generation run keeps the cause."""
     if item.startswith("\n[Generation failed:"):
         return (
-            "\n[Генерация хода не завершилась. Ход не опубликован, "
+            "\n[Генерация хода не завершилась: ход не опубликован, "
             "состояние мира не изменено. Можно повторить попытку.]"
         )
     return item
