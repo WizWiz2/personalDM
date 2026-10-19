@@ -255,19 +255,23 @@ async def retry_failed_turn(
 
     # Re-enable its existing source turn rather than creating an indistinguishable
     # duplicate. The saga marks it failed again if this attempt also fails.
+    try:
+        route = await GameApplication(session).route_input(
+            campaign_id,
+            TurnCreate(
+                role="user",
+                content=turn.content,
+                scene_id=UUID(turn.scene_id) if turn.scene_id else None,
+                acting_character_id=UUID(turn.acting_character_id) if turn.acting_character_id else None,
+                model_name=turn.model_name,
+            ),
+            existing_user_turn_id=turn_id,
+        )
+    except Exception:
+        await session.rollback()
+        raise
     turn.status = "active"
     await session.commit()
-    route = await GameApplication(session).route_input(
-        campaign_id,
-        TurnCreate(
-            role="user",
-            content=turn.content,
-            scene_id=UUID(turn.scene_id) if turn.scene_id else None,
-            acting_character_id=UUID(turn.acting_character_id) if turn.acting_character_id else None,
-            model_name=turn.model_name,
-        ),
-        existing_user_turn_id=turn_id,
-    )
     return StreamingResponse(
         route.stream,
         media_type="text/plain; charset=utf-8",
