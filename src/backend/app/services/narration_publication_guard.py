@@ -22,7 +22,14 @@ class NarrationPublicationGuard:
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
         text = (candidate or "").strip()
-        if text and validation is not None and validation.verdict == "pass":
+        # QA-213 F-33: a model validator may pass fluent prose that reports a
+        # physical transfer despite the executor blocking it. For blocked
+        # inventory steps, publish the actual typed refusal, not that prose.
+        inventory_blocked = any(
+            step["action_type"] == "inventory" and step["status"] == "blocked"
+            for step in authority.executed_steps()
+        )
+        if text and not inventory_blocked and validation is not None and validation.verdict == "pass":
             return text, {
                 "mode": "validated_candidate",
                 "candidate_characters": len(candidate or ""),
@@ -39,6 +46,7 @@ class NarrationPublicationGuard:
             ),
             "candidate_discarded": bool(text),
             "validated_surface": False,
+            "blocked_inventory_override": inventory_blocked,
         }
 
     @staticmethod
