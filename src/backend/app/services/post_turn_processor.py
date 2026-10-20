@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -748,6 +749,7 @@ class PostTurnWorker:
         # Independent of the work coroutine: a hung or cancelled inline request
         # must not prevent stale running rows from being discovered.
         while not self._stop.is_set():
+            next_poll = 15.0
             try:
                 async with AsyncSessionLocal() as session:
                     repo = PostTurnJobRepository(session)
@@ -756,6 +758,10 @@ class PostTurnWorker:
                             60, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
                         ),
                     )
+                    # F-41: commit reclaimed running jobs immediately.
+                    # If retrying an unrelated failed job encounters a SQLite
+                    # lock, those stale jobs must still become pending.
+                    await session.commit()
                     retried = await repo.requeue_failed()
                     await session.commit()
                     if recovered or retried:
@@ -763,19 +769,35 @@ class PostTurnWorker:
                             "Post-turn recovery: %d stale, %d failed requeued",
                             recovered, retried,
                         )
+            except OperationalError as exc:
+                # F-41: WAL write-locks are transient. Keep the independent
+                # reclaimer alive and retry promptly rather than leaving
+                # orphaned running jobs untouched for another long interval.
+                logger.warning("Post-turn recovery hit SQLite contention: %s", exc)
+                next_poll = 2.0
             except Exception:
                 logger.exception("Post-turn durable recovery sweep failed")
+                next_poll = 5.0
             try:
-                await asyncio.wait_for(self._stop.wait(), timeout=15.0)
+                await asyncio.wait_for(self._stop.wait(), timeout=next_poll)
             except TimeoutError:
                 pass
 
     async def run(self) -> None:
-        async with AsyncSessionLocal() as session:
-            await PostTurnJobRepository(session).recover_stale(
-                stale_after_seconds=max(900, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60),
+        # F-41: a transient lock during the initial reclaim must not prevent
+        # the independent periodic recovery task from starting at all.
+        try:
+            async with AsyncSessionLocal() as session:
+                await PostTurnJobRepository(session).recover_stale(
+                    stale_after_seconds=max(
+                        900, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
+                    ),
+                )
+                await session.commit()
+        except OperationalError:
+            logger.exception(
+                "Post-turn startup recovery failed; periodic recovery remains active"
             )
-            await session.commit()
 
         recovery_task = asyncio.create_task(
             self._recover_loop(), name="post-turn-db-recovery"

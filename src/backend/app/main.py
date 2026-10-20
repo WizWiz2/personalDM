@@ -22,6 +22,7 @@ from app.api.visuals import router as visuals_router
 from app.api.world_state import router as world_state_router
 from app.config import settings
 from app.db.engine import get_session
+from app.db.startup_migrations import migrate_database_on_startup
 from app.runtime import install_runtime
 from app.runtime_paths import frontend_dist_dir, is_packaged_dist
 from app.services.post_turn_processor import PostTurnWorker
@@ -57,6 +58,9 @@ async def lifespan(app: FastAPI):
     worker = None
     worker_task = None
     if get_session not in app.dependency_overrides:
+        # N-7: all revisions must be present before API and background jobs
+        # can touch the existing user library. Unknown legacy schemas fail safe.
+        await migrate_database_on_startup()
         worker = PostTurnWorker()
         worker_task = asyncio.create_task(worker.run(), name="post-turn-worker")
         app.state.post_turn_worker = worker

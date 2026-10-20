@@ -125,12 +125,11 @@ async def test_world_clock_advances_only_after_published_ticks(db_session):
     runtime.world_time_order = 0
     await db_session.flush()
 
-    for _ in range(service.TURNS_PER_PHASE - 1):
+    for _ in range(50):
         assert await service.advance_published_turn(scene.id) is None
     assert runtime.world_time_label == "night"
-    assert await service.advance_published_turn(scene.id) == "dawn"
-    assert runtime.world_time_label == "dawn"
-    assert (await service.get(cid, scene.id)).world_time_label == "dawn"
+    assert runtime.world_time_order == 50
+    assert (await service.get(cid, scene.id)).world_time_label == "night"
 
 
 def test_narrator_meta_guard_rejects_scratchpad_but_not_game_dialogue():
@@ -484,9 +483,10 @@ async def test_russian_night_label_advances_to_dawn(db_session):
     runtime = await clock.ensure_runtime_state(scene.id)
     runtime.world_time_label = "ночь"
     runtime.world_time_order = 0
-    for _ in range(clock.TURNS_PER_PHASE):
+    for _ in range(50):
         await clock.advance_published_turn(scene.id)
-    assert runtime.world_time_label == "dawn"
+    # The first tick normalizes the Russian legacy label, but never infers dawn.
+    assert runtime.world_time_label == "night"
 
 
 @pytest.mark.asyncio

@@ -54,5 +54,5 @@ def test_player_stream_hides_the_technical_cause():
     item = player_facing_stream_item(raw)
     assert "travel adjudication" not in item
     assert "ход не опубликован" in item
-    assert "Generation failed" in item
+    assert "Генерация хода не завершилась" in item
     assert player_facing_stream_item("Мастер молчит.") == "Мастер молчит."

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
 
@@ -14,6 +16,53 @@ class NarrationPublicationGuard:
     No prose filtering happens here: the single validator call already judged the four bans.
     """
 
+    @staticmethod
+    def _unreceipted_item_claim(authority: TurnAuthority, candidate: str) -> bool:
+        """Flag clear physical item actions that have no executed custody receipt.
+
+        This is intentionally narrow, not a replacement for semantic validation.
+        In-world static item descriptions and dialogue may still be narrated.
+        """
+        sequence = authority.action_sequence or {}
+        steps = sequence.get("steps") or []
+        if any(
+            isinstance(step, dict) and step.get("action_type") == "inventory"
+            and step.get("status") == "completed"
+            for step in steps
+        ):
+            return False
+        if not re.search(
+            r"(?i)\b(?:взял[аи]?|забрал[аи]?|передал[аи]?|"
+            r"переложил[аи]?|положил[аи]?|убрал[аи]?|сунул[аи]?)\b",
+            candidate,
+        ):
+            return False
+        # Only names the authoritative frame recognizes. Fresh approved item
+        # introductions have their own materialization receipt.
+        newly_created = {
+            item.canonical_name.casefold() for item in authority.allowed_new_items
+        }
+        names = [name for name in authority.object_names if name.casefold() not in newly_created]
+        for name in names:
+            tokens = re.findall(r"[а-яёa-z0-9]+", name.casefold())
+            for token in tokens:
+                stem = token.rstrip("аеёиоуыэюя") if len(token) > 4 else token
+                if len(stem) >= 4 and re.search(r"(?i)\b" + re.escape(stem), candidate):
+                    return True
+        # A blocked offscreen item can be absent from the scene's object list.
+        # Exact substantive words shared with the player's attempted item action
+        # are enough to refuse narration of a new hand-off without a receipt.
+        if any(
+            isinstance(step, dict) and step.get("status") == "blocked"
+            for step in steps
+        ):
+            from_input = re.findall(r"[а-яёa-z0-9]{5,}", authority.player_input.casefold())
+            for token in from_input:
+                stem = token.rstrip("аеёиоуыэюя")
+                if len(stem) >= 4 and re.search(r"(?i)\b" + re.escape(stem), candidate):
+                    return True
+        return False
+
     @classmethod
     def publish(
         cls,
@@ -22,7 +71,21 @@ class NarrationPublicationGuard:
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
         text = (candidate or "").strip()
-        if text and validation is not None and validation.verdict == "pass":
+        # QA-213 F-33: a semantic "pass" alone cannot certify a failed
+        # inventory mutation. On a blocked physical step publish the typed
+        # outcome, not a fluent account of an item hand-off that never occurred.
+        steps = (authority.action_sequence or {}).get("steps") or []
+        blocked_inventory = any(
+            isinstance(step, dict)
+            and step.get("action_type") == "inventory"
+            and step.get("status") == "blocked"
+            for step in steps
+        )
+        unsupported_item_claim = cls._unreceipted_item_claim(authority, text)
+        if (
+            text and not blocked_inventory and not unsupported_item_claim
+            and validation is not None and validation.verdict == "pass"
+        ):
             return text, {
                 "mode": "validated_candidate",
                 "candidate_characters": len(candidate or ""),
@@ -31,6 +94,7 @@ class NarrationPublicationGuard:
             }
         fallback = cls.render_authority(authority)
         return fallback, {
+            "blocked_inventory_override": blocked_inventory,
             "mode": "authority_projection",
             "candidate_characters": len(candidate or ""),
             "published_characters": len(fallback),

@@ -309,6 +309,27 @@ class NpcIntroductionResolver:
                     target_location_id=target_location_id,
                     character_locations=character_locations,
                 )
+            # F-36: a unique temporary "Местный кузнец" already
+            # placed in the same establishment must not become a second
+            # "Кузнец" merely because the player entered its child room.
+            # Do not resolve distant NPCs, promoted names, or generic roles
+            # shared by more than one candidate.
+            if not matches and introduction.temporary_name and target_location_id:
+                proposal_key = identity_key(introduction.canonical_name)
+                role_key = identity_key(introduction.role)
+                if role_key and proposal_key == role_key:
+                    local_role_holders = [
+                        entity for entity in all_characters
+                        if (entity.custom_fields or {}).get("temporary_name")
+                        and character_locations.get(UUID(str(entity.id))) == target_location_id
+                        and identity_key(entity.canonical_name).split()[-1:] == [role_key]
+                    ]
+                    if len(local_role_holders) == 1:
+                        matches = local_role_holders
+                    elif len(local_role_holders) > 1:
+                        raise AuthorityResolutionError(
+                            "Ambiguous existing temporary NPC role in this establishment"
+                        )
             unique_matches = {UUID(str(entity.id)): entity for entity in matches}
             if len(unique_matches) > 1:
                 candidate_names = ", ".join(
@@ -319,6 +340,19 @@ class NpcIntroductionResolver:
                     f"{introduction.canonical_name}: {candidate_names}"
                 )
             if not unique_matches:
+                # F-36: a typed resident slot has exactly one keeper even when
+                # the resolver proposed two different role descriptions in
+                # the same turn, before either new NPC has reached the DB.
+                # Do not guess equivalence from profession alone: only the
+                # authoritative shared slot proves these labels co-refer.
+                earlier_keeper = next((
+                    item for item in new_introductions
+                    if introduction.resident_slot
+                    and item.resident_slot == introduction.resident_slot
+                ), None)
+                if earlier_keeper is not None:
+                    bound.update(dict.fromkeys(designations, earlier_keeper.canonical_name))
+                    continue
                 # Campaign-unique labels via shared contract: never twin another live
                 # canonical_name; collide → needs_name status + human failsoft label.
                 base = introduction.canonical_name

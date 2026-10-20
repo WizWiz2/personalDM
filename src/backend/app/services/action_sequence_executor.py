@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from uuid import UUID
 
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Entity, Item, Scene
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
+from app.services.initial_world_state import InitialWorldStateService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.scene_transition_executor import (
@@ -72,6 +74,15 @@ class ActionSequenceExecutor:
             return existing
         if not plan.steps:
             raise ValueError("Action sequence has no steps")
+
+        # A replay baseline must predate *all* structured physical mutations.
+        # In particular it cannot first be captured by an asynchronous Scribe
+        # after a successful hand-off, or undo would erase the recipient.
+        if any(
+            step.action_type == "inventory" and step.resolution == "auto_success"
+            for step in plan.steps
+        ):
+            await InitialWorldStateService(self._session).ensure_snapshot(campaign_id)
 
         sequence = ActionSequence(
             campaign_id=str(campaign_id),
@@ -241,11 +252,18 @@ class ActionSequenceExecutor:
                 raise InventoryExecutionError("Item is not physically present in the current scene")
             result_owner, result_location = str(campaign.player_character_id), None
         elif operation == "reposition":
-            if not location_id or item.current_owner_id is not None or item.current_location_id != str(location_id):
-                raise InventoryExecutionError("Cannot reposition item outside current location")
-            if not getattr(step, "item_placement_detail", None):
+            detail = (getattr(step, "item_placement_detail", None) or "").strip()
+            if not detail:
                 raise InventoryExecutionError("Reposition requires exact new placement")
-            result_owner, result_location = None, str(location_id)
+            # F-32: a carried letter put in a bag stays in the player's custody.
+            # This is NOT a room drop and must not transfer ownership.
+            stow = bool(re.match(r"(?i)^в\s+(?:сумк|рюкзак|карман)", detail))
+            if stow and item.current_owner_id == str(campaign.player_character_id):
+                result_owner, result_location = str(campaign.player_character_id), None
+            elif location_id and item.current_owner_id is None and item.current_location_id == str(location_id) and not stow:
+                result_owner, result_location = None, str(location_id)
+            else:
+                raise InventoryExecutionError("Cannot reposition item outside current location")
         elif operation in {"drop", "place"}:
             # F26: a "place" or "drop" plan cannot move an object merely because
             # the planner can refer to its ID. Only the current holder can release it.
@@ -392,6 +410,14 @@ class ActionSequenceExecutor:
             campaign_id,
             final_scene_id,
         )
+        # The player may not be listed as a SceneParticipant. Keep physical
+        # location consistent with the authoritative scene on sequence apply.
+        location_id = await self._scenes.get_location_id(final_scene_id)
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        if location_id and campaign and campaign.player_character_id:
+            player = await self._session.get(Character, campaign.player_character_id)
+            if player:
+                player.current_location_id = str(location_id)
 
     async def _compensate(
         self,
@@ -416,9 +442,12 @@ class ActionSequenceExecutor:
                         transition,
                         final_status,
                     )
+            # Only completed steps changed inventory. Blocked and skipped steps
+            # have no physical effects and must not restore stale snapshots.
+            applied_inventory = step.status == "completed" and bool(step.item_id)
             if step.status in {"completed", "blocked", "skipped"}:
                 step.status = final_status
-            if step.item_id and step.status == final_status:
+            if applied_inventory:
                 item = await self._session.get(Item, step.item_id)
                 if item:
                     item.current_owner_id = step.item_previous_owner_id
@@ -442,6 +471,14 @@ class ActionSequenceExecutor:
                 campaign_id,
                 source_scene_id,
             )
+            # F-39: scene participants do not necessarily include the player.
+            # Restore the playable character explicitly on sequence undo.
+            source_location_id = await self._scenes.get_location_id(source_scene_id)
+            campaign = await self._session.get(Campaign, transition.campaign_id)
+            if source_location_id and campaign and campaign.player_character_id:
+                player = await self._session.get(Character, campaign.player_character_id)
+                if player:
+                    player.current_location_id = str(source_location_id)
         else:
             campaign = await self._session.get(Campaign, transition.campaign_id)
             if campaign:

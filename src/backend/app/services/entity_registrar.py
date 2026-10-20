@@ -580,6 +580,36 @@ class EntityRegistrar:
                 await self._enrich_existing(character, mention, source_turn_id, scene_id)
                 character_id = entity.id
             else:
+                # F-36: the authority materializer may have introduced a role-based
+                # newcomer *in this published turn*. The background registrar can
+                # describe the same person with a shorter role designation. Do not
+                # manufacture a second physical actor from that second description.
+                # This check never merges by occupation alone across different turns.
+                if mention.temporary_name and mention.presence == "present":
+                    same_turn = [
+                        candidate for candidate in character_entities
+                        if candidate.id in scene.participants
+                        and character_locations.get(candidate.id) == scene.location_id
+                        and (candidate.custom_fields or {}).get("introduction_turn_id") == str(source_turn_id)
+                        and identity_key(mention.role)
+                        and (
+                            identity_key((candidate.custom_fields or {}).get("role")) == identity_key(mention.role)
+                            or identity_key((candidate.custom_fields or {}).get("role")).startswith(
+                                identity_key(mention.role) + " "
+                            )
+                            or identity_key(candidate.canonical_name).startswith(identity_key(name) + " ")
+                        )
+                    ]
+                    if same_turn:
+                        if len(same_turn) == 1:
+                            result.resolved_ids.append(same_turn[0].id)
+                        else:
+                            result.conflicts.append({
+                                "description": "Несколько персонажей с одинаковой ролью введены в этом ходе.",
+                                "evidence": mention.evidence,
+                                "error": "Ambiguous same-turn NPC identity",
+                            })
+                        continue
                 if promotion_only and (
                     mention.presence != "mentioned_only" or mention.temporary_name
                 ):
