@@ -94,6 +94,7 @@ class NarrationPublicationGuard:
             }
         fallback = cls.render_authority(authority)
         return fallback, {
+            "blocked_inventory_override": blocked_inventory,
             "mode": "authority_projection",
             "candidate_characters": len(candidate or ""),
             "published_characters": len(fallback),
