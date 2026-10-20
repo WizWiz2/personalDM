@@ -784,11 +784,20 @@ class PostTurnWorker:
                 pass
 
     async def run(self) -> None:
-        async with AsyncSessionLocal() as session:
-            await PostTurnJobRepository(session).recover_stale(
-                stale_after_seconds=max(900, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60),
+        # F-41: a transient lock during the initial reclaim must not prevent
+        # the independent periodic recovery task from starting at all.
+        try:
+            async with AsyncSessionLocal() as session:
+                await PostTurnJobRepository(session).recover_stale(
+                    stale_after_seconds=max(
+                        900, int(settings.POST_TURN_JOB_TIMEOUT_SECONDS) + 60,
+                    ),
+                )
+                await session.commit()
+        except OperationalError:
+            logger.exception(
+                "Post-turn startup recovery failed; periodic recovery remains active"
             )
-            await session.commit()
 
         recovery_task = asyncio.create_task(
             self._recover_loop(), name="post-turn-db-recovery"
