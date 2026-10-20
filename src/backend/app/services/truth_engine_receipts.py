@@ -203,7 +203,7 @@ class StructuredReceiptEventCompiler:
         return CanonicalEventCreate(
             event_key=f"scene_transition:{transition.id}",
             event_type=self._transition_event_type(transition.transition_type),
-            description=transition.reason or f"Applied {transition.transition_type}",
+            description=transition.reason or "Переход выполнен.",
             source_kind="executor_receipt",
             source_turn_id=(UUID(transition.trigger_turn_id) if transition.trigger_turn_id else None),
             world_time=transition.time_after,
@@ -335,8 +335,26 @@ class StructuredReceiptEventCompiler:
         # A planned successful outcome is not evidence when execution blocked that step.
         # All downstream semantic readers must see the execution verdict, not the stale plan.
         if step.status != "completed":
-            return f"{step.status.upper()}: {step.blocking_reason or 'Action did not complete.'}"
-        return step.observable_outcome or step.intent or f"Structured action step {step.step_index}"
+            # Internal executor errors belong in diagnostics, not public canon.
+            localized = {
+                "blocked": "Действие заблокировано.",
+                "skipped": "Действие пропущено.",
+                "undone": "Действие отменено.",
+            }
+            public_reason = (getattr(step, "public_blocking_reason", None) or "").strip()
+            if public_reason:
+                return f"{step.status.upper()}: {public_reason}"
+            reason = (getattr(step, "blocking_reason", None) or "").strip()
+            internal_prefixes = (
+                "cannot reposition item", "cannot place an item",
+                "cannot give an item", "recipient must be physically present",
+                "inventory step ", "inventory recipient ",
+                "item is not physically present",
+            )
+            if reason and not reason.casefold().startswith(internal_prefixes):
+                return f"{step.status.upper()}: {reason}"
+            return f"{step.status.upper()}: {localized.get(step.status, 'Действие не выполнено.')}"
+        return step.observable_outcome or step.intent or "Действие выполнено."
 
     async def _ensure_baseline(
         self,
