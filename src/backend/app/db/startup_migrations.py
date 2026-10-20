@@ -65,7 +65,7 @@ def _migrate_sqlite() -> None:
 
     cfg = Config(str(ini))
     cfg.set_main_option("script_location", str(script_dir))
-    cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+    cfg.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
     head = ScriptDirectory.from_config(cfg).get_current_head()
 
     original_exists = db.exists()
@@ -115,3 +115,7 @@ async def migrate_database_on_startup() -> None:
 
 
 __all__ = ["migrate_database_on_startup", "classify_unversioned_schema"]
+
+
+if __name__ == "__main__":
+    _migrate_sqlite()
