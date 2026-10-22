@@ -213,6 +213,16 @@ class OutcomeNpcIntroduction(BaseModel):
         return self
 
 
+class NpcItemHandoff(BaseModel):
+    """Verified physical NPC-to-player handoff after external outcome resolution."""
+
+    model_config = ConfigDict(extra="forbid")
+    item_id: UUID
+    giver_id: UUID
+    evidence: str = Field(min_length=5, max_length=500)
+    after_action_index: int | None = Field(default=None, ge=0, le=7)
+
+
 class TurnOutcomeDecision(BaseModel):
     """World-facing semantics after player intent has been frozen."""
 
@@ -221,6 +231,7 @@ class TurnOutcomeDecision(BaseModel):
     action_outcomes: list[ActionOutcomeDecision] = Field(default_factory=list, max_length=8)
     npc_introductions: list[OutcomeNpcIntroduction] = Field(default_factory=list, max_length=4)
     item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
+    npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
     world_move: PlannedWorldMove | None = None
 
     # These fields constrain narration/external consequences only; they cannot add player actions.
@@ -253,6 +264,7 @@ __all__ = [
     "DestinationProfilePatch",
     "DestinationProfilePatchSet",
     "OutcomeNpcIntroduction",
+    "NpcItemHandoff",
     "PlayerActionIntent",
     "PlayerIntentContract",
     "PlayerIntentReview",
