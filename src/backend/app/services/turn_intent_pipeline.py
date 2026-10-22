@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.scene_location_table import SceneLocationLink
-from app.db.tables import Campaign, Character, Entity, Turn
+from app.db.tables import Campaign, Character, Entity, Item, Turn
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedWorldMove
 from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
@@ -168,8 +168,42 @@ class TurnIntentPlanningPipeline:
                 campaign_id, scene_id,
             )
         world_context = context_messages
-        if momentum["sources"] and context_messages:
-            first = context_messages[0]
+        # Outcome resolution must know existing NPC-held item identities, or
+        # a legitimate handoff cannot produce a verified giver/item receipt.
+        # Only physically co-located characters are eligible to give objects.
+        if isinstance(self._session, AsyncSession) and scene_id and context_messages:
+            location_id = await self._compiler._scenes.get_location_id(scene_id)
+            if location_id:
+                held = (await self._session.execute(
+                    select(Entity.id, Entity.canonical_name, Item.current_owner_id)
+                    .join(Item, Item.entity_id == Entity.id)
+                    .join(Character, Character.entity_id == Item.current_owner_id)
+                    .where(
+                        Entity.campaign_id == str(campaign_id),
+                        Character.current_location_id == str(location_id),
+                        Item.current_owner_id != str(campaign.player_character_id or ""),
+                    )
+                )).all()
+                if held:
+                    giver_ids = {owner_id for _, _, owner_id in held}
+                    giver_names = dict((await self._session.execute(
+                        select(Entity.id, Entity.canonical_name).where(Entity.id.in_(giver_ids))
+                    )).all())
+                    evidence = "\n".join(
+                        f"- {name} [id={item_id}]; NPC holder: "
+                        f"{giver_names.get(owner_id, 'unknown')} [id={owner_id}]"
+                        for item_id, name, owner_id in held
+                    )
+                    first = world_context[0]
+                    world_context = [
+                        ChatMessage(role=first.role, content=first.content
+                            + "\n[NPC-HELD REGISTERED ITEMS — confirmed physical inventory]\n"
+                            + evidence
+                            + "\nUse these exact ids only after the actual NPC agrees to a handoff."),
+                        *world_context[1:],
+                    ]
+        if momentum["sources"] and world_context:
+            first = world_context[0]
             source_context = (
                 "\n[ENGINE-VERIFIED ACTIVE WORLD THREADS]\n"
                 + json.dumps(momentum, ensure_ascii=False)
@@ -183,7 +217,7 @@ class TurnIntentPlanningPipeline:
             )
             world_context = [
                 ChatMessage(role=first.role, content=first.content + source_context),
-                *context_messages[1:],
+                *world_context[1:],
             ]
 
         resident_slots = await self._compiler.resident_slots(campaign_id)
