@@ -22,6 +22,7 @@ from app.models.player_intent import (
     DestinationProfilePatch,
     DestinationProfilePatchSet,
     DramaticMode,
+    NpcItemHandoff,
     PlayerIntentContract,
     TurnOutcomeDecision,
     TurnResolution,
@@ -102,6 +103,16 @@ containing the name), owned_by_player only when that same outcome confirms
 possession. If an item already exists with its ID in authoritative world state,
 DO NOT recreate it. Unconfirmed player claims and casual background scenery
 are not item introductions.
+
+NPC-TO-PLAYER HANDOFFS (npc_item_handoffs): For an EXISTING significant item
+owned by a physically present NPC who voluntarily hands it to the player in
+this turn, provide the registered item_id, registered giver_id and a verbatim
+substring of the confirmed successful observable_outcome as evidence. Set
+after_action_index to the successful prerequisite index (or null for a purely
+NPC-initiated conversational outcome). A player request is NOT consent. Never
+claim transfer from an absent NPC, or invent UUIDs. These are not new items.
+No prose-only handoffs: any approved transfer of an existing owned item must
+be covered by this typed receipt, otherwise resolve without claiming delivery.
 
 INDEPENDENT STORY (world_move): During normal play, including turns with
 player actions, an established active_conflict, unresolved_beat, tension, or
@@ -316,6 +327,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
     action_outcomes: list[ActionOutcomeDraft] = Field(max_length=8)
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
     item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
+    npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
     world_move: PlannedWorldMove | None = None
     resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
@@ -730,6 +742,9 @@ def normalize_outcome_draft(
             "npc_introductions": introductions,
             "item_introductions": [
                 item.model_dump(mode="json") for item in draft.item_introductions
+            ],
+            "npc_item_handoffs": [
+                item.model_dump(mode="json") for item in draft.npc_item_handoffs
             ],
             "world_move": (
                 draft.world_move.model_dump(mode="json") if draft.world_move else None
