@@ -22,11 +22,18 @@ from app.runtime_paths import backend_dir
 LEGACY_PRE_PLACEMENT_REVISION = "f3a4b5c6d7e8"
 
 
-def classify_unversioned_schema(tables: set[str], items: set[str], steps: set[str]) -> str:
+def classify_unversioned_schema(
+    tables: set[str], items: set[str], steps: set[str],
+    campaigns: set[str] | None = None,
+) -> str:
     """Return the only safe Alembic stamp target for a known create_all schema."""
     domain_tables = tables - {"sqlite_sequence", "alembic_version"}
     if not domain_tables:
         return "empty"
+    # A corrupt campaigns table used to pass legacy fingerprints and be
+    # stamped as a valid schema; subsequent API reads then failed with 500.
+    if campaigns is not None and not {"id", "name"} <= campaigns:
+        return "unknown"
     final = (
         {"campaigns", "items", "action_steps", "npc_identity_anchors",
          "item_custody_commands", "memory_witnesses"} <= tables
@@ -81,6 +88,8 @@ def _migrate_sqlite() -> None:
                 row[0] for row in conn.execute("SELECT version_num FROM alembic_version")
             }
             if revisions == {head}:
+                if "campaigns" not in tables or not {"id", "name"} <= columns("campaigns"):
+                    raise RuntimeError("PersonalDM schema mismatch: campaigns.id/name missing; database not modified")
                 return
         decision = (
             "versioned"
@@ -89,6 +98,7 @@ def _migrate_sqlite() -> None:
                 tables,
                 columns("items") if "items" in tables else set(),
                 columns("action_steps") if "action_steps" in tables else set(),
+                columns("campaigns") if "campaigns" in tables else set(),
             )
         )
         if decision == "unknown":
