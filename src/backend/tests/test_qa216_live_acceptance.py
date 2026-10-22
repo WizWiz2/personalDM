@@ -32,7 +32,7 @@ def test_f44_owner_and_scene_is_valid_single_custody():
     assert result["item_id"] == str(item)
     assert result["owner_id"] == str(owner)
     # Item location is implicit in holder location; no contradictory double custody.
-    assert result["location_id"] is None
+    assert "location_id" not in result
 
 
 def test_f44_unknown_destination_does_not_erase_known_item_location():
