@@ -169,7 +169,9 @@ class PostTurnJobRepository(BaseRepository):
         row = result.scalar_one_or_none()
         if not row:
             return None
-        if row.status == "completed":
+        # A running job may still own the current write lease. Never reset it
+        # to pending from the manual retry endpoint: that could execute it twice.
+        if row.status in {"completed", "running"}:
             return PostTurnJobRead.model_validate(row)
         row.status = "pending"
         row.error = None
