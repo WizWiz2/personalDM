@@ -94,3 +94,27 @@ def test_enrich_typed_place_that_forgot_surface():
     assert action.item_id == letter
     assert action.inventory_operation == "place"
     assert action.item_placement_detail == "между лампой и стеной"
+
+
+def test_f32_recover_long_canonical_item_name_from_short_unique_noun():
+    letter = uuid4()
+    text = "Аккуратно укладываю письмо между лампой и стопкой старых дел."
+    draft = _draft(text)
+    assert _repair_unambiguous_local_placement(
+        draft, text, _context(owned=f"письмо Оста Эндлина [id={letter}]"),
+    )
+    result = normalize_intent_draft(draft, text).actions[0]
+    assert result.action_type == "inventory"
+    assert result.item_id == letter
+    assert result.inventory_operation == "place"
+
+
+def test_f32_do_not_bind_generic_noun_when_two_registered_objects_match():
+    first, second = uuid4(), uuid4()
+    text = "Укладываю письмо между лампой и стопкой дел."
+    draft = _draft(text)
+    assert not _repair_unambiguous_local_placement(
+        draft, text, _context(owned=(
+            f"письмо Оста [id={first}], письмо Алисе [id={second}]"
+        )),
+    )
