@@ -395,6 +395,44 @@ class ActionPlanCompiler:
                 step = self._compile_nonmovement(action, outcome)
             steps.append(step)
 
+        # NPC actions are external outcomes, not player-owned intents. A willing
+        # local giver may transfer an existing registered item only via an
+        # executed receipt; never via an asynchronous Scribe suggestion.
+        confirmed_outcomes = [
+            *(decision.observable_consequences or []),
+            *(row.observable_outcome for row in decision.action_outcomes if row.observable_outcome),
+        ]
+        confirmed_text = " ".join(confirmed_outcomes).casefold()
+        already_handled = {
+            str(step.item_id) for step in steps
+            if step.action_type == "inventory" and step.item_id is not None
+        }
+        for handoff in decision.npc_item_handoffs:
+            if str(handoff.item_id) in already_handled:
+                continue
+            if handoff.evidence.casefold() not in confirmed_text:
+                raise TurnPlanningError("NPC item handoff lacks an approved public outcome")
+            if handoff.after_action_index is not None:
+                prerequisite = next(
+                    (row for row in decision.action_outcomes
+                     if row.action_index == handoff.after_action_index),
+                    None,
+                )
+                if prerequisite is None or prerequisite.resolution != "auto_success":
+                    raise TurnPlanningError("NPC item handoff depends on an unfinished action")
+            if len(steps) >= 8:
+                raise TurnPlanningError("Too many actions for a typed NPC item handoff")
+            steps.append(ActionStepPlan(
+                action_type="inventory",
+                intent="NPC voluntarily transfers an existing item to the player",
+                resolution="auto_success",
+                observable_outcome=handoff.evidence,
+                item_id=handoff.item_id,
+                inventory_operation="receive",
+                inventory_target_id=handoff.giver_id,
+            ))
+            already_handled.add(str(handoff.item_id))
+
         first = next((step for step in steps if step.resolution == "auto_success"), None)
         if contract.time_advance and first is not None and not any(
             step.transition.elapsed_time or step.transition.time_after for step in steps
