@@ -6,6 +6,8 @@ import re
 _INTERNAL = (
     re.compile(r"(?im)^\s*(?:analysis|reasoning|chain.of.thought|internal note)\s*:\s+"),
     re.compile(r"(?im)^\s*(?:need no invented|end actionable|must avoid inventing)\b"),
+    # QA-215 F-45: a scratchpad tail can appear on the same line as prose.
+    re.compile(r"(?i)\b(?:need russian(?: no typo)?|end situation meaningful|not established but allowed)\b"),
     re.compile(r"(?im)^\s*\[/?(?:AUTHORITATIVE SCENE STATE|INTER-AGENT|APPROVED TURN PLAN|SYSTEM PROMPT)\]"),
     re.compile(r"(?im)^\s*<\|(?:im_start|im_end|assistant|analysis|final)\|>"),
     re.compile(r"(?im)^\s*(?:as an ai language model|как языковая модель(?: ии)?)\b"),

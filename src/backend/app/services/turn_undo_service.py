@@ -293,6 +293,16 @@ class TurnUndoService:
                 SceneThesis.source_turn_id == str(assistant_turn_id),
             )
         )
+        # Canon replay can overwrite a player location already restored by
+        # transition compensation. Reconcile after replay, as the player is not
+        # guaranteed to be listed among scene participants.
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        if campaign and campaign.current_scene_id and campaign.player_character_id:
+            active_location_id = await self._scenes.get_location_id(UUID(campaign.current_scene_id))
+            if active_location_id:
+                player = await self._session.get(Character, campaign.player_character_id)
+                if player:
+                    player.current_location_id = str(active_location_id)
 
     async def _remove_turn_introductions(
         self,

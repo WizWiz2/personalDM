@@ -318,6 +318,17 @@ STRUCTURED WORLD BOUNDARIES:
   selected surface; `place` means deliberately putting it on/in a named surface, container, or
   position. "Кладу ... на пол рядом с собой" is a drop.
 - Time transitions are structured too; atmosphere alone never advances time.
+- QA-215 F-44/F-47: if a player takes, places, stows, drops or gives a registered item,
+  the actual item_id and custody operation MUST be in an executed inventory step.
+  A generic interaction plus fluent observable_outcome is NOT a physical receipt.
+- Showing, displaying or inspecting an item does not transfer custody, but is allowed
+  only when the item is already held by the actor or physically reachable here.
+  Otherwise explicitly block it; never narrate an off-location or NPC-owned object
+  appearing in the protagonist's hand as a side effect of conversation.
+- An NPC handing over an existing owned item is a custody change too. If the available
+  structured authority cannot represent and execute that change, do not invent a
+  completed handoff in observable_consequences or narration. Expose the unmet action
+  rather than claiming that prose alone changed physical ownership.
 
 NPC / ENTITY AUTHORITY:
 - Decide from meaning and campaign context whether a PERSON physically appears. Do not infer person

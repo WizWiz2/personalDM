@@ -561,9 +561,13 @@ def _repair_unambiguous_local_placement(
             tokens = _TOKEN.findall(name.casefold())
             if not tokens:
                 continue
-            head = tokens[-1]
-            stem = head.rstrip("аеёиоуыэюя") if len(head) > 4 else head
-            if len(stem) >= 4 and any(word.startswith(stem) for word in words):
+            # A registered item can have a descriptive canonical name,
+            # e.g. "письмо Оста Эндлина", while the player simply says "письмо".
+            # The unique catalog match below remains mandatory: no guessing.
+            stems = [token.rstrip("аеёиоуыэюя") if len(token) > 4 else token
+                     for token in tokens]
+            if any(len(stem) >= 4 and any(word.startswith(stem) for word in words)
+                   for stem in stems):
                 matching.append(item_id)
         if len(matching) != 1:
             continue  # Ambiguity or absent catalog evidence is never guessed.
