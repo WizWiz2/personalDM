@@ -95,3 +95,75 @@ async def test_npc_absent_or_item_not_held_does_not_transfer(db_session):
         await ActionSequenceExecutor(db_session)._apply_inventory_step(
             cid, scene_id, uuid4(), step, SimpleNamespace(),
         )
+
+
+@pytest.mark.asyncio
+async def test_outcome_compiler_adds_npc_receipt_after_successful_service():
+    from unittest.mock import AsyncMock
+    from app.models.player_intent import (
+        ActionOutcomeDecision, NpcItemHandoff, PlayerActionIntent,
+        PlayerIntentContract, TurnOutcomeDecision,
+    )
+    from app.services.action_plan_compiler import ActionPlanCompiler
+
+    giver_id, item_id = uuid4(), uuid4()
+    compiler = ActionPlanCompiler.__new__(ActionPlanCompiler)
+    compiler._world = AsyncMock(return_value=(
+        None, SimpleNamespace(location_id=uuid4()), []
+    ))
+    contract = PlayerIntentContract(
+        summary="Прошу Алису отдать письмо",
+        actions=[PlayerActionIntent(action_type="service", intent="Прошу Алису отдать письмо")],
+    )
+    decision = TurnOutcomeDecision(
+        action_outcomes=[ActionOutcomeDecision(
+            action_index=0, resolution="auto_success",
+            observable_outcome="Алиса согласилась передать письмо.",
+        )],
+        npc_item_handoffs=[NpcItemHandoff(
+            item_id=item_id, giver_id=giver_id,
+            evidence="Алиса согласилась передать письмо.",
+            after_action_index=0,
+        )],
+    )
+    plan = await compiler.compile(uuid4(), contract, decision)
+    assert len(plan.action_sequence.steps) == 2
+    receipt = plan.action_sequence.steps[-1]
+    assert receipt.action_type == "inventory"
+    assert receipt.inventory_operation == "receive"
+    assert receipt.item_id == item_id
+    assert receipt.inventory_target_id == giver_id
+
+
+@pytest.mark.asyncio
+async def test_outcome_compiler_rejects_unconfirmed_npc_handoff():
+    from unittest.mock import AsyncMock
+    from app.models.player_intent import (
+        ActionOutcomeDecision, NpcItemHandoff, PlayerActionIntent,
+        PlayerIntentContract, TurnOutcomeDecision,
+    )
+    from app.services.action_plan_compiler import ActionPlanCompiler
+    from app.services.turn_planner import TurnPlanningError
+
+    giver, item = uuid4(), uuid4()
+    compiler = ActionPlanCompiler.__new__(ActionPlanCompiler)
+    compiler._world = AsyncMock(return_value=(
+        None, SimpleNamespace(location_id=uuid4()), []
+    ))
+    contract = PlayerIntentContract(
+        summary="Прошу письмо", actions=[PlayerActionIntent(
+            action_type="service", intent="Прошу письмо",
+        )],
+    )
+    decision = TurnOutcomeDecision(
+        action_outcomes=[ActionOutcomeDecision(
+            action_index=0, resolution="auto_success",
+            observable_outcome="Алиса отказывает в передаче.",
+        )],
+        npc_item_handoffs=[NpcItemHandoff(
+            item_id=item, giver_id=giver,
+            evidence="Алиса вручает письмо.", after_action_index=0,
+        )],
+    )
+    with pytest.raises(TurnPlanningError, match="lacks an approved"):
+        await compiler.compile(uuid4(), contract, decision)
