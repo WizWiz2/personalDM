@@ -26,6 +26,8 @@ from app.db.startup_migrations import migrate_database_on_startup
 from app.runtime import install_runtime
 from app.runtime_paths import frontend_dist_dir, is_packaged_dist
 from app.services.post_turn_processor import PostTurnWorker
+from app.services.generation_startup_recovery import recover_interrupted_generations
+from app.db.engine import AsyncSessionLocal
 
 install_runtime()
 
@@ -61,6 +63,10 @@ async def lifespan(app: FastAPI):
         # N-7: all revisions must be present before API and background jobs
         # can touch the existing user library. Unknown legacy schemas fail safe.
         await migrate_database_on_startup()
+        # N-13: SIGKILL can leave an active user input with a running generation.
+        # Recover only non-prepared attempts before accepting new player actions.
+        async with AsyncSessionLocal() as session:
+            await recover_interrupted_generations(session)
         worker = PostTurnWorker()
         worker_task = asyncio.create_task(worker.run(), name="post-turn-worker")
         app.state.post_turn_worker = worker
