@@ -125,7 +125,7 @@ def structured_inventory_contract_issues(
                 f"inventory step {index}: {operation} item_id={item_id} rejected because {location}"
             )
 
-        if operation == "give":
+        if operation in {"give", "receive"}:
             target_id = (
                 str(step.inventory_target_id).casefold()
                 if step.inventory_target_id is not None
@@ -133,7 +133,7 @@ def structured_inventory_contract_issues(
             )
             if not target_id or target_id not in character_ids:
                 issues.append(
-                    f"inventory step {index}: give target_id={target_id or 'missing'} rejected "
+                    f"inventory step {index}: {operation} target_id={target_id or 'missing'} rejected "
                     "because the target is not a physically present character"
                 )
 
