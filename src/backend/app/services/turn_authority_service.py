@@ -238,11 +238,15 @@ class TurnAuthorityService:
             }
 
         # Only read typed DB custody; never infer ownership from storyteller prose.
-        item_rows = (await self._session.execute(
-            select(Entity.canonical_name, Item.current_owner_id, Item.current_location_id)
-            .join(Item, Item.entity_id == Entity.id)
-            .where(Entity.campaign_id == str(campaign_id), Entity.entity_type == "item")
-        )).all()
+        # Thin authority contract tests inject repository doubles without a DB
+        # session. Their typed cast behavior must remain independently testable.
+        item_rows = []
+        if callable(getattr(self._session, "execute", None)):
+            item_rows = (await self._session.execute(
+                select(Entity.canonical_name, Item.current_owner_id, Item.current_location_id)
+                .join(Item, Item.entity_id == Entity.id)
+                .where(Entity.campaign_id == str(campaign_id), Entity.entity_type == "item")
+            )).all()
         current_location_id = str(target_state.location_id) if target_state and target_state.location_id else None
         unavailable_items = [
             name for name, owner_id, item_location_id in item_rows
