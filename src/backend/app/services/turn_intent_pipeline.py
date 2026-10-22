@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import Campaign, Character, Entity, Item, Turn
 from app.models.turn import ChatMessage
@@ -172,7 +173,7 @@ class TurnIntentPlanningPipeline:
         # a legitimate handoff cannot produce a verified giver/item receipt.
         # Only physically co-located characters are eligible to give objects.
         if isinstance(self._session, AsyncSession) and scene_id and context_messages:
-            location_id = await self._compiler._scenes.get_location_id(scene_id)
+            location_id = await SceneRepository(self._session).get_location_id(scene_id)
             if location_id:
                 held = (await self._session.execute(
                     select(Entity.id, Entity.canonical_name, Item.current_owner_id)
