@@ -1,5 +1,5 @@
 """QA-215 F-42 and N-13 recovery regressions."""
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -67,6 +67,6 @@ async def test_manual_retry_does_not_reclaim_running_memory_job(db_session):
                       job_type="memory_scribe", status="running")
     db_session.add(row)
     await db_session.commit()
-    result = await PostTurnJobRepository(db_session).retry(uuid4() if False else __import__("uuid").UUID(row.id))
+    result = await PostTurnJobRepository(db_session).retry(UUID(row.id))
     assert result.status == "running"
     assert (await db_session.get(PostTurnJob, row.id)).status == "running"
