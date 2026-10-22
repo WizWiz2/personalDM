@@ -25,12 +25,12 @@ class NarrationPublicationGuard:
         """
         sequence = authority.action_sequence or {}
         steps = sequence.get("steps") or []
-        if any(
-            isinstance(step, dict) and step.get("action_type") == "inventory"
-            and step.get("status") == "completed"
+        completed_items = {
+            str(step.get("item_name") or "").casefold()
             for step in steps
-        ):
-            return False
+            if isinstance(step, dict) and step.get("action_type") == "inventory"
+            and step.get("status") == "completed"
+        }
         if not re.search(
             r"(?i)\b(?:взял[аи]?|забрал[аи]?|передал[аи]?|"
             r"переложил[аи]?|положил[аи]?|убрал[аи]?|сунул[аи]?|"
@@ -43,7 +43,10 @@ class NarrationPublicationGuard:
         newly_created = {
             item.canonical_name.casefold() for item in authority.allowed_new_items
         }
-        names = [name for name in authority.object_names if name.casefold() not in newly_created]
+        names = [
+            name for name in [*authority.object_names, *authority.unavailable_item_names]
+            if name.casefold() not in newly_created and name.casefold() not in completed_items
+        ]
         for name in names:
             tokens = re.findall(r"[а-яёa-z0-9]+", name.casefold())
             for token in tokens:
