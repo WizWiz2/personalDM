@@ -118,11 +118,11 @@ async def test_outcome_compiler_adds_npc_receipt_after_successful_service():
     decision = TurnOutcomeDecision(
         action_outcomes=[ActionOutcomeDecision(
             action_index=0, resolution="auto_success",
-            observable_outcome="Алиса согласилась передать письмо.",
+            observable_outcome="Алиса вручает письмо Вере.",
         )],
         npc_item_handoffs=[NpcItemHandoff(
             item_id=item_id, giver_id=giver_id,
-            evidence="Алиса согласилась передать письмо.",
+            evidence="Алиса вручает письмо Вере.",
             after_action_index=0,
         )],
     )
