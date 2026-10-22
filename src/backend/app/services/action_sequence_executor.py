@@ -272,6 +272,20 @@ class ActionSequenceExecutor:
             if not location_id:
                 raise InventoryExecutionError("Cannot place an item in a scene without a location")
             result_owner, result_location = None, str(location_id)
+        elif operation == "receive":
+            # A willing NPC handoff is an authoritative custody transfer, not
+            # an asynchronous Scribe guess. The giver must physically own the
+            # object and be present with the player in the target scene.
+            giver_id = str(step.inventory_target_id or "")
+            giver_entity = await self._session.get(Entity, giver_id)
+            giver = await self._session.get(Character, giver_id)
+            if not giver or not giver_entity or giver_entity.campaign_id != str(campaign_id):
+                raise InventoryExecutionError("Inventory giver must be a character in the campaign")
+            if giver_id == str(campaign.player_character_id) or not location_id or giver.current_location_id != str(location_id):
+                raise InventoryExecutionError("Inventory giver must be another character physically present")
+            if item.current_owner_id != giver_id or item.current_location_id is not None:
+                raise InventoryExecutionError("Item is not owned by the claimed inventory giver")
+            result_owner, result_location = str(campaign.player_character_id), None
         else:  # give
             if item.current_owner_id != str(campaign.player_character_id):
                 raise InventoryExecutionError("Cannot give an item the player does not hold")
