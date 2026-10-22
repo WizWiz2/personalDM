@@ -110,6 +110,8 @@ class TurnAuthority(BaseModel):
     world_move: PlannedWorldMove | None = None
     allowed_existing_npc_arrivals: list[ExistingNpcArrival] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
+    # Registered objects not physically available to the player.
+    unavailable_item_names: list[str] = Field(default_factory=list)
 
     resolution: str = "conversation"
     identity_reveal_requested: bool = False
@@ -247,6 +249,7 @@ class TurnAuthority(BaseModel):
             "scene_time": self.scene_time,
             "allowed_new_items": [item.canonical_name for item in self.allowed_new_items],
             "objects_here": self.object_names,
+            "unavailable_items": self.unavailable_item_names,
             "approved_world_move": (
                 self.world_move.model_dump(mode="json") if self.world_move else None
             ),
