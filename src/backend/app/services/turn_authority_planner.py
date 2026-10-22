@@ -313,7 +313,12 @@ STRUCTURED WORLD BOUNDARIES:
   transition. The committed attempted movement still remains as a `blocked` action_sequence step
   with a concrete blocking_reason; do not silently omit the blocked attempt. Later actions that
   depend on it remain unexecuted.
-- Distinguish inventory operations by intended result: `drop` means releasing a held item onto the
+- Distinguish inventory operations by intended result: `receive` transfers a registered
+  NPC-owned item to the player ONLY if the NPC elects to hand it over and is physically
+  present; put the existing item_id and giver inventory_target_id in a typed inventory
+  auto_success step. A request alone does not prove willingness; a refusal is blocked.
+  No item may teleport from an absent NPC and no prose-only handoff is a success.
+  `drop` means releasing a held item onto the
   floor/ground or nearby without deliberately putting it into a named receptacle, slot, or carefully
   selected surface; `place` means deliberately putting it on/in a named surface, container, or
   position. "Кладу ... на пол рядом с собой" is a drop.
@@ -325,10 +330,9 @@ STRUCTURED WORLD BOUNDARIES:
   only when the item is already held by the actor or physically reachable here.
   Otherwise explicitly block it; never narrate an off-location or NPC-owned object
   appearing in the protagonist's hand as a side effect of conversation.
-- An NPC handing over an existing owned item is a custody change too. If the available
-  structured authority cannot represent and execute that change, do not invent a
-  completed handoff in observable_consequences or narration. Expose the unmet action
-  rather than claiming that prose alone changed physical ownership.
+- An NPC handing over an existing owned item uses an executed inventory receive
+  receipt with the actual giver and item UUID. Never narrate a completed handoff
+  using an untyped interaction, even when NPC dialogue agrees.
 
 NPC / ENTITY AUTHORITY:
 - Decide from meaning and campaign context whether a PERSON physically appears. Do not infer person
