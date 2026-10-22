@@ -21,13 +21,12 @@ from app.api.turns import router as turns_router
 from app.api.visuals import router as visuals_router
 from app.api.world_state import router as world_state_router
 from app.config import settings
-from app.db.engine import get_session
+from app.db.engine import AsyncSessionLocal, get_session
 from app.db.startup_migrations import migrate_database_on_startup
 from app.runtime import install_runtime
 from app.runtime_paths import frontend_dist_dir, is_packaged_dist
-from app.services.post_turn_processor import PostTurnWorker
 from app.services.generation_startup_recovery import recover_interrupted_generations
-from app.db.engine import AsyncSessionLocal
+from app.services.post_turn_processor import PostTurnWorker
 
 install_runtime()
 
