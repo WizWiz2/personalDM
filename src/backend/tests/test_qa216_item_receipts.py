@@ -73,7 +73,7 @@ async def test_npc_receives_to_player_only_with_authoritative_item_receipt(db_se
 
 @pytest.mark.asyncio
 async def test_npc_absent_or_item_not_held_does_not_transfer(db_session):
-    cid, _, elsewhere, hero, npc, item_id, scene_id = await setup_handoff(db_session)
+    cid, room, elsewhere, hero, npc, item_id, scene_id = await setup_handoff(db_session)
     from app.db.tables import Character
     giver = await db_session.get(Character, str(npc))
     giver.current_location_id = str(elsewhere)
@@ -89,7 +89,7 @@ async def test_npc_absent_or_item_not_held_does_not_transfer(db_session):
         )
     item = await db_session.get(Item, str(item_id))
     assert item.current_owner_id == str(npc)
-    giver.current_location_id = None
+    giver.current_location_id = str(room)
     item.current_owner_id = str(hero)
     with pytest.raises(InventoryExecutionError, match="not owned"):
         await ActionSequenceExecutor(db_session)._apply_inventory_step(
