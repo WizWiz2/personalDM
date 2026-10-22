@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
@@ -9,6 +10,7 @@ from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.turn_authority import TurnAuthority
+from app.db.tables import Entity, Item
 from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
 from app.services.outcome_fact_authority import established_state_lines, established_subjects
@@ -235,6 +237,18 @@ class TurnAuthorityService:
                 "planned": plan.action_sequence.model_dump(mode="json"),
             }
 
+        # Only read typed DB custody; never infer ownership from storyteller prose.
+        item_rows = (await self._session.execute(
+            select(Entity.canonical_name, Item.current_owner_id, Item.current_location_id)
+            .join(Item, Item.entity_id == Entity.id)
+            .where(Entity.campaign_id == str(campaign_id), Entity.entity_type == "item")
+        )).all()
+        current_location_id = str(target_state.location_id) if target_state and target_state.location_id else None
+        unavailable_items = [
+            name for name, owner_id, item_location_id in item_rows
+            if owner_id != str(campaign.player_character_id or "")
+            and (owner_id is not None or item_location_id != current_location_id)
+        ]
         authority = TurnAuthority(
             campaign_id=campaign_id,
             trigger_turn_id=trigger_turn_id,
@@ -272,6 +286,7 @@ class TurnAuthorityService:
             ),
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
+            unavailable_item_names=unavailable_items,
             world_move=world_move,
             resolution=(plan.resolution if plan else "conversation"),
             identity_reveal_requested=(
