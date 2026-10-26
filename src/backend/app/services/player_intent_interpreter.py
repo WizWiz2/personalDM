@@ -192,6 +192,9 @@ class _MovementWire(_ActionWire):
     )
     spatial_effect: Literal["travel"]
     destination_location: str = Field(min_length=1, max_length=255)
+    returns_to_earlier_scene: bool = Field(default=False, description=(
+        "true when the hero goes back to where an earlier scene took place (a reference with a "
+        "scene_opening); place is then that reference's own ID."))
     place: str = Field(description=(
         "Same known place ID (also a spot within earshot of those present, current=true; an "
         "established exit's destination even when the input adds detail); new_in:<ID> for a new "
@@ -282,7 +285,8 @@ def _controlled_id(context_messages: list[ChatMessage]) -> str | None:
     ), None)
 
 
-def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str, str] | None = None):
+def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str, str] | None = None,
+                       visited: tuple[str, ...] = ()):
     owned = action_reference_catalog(context_messages, "Player-owned items:")
     objects = action_reference_catalog(context_messages, "Objects physically here:")
     registered = action_reference_catalog(context_messages, "Registered items:")
@@ -297,6 +301,13 @@ def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str
     movement = create_model("ReferencedMovement", __base__=_MovementWire, place=(
         Literal[refs + tuple(f"new_in:{key}" for key in refs) + ("new", "unresolved")], ...))
     variants = [movement, _TimeWire, _ProducedInventoryWire, _SpeechWire, _LocalActionWire]
+    if visited:
+        # Going back is a choice among places that already had a scene, never a new twin (replay15 r10).
+        variants[:1] = [
+            create_model("ReturnMovement", __base__=movement, returns_to_earlier_scene=(Literal[True], ...),
+                         place=(Literal[visited], ...)),
+            create_model("OnwardMovement", __base__=movement, returns_to_earlier_scene=(Literal[False], ...)),
+        ]
     if owned or objects:
         variants[-1] = create_model(
             "ReferencedLocalAction", __base__=_LocalActionWire,
@@ -610,7 +621,9 @@ class PlayerIntentInterpreter:
             + player_input
         )
         try:
-            wire = _intent_wire_model(context_messages, references)
+            wire = _intent_wire_model(context_messages, references, tuple(
+                key for key, place in (location_catalog or {}).items()
+                if place.get("scene_opening") and not place.get("current") and key in references))
             if references:
                 user += "\n\n[LOCATION REFERENCES]\n" + json.dumps(
                     location_catalog or references, ensure_ascii=False)

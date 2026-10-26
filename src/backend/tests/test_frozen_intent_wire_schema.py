@@ -389,3 +389,18 @@ def test_arrival_is_required_explicit_null_decided_before_the_result_and_never_d
             "action_outcomes": [{"action_index": 0, "resolution": "auto_success",
                                  "arriving": {"canonical_name": "Речник", "role": "речник"}}],
         })
+
+
+def test_going_back_binds_a_place_that_already_had_a_scene():
+    """replay15 r10: «иду обратно на пристань» created a second pier instead of the town's own ID."""
+    town, inn = "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"
+    wire = _intent_wire_model([], {town: "Весьегонск", inn: "Трактир"}, visited=(town,))
+    move = {"evidence_quote": "иду обратно на пристань", "contribution_kind": "world_action", "actor_id": "x",
+            "intent": "Вернуться на пристань.", "action_type": "movement", "spatial_effect": "travel",
+            "destination_location": "пристань", "movement_method": "ordinary"}
+    back = {**move, "returns_to_earlier_scene": True}
+    assert wire.model_validate({"summary": "Иду.", "actions": [{**back, "place": town}]})
+    with pytest.raises(ValidationError):
+        wire.model_validate({"summary": "Иду.", "actions": [{**back, "place": f"new_in:{town}"}]})
+    assert wire.model_validate({"summary": "Иду.", "actions": [
+        {**move, "returns_to_earlier_scene": False, "place": f"new_in:{town}"}]})
