@@ -1114,7 +1114,8 @@ class TurnOutcomeResolver:
             if force_introduce_contact:
                 solo_cast = True
             pure_travel = is_pure_ordinary_travel(contract)
-            if not force_introduce_contact and pure_travel:
+            # The travel-only call has no world channel; a due initiative takes the full outcome call instead.
+            if not force_introduce_contact and pure_travel and not (momentum.get("pressure_due") and threads):
                 return await self._resolve_ordinary_travel(
                     selection,
                     context_messages,
