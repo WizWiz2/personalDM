@@ -196,7 +196,9 @@ thread's actor acts at their own place, or here if present), npc_move (the threa
 takes ONE listed available_destinations edge, never into the hero's place), arrival (a
 person arrives here: the thread's actor when it has one, such as someone sent for; otherwise
 the newcomer typed in world_move.newcomer). When an NPC here agrees to send for a person who is
-not in the cast, type that person in that action's sends_for.
+not in the cast, type that person in that action's sends_for. A person named by personal name
+(whom the hero seeks, a goal, a reply) who is not in the cast is typed once in absent_people:
+offscreen, never present now; that name then belongs to them and to nobody else.
 master_harshness sets how hard independent moves and failures land: gentle = the world
 offers, helps and informs, costs stay soft; fair = proportionate costs; harsh = costs land
 now, threats press, NPCs pursue their own interest even against the hero.
@@ -396,6 +398,8 @@ class TurnOutcomeDecisionDraft(BaseModel):
 
     action_outcomes: list[ActionOutcomeDraft] = Field(max_length=8)
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
+    absent_people: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=2, description=(
+        "Named people spoken of but not here and not in the cast: typed offscreen, identity reserved."))
     item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
     npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
     player_item_handoffs: list[PlayerItemHandoff] = Field(default_factory=list, max_length=4)
@@ -897,6 +901,9 @@ def normalize_outcome_draft(
     errands = [
         item.sends_for.model_copy(update={"after_action_index": item.action_index, "resident_slot": None})
         for item in draft.action_outcomes if getattr(item, "sends_for", None)
+    ] + [  # A named person spoken of is offscreen too: their name is theirs (REPORT14 «Прохор Белов»).
+        item.model_copy(update={"after_action_index": None, "resident_slot": None})
+        for item in draft.absent_people if not item.temporary_name
     ]
     for arrives, npc in [*((True, item) for item in arrivals), *((False, item) for item in draft.npc_introductions),
                          *((None, item) for item in errands)]:

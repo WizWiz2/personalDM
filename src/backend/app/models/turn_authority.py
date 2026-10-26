@@ -32,7 +32,7 @@ class PlannedNpcIntroduction(BaseModel):
     resident_slot: str | None = Field(default=None, max_length=64)
     # Brought here by a step's result, not found at the place: never a resident keeper.
     arrives: bool = False
-    # An errand's target: exists offscreen until an arrival world move brings them.
+    # Offscreen: an errand's target or a named person spoken of; only an arrival brings them.
     sent_for: bool = False
 
 
