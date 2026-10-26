@@ -13,6 +13,7 @@ from app.models.turn import ChatMessage
 from app.models.turn_authority import (
     PlannedItemIntroduction,
     PlannedNpcIntroduction,
+    PlannedPlaceIntroduction,
     PlannedWorldMove,
 )
 from app.providers.llm_provider import LLMProvider, LLMProviderError
@@ -128,6 +129,7 @@ class CoordinatedTurnPlan(TurnPlan):
     item_introductions: list[PlannedItemIntroduction] = Field(
         default_factory=list, max_length=4,
     )
+    place_introductions: list[PlannedPlaceIntroduction] = Field(default_factory=list, max_length=1)
     world_move: PlannedWorldMove | None = None
     addressed_response_requested: bool = False
     addressed_response: AddressedResponse | None = None

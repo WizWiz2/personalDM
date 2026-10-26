@@ -660,6 +660,7 @@ class ActionPlanCompiler:
             ),
             npc_introductions=npc_introductions,
             item_introductions=introductions,
+            place_introductions=decision.place_introductions,
             world_move=decision.world_move,
             addressed_response_requested=contract.addressed_response_requested,
             personal_name_revealed=False,

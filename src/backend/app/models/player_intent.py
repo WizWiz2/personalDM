@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.addressed_response import AddressedResponse
 from app.models.item_state import ItemContentRevelation, ItemPropertyChange, RequestedInventoryAction
-from app.models.turn_authority import PlannedItemIntroduction, PlannedWorldMove
+from app.models.turn_authority import PlannedItemIntroduction, PlannedPlaceIntroduction, PlannedWorldMove
 
 
 # Scene clock authority: a typed part of day, never a phrase copied from the player.
@@ -257,6 +257,7 @@ class TurnOutcomeDecision(BaseModel):
     action_outcomes: list[ActionOutcomeDecision] = Field(default_factory=list, max_length=8)
     npc_introductions: list[OutcomeNpcIntroduction] = Field(default_factory=list, max_length=4)
     item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
+    place_introductions: list[PlannedPlaceIntroduction] = Field(default_factory=list, max_length=1)
     npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
     player_item_handoffs: list[PlayerItemHandoff] = Field(default_factory=list, max_length=4)
     item_revelations: list[ItemContentRevelation] = Field(default_factory=list, max_length=4)

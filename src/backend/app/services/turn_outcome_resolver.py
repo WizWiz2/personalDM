@@ -199,6 +199,9 @@ the newcomer typed in world_move.newcomer). When an NPC here agrees to send for 
 not in the cast, type that person in that action's sends_for. A person named by personal name
 (whom the hero seeks, a goal, a reply) who is not in the cast is typed once in absent_people:
 offscreen, never present now; that name then belongs to them and to nobody else.
+PLACES: when a result or world move reveals a concrete place the hero could go that is not a
+known place (where someone lives, where the lights were seen), type it in place_introductions:
+place=new_in:<ID of the KNOWN PLACE it lies in>, a short name and profile. It becomes a destination.
 master_harshness sets how hard independent moves and failures land: gentle = the world
 offers, helps and informs, costs stay soft; fair = proportionate costs; harsh = costs land
 now, threats press, NPCs pursue their own interest even against the hero.
@@ -386,6 +389,12 @@ class OutcomeNpcIntroductionDraft(BaseModel):
 ActionOutcomeDraft.model_rebuild()
 
 
+class PlaceIntroductionDraft(BaseModel):
+    canonical_name: str = Field(min_length=2, max_length=80)
+    profile: str = Field(min_length=32, max_length=600)
+    place: str = Field(description="new_in:<ID of the known place it lies in>")
+
+
 class TurnOutcomeDecisionDraft(BaseModel):
     """Permissive semantic draft with a mandatory action coverage field.
 
@@ -400,6 +409,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
     absent_people: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=2, description=(
         "Named people spoken of but not here and not in the cast: typed offscreen, identity reserved."))
+    place_introductions: list[PlaceIntroductionDraft] = Field(default_factory=list, max_length=1)
     item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
     npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
     player_item_handoffs: list[PlayerItemHandoff] = Field(default_factory=list, max_length=4)
@@ -459,6 +469,7 @@ def _outcome_wire_model(
     world_kinds: tuple[str, ...] = (),
     world_required: bool = False,
     last_world_kind: str | None = None,
+    known_places: tuple[str, ...] = (),
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -637,12 +648,17 @@ def _outcome_wire_model(
 
         world_move_type = ThreadWorldMove if world_required else ThreadWorldMove | None
 
+    # A new place lies inside a known one: the binder's own new_in:<ID> choice (REPORT14: no places).
+    place_model = create_model("BoundPlaceIntroductionDraft", __base__=PlaceIntroductionDraft, place=(
+        Literal[tuple(f"new_in:{key}" for key in known_places)] if known_places else str, ...))
+
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
         model_config = ConfigDict(extra="ignore", json_schema_extra={
             "required": ["action_outcomes", "npc_introductions", "npc_item_handoffs", "player_item_handoffs", "item_revelations", "item_introductions", "item_property_changes",
                          *(["world_move"] if world_required and world_move_type is not type(None) else [])],
         })
         response_speaker_name: speaker_type = None
+        place_introductions: list[place_model] = Field(default_factory=list, max_length=1 if known_places else 0)
         npc_item_handoffs: list[npc_handoff_model] = Field(default_factory=list, max_length=4 if npc_handoffs_allowed else 0)
         player_item_handoffs: list[player_handoff_model] = Field(default_factory=list, max_length=4 if player_handoffs_allowed else 0)
         item_revelations: list[revelation_model] = Field(default_factory=list, max_length=4 if revelations_allowed else 0)
@@ -972,6 +988,11 @@ def normalize_outcome_draft(
                 item.model_dump(mode="json") for item in draft.player_item_handoffs
             ],
             "item_revelations": [item.model_dump(mode="json") for item in draft.item_revelations],
+            "place_introductions": [
+                {"canonical_name": _compact(place.canonical_name), "profile": _compact(place.profile),
+                 "parent_location_id": place.place.removeprefix("new_in:")}
+                for place in draft.place_introductions if place.place.startswith("new_in:")
+            ],
             "item_property_changes": [item.model_dump(mode="json") for item in draft.item_property_changes],
             "world_move": (
                 draft.world_move.model_dump(mode="json") if draft.world_move else None
@@ -1116,6 +1137,7 @@ class TurnOutcomeResolver:
         repair_feedback: str | None = None,
         initiative: tuple[InitiativePolicy, dict] | None = None,
         master_block: str = "",
+        known_places: dict[str, str] | None = None,
     ) -> TurnOutcomeDecision:
         policy, momentum = initiative or (InitiativePolicy(), {})
         threads = {thread["thread_id"]: thread for thread in momentum.get("sources", [])
@@ -1194,6 +1216,7 @@ class TurnOutcomeResolver:
                 world_kinds=tuple(policy.world_moves),
                 world_required=bool(momentum.get("pressure_due")) and not contract.pending_player_choice,
                 last_world_kind=momentum.get("last_world_move_kind"),
+                known_places=tuple(known_places or ()),
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,
@@ -1244,6 +1267,8 @@ class TurnOutcomeResolver:
                             + json.dumps(response_contract, ensure_ascii=False)
                             + empty_cast_guidance
                             + master_block
+                            + ("\n[KNOWN PLACES]\n" + json.dumps(known_places, ensure_ascii=False)
+                               if known_places else "")
                             + "".join(
                                 f"\n[DESTINATION CAST — typed] Physically at «{place}» when the "
                                 f"human arrives: {', '.join(cast)}. They are there; never resolve "
