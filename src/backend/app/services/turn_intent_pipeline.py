@@ -242,7 +242,9 @@ class TurnIntentPlanningPipeline:
             ]
 
         resident_slots = await self._compiler.resident_slots(campaign_id)
-        decision = await self._compiler.resolve_known_travel(campaign_id, contract)
+        # A due world initiative rides the outcome call even on known-route travel.
+        world_due = bool(momentum.get("pressure_due") and momentum.get("sources"))
+        decision = None if world_due else await self._compiler.resolve_known_travel(campaign_id, contract)
         outcome_owner = "route_graph" if decision is not None else "external_resolver"
         if decision is None:
             decision = await self._outcomes.resolve(
