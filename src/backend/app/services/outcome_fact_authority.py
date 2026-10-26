@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.fact_types import predicate_label
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.repositories.fact_repo import FactRepository
 from app.db.tables import Turn
@@ -86,7 +87,7 @@ async def established_state_lines(
             # remains active resurrects superseded positions/ownership of unrelated subjects.
             subject = str(fact.subject or "")
             value = f": {fact.object_value}" if fact.object_value is not None else ""
-            line = f"{subject} — {fact.predicate}{value}."
+            line = f"{subject} — {predicate_label(fact.predicate)}{value}."
             if line not in lines:
                 lines.append(line)
     return lines

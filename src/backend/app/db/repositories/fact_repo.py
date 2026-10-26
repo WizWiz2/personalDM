@@ -7,6 +7,7 @@ from app.db.memory_witness import record_witnesses
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Fact
 from app.models.fact import FactCreate, FactRead, FactUpdate
+from app.models.fact_types import cardinality_of
 
 
 class FactRepository(BaseRepository):
@@ -204,70 +205,46 @@ class FactRepository(BaseRepository):
         data: FactCreate,
         *,
         operation: str = "assert",
-        cardinality: str = "single",
         previous_object_value: str | None = None,
     ) -> FactRead | None:
-        """Apply assert/revise/contradict/retract while preserving history."""
-        operation = (
-            operation
-            if operation in {"assert", "revise", "retract", "contradict"}
-            else "assert"
-        )
-        cardinality = cardinality if cardinality in {"single", "multi"} else "single"
-        # scene_state can describe a single-valued state or a set of simultaneously
-        # true observations. The memory kind alone cannot decide cardinality:
-        # ("кровь", "находится") may refer to two distinct unregistered puddles.
-        # Let the semantic taxonomy/scribe supply cardinality until a typed slot
-        # contract can prove exclusivity. Explicit revise still supersedes history.
-        current = await self.find_current_by_key(
-            campaign_id,
-            data.subject,
-            data.predicate,
-            scope=data.scope,
-            scene_id=data.scene_id,
-            memory_kind=data.memory_kind,
-        )
-        # A free-text subject is NOT physical identity. Two registered objects
-        # may have the same label ("лодка", "лужа крови") in the same scene.
-        # Typed assertions can only supersede facts about that exact entity.
-        # Untyped assertions cannot implicitly overwrite a registered entity.
+        """Apply assert/revise/contradict/retract while preserving history.
+
+        Cardinality belongs to the closed fact-type catalog. A ``single`` type has one
+        current value per (subject, type_id) across scopes: a new value supersedes it.
+        Typed subjects match by entity id; untyped subjects never overwrite typed ones.
+        """
+        if operation not in {"assert", "revise", "retract", "contradict"}:
+            operation = "assert"
+        single = cardinality_of(data.predicate) == "single"
+        subject_key = self.normalize(data.subject)
+        predicate_key = self.normalize(data.predicate)
         current = [
-            fact for fact in current
-            if fact.subject_entity_id == data.subject_entity_id
-        ]
-        if data.subject_entity_id:
-            # Match the same typed entity even when the storyteller changes its
-            # surface designation. Keep unrelated predicates and scopes intact.
-            seen_ids = {fact.id for fact in current}
-            current.extend(
-                fact for fact in await self.list_active(campaign_id, scene_id=data.scene_id)
-                if fact.subject_entity_id == data.subject_entity_id
-                and fact.memory_kind == data.memory_kind
-                and fact.scope == data.scope
-                and fact.scene_id == data.scene_id
-                and self.normalize(fact.predicate) == self.normalize(data.predicate)
-                and fact.id not in seen_ids
+            fact
+            for fact in await self.list_active(campaign_id)
+            if self.normalize(fact.predicate) == predicate_key
+            and fact.subject_entity_id == data.subject_entity_id
+            and (data.subject_entity_id is not None or self.normalize(fact.subject) == subject_key)
+            and (
+                single
+                or (fact.scope == data.scope and fact.scene_id == data.scene_id)
             )
+        ]
         object_key = self.normalize(data.object_value)
         truth_key = self.normalize(data.truth_status)
-
         exact = [
             fact
             for fact in current
             if self.normalize(fact.object_value) == object_key
             and self.normalize(fact.truth_status) == truth_key
+            and fact.scope == data.scope
+            and fact.scene_id == data.scene_id
         ]
-        previous_key = self.normalize(previous_object_value)
+        expected = self.normalize(previous_object_value) or object_key
 
         if operation == "retract":
-            targets = current
-            if cardinality == "multi" and (previous_key or object_key):
-                expected = previous_key or object_key
-                targets = [
-                    fact
-                    for fact in current
-                    if self.normalize(fact.object_value) == expected
-                ]
+            targets = current if single or not expected else [
+                fact for fact in current if self.normalize(fact.object_value) == expected
+            ]
             for fact in targets:
                 await self.update(fact.id, FactUpdate(is_current=False))
             return None
@@ -276,24 +253,16 @@ class FactRepository(BaseRepository):
             return exact[0]
 
         created = await self.create(campaign_id, data)
-        targets: list[FactRead] = []
-        if cardinality == "single":
+        if single:
             targets = current
-        elif operation in {"revise", "contradict"}:
-            if previous_key:
-                targets = [
-                    fact
-                    for fact in current
-                    if self.normalize(fact.object_value) == previous_key
-                ]
-            elif exact:
-                targets = []
-            else:
-                targets = current
-
+        elif operation in {"revise", "contradict"} and previous_object_value:
+            targets = [
+                fact for fact in current
+                if self.normalize(fact.object_value) == self.normalize(previous_object_value)
+            ]
+        else:
+            targets = []
         for fact in targets:
-            if fact.id == created.id:
-                continue
             await self.update(
                 fact.id,
                 FactUpdate(is_current=False, superseded_by=created.id),

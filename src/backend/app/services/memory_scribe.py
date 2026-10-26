@@ -9,6 +9,7 @@ from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
+from app.models.fact_types import catalog_prompt
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
@@ -140,27 +141,24 @@ class MemoryScribe:
 - Используй точные ИМЕНА сущностей, не UUID и не SELF/USER/all/N/A.
 - Scene Thesis обслуживается отдельным Curator и запрещён.
 - Для каждого durable world_state outcome обязательно создай proposal change_type=fact с непустыми
-  payload.subject, payload.predicate и payload.object_value; payload не может быть пустым.
+  fact_type, payload.subject и payload.object_value; payload не может быть пустым.
 - Выбирай субъектом сущность, чьё состояние или свойство непосредственно изменилось (state-bearing
   entity). Не подменяй её контейнером, сценой или местом, где эффект лишь наблюдается; место можно
   указать отдельным фактом только если его собственное состояние также явно установлено.
 - Если состояние уже описывает устойчивое значение, передай его как object_value и выбери
   operation=assert для нового значения или operation=revise для замены текущего значения.
-- Если в текущих FACTS уже есть то же смысловое subject+predicate, новая подтверждённая версия
-  должна использовать operation=revise, сохранить тот же scope и заменить прежнее значение;
-  не создавай второй параллельный current fact для single-кардинальности.
-- Если результат исполняет, отменяет или меняет ожидаемое/отложенное состояние текущего факта
-  (договорённость состоялась, человек пришёл, ожидание закончилось), сделай operation=revise того же
-  subject+predicate с новым значением: устаревшее «ещё не» не должно оставаться current.
+- fact_type выбирается только из КАТАЛОГА ТИПОВ ФАКТОВ. Тот же subject и тот же fact_type с
+  новым значением заменяют прежнее значение автоматически (для single-типов), включая
+  исполнение ожидаемого состояния («ещё не пришёл» → «пришёл»).
 - object_value всегда является короткой строкой на русском, даже если состояние логически
   истинно или ложно: не помещай boolean true/false в object_value. Boolean-аспект уже
   выражается наличием факта и truth_status="true" или "false".
 - При изменении состояния запиши именно результирующее состояние изменённого объекта:
-  subject = носитель изменённого свойства, predicate = это свойство, object_value = его новое
+  subject = носитель изменённого свойства, fact_type = это свойство, object_value = его новое
   значение. Не заменяй состояние атмосферой, цветом, впечатлением или описанием эффекта.
   Сохраняй отрицания и различай действие, его причину и наблюдаемый результат. Если результат
   не подтверждён, не утверждай желаемое состояние из попытки игрока. Для уже известного
-  свойства сохраняй его subject/predicate и сопоставимое краткое значение.
+  свойства сохраняй его subject/fact_type и сопоставимое краткое значение.
 - subject и object_value факта — текстовые понятия, а не ссылки на известные сущности;
   не отбрасывай новый предмет только потому, что его ещё нет в списке сущностей.
 - Не создавай canon_gap proposal и не оставляй durable outcome без конкретного fact/event/relationship
@@ -193,7 +191,7 @@ class MemoryScribe:
       "outcome_id": "o1",
       "change_type": "fact|event|relationship|movement|knowledge|item_transfer|narrative_detail",
       "operation": "assert|revise|retract|contradict",
-      "cardinality": "single|multi",
+      "fact_type": "ID из каталога (только для change_type=fact)",
       "payload": {{}}
     }}
   ]
@@ -201,7 +199,7 @@ class MemoryScribe:
 
 PAYLOAD:
 Все ссылки на сущности — точное имя/alias из каталога или его UUID. Не возвращай SELF, player, all или другие местоименные заглушки; перечисли конкретные id участников.
-- fact: {{"subject":"устойчивый субъект","predicate":"стабильная связь","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public","scope":"scene|campaign"}}
+- fact: {{"subject":"устойчивый субъект","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public","scope":"scene|campaign"}}
 - scope=scene для следов, положения, состояния двери, локальной находки и любых наблюдений, истинных только здесь.
 - scope=campaign только для личности, происхождения, владения, глобального лора или устойчивого состояния, которое должно пережить смену сцены.
 - event: {{"event_type":"тип","description":"что произошло","location_id":"имя локации или null","participant_ids":["имена"]}}
@@ -222,7 +220,9 @@ FACT SEMANTICS:
 - revise: прежнее текущее значение уточнено или заменено;
 - contradict: ДМ прямо опроверг прежнее текущее значение;
 - retract: прежнее значение больше не считается текущим;
-- cardinality=single, если одновременно допустимо только одно значение; multi, если значений может быть несколько.
+
+КАТАЛОГ ТИПОВ ФАКТОВ (fact_type; в скобках кардинальность):
+{catalog_prompt()}
 
 Каждый durable outcome должен иметь хотя бы один proposal. Если нет ни устойчивых изменений,
 ни полезной временной детали, верни пустые outcomes и proposals.
@@ -576,15 +576,9 @@ FACT SEMANTICS:
             if not resolved.get("subject") or not resolved.get("predicate"):
                 return None
             operation = str(resolved.get("operation") or canon_meta.get("operation") or "assert")
-            cardinality = str(
-                resolved.get("cardinality") or canon_meta.get("cardinality") or "single"
-            )
             if operation not in {"assert", "revise", "retract", "contradict"}:
                 operation = "assert"
-            if cardinality not in {"single", "multi"}:
-                cardinality = "single"
             resolved["operation"] = operation
-            resolved["cardinality"] = cardinality
             if operation != "retract" and not resolved.get("object_value"):
                 return None
             scope = str(resolved.get("scope") or "scene").casefold()

@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.fact_types import predicate_label
 from app.config import settings
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.event_repo import EventRepository
@@ -275,7 +276,7 @@ class ThesisCurator:
 
         facts = await self._fact_repo.list_active(campaign_id, scene_id=scene_id)
         fact_lines = [
-            f"- {fact.subject} | {fact.predicate} | {fact.object_value or 'null'} "
+            f"- {fact.subject} | {predicate_label(fact.predicate)} | {fact.object_value or 'null'} "
             f"[{fact.truth_status}; {fact.scope}]"
             for fact in facts[-24:]
         ]

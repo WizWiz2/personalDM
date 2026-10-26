@@ -299,6 +299,7 @@ def _scribe(prompt: str) -> str:
         proposal = {
             "outcome_id": "o1",
             "change_type": "fact",
+            "fact_type": "condition",
             "operation": "assert",
             "cardinality": "multi",
             "payload": {

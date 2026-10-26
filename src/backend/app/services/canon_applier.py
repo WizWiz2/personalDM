@@ -46,12 +46,6 @@ class CanonApplier:
         value = str(payload.get("operation") or canon.get("operation") or "assert")
         return value if value in {"assert", "revise", "retract", "contradict"} else "assert"
 
-    @staticmethod
-    def _cardinality(payload: dict) -> str:
-        canon = payload.get("_canon") if isinstance(payload.get("_canon"), dict) else {}
-        value = str(payload.get("cardinality") or canon.get("cardinality") or "single")
-        return value if value in {"single", "multi"} else "single"
-
     async def _structured_item_receipt_exists(
         self,
         campaign_id: UUID,
@@ -208,7 +202,6 @@ class CanonApplier:
                     ),
                 ),
                 operation=operation,
-                cardinality=self._cardinality(payload),
                 previous_object_value=payload.get("previous_object_value"),
             )
             return

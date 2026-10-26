@@ -25,6 +25,7 @@ def test_outcome_first_fact_is_covered_and_evidence_backed():
                 {
                     "outcome_id": "o1",
                     "change_type": "fact",
+                    "fact_type": "condition",
                     "operation": "revise",
                     "cardinality": "single",
                     "payload": {
@@ -63,6 +64,7 @@ def test_character_claim_cannot_become_objective_fact():
                 {
                     "outcome_id": "claim",
                     "change_type": "fact",
+                    "fact_type": "condition",
                     "operation": "assert",
                     "cardinality": "single",
                     "payload": {
@@ -121,6 +123,7 @@ def test_unsupported_evidence_is_rejected_not_silently_accepted():
                 {
                     "outcome_id": "o1",
                     "change_type": "fact",
+                    "fact_type": "condition",
                     "payload": {
                         "subject": "дракон",
                         "predicate": "состояние",
@@ -142,6 +145,7 @@ def test_legacy_proposals_are_marked_as_unverified():
             "proposals": [
                 {
                     "change_type": "fact",
+                    "fact_type": "condition",
                     "payload": {
                         "subject": "дверь",
                         "predicate": "состояние",
