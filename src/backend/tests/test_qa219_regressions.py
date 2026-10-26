@@ -32,7 +32,7 @@ from app.services.continuity_checker import ContinuityChecker
 from app.services.item_fact_guard import guard_item_facts
 from app.services.item_state_authority import load_item_states
 from app.services.narration_meta_guard import leaked_meta_lines
-from app.services.player_intent_interpreter import _intent_semantic_review_wire, _intent_wire_model
+from app.services.player_intent_interpreter import _intent_wire_model
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.turn_authority_validator import TurnAuthorityValidator
 from app.services.turn_planner import TurnPlanningError
@@ -231,13 +231,10 @@ def test_outside_item_remains_selectable_in_both_intent_schemas():
         f"Controlled character: {hero}\nPhysically present characters: Ирма [id={hero}], Марта [id={npc}]\n"
         f"Player-owned items: письмо в рамке [id={held}]\nRegistered items: письмо без марки [id={outside}], письмо в рамке [id={held}]"
     ))]
-    action = {"action_type": "inventory", "actor_role": "speaker", "intent": "Забрать письмо без марки",
+    action = {"action_type": "inventory", "evidence_quote": "Забрать", "contribution_kind": "world_action",
+              "actor_id": hero, "intent": "Забрать письмо без марки",
               "item_id": outside, "inventory_operation": "take"}
     assert _intent_wire_model(context).model_validate({"summary": action["intent"], "actions": [action]}).actions[0].item_id == outside
-    review = _intent_semantic_review_wire(1, action["intent"], "Ирма", context)
-    assert review.model_validate({"action_ownership": [{**{key: value for key, value in action.items() if key != "intent"}, "action_index": 0,
-        "spatial_effect": "local", "contribution_kind": "world_action"}],
-        "information_request_only": False, "information_recipient": "none"}).action_ownership[0].item_id is not None
 
 
 @pytest.mark.asyncio

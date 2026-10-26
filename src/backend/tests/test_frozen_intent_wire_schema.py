@@ -8,8 +8,6 @@ from app.services.dead_turn_guard import _empty_plan_diagnostic
 from app.services.player_intent_interpreter import (
     PlayerActionIntentDraft,
     PlayerIntentContractDraft,
-    _destination_binding_wire,
-    _intent_semantic_review_wire,
     _intent_wire_model,
     _IntentWire,
     normalize_intent_draft,
@@ -22,17 +20,19 @@ from app.services.turn_outcome_resolver import (
     _profile_wire_model,
 )
 
+_TYPED = {"evidence_quote": "q", "contribution_kind": "world_action", "actor_id": "x"}
 
-def test_movement_reference_schema_restricts_known_identity_and_allows_discovery():
+
+def test_movement_place_schema_restricts_known_identity_and_allows_discovery():
     location_id = "00000000-0000-4000-8000-000000000001"
-    wire = _destination_binding_wire([0], {location_id: "Комната Кая"})
-    payload = {"action_0": location_id}
-    assert wire.model_validate(payload).action_0 == location_id
-    payload["action_0"] = "new"
-    assert wire.model_validate(payload).action_0 == "new"
-    payload["action_0"] = "invented-id"
+    wire = _intent_wire_model([], {location_id: "Комната Кая"})
+    move = {"evidence_quote": "иду к себе", "contribution_kind": "world_action", "actor_id": "x",
+            "intent": "Иду к себе.", "action_type": "movement", "spatial_effect": "travel",
+            "destination_location": "к себе", "movement_method": "ordinary"}
+    for place in (location_id, f"new_in:{location_id}", "new", "unresolved"):
+        assert wire.model_validate({"summary": "Иду.", "actions": [{**move, "place": place}]})
     with pytest.raises(ValidationError):
-        wire.model_validate(payload)
+        wire.model_validate({"summary": "Иду.", "actions": [{**move, "place": "invented-id"}]})
 
 
 def test_inventory_schema_rejects_a_one_digit_uuid_error_and_self_recipient():
@@ -43,7 +43,7 @@ def test_inventory_schema_rejects_a_one_digit_uuid_error_and_self_recipient():
         f"Controlled character: {player}\nPlayer-owned items: Ключ [id={item}]\n"
         f"Physically present characters: Кай [id={player}], Мартин [id={npc}]"
     ))])
-    action = dict(action_type="inventory", actor_role="speaker", intent="Передаю ключ.",
+    action = dict(action_type="inventory", **{**_TYPED, "actor_id": player}, intent="Передаю ключ.",
                   item_id=item, inventory_operation="give", inventory_target_id=npc)
     payload = {"summary": "Передаю ключ.", "actions": [action]}
     assert wire.model_validate(payload).actions[0].item_id == item
@@ -62,22 +62,6 @@ def test_empty_action_schema_exposes_only_null_prerequisites():
     assert intro["properties"]["after_action_index"]["type"] == "null"
 
 
-def test_attempted_movement_cannot_be_combined_with_no_endpoint_or_travel_effect():
-    wire = _intent_semantic_review_wire(1, "Пытаюсь пройти на склад; прямого прохода нет.")
-    action = {"action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action",
-              "action_type": "movement", "spatial_effect": "none", "destination_location": None}
-    payload = {"action_ownership": [action], "information_request_only": False,
-               "information_recipient": "none"}
-    with pytest.raises(ValidationError, match="attempted movement"):
-        wire.model_validate(payload)
-    valid = {**action, "spatial_effect": "travel", "destination_location": "Склад"}
-    assert wire.model_validate({**payload, "action_ownership": [valid]}).action_ownership[0].action_type == "movement"
-    schema = wire.model_json_schema()
-    movement = schema["$defs"]["MovingOwnership"]["properties"]
-    assert movement["spatial_effect"]["const"] == "travel"
-    assert movement["destination_location"]["type"] == "string"
-
-
 def test_intent_wire_schema_cannot_accept_empty_json_object() -> None:
     schema = PlayerIntentContractDraft.model_json_schema()
 
@@ -86,19 +70,10 @@ def test_intent_wire_schema_cannot_accept_empty_json_object() -> None:
         PlayerIntentContractDraft.model_validate({})
 
 
-def test_destination_bindings_select_only_catalogued_ids_or_new():
-    wire = _destination_binding_wire([0, 1], {"room": "Комната", "garden": "Сад"})
-    assert wire.model_validate({"action_0": "garden", "action_1": "new"})
-    with pytest.raises(ValidationError):
-        wire.model_validate({"action_0": "Сад", "action_1": "garden"})
-    with pytest.raises(ValidationError):
-        wire.model_validate({"action_0": "room", "action_1": "garden", "actions": []})
-
-
 def test_intent_action_wire_schema_requires_type_and_intent() -> None:
     schema = PlayerActionIntentDraft.model_json_schema()
 
-    assert {"action_type", "intent"}.issubset(set(schema.get("required") or []))
+    assert "intent" in set(schema.get("required") or [])
     with pytest.raises(ValidationError):
         PlayerActionIntentDraft.model_validate({})
 
@@ -140,7 +115,7 @@ def test_required_movement_draft_still_normalizes_into_strict_ir() -> None:
     assert contract.actions[0].destination_location == "Коридор"
     assert contract.actions[0].destination_parent_location_id is None
     house = "6f1c1c4e-2b7a-4a43-9a51-0d5a1f6b7c11"
-    draft.actions[0].destination_reference = f"new_in:{house}"
+    draft.actions[0].place = f"new_in:{house}"
     inside = normalize_intent_draft(draft, "Я выхожу из своей комнаты в коридор.").actions[0]
     assert (inside.destination_location_id, str(inside.destination_parent_location_id)) == (None, house)
 
@@ -178,15 +153,13 @@ def test_wire_normalization_preserves_movement_and_inventory_authority() -> None
             "summary": "Кай выходит в коридор и передаёт ключ Мартину.",
             "actions": [
                 {
-                    "action_type": "movement",
-                    "actor_role": "speaker",
+                    "action_type": "movement", **_TYPED, "spatial_effect": "travel", "place": "new",
                     "intent": "Выхожу в коридор.",
                     "destination_location": "Коридор",
                     "movement_method": "ordinary",
                 },
                 {
-                    "action_type": "inventory",
-                    "actor_role": "speaker",
+                    "action_type": "inventory", **_TYPED,
                     "intent": "Передаю ключ Мартину.",
                     "inventory_operation": "give",
                     "item_id": "00000000-0000-4000-8000-000000000001",
@@ -210,8 +183,7 @@ def test_special_movement_method_survives_intent_normalization():
             "summary": "Телепортируюсь в коридор.",
             "actions": [
                 {
-                    "action_type": "movement",
-                    "actor_role": "speaker",
+                    "action_type": "movement", **_TYPED, "spatial_effect": "travel", "place": "new",
                     "intent": "Телепортироваться в коридор.",
                     "destination_location": "Коридор",
                     "movement_method": "teleportation",
