@@ -15,7 +15,7 @@ from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import Campaign, Turn
+from app.db.tables import Campaign, GenerationDecision, Turn
 from app.models.proposed_change import ChangeType, ProposalAction
 from app.services import campaign_write_barrier
 from app.services.actor_turn_authority_guard import speech_spans
@@ -155,10 +155,12 @@ class PostTurnProcessor:
             and int(protocol.get("version") or 0) >= 1
         )
 
-    @classmethod
-    def _typed_record(cls, assistant) -> str:
-        """What the turn decided, never what the prose says: the only source of durable facts."""
-        authority = cls._snapshot_dict(assistant).get("turn_authority") or {}
+    async def _typed_record(self, assistant) -> str:
+        """What the turn decided, never what the prose says: the only source of durable facts.
+
+        The one prose span admitted is the beat owner's typed speech claim (cast ID checked against
+        the grant): it becomes that speaker's claim, never objective canon."""
+        authority = self._snapshot_dict(assistant).get("turn_authority") or {}
         steps = (authority.get("action_sequence") or {}).get("steps") or []
         # Plain lines, not JSON: prose-era guards read every double quote as direct speech.
         lines = [f"Место: {' / '.join(authority.get('target_location_path') or authority.get('source_location_path') or [])}",
@@ -169,6 +171,15 @@ class PostTurnProcessor:
         # A typed beat is the owner's decided line: quoted, so it is attributed to that speaker.
         lines += [f"{speaker}: «{beat}»" if speaker else beat for beat in authority.get("character_beats") or []]
         lines += list(authority.get("observable_consequences") or [])
+        beat = (await self._session.execute(
+            select(GenerationDecision.payload_json).where(
+                GenerationDecision.user_turn_id == str(assistant.parent_turn_id),
+                GenerationDecision.step == "beat", GenerationDecision.outcome == "honored",
+            ).order_by(GenerationDecision.created_at.desc()).limit(1)
+        )).scalar()
+        beat = json.loads(beat) if beat else {}
+        if beat.get("kind") == "speech" and beat.get("cast_id") == authority.get("beat_owner_id"):
+            lines.append(f"{beat.get('owner')} сказал: «{beat['evidence']}»")
         return "\n".join(lines)
 
     @staticmethod
@@ -460,7 +471,7 @@ class PostTurnProcessor:
                 managed = self._authority_managed(assistant) and (
                     self._snapshot_dict(assistant).get("turn_authority") or {}
                 ).get("scene_disposition") != "actor_turn"
-                record = self._typed_record(assistant) if managed else assistant.content
+                record = await self._typed_record(assistant) if managed else assistant.content
                 if assistant.parent_turn_id:
                     from app.services.location_profile_guard import (
                         apply_location_profile_updates,
