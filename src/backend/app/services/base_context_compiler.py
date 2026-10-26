@@ -286,6 +286,26 @@ class ContextCompiler:
             own_dialogue.append(record)
         return own_dialogue[-self.ACTOR_HISTORY_LIMIT :]
 
+    SCENE_WINDOW_OTHER_FACTS = 12
+
+    @classmethod
+    def _scene_window(cls, facts, scene_id: UUID | None, scene_entity_ids: set[str]):
+        """This scene's facts and facts about who/what is here; only the latest few others.
+
+        Context must not grow with campaign length: everything else is reachable through
+        the bridge and the player memory query, not replayed into every prompt.
+        """
+        here = [
+            fact for fact in facts
+            if (scene_id is not None and fact.scene_id == scene_id)
+            or str(fact.subject_entity_id) in scene_entity_ids
+        ]
+        here_ids = {fact.id for fact in here}
+        others = sorted(
+            (fact for fact in facts if fact.id not in here_ids), key=lambda fact: fact.updated_at
+        )[-cls.SCENE_WINDOW_OTHER_FACTS :]
+        return sorted([*here, *others], key=lambda fact: fact.updated_at)
+
     async def compile_context(
         self,
         campaign_id: UUID,
@@ -493,10 +513,15 @@ class ContextCompiler:
                     included_belief_ids.extend(actor_belief_ids)
                     included_layers.append("layer_2_actor")
 
-        facts = await self._fact_repo.list_active(
-            campaign_id,
-            visibility="public" if actor_mode else None,
-            scene_id=scene_id,
+        facts = self._scene_window(
+            await self._fact_repo.list_active(
+                campaign_id,
+                visibility="public" if actor_mode else None,
+                scene_id=scene_id,
+            ),
+            scene_id,
+            {str(item.id) for item in scene_characters}
+            | ({str(scene.location_id)} if scene and getattr(scene, "location_id", None) else set()),
         )
         if facts:
             fact_package = "[Campaign Facts & History]\n"

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 from collections import Counter
@@ -41,6 +42,7 @@ class LLMProvider:
     silently ignored by an OpenAI compatibility shim.
     """
 
+    PROMPT_CACHE_HEAD_CHARS = 2000
     COMPLETE_ENDINGS = (".", "!", "?", "…", ":", ";", "»", '"', "'", ")", "]", "}", "*")
     JSON_MARKERS = (
         "верни только json",
@@ -478,6 +480,17 @@ class LLMProvider:
             result.append({"role": role, "content": message.get("content", "")})
         return result
 
+    @staticmethod
+    def _prompt_cache_key(config: ProviderConfigRead, messages: list[dict[str, str]]) -> str:
+        """Route requests sharing a stable prompt head to the same prompt cache.
+
+        Every prompt starts with its stable block (rules, master, catalogs); volatile scene
+        state follows it. The head of the first message therefore identifies the prompt family.
+        """
+        head = messages[0].get("content", "")[: LLMProvider.PROMPT_CACHE_HEAD_CHARS] if messages else ""
+        digest = hashlib.sha256(f"{config.model_name}\n{head}".encode()).hexdigest()
+        return f"pdm-{digest[:32]}"
+
     @classmethod
     def _responses_payload(
         cls,
@@ -489,6 +502,7 @@ class LLMProvider:
             "input": cls._responses_input(messages),
             "stream": True,
             "store": False,
+            "prompt_cache_key": cls._prompt_cache_key(config, messages),
         }
         if settings.LLM_REASONING_EFFORT:
             payload["reasoning"] = {"effort": settings.LLM_REASONING_EFFORT}
