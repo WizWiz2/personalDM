@@ -468,7 +468,9 @@ def normalize_intent_draft(
 
     fallback = _compact(player_input)
     summary = _compact(draft.summary) or fallback
-    source_actions = [] if draft.information_request_only else list(draft.actions)
+    # A typed errand is a request with a world result, never a mere question (replay16 k2).
+    errand = any(action.expected_effect == "fetch_person" for action in draft.actions)
+    source_actions = [] if draft.information_request_only and not errand else list(draft.actions)
     requests = {}
     addressee_owned = False
     for index, action in enumerate(source_actions):

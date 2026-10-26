@@ -48,3 +48,15 @@ def test_a_spoken_errand_stays_an_executable_request():
         "information_recipient": None})()})()
     interpreter._apply_ownership(draft, text, None)
     assert [(a.action_type, a.expected_effect) for a in draft.actions] == [("service", "fetch_person")]
+
+
+def test_a_typed_errand_survives_an_information_request_flag():
+    """replay16 k2: «Не пошлёте ли кого-нибудь… сказать Белову» was flagged a question and emptied."""
+    from app.services.player_intent_interpreter import PlayerIntentContractDraft, normalize_intent_draft
+    text = "«Не пошлёте ли кого-нибудь к конторе — сказать Белову, что его ждут?»"
+    draft = PlayerIntentContractDraft.model_validate({
+        "summary": "Просьба.", "information_request_only": True, "actions": [
+            {"evidence_quote": text, "action_type": "service", "intent": "Попросить послать к Белову.",
+             "expected_effect": "fetch_person"}]})
+    contract = normalize_intent_draft(draft, text)
+    assert [a.expected_effect for a in contract.actions] == ["fetch_person"]
