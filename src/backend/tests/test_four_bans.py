@@ -334,3 +334,15 @@ def test_narrator_gets_the_typed_place_frame():
                                  {"name": "Пристань", "profile": "Причал."}],
              "reachable_from_here": ["Трактир"]}
     assert _authority(place_frame=frame).narrator_payload()["place_frame"] == frame
+
+
+def test_a_prose_name_for_a_cast_member_is_a_canon_conflict_unless_revealed():
+    """replay16 k1: «Степан меня зовут» left the fisher typed as «Рыбак у пристани»; k3 then broke."""
+    from app.models.addressed_response import AddressedResponse
+    prose = "— Степан меня зовут, — ответил дежурный."
+    data = {**_verdict(), "entrances": [],
+            "names_given": [{"evidence": "Степан меня зовут", "who": "Дежурный", "name": "Степан"}]}
+    assert TurnAuthorityValidator._interpret(_authority(), prose, data).verdict == "repair_required"
+    revealed = _authority(addressed_response=AddressedResponse(
+        speaker_name="Дежурный", revealed_name="Степан", name_evidence="Степан меня зовут"))
+    assert TurnAuthorityValidator._interpret(revealed, prose, data).verdict == "pass"
