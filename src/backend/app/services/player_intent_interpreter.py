@@ -608,26 +608,39 @@ class PlayerIntentInterpreter:
             if references:
                 user += "\n\n[LOCATION REFERENCES]\n" + json.dumps(
                     location_catalog or references, ensure_ascii=False)
-            data = await self._router.generate_json(
-                self._provider,
-                selection,
-                [
-                    ChatMessage(
-                        role="system",
-                        content=_INTENT_PROMPT
-                        + "\n\n[OUTPUT JSON SCHEMA]\n"
-                        + json.dumps(wire.model_json_schema(), ensure_ascii=False),
-                    ),
-                    ChatMessage(role="user", content=user),
-                ],
-                max_tokens=1000,
-                temperature=settings.PLANNER_TEMPERATURE,
-                response_model=wire,
-            )
-            self.audit.append(
-                {"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)}
-            )
-            draft = PlayerIntentContractDraft.model_validate(data)
+
+            async def generate(note: str = "") -> PlayerIntentContractDraft:
+                data = await self._router.generate_json(
+                    self._provider,
+                    selection,
+                    [
+                        ChatMessage(
+                            role="system",
+                            content=_INTENT_PROMPT
+                            + "\n\n[OUTPUT JSON SCHEMA]\n"
+                            + json.dumps(wire.model_json_schema(), ensure_ascii=False),
+                        ),
+                        ChatMessage(role="user", content=user + note),
+                    ],
+                    max_tokens=1000,
+                    temperature=settings.PLANNER_TEMPERATURE,
+                    response_model=wire,
+                )
+                self.audit.append(
+                    {"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)}
+                )
+                return PlayerIntentContractDraft.model_validate(data)
+
+            draft = await generate()
+            uncovered = self._linguistic_analyzer.uncovered_acts(
+                player_input, [action.evidence_quote for action in draft.actions])
+            if uncovered:
+                # One typed coverage repair: a stated own act with no entry was dropped.
+                self.audit.append({"phase": "coverage_repair", "uncovered": list(uncovered)})
+                draft = await generate(
+                    "\n\n[UNCOVERED STATED ACTS]\n" + json.dumps(list(uncovered), ensure_ascii=False)
+                    + "\nThese clauses of the human input have no entry. Return the whole contract "
+                      "again with every stated act or utterance as its own entry.")
             self._apply_ownership(draft, player_input, _controlled_id(context_messages))
             self._check_places(draft, references, location_catalog)
             contract = normalize_intent_draft(draft, player_input)

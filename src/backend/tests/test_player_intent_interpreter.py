@@ -17,6 +17,16 @@ from app.services.player_intent_interpreter import (
 
 
 @pytest.mark.asyncio
+async def test_a_stated_own_act_without_an_entry_gets_one_coverage_repair():
+    text = "Расплачиваюсь, прощаюсь до утра и иду обратно на пристань."
+    router = _Router({"summary": text, "actions": [
+        {"action_type": "service", "intent": "Расплатиться.", "evidence_quote": "Расплачиваюсь"},
+        {"action_type": "other", "intent": "Попрощаться.", "evidence_quote": "прощаюсь до утра"}]})
+    await PlayerIntentInterpreter(router).interpret(SimpleNamespace(), [], text)
+    assert router.calls == ["PlayerIntentContractDraft"] * 2  # «иду обратно на пристань» had no entry
+
+
+@pytest.mark.asyncio
 async def test_locking_workshop_is_local_even_when_extraction_calls_it_movement():
     router = _Router({
         "summary": "Запираю мастерскую и оставляю свет.",
@@ -115,6 +125,10 @@ class _LinguisticAnalyzer:
     ) -> LinguisticIntentAnalysis:
         del player_input, action_evidence
         return self.analysis
+
+    def uncovered_acts(self, player_input: str, evidence: list[str]) -> tuple[str, ...]:
+        del player_input, evidence
+        return ()
 
 
 @pytest.mark.asyncio
@@ -245,6 +259,7 @@ async def test_known_destination_identity_overrides_inflected_model_label():
                 {
                     "action_type": "movement",
                     "intent": "Вернуться в свою комнату.",
+                    "evidence_quote": "возвращаюсь из коридора в свою комнату",
                     "destination_location": "комната Кай",
                 }
             ],
@@ -272,6 +287,7 @@ async def test_possessed_room_uses_unique_grammatical_head_not_surrounding_area(
                 {
                     "action_type": "movement",
                     "intent": "Вернуться в свою комнату.",
+                    "evidence_quote": "возвращаюсь из коридора в свою комнату",
                     "destination_location": "свою комнату",
                 }
             ],
@@ -303,6 +319,7 @@ async def test_inflected_destination_reaches_semantic_identity_binding():
                 {
                     "action_type": "movement",
                     "intent": "Вернуться к стеллажам.",
+                    "evidence_quote": "Возвращаюсь к стеллажам",
                     "destination_location": "стеллажи",
                 }
             ],
@@ -748,7 +765,7 @@ async def test_numbered_destination_is_bound_by_semantic_id(number):
     persisted = f"Причал №{number}"
     router = _Router(
         {"summary": "Вернуться на известный причал.", "actions": [{
-            "action_type": "movement", "intent": "Вернуться на причал.",
+            "action_type": "movement", "intent": "Вернуться на причал.", "evidence_quote": "Возвращаюсь",
             "destination_location": selected,
         }]},
         bindings={"action_0": location_id},
