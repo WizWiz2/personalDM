@@ -90,6 +90,13 @@ class NarrationPublicationGuard:
         return f"{text.rstrip()}\n\n{outcome}"
 
     @classmethod
+    def render_contract(cls, authority: TurnAuthority) -> str:
+        """Typed outcome lines for a narrowed narrator contract (never published as-is)."""
+        if authority.item_states:
+            return cls.render_item_states(authority)
+        return cls.render_authority(authority)
+
+    @classmethod
     def render_item_states(cls, authority: TurnAuthority) -> str:
         """Safe in-world projection without repeating an unexecuted service handoff."""
         parts = []
