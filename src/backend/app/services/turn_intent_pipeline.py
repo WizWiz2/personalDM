@@ -67,6 +67,13 @@ def apply_due_deadline(
     })
 
 
+def _name_forms():
+    from app.services.linguistic_intent_analyzer import LinguisticIntentAnalyzer
+    pipeline = LinguisticIntentAnalyzer().pipeline
+    return lambda name: [{token.text.casefold(), token.lemma_.casefold()} for token in pipeline(name)
+                         if not token.is_punct]
+
+
 class TurnIntentPlanningPipeline:
     """Production planning pipeline with one semantic owner per phase.
 
@@ -103,15 +110,20 @@ class TurnIntentPlanningPipeline:
         return cast
 
     async def _uncast(self, campaign_id, names) -> tuple[str, ...]:
-        """Personal names no character carries yet (a surname alone matches its bearer, replay16 k3)."""
+        """Personal names no character carries yet. Each word matches by surface or UD lemma, so
+        a surname alone or an inflected form («Белова») is its bearer (replay16 k3, p2)."""
         if not names or not isinstance(self._session, AsyncSession):
             return ()
-        known = [{identity_key(part) for part in name.split()} for name in (await self._session.execute(
+        forms = _name_forms()
+        known = [forms(name) for name in (await self._session.execute(
             select(Entity.canonical_name).where(Entity.campaign_id == str(campaign_id),
                                                 Entity.entity_type == "character"))).scalars()]
+
+        def within(short, long):
+            return bool(short) and all(any(word & other for other in long) for word in short)
+
         return tuple(name for name in names if not any(
-            (parts := {identity_key(part) for part in name.split()}) <= bearer or bearer <= parts
-            for bearer in known if bearer))
+            within(parts := forms(name), bearer) or within(bearer, parts) for bearer in known))
 
     async def _without_carried_offscreen(self, campaign_id, decision):
         """An offscreen person whose personal name a character already carries is that character."""
