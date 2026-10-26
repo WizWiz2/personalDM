@@ -60,3 +60,17 @@ def test_a_typed_errand_survives_an_information_request_flag():
              "expected_effect": "fetch_person"}]})
     contract = normalize_intent_draft(draft, text)
     assert [a.expected_effect for a in contract.actions] == ["fetch_person"]
+
+
+@pytest.mark.asyncio
+async def test_an_inflected_name_is_its_bearer(db_session):
+    """replay16 p2: «Белова» (genitive) and «Прохор Белов» became two offscreen people."""
+    campaign = Campaign(name="r16p")
+    db_session.add(campaign)
+    await db_session.flush()
+    db_session.add(Entity(campaign_id=campaign.id, entity_type="character", canonical_name="Белова",
+                          description="Отсутствующий речник"))
+    await db_session.flush()
+    pipeline = TurnIntentPlanningPipeline.__new__(TurnIntentPlanningPipeline)
+    pipeline._session = db_session
+    assert await pipeline._uncast(campaign.id, ["Прохор Белов", "Егор"]) == ("Егор",)
