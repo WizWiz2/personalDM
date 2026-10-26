@@ -9,7 +9,7 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.models.turn_authority import TurnAuthority
+from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
 from app.db.tables import Entity, Item
 from app.services.entity_identity import identity_key
 from app.services.item_state_authority import load_item_states
@@ -203,6 +203,14 @@ class TurnAuthorityService:
             raise TurnAuthorityError(str(exc)) from exc
 
         present_names = list(npc_resolution.present_names)
+        if world_move and world_move.kind == "arrival" and world_move.actor_id:
+            # The thread's own person (e.g. the one sent for) is who the world brings here.
+            arriving = await self._session.get(Entity, str(world_move.actor_id))
+            if arriving and arriving.canonical_name not in present_names:
+                npc_resolution.existing_arrivals.append(ExistingNpcArrival(
+                    entity_id=world_move.actor_id, canonical_name=arriving.canonical_name,
+                    reason=world_move.source[:500]))
+                present_names.append(arriving.canonical_name)
         present_keys = {identity_key(value) for value in present_names}
         all_characters = await self._entities.list_by_campaign(
             campaign_id,

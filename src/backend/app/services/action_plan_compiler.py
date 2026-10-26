@@ -641,6 +641,7 @@ class ActionPlanCompiler:
                 after_action_index=item.after_action_index,
                 resident_slot=item.resident_slot,
                 arrives=item.arrives,
+                sent_for=item.sent_for,
             )
             for item in decision.npc_introductions
         ]

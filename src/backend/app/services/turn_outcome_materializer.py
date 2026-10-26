@@ -9,7 +9,7 @@ from sqlalchemy import delete, func, select
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Entity, Item, ItemContentDisclosure, ItemCreationEffect, NpcIdentityAnchor, SceneParticipant, Turn
+from app.db.tables import Character, Entity, Location, Item, ItemContentDisclosure, ItemCreationEffect, NpcIdentityAnchor, SceneParticipant, Turn
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.services.item_content_authority import revealed_item_contents
 from app.models.addressed_response import AddressedResponse
@@ -257,6 +257,7 @@ class TurnOutcomeMaterializer:
                     "role": introduction.role,
                     "temporary_name": introduction.temporary_name,
                     **({"slot_id": introduction.resident_slot} if introduction.resident_slot else {}),
+                    **({"sent_for": True} if introduction.sent_for else {}),
                 },
             ),
             stable_entity_id=stable_id,
@@ -269,6 +270,12 @@ class TurnOutcomeMaterializer:
                     entity_id=str(character.id),
                 )
             )
+        if introduction.sent_for:
+            # Offscreen in the wider place this scene belongs to, until the world brings them.
+            here = await self._session.get(Location, str(await self._scenes.get_location_id(authority.target_scene_id)))
+            row = await self._session.get(Character, str(character.id))
+            row.current_location_id = (here.parent_location_id or here.id) if here else None
+            return character
         await self._scenes.add_participant(
             authority.target_scene_id,
             character.id,

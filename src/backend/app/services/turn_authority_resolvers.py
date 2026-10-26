@@ -401,8 +401,8 @@ class NpcIntroductionResolver:
             existing_id, existing = next(iter(unique_matches.items()))
             existing_key = identity_key(existing.canonical_name)
             bound.update(dict.fromkeys(designations, existing.canonical_name))
-            if existing_key in present_keys:
-                continue
+            if existing_key in present_keys or introduction.sent_for:
+                continue  # Someone sent for a known person: they come later, by a world move.
 
             current_location_id = character_locations.get(existing_id)
             # A completed step's typed result that brings a known person here is their structured
@@ -429,7 +429,7 @@ class NpcIntroductionResolver:
         # Authorized first appearances are physically present for narrator/validator this turn.
         for introduction in new_introductions:
             key = identity_key(introduction.canonical_name)
-            if key and key not in present_keys:
+            if key and key not in present_keys and not introduction.sent_for:
                 names.append(introduction.canonical_name)
                 present_keys.add(key)
 
