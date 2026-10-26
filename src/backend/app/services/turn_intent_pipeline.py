@@ -166,6 +166,7 @@ class TurnIntentPlanningPipeline:
         # A deterministic pacing signal and verified actor goals are fed into
         # the *outcome* resolver. Narrator prose alone cannot move the world.
         momentum = {"sources": [], "pressure_due": False, "quiet_turns": 0}
+        scene_id = None
         if isinstance(self._session, AsyncSession):
             campaign = await self._session.get(Campaign, str(campaign_id))
             scene_id = (
@@ -173,7 +174,7 @@ class TurnIntentPlanningPipeline:
                 if campaign and campaign.current_scene_id else None
             )
             momentum = await WorldMomentumService(self._session).snapshot(
-                campaign_id, scene_id,
+                campaign_id, scene_id, patience=persona.initiative.patience_turns,
             )
         world_context = context_messages
         if isinstance(self._session, AsyncSession) and world_context:
@@ -228,9 +229,8 @@ class TurnIntentPlanningPipeline:
             source_context = (
                 "\n[ENGINE-VERIFIED ACTIVE WORLD THREADS]\n"
                 + json.dumps(momentum, ensure_ascii=False)
-                + "\npressure_due is pacing guidance, NOT permission to invent new "
-                  "actors or physical results. Choose a verified thread and its "
-                  "exact source and actor_id. An absent NPC acts only at their "
+                + "\nA world_move names one of these threads by thread_id; its source "
+                  "and actor come from the thread. An absent NPC acts only at their "
                   "real location; never bring them into this scene without a "
                   "typed transition. When due_phase is specified, compare it "
                   "with the authoritative world_time_label. A quiet beat may "
@@ -252,6 +252,7 @@ class TurnIntentPlanningPipeline:
                 contract,
                 force_introduce_contact=director.forced_introduce_contact,
                 resident_slots=resident_slots,
+                initiative=(persona.initiative, momentum),
                 destination_cast=await self._destination_cast(campaign_id, contract, names),
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
@@ -303,6 +304,7 @@ class TurnIntentPlanningPipeline:
                 decision = await self._outcomes.resolve(
                     selection, world_context, user_input, contract,
                     resident_slots=resident_slots,
+                    initiative=(persona.initiative, momentum),
                     destination_cast=await self._destination_cast(campaign_id, contract, names),
                     repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
                 )

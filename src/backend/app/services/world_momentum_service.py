@@ -169,31 +169,33 @@ class WorldMomentumService:
                 item["available_destinations"] = routes[origin]
         return sources
 
-    async def snapshot(self, campaign_id: UUID, scene_id: UUID | None) -> dict:
+    async def snapshot(
+        self, campaign_id: UUID, scene_id: UUID | None, *, patience: int | None = None,
+    ) -> dict:
+        """``patience``: the master's quiet published turns before the world must act."""
+        patience = patience or self.QUIET_TURNS_THRESHOLD
         threads = await self.threads(campaign_id, scene_id)
         if not threads:
             return {"sources": [], "pressure_due": False, "quiet_turns": 0,
                     "world_time_label": None, "automatic_deadline": None}
-        rows = (
-            await self._session.execute(
-                select(Turn.created_at).where(
-                    Turn.campaign_id == str(campaign_id),
-                    Turn.role == "assistant",
-                    Turn.status == "active",
-                ).order_by(Turn.created_at.desc()).limit(self.QUIET_TURNS_THRESHOLD)
-            )
-        ).scalars().all()
-        quiet_turns = len(rows)
-        if rows:
-            last_independent = await self._session.scalar(
-                select(Event.id).where(
-                    Event.campaign_id == str(campaign_id),
-                    Event.event_type.like("world_initiative:%"),
-                    Event.created_at >= rows[-1],
-                ).limit(1)
-            )
-        else:
-            last_independent = None
+        for index, thread in enumerate(threads):
+            thread["thread_id"] = f"thread_{index}"
+        last_independent = await self._session.scalar(
+            select(Event.created_at).where(
+                Event.campaign_id == str(campaign_id),
+                Event.event_type.like("world_initiative:%"),
+            ).order_by(Event.created_at.desc()).limit(1)
+        )
+        published = select(Turn.created_at).where(
+            Turn.campaign_id == str(campaign_id),
+            Turn.role == "assistant",
+            Turn.status == "active",
+        )
+        if last_independent is not None:
+            published = published.where(Turn.created_at > last_independent)
+        quiet_turns = len((await self._session.execute(
+            published.order_by(Turn.created_at.desc()).limit(patience)
+        )).scalars().all())
         runtime = (
             await self._session.get(SceneRuntimeState, str(scene_id))
             if scene_id else None
@@ -218,8 +220,7 @@ class WorldMomentumService:
                 break
         return {
             "sources": threads,
-            "pressure_due": len(rows) >= self.QUIET_TURNS_THRESHOLD
-                            and last_independent is None,
+            "pressure_due": quiet_turns >= patience,
             "quiet_turns": quiet_turns,
             "world_time_label": phase,
             "automatic_deadline": due,

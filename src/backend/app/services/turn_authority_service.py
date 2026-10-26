@@ -111,16 +111,11 @@ class TurnAuthorityService:
                 if source["source"].casefold().strip() == candidate.source.casefold().strip()
                 and str(source["actor_id"] or "") == str(candidate.actor_id or "")
             ]
+            # Only an NPC kind acts through the thread's actor; other kinds move nobody.
             actor_ok = (
-                (
-                    candidate.kind in {"npc_action", "npc_move"}
-                    and candidate.actor_id is not None
-                )
-                or (
-                    candidate.kind not in {"npc_action", "npc_move"}
-                    and candidate.actor_id is None
-                    and candidate.destination_location_id is None
-                )
+                candidate.actor_id is not None
+                if candidate.kind in {"npc_action", "npc_move"}
+                else candidate.destination_location_id is None
             )
             route_ok = candidate.kind != "npc_move"
             if candidate.kind == "npc_move" and candidate.destination_location_id:

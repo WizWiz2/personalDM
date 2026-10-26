@@ -17,6 +17,7 @@ from pydantic import (
 )
 
 from app.models.addressed_response import AddressedResponse
+from app.models.game_master import InitiativePolicy
 from app.models.item_state import ItemContentRevelation, ItemPropertyChange, ItemStateSnapshot
 from app.models.player_intent import (
     ActionOutcomeDecision,
@@ -184,29 +185,21 @@ a hypothetical question, or past prose never authorizes the player's new act. Wi
 both an authorized offer and actual acceptance, do not claim possession changed. A generic
 service result is not physical evidence: every confirmed handoff requires an inventory receipt.
 
-INDEPENDENT STORY (world_move): During normal play, including turns with
-player actions, an established active_conflict, unresolved_beat, tension, or
-already-known NPC CharacterGoal may develop without player instruction.
-ENGINE-VERIFIED ACTIVE WORLD THREADS lists the precise sources and actor IDs.
-Use kind=pressure|information|deadline|npc_action|npc_move; source must EXACTLY equal
-one listed source; outcome must EXACTLY equal one of observable_consequences.
-For npc_action and npc_move, actor_id must match an existing goal's actor_id.
-npc_move MUST include destination_location_id from that actor's listed
-available_destinations: ONE previously established, active graph edge. Do not
-move an NPC to the hero's current place or invent a location/route. The
-NPC's observed arrival into the hero's scene requires a separate authorized
-presence transition. For npc_action, that actor can
-act at their own current place, but cannot teleport to the player's location
-or speak there when physically absent. An offscreen development can only be
-reported indirectly where existing world communication makes that possible.
-For deadline, specify due_phase=the structured clock phase from context;
-do not claim a deadline expired in any other phase. Deadlines are one-shot.
-If pressure_due=true and a legitimate story source exists, strongly prefer a
-specific, consequential world_move rather than another passive observation.
-Never invent a random threat just to hit a pressure quota.
-World moves must not introduce strangers, create items, change custody, or
-decide a PC action. Only npc_move authorizes a single existing NPC's movement
-along one typed known exit; no other world_move may move characters.
+INDEPENDENT STORY (world_move): the world acts on its own, without player instruction,
+by developing one ENGINE-VERIFIED ACTIVE WORLD THREAD named by thread_id (an
+active_conflict, unresolved_beat, tension, deadline, promise/errand or a known NPC goal).
+world_initiative_due=true means the world has waited long enough under this master: the
+schema then requires a world_move. outcome is one concrete observable development.
+Kinds: pressure (a thread tightens), information (news reaches the hero through existing
+communication), deadline (due_phase equals the clock phase; one-shot), npc_action (the
+thread's actor acts at their own place, or here if present), npc_move (the thread's actor
+takes ONE listed available_destinations edge, never into the hero's place), arrival (the
+thread is fulfilled or advanced by a person arriving here, typed in npc_introductions).
+master_harshness sets how hard independent moves and failures land: gentle = the world
+offers, helps and informs, costs stay soft; fair = proportionate costs; harsh = costs land
+now, threats press, NPCs pursue their own interest even against the hero.
+Never invent a random threat unrelated to the threads. World moves create no items,
+change no custody, decide no PC action and move nobody except as their kind states.
 Do not use them if there is an unresolved pending_player_choice.
 """;
 
@@ -452,6 +445,9 @@ def _outcome_wire_model(
     present_ids: set[str] | None = None,
     discovery_targets: dict[int, str] | None = None,
     required_effects: dict[int, str] | None = None,
+    world_threads: dict[str, bool] | None = None,
+    world_kinds: tuple[str, ...] = (),
+    world_required: bool = False,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -601,9 +597,34 @@ def _outcome_wire_model(
                 )
         action_model = reduce(or_, variants)
 
+    introduction_cap = (
+        (1 if required_slot else 4 if resident_slots or not movement_indices else 0)
+        if allow_introductions else 0
+    )
+    # The master's closed world-move kinds, minus kinds this turn's structure cannot carry.
+    kinds = tuple(
+        kind for kind in world_kinds
+        if (kind not in {"npc_action", "npc_move"} or any((world_threads or {}).values()))
+        and (kind != "arrival" or introduction_cap)
+    )
+    world_move_type = type(None)
+    if world_threads and kinds:
+        class ThreadWorldMove(BaseModel):
+            """An independent development of one verified thread; source and actor come from it."""
+
+            model_config = ConfigDict(extra="ignore")
+            thread_id: Literal[tuple(world_threads)]
+            kind: Literal[kinds]
+            outcome: str = Field(min_length=12, max_length=1000)
+            destination_location_id: UUID | None = None
+            due_phase: Literal["dawn", "morning", "day", "evening", "night"] | None = None
+
+        world_move_type = ThreadWorldMove if world_required else ThreadWorldMove | None
+
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
         model_config = ConfigDict(extra="ignore", json_schema_extra={
-            "required": ["action_outcomes", "npc_introductions", "npc_item_handoffs", "player_item_handoffs", "item_revelations", "item_introductions", "item_property_changes"],
+            "required": ["action_outcomes", "npc_introductions", "npc_item_handoffs", "player_item_handoffs", "item_revelations", "item_introductions", "item_property_changes",
+                         *(["world_move"] if world_required and world_move_type is not type(None) else [])],
         })
         response_speaker_name: speaker_type = None
         npc_item_handoffs: list[npc_handoff_model] = Field(default_factory=list, max_length=4 if npc_handoffs_allowed else 0)
@@ -620,9 +641,12 @@ def _outcome_wire_model(
         )
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
             min_length=1 if required_slot and allow_introductions else 0,
-            max_length=(1 if required_slot else 4 if resident_slots or not movement_indices else 0)
-            if allow_introductions else 0,
+            max_length=introduction_cap,
         )
+        if world_required and world_move_type is not type(None):
+            world_move: world_move_type
+        else:
+            world_move: world_move_type = None
 
         @model_validator(mode="before")
         @classmethod
@@ -671,6 +695,13 @@ def _outcome_wire_model(
         @model_validator(mode="after")
         def validate_action_indices(self):
             outcomes = {outcome.action_index: outcome for outcome in self.action_outcomes}
+            move = self.world_move
+            if move is not None and move.kind in {"npc_action", "npc_move"} and not world_threads[move.thread_id]:
+                raise ValueError("npc_action/npc_move must name a thread that has an actor")
+            if move is not None and move.kind == "arrival" and not (
+                self.npc_introductions or any(getattr(item, "arriving", None) for item in self.action_outcomes)
+            ):
+                raise ValueError("an arrival world_move requires the arriving person in npc_introductions")
             for index, effect in (required_effects or {}).items():
                 if outcomes.get(index) is None or outcomes[index].resolution != "auto_success":
                     continue
@@ -1057,7 +1088,11 @@ class TurnOutcomeResolver:
         resident_slots: list[tuple[str, str, bool]] | None = None,
         destination_cast: dict[str, list[str]] | None = None,
         repair_feedback: str | None = None,
+        initiative: tuple[InitiativePolicy, dict] | None = None,
     ) -> TurnOutcomeDecision:
+        policy, momentum = initiative or (InitiativePolicy(), {})
+        threads = {thread["thread_id"]: thread for thread in momentum.get("sources", [])
+                   if thread.get("thread_id")}
         try:
             solo_cast = solo_physical_presence(context_messages)
             # Ordinary-travel short-circuit for pure reach-destination commitments (solo or not).
@@ -1127,6 +1162,9 @@ class TurnOutcomeResolver:
                     for index, action in enumerate(contract.actions)
                     if action.action_type == "movement"
                 },
+                world_threads={key: bool(thread.get("actor_id")) for key, thread in threads.items()},
+                world_kinds=tuple(policy.world_moves),
+                world_required=bool(momentum.get("pressure_due")) and not contract.pending_player_choice,
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,
@@ -1134,6 +1172,8 @@ class TurnOutcomeResolver:
                 "solo_physical_cast": solo_cast,
                 "seeks_contact_or_presence": seeks_contact_or_presence(contract),
                 "resident_slots": {slot_id: role for slot_id, role, _filled in slots},
+                "world_initiative_due": bool(momentum.get("pressure_due")),
+                "master_harshness": policy.harshness,
             }
             empty_cast_guidance = ""
             if required_slot:
@@ -1193,6 +1233,18 @@ class TurnOutcomeResolver:
                 response_model=response_model,
             )
             draft = response_model.model_validate(data)
+            if draft.world_move is not None:
+                # The machine owns the thread's source and actor; the model chose only its ID.
+                thread = threads[draft.world_move.thread_id]
+                move = PlannedWorldMove(
+                    kind=draft.world_move.kind, source=thread["source"], outcome=draft.world_move.outcome,
+                    actor_id=thread.get("actor_id"), due_phase=draft.world_move.due_phase,
+                    destination_location_id=draft.world_move.destination_location_id,
+                )
+                consequences = [item for item in draft.observable_consequences if item != move.outcome]
+                draft = draft.model_copy(update={
+                    "world_move": move, "observable_consequences": [*consequences[:3], move.outcome],
+                })
             decision = normalize_outcome_draft(draft, contract)
             decision = self._normalize_temporary_identities(decision)
             self.audit.append(

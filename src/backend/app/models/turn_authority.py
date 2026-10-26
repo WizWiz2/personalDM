@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.models.game_master import WorldMoveKind
 from app.models.addressed_response import AddressedResponse
 from app.models.item_state import ItemStateSnapshot
 from app.models.session_zero import NARRATIVE_PERSON, NarrativePerson
@@ -57,7 +58,7 @@ class PlannedWorldMove(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    kind: Literal["pressure", "information", "deadline", "npc_action", "npc_move"]
+    kind: WorldMoveKind  # arrival: the thread is fulfilled by a typed npc_introduction
     source: str = Field(min_length=8, max_length=1000)
     outcome: str = Field(min_length=12, max_length=1000)
     # NPC autonomous action must be grounded in one persisted CharacterGoal.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.models.game_master import GameMasterPersona, MovePolicy
+from app.models.game_master import GameMasterPersona, InitiativePolicy, MovePolicy
 
 BALANCED_POLICY = MovePolicy(
     quiet=1.0,
@@ -44,6 +44,7 @@ _PRESETS: dict[str, GameMasterPersona] = {
         ],
         portrait_pixel="/masters/chronicler-pixel.png",
         portrait_engraving="/masters/chronicler-engraving.png",
+        initiative=InitiativePolicy(patience_turns=3, harshness="fair"),
         move_policy=MovePolicy(
             quiet=0.35,
             advance_conflict=1.8,
@@ -83,6 +84,10 @@ _PRESETS: dict[str, GameMasterPersona] = {
         ],
         portrait_pixel="/masters/keeper-pixel.png",
         portrait_engraving="/masters/keeper-engraving.png",
+        initiative=InitiativePolicy(
+            patience_turns=5, harshness="gentle",
+            world_moves=["information", "npc_action", "arrival", "deadline"],
+        ),
         move_policy=MovePolicy(
             quiet=2.0,
             advance_conflict=0.7,
@@ -122,6 +127,7 @@ _PRESETS: dict[str, GameMasterPersona] = {
         ],
         portrait_pixel="/masters/chaos-pixel.png",
         portrait_engraving="/masters/chaos-engraving.png",
+        initiative=InitiativePolicy(patience_turns=1, harshness="harsh"),
         move_policy=MovePolicy(
             quiet=0.6,
             advance_conflict=1.0,
@@ -160,6 +166,10 @@ _PRESETS: dict[str, GameMasterPersona] = {
         ],
         portrait_pixel="/masters/puppeteer-pixel.png",
         portrait_engraving="/masters/puppeteer-engraving.png",
+        initiative=InitiativePolicy(
+            patience_turns=2, harshness="fair",
+            world_moves=["information", "npc_action", "npc_move", "arrival", "deadline"],
+        ),
         move_policy=MovePolicy(
             quiet=0.5,
             advance_conflict=1.4,
@@ -197,6 +207,10 @@ _PRESETS: dict[str, GameMasterPersona] = {
         ],
         portrait_pixel="/masters/referee-pixel.png",
         portrait_engraving="/masters/referee-engraving.png",
+        initiative=InitiativePolicy(
+            patience_turns=2, harshness="harsh",
+            world_moves=["pressure", "deadline", "npc_action", "npc_move", "arrival"],
+        ),
         move_policy=MovePolicy(
             quiet=0.3,
             advance_conflict=1.7,
@@ -224,6 +238,11 @@ def default_preset_id() -> str:
     return "iron_chronicler"
 
 
+def clone_initiative(preset_id: str | None) -> InitiativePolicy:
+    preset = _PRESETS.get(preset_id or "")
+    return preset.initiative.model_copy(deep=True) if preset else InitiativePolicy()
+
+
 def clone_policy(preset_id: str | None) -> MovePolicy:
     if preset_id and preset_id in _PRESETS:
         return _PRESETS[preset_id].move_policy.model_copy(deep=True)
@@ -232,6 +251,7 @@ def clone_policy(preset_id: str | None) -> MovePolicy:
 
 __all__ = [
     "BALANCED_POLICY",
+    "clone_initiative",
     "clone_policy",
     "default_preset_id",
     "get_preset",
