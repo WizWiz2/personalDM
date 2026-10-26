@@ -127,14 +127,8 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    interchange documents or claim their written text/signature contains an author, instruction or
    condition absent from that content. External investigation may reveal authorship or meaning
    without rewriting the document; a character's interpretation is not the document's literal text.
-   Also do not physically introduce a new UNIQUE PLOT-SIGNIFICANT object (a named key,
-   ledger, document or irreplaceable clue) that is absent from both objects_here and
-   allowed_new_items, or transfer its custody without an executed inventory step.
-   Any distinct persistent artifact the hero creates, keeps, places or uses later is significant
-   in this sense, even if its material is ordinary. Producing a derivative artifact is a new
-   physical result requiring allowed_new_items; it is not a free background detail.
-   Ordinary backdrop objects, sensory scenery and things mentioned in dialogue are not
-   violations. Do not confuse unknown physical presence with confirmed absence.
+   Do not transfer custody of a registered item without an executed inventory step. Prose
+   objects outside the typed facts are decoration (never recorded), not violations.
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or
    voluntary actions beyond player_input. Rendering player_input itself, its result, and what the
    player character perceives is allowed.
