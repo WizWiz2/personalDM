@@ -1,5 +1,3 @@
-import pytest
-from pydantic import ValidationError
 
 from app.models.narration_validation import NarrationValidationResult
 from app.services.narration_validator import NarrationValidator
@@ -20,9 +18,9 @@ def _base_plan(**updates):
     return data
 
 
-def test_transition_resolution_requires_structured_boundary():
-    with pytest.raises(ValidationError):
-        TurnPlan.model_validate(_base_plan(resolution="transition"))
+def test_transition_label_without_structure_is_not_a_move():
+    plan = TurnPlan.model_validate(_base_plan(resolution="transition"))
+    assert plan.resolution == "uncertain" and not plan.scene_transition.required
 
 
 def test_transition_resolution_accepts_materializable_location():
