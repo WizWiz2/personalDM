@@ -689,6 +689,8 @@ class SceneTransitionExecutor:
         locations = await self._locations.list_by_campaign(campaign_id)
         match = self._match_location(locations, clean_destination)
         if match:
+            if match.status == "inactive":  # a redo of an undone trip re-catalogs the same place
+                (await self._session.get(Entity, str(match.id))).status = "active"
             return match.id, False
 
         parent_id = None
