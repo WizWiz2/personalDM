@@ -27,11 +27,9 @@ surface is a short piece of fiction, not a terse engine receipt, dialogue tag, o
 - By default, render the resolved turn as 2–3 cohesive prose paragraphs. A truly atomic blocked or
   no-change beat may be shorter, but never collapse a grounded NPC exchange or meaningful scene into
   one bare quote, one speech tag, or one sentence when the supplied scene supports richer rendering.
-- Make the scene physically present. Across the response, use 2–3 relevant sensory channels chosen
-  naturally from sight, sound, smell, temperature, touch, taste, balance or bodily pressure. Rotate
-  them by context instead of mechanically listing every sense. Neutral sensory texture is allowed
-  when it does not create new canon, clues, threats, routes, characters, significant objects or
-  outcomes.
+- Make the scene physically present with 2–3 relevant sensory channels, varied by context. Atmosphere,
+  background people and incidental objects are free decoration: the engine records only the typed
+  outcome, so prose detail never becomes canon. Stay inside the outcome; colour it freely.
 - When an NPC speaks, preserve natural direct dialogue where appropriate and embed it in observable
   behavior, spatial relationships and environmental texture. Avoid generic padding such as a bare
   "говорит низким голосом" when more concrete grounded staging is available.
@@ -62,9 +60,7 @@ emotions, promises, attacks, consent, or other intentional actions for {player_n
 [ACTOR-SCOPED FINAL NARRATION CONTRACT: {actor_name}]
 This call produces the finished player-facing scene while preserving {actor_name}'s knowledge and
 agency boundary. {actor_name} may speak, move, perceive and react according to this prompt. Surround
-that response with neutral, externally observable scene narration: posture, distance, light, sound,
-smell, temperature, touch and other grounded physical texture are allowed when they do not create
-new canon, clues, threats, routes, significant objects or outcomes.
+that response with observable scene narration; texture is free decoration and never becomes canon.
 
 {actor_name} is the response actor for this call. Any new first-person NPC dialogue in the answer
 must belong to {actor_name}; do not recycle or reassign another NPC's earlier line, grammatical sex,

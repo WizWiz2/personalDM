@@ -558,7 +558,9 @@ class ContextCompiler:
                         and getattr(memory, "character_id", None) != character.id
                     ]
                     for header, group in (
-                        ("Private knowledge", [
+                        # The hero's private knowledge is not in the shared card: whoever voices
+                        # an NPC cannot see it, so no NPC can repeat what only the hero heard.
+                        ("Private knowledge", [] if character.id == player_id else [
                             b for b in held[character.id]
                             if b.source_character_id not in held or b.source_character_id == player_id
                         ]),

@@ -302,5 +302,6 @@ async def test_an_npc_card_lists_only_what_that_npc_witnessed(db_session: AsyncS
 
     seen = "\n".join(takewhile(lambda line: line.startswith("- "), section.split("\n")))
 
-    assert "Прохор ночует у вдовы Марьи." in context and "[witnesses:" not in context
+    # The hero's private line is in no card: nobody voicing an NPC can repeat it.
+    assert "Прохор ночует у вдовы Марьи." not in context and "[witnesses:" not in context
     assert "полтинник лежит на стойке" in seen and "вдовы Марьи" not in seen

@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.engine import AsyncSessionLocal
 from app.db.repositories.campaign_repo import CampaignRepository
-from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.scene_repo import SceneRepository
@@ -155,6 +154,22 @@ class PostTurnProcessor:
             and isinstance(protocol, dict)
             and int(protocol.get("version") or 0) >= 1
         )
+
+    @classmethod
+    def _typed_record(cls, assistant) -> str:
+        """What the turn decided, never what the prose says: the only source of durable facts."""
+        authority = cls._snapshot_dict(assistant).get("turn_authority") or {}
+        steps = (authority.get("action_sequence") or {}).get("steps") or []
+        # Plain lines, not JSON: prose-era guards read every double quote as direct speech.
+        lines = [f"Место: {' / '.join(authority.get('target_location_path') or authority.get('source_location_path') or [])}",
+                 f"Присутствуют: {', '.join(authority.get('present_character_names') or [])}"]
+        lines += [f"Шаг ({step.get('resolution')}): {step.get('observable_outcome') or step.get('public_blocking_reason')}"
+                  for step in steps if isinstance(step, dict)]
+        speaker = authority.get("beat_owner_name")
+        # A typed beat is the owner's decided line: quoted, so it is attributed to that speaker.
+        lines += [f"{speaker}: «{beat}»" if speaker else beat for beat in authority.get("character_beats") or []]
+        lines += list(authority.get("observable_consequences") or [])
+        return "\n".join(lines)
 
     @staticmethod
     def _respect_semantic_ownership(proposals):
@@ -438,6 +453,10 @@ class PostTurnProcessor:
                     if p.payload.get("_canon", {}).get("owner") != "turn_response"
                 ]
                 campaign = await self._campaigns.get_by_id(campaign_id)
+                # Authority turns: facts, people and places come from the typed outcome only.
+                # Anything the prose adds is decoration: not recorded, no ID, not a fact.
+                managed = self._authority_managed(assistant) and assistant.acting_character_id is None
+                record = self._typed_record(assistant) if managed else assistant.content
                 if assistant.parent_turn_id:
                     from app.services.location_profile_guard import (
                         apply_location_profile_updates,
@@ -451,7 +470,7 @@ class PostTurnProcessor:
                         self._session,
                         campaign_id=campaign_id,
                         trigger_turn_id=UUID(str(assistant.parent_turn_id)),
-                        assistant_content=assistant.content,
+                        assistant_content=record,
                         prepare_only=True,
                     )
                     await self._session.rollback()
@@ -478,37 +497,9 @@ class PostTurnProcessor:
                     # In promotion-only mode it cannot create a duplicate entity, so this
                     # pass is safe on every authority-managed turn and keeps the boundary
                     # between planning and durable identity state robust.
-                    if self._authority_managed(assistant):
-                        authority_snapshot = (
-                            self._snapshot_dict(assistant).get("turn_authority") or {}
-                        )
-                        should_verify_identity = bool(
-                            authority_snapshot.get("identity_reveal_requested")
-                        )
-                        if not should_verify_identity and assistant.scene_id:
-                            scene = await self._scenes.get_by_id(assistant.scene_id)
-                            if scene:
-                                entities = await EntityRepository(self._session).list_by_campaign(
-                                    campaign_id
-                                )
-                                participant_ids = {
-                                    str(entity_id) for entity_id in scene.participants
-                                }
-                                should_verify_identity = any(
-                                    str(entity.id) in participant_ids
-                                    and bool(
-                                        (getattr(entity, "custom_fields", None) or {}).get(
-                                            "temporary_name"
-                                        )
-                                    )
-                                    for entity in entities
-                                    if entity.entity_type == "character"
-                                )
+                    if managed:
+                        # Typed outcome owns identities (npc_introductions, response_revealed_name).
                         registration = EntityRegistrationResult()
-                        if should_verify_identity:
-                            registration = await self._register_without_locked_inference(
-                                campaign_id, assistant, promotion_only=True,
-                            )
                     else:
                         registration = await self._register_without_locked_inference(
                             campaign_id, assistant, promotion_only=False,
@@ -527,7 +518,16 @@ class PostTurnProcessor:
                         user_turn.id
                     )
                     scribe = MemoryScribe(self._session, structured_receipts=receipts)
-                    if (
+                    if managed:
+                        proposals = await scribe.extract_proposals(
+                            campaign_id=campaign_id,
+                            scene_id=assistant.scene_id,
+                            user_content=user_turn.content,
+                            assistant_content=record,
+                            acting_character_id=assistant.acting_character_id,
+                            player_character_id=campaign.player_character_id if campaign else None,
+                        )
+                    elif (
                         assistant.acting_character_id is not None
                         and campaign is not None
                         and campaign.player_character_id is not None
@@ -602,7 +602,7 @@ class PostTurnProcessor:
                         assistant.scene_id,
                         proposals,
                     )
-                    texture = await taxonomy.extract_narrative_details(
+                    texture = [] if managed else await taxonomy.extract_narrative_details(
                         campaign_id,
                         assistant.scene_id,
                         assistant.content,
