@@ -195,7 +195,7 @@ communication), deadline (due_phase equals the clock phase; one-shot), npc_actio
 thread's actor acts at their own place, or here if present), npc_move (the thread's actor
 takes ONE listed available_destinations edge, never into the hero's place), arrival (a
 person arrives here: the thread's actor when it has one, such as someone sent for; otherwise
-a newcomer typed in npc_introductions). When an NPC here agrees to send for a person who is
+the newcomer typed in world_move.newcomer). When an NPC here agrees to send for a person who is
 not in the cast, type that person in that action's sends_for.
 master_harshness sets how hard independent moves and failures land: gentle = the world
 offers, helps and informs, costs stay soft; fair = proportionate costs; harsh = costs land
@@ -628,6 +628,8 @@ def _outcome_wire_model(
             outcome: str = Field(min_length=12, max_length=1000)
             destination_location_id: UUID | None = None
             due_phase: Literal["dawn", "morning", "day", "evening", "night"] | None = None
+            # A stranger's arrival carries the stranger, so whoever walks in is cast (REPORT14 p10).
+            newcomer: arrival_type = None
 
         world_move_type = ThreadWorldMove if world_required else ThreadWorldMove | None
 
@@ -708,10 +710,9 @@ def _outcome_wire_model(
             move = self.world_move
             if move is not None and move.kind in {"npc_action", "npc_move"} and not world_threads[move.thread_id]:
                 raise ValueError("npc_action/npc_move must name a thread that has an actor")
-            if move is not None and move.kind == "arrival" and not world_threads[move.thread_id] and not (
-                self.npc_introductions or any(getattr(item, "arriving", None) for item in self.action_outcomes)
-            ):
-                raise ValueError("an arrival world_move requires the arriving person in npc_introductions")
+            if move is not None and move.kind == "arrival" and not world_threads[move.thread_id] \
+                    and move.newcomer is None:
+                raise ValueError("an arrival world_move without the thread's actor requires world_move.newcomer")
             for index, effect in (required_effects or {}).items():
                 if outcomes.get(index) is None or outcomes[index].resolution != "auto_success":
                     continue
@@ -852,6 +853,7 @@ def _bounded_strings(values: list[str], limit: int) -> list[str]:
 def normalize_outcome_draft(
     draft: TurnOutcomeDecisionDraft,
     contract: PlayerIntentContract,
+    newcomer: OutcomeNpcIntroductionDraft | None = None,
 ) -> TurnOutcomeDecision:
     """Turn permissive model output into strict world-facing semantics deterministically."""
 
@@ -890,7 +892,7 @@ def normalize_outcome_draft(
     arrivals = [
         item.arriving.model_copy(update={"after_action_index": item.action_index, "resident_slot": None})
         for item in draft.action_outcomes if getattr(item, "arriving", None)
-    ]
+    ] + ([newcomer.model_copy(update={"after_action_index": None, "resident_slot": None})] if newcomer else [])
     # A person an NPC agreed to fetch is that step's offscreen errand target (REPORT13 «речник»).
     errands = [
         item.sends_for.model_copy(update={"after_action_index": item.action_index, "resident_slot": None})
@@ -1254,9 +1256,12 @@ class TurnOutcomeResolver:
                 response_model=response_model,
             )
             draft = response_model.model_validate(data)
+            newcomer = None
             if draft.world_move is not None:
                 # The machine owns the thread's source and actor; the model chose only its ID.
                 thread = threads[draft.world_move.thread_id]
+                if draft.world_move.kind == "arrival" and not thread.get("actor_id"):
+                    newcomer = draft.world_move.newcomer
                 move = PlannedWorldMove(
                     kind=draft.world_move.kind, source=thread["source"], outcome=draft.world_move.outcome,
                     actor_id=thread.get("actor_id"), due_phase=draft.world_move.due_phase,
@@ -1267,7 +1272,7 @@ class TurnOutcomeResolver:
                 draft = draft.model_copy(update={
                     "world_move": move, "observable_consequences": [*consequences[:3], move.outcome],
                 })
-            decision = normalize_outcome_draft(draft, contract)
+            decision = normalize_outcome_draft(draft, contract, newcomer)
             decision = self._normalize_temporary_identities(decision)
             self.audit.append(
                 {
