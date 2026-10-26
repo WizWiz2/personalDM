@@ -68,7 +68,8 @@ async def role_json(self, provider, selection, messages, **kwargs):
                     "id": "o1",
                     "kind": "event",
                     "description": "Бармен обслужил героя и сообщил о комнате.",
-                    "evidence": "Бармен ставит перед тобой кружку",
+                    # Scribe reads the typed outcome, not the prose: evidence quotes the decision.
+                    "evidence": "Бармен отвечает, что комната наверху свободна",
                     "authority": "dm_confirmed",
                     "durable": True,
                 }
@@ -160,6 +161,7 @@ def test_authority_materializes_npc_before_scribe_resolves_event_participant(
         BARTENDER_IDENTITY,
     }
 
+    print("DBG", snapshot["proposals"], failed_jobs if "failed_jobs" in dir() else "")
     event_proposal = next(
         proposal
         for proposal in snapshot["proposals"]
