@@ -661,7 +661,9 @@ def _outcome_wire_model(
                          *(["world_move"] if world_required and world_move_type is not type(None) else [])],
         })
         response_speaker_name: speaker_type = None
-        place_introductions: list[place_model] = Field(default_factory=list, max_length=1 if known_places else 0)
+        # Not while the hero travels: the destination is profiled by travel (replay15 k3 twin inn).
+        place_introductions: list[place_model] = Field(
+            default_factory=list, max_length=1 if known_places and not movement_indices else 0)
         npc_item_handoffs: list[npc_handoff_model] = Field(default_factory=list, max_length=4 if npc_handoffs_allowed else 0)
         player_item_handoffs: list[player_handoff_model] = Field(default_factory=list, max_length=4 if player_handoffs_allowed else 0)
         item_revelations: list[revelation_model] = Field(default_factory=list, max_length=4 if revelations_allowed else 0)
