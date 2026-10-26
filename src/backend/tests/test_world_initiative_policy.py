@@ -108,3 +108,15 @@ def test_a_strangers_arrival_carries_the_stranger_as_an_arriving_newcomer():
                                     PlayerIntentContract(summary="Жду.", actions=[]),
                                     draft.world_move.newcomer).npc_introductions
     assert npc.arrives and not npc.sent_for  # arriving: never folded into the place's keeper slot
+
+
+def test_a_named_absent_person_is_typed_offscreen_so_their_name_is_reserved():
+    from app.models.player_intent import PlayerIntentContract
+    from app.services.turn_outcome_resolver import normalize_outcome_draft
+    sought = {"canonical_name": "Прохор Белов", "role": "речник", "reason": "Его ищет Илья.",
+              "temporary_name": False, "personal_name_evidence": "Прохора Белова здесь знают",
+              "description": "Речник, первым рассказавший об огнях над Ладогой.",
+              "appearance": "Неизвестна: его здесь пока никто не видел, только слышали."}
+    draft = _outcome_wire_model(0).model_validate({**BASE, "absent_people": [sought]})
+    [npc] = normalize_outcome_draft(draft, PlayerIntentContract(summary="Спрашиваю.", actions=[])).npc_introductions
+    assert npc.sent_for and not npc.arrives and npc.canonical_name == "Прохор Белов"
