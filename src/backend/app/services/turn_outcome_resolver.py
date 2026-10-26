@@ -196,9 +196,11 @@ thread's actor acts at their own place, or here if present), npc_move (the threa
 takes ONE listed available_destinations edge, never into the hero's place), arrival (a
 person arrives here: the thread's actor when it has one, such as someone sent for; otherwise
 the newcomer typed in world_move.newcomer). When an NPC here agrees to send for a person who is
-not in the cast, type that person in that action's sends_for. A person named by personal name
-(whom the hero seeks, a goal, a reply) who is not in the cast is typed once in absent_people:
-offscreen, never present now; that name then belongs to them and to nobody else.
+not in the cast, type that person in that action's sends_for.
+ABSENT PEOPLE: whenever the input, the hero's goal or your result speaks of a person by personal
+name who has no cast ID (someone sought, rumored, named by a witness), add them to absent_people
+once (temporary_name=false, personal_name_evidence = the verbatim mention). They stay offscreen;
+that name then belongs to them and to nobody else.
 PLACES: when a result or world move reveals a concrete place the hero could go that is not a
 known place (where someone lives, where the lights were seen), type it in place_introductions:
 place=new_in:<ID of the KNOWN PLACE it lies in>, a short name and profile. It becomes a destination.
@@ -654,7 +656,8 @@ def _outcome_wire_model(
 
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
         model_config = ConfigDict(extra="ignore", json_schema_extra={
-            "required": ["action_outcomes", "npc_introductions", "npc_item_handoffs", "player_item_handoffs", "item_revelations", "item_introductions", "item_property_changes",
+            # Absent people and places are decided every turn (explicit [] allowed), never skipped by omission.
+            "required": ["action_outcomes", "npc_introductions", "absent_people", "place_introductions", "npc_item_handoffs", "player_item_handoffs", "item_revelations", "item_introductions", "item_property_changes",
                          *(["world_move"] if world_required and world_move_type is not type(None) else [])],
         })
         response_speaker_name: speaker_type = None
