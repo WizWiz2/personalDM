@@ -6,27 +6,36 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.db.repositories.turn_repo import TurnRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Item, Entity
-from app.models.item_state import ItemPropertyChange, RequestedInventoryAction, ItemPositionClaim
-from app.models.player_intent import ActionOutcomeDecision, PlayerActionIntent, PlayerIntentContract, PlayerItemHandoff, TurnOutcomeDecision
-from app.models.turn import ChatMessage, TurnCreate
+from app.db.repositories.turn_repo import TurnRepository
+from app.db.tables import Entity, Item
+from app.models.item_state import ItemPositionClaim, ItemPropertyChange, RequestedInventoryAction
+from app.models.player_intent import (
+    ActionOutcomeDecision,
+    NpcItemHandoff,
+    PlayerActionIntent,
+    PlayerIntentContract,
+    PlayerItemHandoff,
+    TurnOutcomeDecision,
+)
 from app.models.scene_state import LocationExitCreate
-from app.models.player_intent import NpcItemHandoff
+from app.models.turn import ChatMessage, TurnCreate
 from app.models.turn_authority import PlannedItemIntroduction, TurnAuthority
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.action_sequence_executor import ActionSequenceExecutor
-from app.services.item_state_authority import load_item_states
-from app.services.item_state_authority import item_position_violations
-from app.services.player_intent_interpreter import PlayerActionIntentDraft, PlayerIntentContractDraft, normalize_intent_draft, _intent_semantic_review_wire
-from app.services.turn_authority_validator import TurnAuthorityValidator, inventory_validation_model
-from app.services.turn_outcome_resolver import _outcome_wire_model
-from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
-from app.services.turn_planner import PlanContractError
-from app.services.scene_state_service import SceneStateService
+from app.services.item_state_authority import item_position_violations, load_item_states
 from app.services.narration_publication_guard import NarrationPublicationGuard
-from tests.test_player_intent_interpreter import _Router, _interpreter
+from app.services.player_intent_interpreter import (
+    PlayerActionIntentDraft,
+    PlayerIntentContractDraft,
+    _intent_wire_model,
+    normalize_intent_draft,
+)
+from app.services.scene_state_service import SceneStateService
+from app.services.turn_authority_validator import TurnAuthorityValidator, inventory_validation_model
+from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
+from app.services.turn_outcome_resolver import _outcome_wire_model
+from app.services.turn_planner import PlanContractError
 from tests.test_qa219_regressions import _world
 from tests.test_qa220_regressions import _auth
 
@@ -182,26 +191,6 @@ async def test_keyed_audit_preserves_dialogue_but_does_not_invent_absent_reviews
     assert result.verdict == "pass" and router.generate_json.await_count == 1
 
 
-@pytest.mark.asyncio
-async def test_coverage_review_restores_committed_return_before_the_final_act():
-    text = "Выйду во двор. Осмотрю стену. Вернувшись в архив, запишу результат."
-    actions = [
-        {"action_type": "movement", "intent": "Выйду во двор.", "destination_location": "двор"},
-        {"action_type": "observation", "intent": "Осмотрю стену."},
-        {"action_type": "interaction", "intent": "запишу результат."},
-    ]
-    router = _Router({"summary": text, "actions": actions}, bindings={"action_0": "new", "action_2": "new"}, review={
-        "action_ownership": [{"action_index": i, "actor_role": "speaker", "contribution_kind": "world_action",
-                              "evidence_quote": row["intent"]} for i, row in enumerate(actions)],
-        "information_request_only": False, "information_recipient": "none",
-        "missing_actions": [{"before_action_index": 2, "evidence_quote": "Вернувшись в архив",
-            "action": {"action_type": "movement", "intent": "Вернуться в архив.", "destination_location": "архив"}}],
-    })
-    contract = await _interpreter(router).interpret(SimpleNamespace(), [], text)
-    assert [action.action_type for action in contract.actions] == ["movement", "observation", "movement", "interaction"]
-    assert contract.actions[2].destination_location == "архив"
-
-
 def test_destination_response_owner_is_not_rejected_against_the_origin_cast():
     wire = _outcome_wire_model(1, present_names=["Герой", "Хранитель"], bound_response_speaker="Хранитель")
     result = wire.model_validate({"npc_introductions": [], "response_speaker_name": "Хранитель",
@@ -216,15 +205,14 @@ def test_native_addressed_give_can_target_the_controlled_character_without_direc
     context = [ChatMessage(role="system", content=(
         f"Controlled character: {hero}\nPhysically present characters: Вера [id={hero}], Алиса [id={npc}]\n"
         f"Registered items: документ [id={item}]"))]
-    wire = _intent_semantic_review_wire(1, text, "Вера", context)
-    payload = {"information_request_only": False, "information_recipient": "none", "action_ownership": [{
-        "action_index": 0, "actor_role": "addressee", "contribution_kind": "world_action", "action_type": "inventory",
-        "spatial_effect": "local", "item_id": str(item), "inventory_operation": "give",
-        "inventory_target_id": str(hero), "evidence_quote": text}]}
-    assert wire.model_validate(payload).action_ownership[0].inventory_target_id == str(hero)
-    payload["action_ownership"][0]["actor_role"] = "speaker"
-    with pytest.raises(ValidationError, match="other than"):
-        wire.model_validate(payload)
+    wire = _intent_wire_model(context)
+    give = {"evidence_quote": text, "contribution_kind": "world_action", "actor_id": str(npc),
+            "intent": text, "action_type": "inventory", "item_id": str(item),
+            "inventory_operation": "give", "inventory_target_id": str(hero)}
+    payload = {"summary": text, "actions": [give]}
+    assert wire.model_validate(payload).actions[0].inventory_target_id == str(hero)
+    with pytest.raises(ValidationError):
+        wire.model_validate({**payload, "actions": [{**give, "actor_id": str(hero)}]})
 
 
 @pytest.mark.asyncio

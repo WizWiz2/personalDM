@@ -130,18 +130,14 @@ def test_wrong_encryption_key_has_reconnect_guidance(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_existing_exit_overrides_new_destination_binding():
-    from unittest.mock import AsyncMock
-
     from app.services.player_intent_interpreter import PlayerIntentInterpreter
     place = str(uuid4())
-    router = SimpleNamespace(generate_json=AsyncMock(return_value={"action_0": "new"}))
-    interpreter = PlayerIntentInterpreter(router)
     draft = PlayerIntentContractDraft(summary="Выхожу наружу.", actions=[PlayerActionIntentDraft(
-        action_type="movement", intent="Выйти наружу", destination_location="наружу",
+        action_type="movement", intent="Выйти наружу", destination_location="наружу", place="new",
     )])
-    await interpreter._bind_destinations(
-        SimpleNamespace(), draft, draft.summary, {place: "Окрестности — гостиница"},
-        catalog={place: {"exit_labels_from_current": ["наружу"]}},
+    PlayerIntentInterpreter._check_places(
+        draft, {place: "Окрестности — гостиница"},
+        {place: {"exit_labels_from_current": ["наружу"]}},
     )
     action = normalize_intent_draft(draft, draft.summary).actions[0]
     assert action.destination_location_id == UUID(place)

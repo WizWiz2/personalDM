@@ -99,17 +99,12 @@ async def test_imperative_return_with_first_person_purpose_becomes_receive_not_g
     text = "Алиса, отдай пока письмо — хочу перенести его в другое место."
     draft = PlayerIntentContractDraft(summary=text, actions=[PlayerActionIntentDraft(
         action_type="inventory", intent="Получить письмо обратно", actor_role="speaker",
+        evidence_quote="отдай пока письмо",
         item_id=str(letter), inventory_operation="give", inventory_target_id=str(npc),
     )])
     # Even a wrong semantic owner is overridden by the imperative's actual predicate,
     # without conflating it with the later first-person purpose.
-    router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "action_ownership": [{"action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action",
-            "spatial_effect": "local", "action_type": "inventory", "item_id": str(letter),
-            "inventory_operation": "give", "inventory_target_id": str(npc), "evidence_quote": "отдай пока письмо"}],
-        "information_request_only": False, "information_recipient": "character", "addressed_character_name": "Алиса",
-    }))
-    await PlayerIntentInterpreter(router)._review_semantic_ownership(SimpleNamespace(), text, draft, [])
+    PlayerIntentInterpreter(SimpleNamespace())._apply_ownership(draft, text, None)
     contract = normalize_intent_draft(draft, text)
     assert contract.actions[0].action_type == "service"
     assert contract.actions[0].inventory_operation is None
