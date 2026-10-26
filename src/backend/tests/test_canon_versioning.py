@@ -28,24 +28,21 @@ async def test_single_fact_revises_old_value_and_exact_assert_is_noop(
 
     first = await repo.apply_change(
         campaign_id,
-        FactCreate(subject="ворота", predicate="состояние", object_value="закрыты"),
+        FactCreate(subject="ворота", predicate="access_state", object_value="закрыты"),
         operation="assert",
-        cardinality="single",
     )
     duplicate = await repo.apply_change(
         campaign_id,
-        FactCreate(subject=" Ворота ", predicate="Состояние", object_value="закрыты"),
+        FactCreate(subject=" Ворота ", predicate="access_state", object_value="закрыты"),
         operation="assert",
-        cardinality="single",
     )
     assert duplicate.id == first.id
     assert len(await repo.list_active(campaign_id)) == 1
 
     second = await repo.apply_change(
         campaign_id,
-        FactCreate(subject="ворота", predicate="состояние", object_value="открыты"),
+        FactCreate(subject="ворота", predicate="access_state", object_value="открыты"),
         operation="revise",
-        cardinality="single",
     )
     active = await repo.list_active(campaign_id)
     old = await repo.get_by_id(first.id)
@@ -70,10 +67,10 @@ async def test_scene_state_allows_explicit_multivalued_observations_and_targeted
         return await repo.apply_change(
             campaign_id,
             FactCreate(
-                subject="кровь", predicate="находится", object_value=value,
+                subject="кровь", predicate="known_feature", object_value=value,
                 memory_kind="scene_state", scene_id=scene_id,
             ),
-            operation=operation, cardinality="multi",
+            operation=operation,
             previous_object_value=previous,
         )
 
@@ -115,16 +112,16 @@ async def test_scene_state_preserves_distinct_predicates_and_resolves_entity_ali
             subject_entity_id=attendant.id,
         ))
 
-    first = await state("Служащий трактира", "держит", "книгу")
-    location = await state("служащий", "настроение", "тревожное")
-    updated = await state("служащий", "держит", "фонарь")
+    first = await state("Служащий трактира", "activity", "книгу")
+    location = await state("служащий", "condition", "тревожное")
+    updated = await state("служащий", "activity", "фонарь")
 
     assert (await repo.get_by_id(first.id)).is_current is False
     assert (await repo.get_by_id(first.id)).superseded_by == updated.id
     assert (await repo.get_by_id(location.id)).is_current is True
     active = await repo.list_active(campaign_id)
     assert {(fact.predicate, fact.object_value) for fact in active} == {
-        ("держит", "фонарь"), ("настроение", "тревожное"),
+        ("activity", "фонарь"), ("condition", "тревожное"),
     }
 
 
@@ -152,7 +149,7 @@ async def test_same_label_different_typed_objects_are_not_superseded(
 
     async def boat(entity_id, name, value):
         return await repo.apply_change(campaign_id, FactCreate(
-            subject=name, predicate="местоположение", object_value=value,
+            subject=name, predicate="location", object_value=value,
             scene_id=scene_id, memory_kind="scene_state",
             subject_entity_id=entity_id,
         ))
@@ -187,12 +184,12 @@ async def test_untyped_scene_assertion_does_not_revise_a_typed_object(
     )
     repo, scene_id = FactRepository(db_session), uuid4()
     typed = await repo.apply_change(campaign_id, FactCreate(
-        subject="лодка", predicate="состояние", object_value="опечатана",
+        subject="лодка", predicate="access_state", object_value="опечатана",
         scene_id=scene_id, memory_kind="scene_state",
         subject_entity_id=boat.id,
     ))
     untyped = await repo.apply_change(campaign_id, FactCreate(
-        subject="лодка", predicate="состояние", object_value="на плаву",
+        subject="лодка", predicate="access_state", object_value="на плаву",
         scene_id=scene_id, memory_kind="scene_state",
     ))
     assert (await repo.get_by_id(typed.id)).is_current is True
@@ -211,13 +208,11 @@ async def test_multi_fact_keeps_multiple_values_and_retracts_one(
     repo = FactRepository(db_session)
     await repo.apply_change(
         campaign_id,
-        FactCreate(subject="Элдон", predicate="имеет_улику", object_value="карта"),
-        cardinality="multi",
+        FactCreate(subject="Элдон", predicate="known_feature", object_value="карта"),
     )
     await repo.apply_change(
         campaign_id,
-        FactCreate(subject="Элдон", predicate="имеет_улику", object_value="печать"),
-        cardinality="multi",
+        FactCreate(subject="Элдон", predicate="known_feature", object_value="печать"),
     )
     assert {item.object_value for item in await repo.list_active(campaign_id)} == {
         "карта",
@@ -226,9 +221,8 @@ async def test_multi_fact_keeps_multiple_values_and_retracts_one(
 
     await repo.apply_change(
         campaign_id,
-        FactCreate(subject="Элдон", predicate="имеет_улику", object_value="карта"),
+        FactCreate(subject="Элдон", predicate="known_feature", object_value="карта"),
         operation="retract",
-        cardinality="multi",
     )
     assert [item.object_value for item in await repo.list_active(campaign_id)] == ["печать"]
 
@@ -315,3 +309,18 @@ async def test_relationship_revision_keeps_one_current_assertion(
     assert [item.id for item in current] == [second.id]
     assert old.is_current is False
     assert old.superseded_by == second.id
+
+
+@pytest.mark.asyncio
+async def test_single_type_supersedes_across_scenes(db_session: AsyncSession):
+    """sim300: Йонас held three current locations written from three scenes."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Йонас"))
+    repo = FactRepository(db_session)
+    for value in ("станция", "маяк", "причал"):
+        await repo.apply_change(campaign_id, FactCreate(
+            subject="Йонас", predicate="location", object_value=value,
+            memory_kind="scene_state", scene_id=uuid4(),
+        ))
+    active = await repo.list_active(campaign_id)
+    assert [fact.object_value for fact in active] == ["причал"]

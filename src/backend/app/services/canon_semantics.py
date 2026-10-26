@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.models.fact_types import FactTypeId
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 
 WORD_PATTERN = re.compile(r"[\w-]+", flags=re.UNICODE)
@@ -24,11 +25,6 @@ class CanonOperation(str, Enum):
     REVISE = "revise"
     RETRACT = "retract"
     CONTRADICT = "contradict"
-
-
-class FactCardinality(str, Enum):
-    SINGLE = "single"
-    MULTI = "multi"
 
 
 class OutcomeAtom(BaseModel):
@@ -52,7 +48,8 @@ class ProposalAtom(BaseModel):
     outcome_id: str
     change_type: ChangeType
     operation: CanonOperation = CanonOperation.ASSERT
-    cardinality: FactCardinality = FactCardinality.SINGLE
+    # Required for change_type=fact: the predicate is a catalog ID, not free text.
+    fact_type: FactTypeId | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -209,12 +206,14 @@ def proposals_from_envelope(
             "evidence": outcome.evidence,
             "authority": outcome.authority.value,
             "operation": proposal.operation.value,
-            "cardinality": proposal.cardinality.value,
             "durable": outcome.durable,
         }
         if proposal.change_type == ChangeType.FACT:
+            if proposal.fact_type is None or proposal.fact_type == "legacy_note":
+                audit.rejected_schema_count += 1
+                continue
+            payload["predicate"] = proposal.fact_type
             payload.setdefault("operation", proposal.operation.value)
-            payload.setdefault("cardinality", proposal.cardinality.value)
 
         signature = json.dumps(
             {"change_type": proposal.change_type.value, "payload": payload},

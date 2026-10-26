@@ -5,6 +5,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.fact_types import predicate_label
 from app.config import settings
 from app.db.memory_witness import witnesses_of
 from app.db.repositories.belief_repo import BeliefRepository
@@ -501,7 +502,7 @@ class ContextCompiler:
             fact_package = "[Campaign Facts & History]\n"
             fact_ids: list[str] = []
             for fact in facts:
-                fact_package += f"- {fact.subject} {fact.predicate} {fact.object_value or ''}\n"
+                fact_package += f"- {fact.subject} {predicate_label(fact.predicate)} {fact.object_value or ''}\n"
                 fact_ids.append(str(fact.id))
             fact_tokens = count_tokens(fact_package)
             if current_budget_used + fact_tokens < content_budget:

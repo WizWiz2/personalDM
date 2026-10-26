@@ -112,6 +112,7 @@ def _narrator_audit_response(claim_segment_id: int) -> dict:
                 {
                     "outcome_id": "key17",
                     "change_type": "fact",
+                    "fact_type": "condition",
                     "operation": "assert",
                     "cardinality": "single",
                     "payload": {
@@ -126,6 +127,7 @@ def _narrator_audit_response(claim_segment_id: int) -> dict:
                 {
                     "outcome_id": "folder",
                     "change_type": "fact",
+                    "fact_type": "condition",
                     "operation": "assert",
                     "cardinality": "multi",
                     "payload": {

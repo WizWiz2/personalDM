@@ -87,7 +87,7 @@ async def test_observation_cannot_supersede_a_completed_outcome_fact(db_session:
         ChangeType.FACT,
         {
             "subject": "ставни",
-            "predicate": "открыты",
+            "predicate": "access_state",
             "object_value": "да",
             "truth_status": "true",
             "visibility": "public",
@@ -100,7 +100,7 @@ async def test_observation_cannot_supersede_a_completed_outcome_fact(db_session:
     opened = await FactRepository(db_session).find_current_by_key(
         campaign_id,
         "ставни",
-        "открыты",
+        "access_state",
         scope="scene",
         scene_id=scene.id,
         memory_kind="scene_state",
@@ -134,7 +134,7 @@ async def test_observation_cannot_supersede_a_completed_outcome_fact(db_session:
         ChangeType.FACT,
         {
             "subject": "ставни",
-            "predicate": "открыты",
+            "predicate": "access_state",
             "object_value": "нет",
             "truth_status": "true",
             "visibility": "public",
@@ -148,7 +148,7 @@ async def test_observation_cannot_supersede_a_completed_outcome_fact(db_session:
     still = await FactRepository(db_session).find_current_by_key(
         campaign_id,
         "ставни",
-        "открыты",
+        "access_state",
         scope="scene",
         scene_id=scene.id,
         memory_kind="scene_state",
@@ -180,7 +180,7 @@ async def test_observation_cannot_supersede_a_completed_outcome_fact(db_session:
         ChangeType.FACT,
         {
             "subject": "ставни",
-            "predicate": "открыты",
+            "predicate": "access_state",
             "object_value": "нет",
             "truth_status": "true",
             "visibility": "public",
@@ -194,7 +194,7 @@ async def test_observation_cannot_supersede_a_completed_outcome_fact(db_session:
     closed = await FactRepository(db_session).find_current_by_key(
         campaign_id,
         "ставни",
-        "открыты",
+        "access_state",
         scope="scene",
         scene_id=scene.id,
         memory_kind="scene_state",

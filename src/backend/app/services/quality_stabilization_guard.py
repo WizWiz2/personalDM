@@ -9,6 +9,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
+from app.models.fact_types import catalog_prompt
 from app.models.proposed_change import ChangeType, ProposalAction, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProviderError
@@ -330,8 +331,8 @@ async def _recover_interaction_facts(
                     "narration do not explicitly establish a durable resulting property/state, return "
                     "empty outcomes and proposals. Evidence must be an exact short span from the "
                     "supplied authoritative text. For a changed state, use the actual state-bearing "
-                    "subject, a stable predicate, the resulting value, operation=assert/revise, and "
-                    "cardinality=single. Human-readable fields must be Russian."
+                    "subject, fact_type from FACT TYPES, the resulting value, operation=assert/revise. "
+                    "Human-readable fields must be Russian.\n\nFACT TYPES:\n" + catalog_prompt()
                 ),
             ),
             ChatMessage(

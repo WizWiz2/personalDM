@@ -54,9 +54,6 @@ def install() -> None:
         return
 
     from app.services.control_language_guard import install as install_control_language
-    from app.services.fact_slot_reconciliation_guard import (
-        install as install_fact_slot_reconciliation,
-    )
     from app.services.live_contract_stabilization_guard import (
         install as install_live_contract_stabilization,
     )
@@ -72,7 +69,6 @@ def install() -> None:
     install_control_language()
     install_planner_structural_repair()
     install_live_contract_stabilization()
-    install_fact_slot_reconciliation()
     _INSTALLED = True
 
 
