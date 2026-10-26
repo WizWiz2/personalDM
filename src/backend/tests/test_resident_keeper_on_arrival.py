@@ -97,3 +97,20 @@ async def test_a_step_that_brings_a_known_person_moves_them_here(db_session):
         campaign_id=campaign_id, introductions=[back.model_copy(update={"arrives": False})],
         present_names=[], target_location_id=inn.id)
     assert not found.existing_arrivals
+
+
+@pytest.mark.asyncio
+async def test_a_person_sent_for_is_neither_the_keeper_nor_present(db_session):
+    """Replay14 T4: the river-man the host sent for was folded into the keeper slot."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Keeper"))
+    inn = await LocationRepository(db_session).create(campaign_id, LocationCreate(
+        canonical_name="Трактир", custom_fields={"resident_role": "трактирщик"}))
+    river = PlannedNpcIntroduction(canonical_name="Речник", role="речник", temporary_name=True,
+                                   reason="Хозяин послал за ним.", sent_for=True)
+
+    resolved = await NpcIntroductionResolver(db_session).resolve(
+        campaign_id=campaign_id, introductions=[river], present_names=[], target_location_id=inn.id)
+
+    assert ("Речник", None) in [(i.canonical_name, i.resident_slot) for i in resolved.new_introductions]
+    assert "Речник" not in resolved.present_names
