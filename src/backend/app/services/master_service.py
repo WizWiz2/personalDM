@@ -19,6 +19,7 @@ from app.models.game_master import (
 )
 from app.services.master_catalog import (
     clone_policy,
+    clone_initiative,
     default_preset_id,
     get_preset,
     list_presets,
@@ -97,6 +98,7 @@ class MasterService:
             portrait_engraving=payload.portrait_engraving
             or (base.portrait_engraving if base else "/masters/chronicler-engraving.png"),
             move_policy=policy,
+            initiative=payload.initiative or clone_initiative(payload.base_preset_id),
             gender=payload.gender,
             is_preset=False,
             base_preset_id=payload.base_preset_id,

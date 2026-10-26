@@ -31,15 +31,6 @@ PRESSURE_MOVES: frozenset[DirectorMove] = frozenset(
 )
 QUIET_MOVES: frozenset[DirectorMove] = frozenset({"quiet", "soften_blow"})
 
-PRESSURE_THRESHOLD_BY_MASTER: dict[str, int] = {
-    "soft_keeper": 5,
-    "iron_chronicler": 2,
-    "harsh_referee": 2,
-    "chaos_dice": 3,
-    "intrigue_puppeteer": 3,
-}
-DEFAULT_PRESSURE_THRESHOLD = 3
-
 _DRAMATIC_RANK = {"calm": 0, "routine": 1, "tense": 2, "dangerous": 3}
 _RANK_TO_DRAMATIC = {value: key for key, value in _DRAMATIC_RANK.items()}
 
@@ -87,12 +78,13 @@ def adjust_weights(
     policy: MovePolicy,
     *,
     master_id: str,
+    patience: int,
     rhythm: MasterRhythmState,
     seek_contact: bool,
     empty_companion_cast: bool,
 ) -> dict[DirectorMove, float]:
     weights = policy.as_mapping()
-    threshold = PRESSURE_THRESHOLD_BY_MASTER.get(master_id, DEFAULT_PRESSURE_THRESHOLD)
+    threshold = patience
     if rhythm.turns_since_pressure >= threshold:
         for move in PRESSURE_MOVES:
             weights[move] *= 1.6
@@ -176,6 +168,7 @@ def select_director_moves(
     weights = adjust_weights(
         master.move_policy,
         master_id=policy_owner,
+        patience=master.initiative.patience_turns,
         rhythm=rhythm,
         seek_contact=seek_contact,
         empty_companion_cast=empty_companion_cast,
@@ -290,7 +283,6 @@ def apply_moves_to_outcome_decision(
     dramatic = decision.dramatic_mode
     allow_complication = decision.allow_new_complication
     complication_source = decision.complication_source
-    world_move = decision.world_move
 
     pressureish = moves & {
         "advance_conflict",
@@ -309,7 +301,6 @@ def apply_moves_to_outcome_decision(
         dramatic = _cap_dramatic(dramatic, "calm" if "quiet" in moves else "routine")
         allow_complication = False
         complication_source = None
-        world_move = None
     elif "soften_blow" in moves and "harden_consequence" not in moves:
         # Softener loses to harden when both somehow appear; otherwise dampen escalation.
         dramatic = _cap_dramatic(dramatic, "routine")
@@ -319,7 +310,6 @@ def apply_moves_to_outcome_decision(
             "dramatic_mode": dramatic,
             "allow_new_complication": allow_complication,
             "complication_source": complication_source if allow_complication else None,
-            "world_move": world_move,
         }
     )
 

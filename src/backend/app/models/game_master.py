@@ -64,6 +64,21 @@ class MovePolicy(BaseModel):
         return {move: float(getattr(self, move)) for move in DIRECTOR_MOVES}
 
 
+WorldMoveKind = Literal["pressure", "information", "deadline", "npc_action", "npc_move", "arrival"]
+WORLD_MOVE_KINDS: tuple[WorldMoveKind, ...] = (
+    "pressure", "information", "deadline", "npc_action", "npc_move", "arrival",
+)
+
+
+class InitiativePolicy(BaseModel):
+    """How this master lets the world act on its own, over the closed world-move kinds."""
+
+    # Published turns without an independent world move before one becomes mandatory.
+    patience_turns: int = Field(default=3, ge=1, le=8)
+    world_moves: list[WorldMoveKind] = Field(default_factory=lambda: list(WORLD_MOVE_KINDS), min_length=1)
+    harshness: Literal["gentle", "fair", "harsh"] = "fair"
+
+
 class MasterRhythmState(BaseModel):
     """Lightweight deterministic counters — no LLM interpreter."""
 
@@ -84,6 +99,7 @@ class GameMasterPersona(BaseModel):
     portrait_pixel: str = Field(min_length=8, max_length=200)
     portrait_engraving: str = Field(min_length=8, max_length=200)
     move_policy: MovePolicy
+    initiative: InitiativePolicy = Field(default_factory=InitiativePolicy)
     gender: Literal["male", "female", "neutral"] = "neutral"
     is_preset: bool = True
     base_preset_id: str | None = None
@@ -107,6 +123,7 @@ class CustomMasterInput(BaseModel):
     catchphrases: list[str] = Field(min_length=1, max_length=5)
     base_preset_id: str | None = None
     move_policy: MovePolicy | None = None
+    initiative: InitiativePolicy | None = None
     portrait_pixel: str | None = None
     portrait_engraving: str | None = None
     gender: Literal["male", "female", "neutral"] = "neutral"
