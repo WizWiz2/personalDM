@@ -196,7 +196,7 @@ thread's actor acts at their own place, or here if present), npc_move (the threa
 takes ONE listed available_destinations edge, never into the hero's place), arrival (a
 person arrives here: the thread's actor when it has one, such as someone sent for; otherwise
 the newcomer typed in world_move.newcomer). When an NPC here agrees to send for a person who is
-not in the cast, type that person in that action's sends_for.
+not in the cast, type that person in that action's sends_for (required for accepted fetch_person).
 ABSENT PEOPLE: whenever the input, the hero's goal or your result speaks of a person by personal
 name who has no cast ID (someone sought, rumored, named by a witness), add them to absent_people
 once (temporary_name=false, personal_name_evidence = the verbatim mention). They stay offscreen;
@@ -472,6 +472,7 @@ def _outcome_wire_model(
     world_required: bool = False,
     last_world_kind: str | None = None,
     known_places: tuple[str, ...] = (),
+    required_absent: tuple[str, ...] = (),
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -676,6 +677,9 @@ def _outcome_wire_model(
             min_length=action_count,
             max_length=action_count,
         )
+        # A person the human named who has no cast ID is typed offscreen this turn (replay15 Keeper).
+        absent_people: list[OutcomeNpcIntroductionDraft] = Field(
+            default_factory=list, min_length=len(required_absent), max_length=max(2, len(required_absent)))
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
             min_length=1 if required_slot and allow_introductions else 0,
             max_length=introduction_cap,
@@ -738,9 +742,17 @@ def _outcome_wire_model(
             if move is not None and move.kind == "arrival" and not world_threads[move.thread_id] \
                     and move.newcomer is None:
                 raise ValueError("an arrival world_move without the thread's actor requires world_move.newcomer")
+            typed = {identity_key(item.canonical_name) for item in self.absent_people
+                     if not item.temporary_name and item.personal_name_evidence}
+            if any(identity_key(name) not in typed for name in required_absent):
+                raise ValueError(f"absent_people must type each named absent person {list(required_absent)} "
+                                 "with temporary_name=false and personal_name_evidence")
             for index, effect in (required_effects or {}).items():
                 if outcomes.get(index) is None or outcomes[index].resolution != "auto_success":
                     continue
+                if effect == "fetch_person" and allow_introductions and outcomes[index].npc_response == "accepted" \
+                        and outcomes[index].sends_for is None:
+                    raise ValueError("An accepted errand to fetch someone requires that action's sends_for")
                 if effect == "item_creation" and not any(item.after_action_index == index for item in self.item_introductions):
                     raise ValueError("Successful artifact creation requires a typed introduction at its source index")
                 if effect == "item_change" and not any(item.action_index == index for item in self.item_property_changes):
@@ -1143,6 +1155,7 @@ class TurnOutcomeResolver:
         initiative: tuple[InitiativePolicy, dict] | None = None,
         master_block: str = "",
         known_places: dict[str, str] | None = None,
+        required_absent: tuple[str, ...] = (),
     ) -> TurnOutcomeDecision:
         policy, momentum = initiative or (InitiativePolicy(), {})
         threads = {thread["thread_id"]: thread for thread in momentum.get("sources", [])
@@ -1222,6 +1235,7 @@ class TurnOutcomeResolver:
                 world_required=bool(momentum.get("pressure_due")) and not contract.pending_player_choice,
                 last_world_kind=momentum.get("last_world_move_kind"),
                 known_places=tuple(known_places or ()),
+                required_absent=required_absent,
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,

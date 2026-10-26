@@ -38,7 +38,7 @@ class PlayerActionIntent(BaseModel):
     intent: str = Field(min_length=2, max_length=500)
     subject_item_id: UUID | None = None
     requested_inventory: RequestedInventoryAction | None = None
-    expected_effect: Literal["ordinary", "item_creation", "item_change"] = "ordinary"
+    expected_effect: Literal["ordinary", "item_creation", "item_change", "fetch_person"] = "ordinary"
 
     # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
@@ -125,6 +125,8 @@ class PlayerIntentContract(BaseModel):
     protected_player_decisions: list[str] = Field(default_factory=list, max_length=8)
     # The moment the player skips to before acting; the compiler moves the scene clock to it.
     time_advance: DayPart | None = None
+    # People the human names who are not here: each becomes typed offscreen canon this turn.
+    named_absent_people: list[str] = Field(default_factory=list, max_length=2)
 
     @model_validator(mode="after")
     def validate_response_target(self):

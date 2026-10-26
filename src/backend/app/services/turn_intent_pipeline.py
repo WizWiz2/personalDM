@@ -11,6 +11,7 @@ from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import Campaign, Character, Entity, Item, Turn
+from app.services.entity_identity import identity_key
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedWorldMove
 from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
@@ -100,6 +101,17 @@ class TurnIntentPlanningPipeline:
         for location_id, name in rows.all():
             cast.setdefault(names.get(location_id, location_id), []).append(name)
         return cast
+
+    async def _uncast_names(self, campaign_id, contract) -> tuple[str, ...]:
+        """Names the human spoke of that no character carries yet (a surname alone matches its bearer)."""
+        if not contract.named_absent_people or not isinstance(self._session, AsyncSession):
+            return ()
+        known = [{identity_key(part) for part in name.split()} for name in (await self._session.execute(
+            select(Entity.canonical_name).where(Entity.campaign_id == str(campaign_id),
+                                                Entity.entity_type == "character"))).scalars()]
+        return tuple(name for name in contract.named_absent_people if not any(
+            (parts := {identity_key(part) for part in name.split()}) <= bearer or bearer <= parts
+            for bearer in known if bearer))
 
     async def _location_catalog(self, campaign_id) -> tuple[dict[str, str], dict[str, dict]]:
         """Known places for destination binding; current marks where the player is now."""
@@ -259,6 +271,7 @@ class TurnIntentPlanningPipeline:
                 master_block=outcome_master_block(persona, list(director.moves)),
                 destination_cast=await self._destination_cast(campaign_id, contract, names),
                 known_places=names,
+                required_absent=await self._uncast_names(campaign_id, contract),
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
             # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so
@@ -313,6 +326,7 @@ class TurnIntentPlanningPipeline:
                     master_block=outcome_master_block(persona, list(director.moves)),
                     destination_cast=await self._destination_cast(campaign_id, contract, names),
                     known_places=names,
+                    required_absent=await self._uncast_names(campaign_id, contract),
                     repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
                 )
                 decision = apply_due_deadline(apply_moves_to_outcome_decision(decision, director), contract, momentum)
