@@ -14,6 +14,7 @@ from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.actor_turn_authority_guard import speech_spans
+from app.services.entity_identity import identity_key
 from app.services.item_state_authority import item_position_violations
 from app.services.llm_usage_tracker import record_decision
 from app.services.narration_validator import NarrationValidationError
@@ -69,13 +70,33 @@ def entrance_model(authority: TurnAuthority, base: type[BaseModel]) -> type[Base
             "Cast name of whoever enters; background_crowd for an anonymous group acting as one; "
             "untyped_person for an individual with no cast name here."))),
     )
+    speakers = tuple(dict.fromkeys([*authority.present_character_names, *authority.allowed_new_npc_names]))
+    naming = create_model(
+        "GivenName", __config__=ConfigDict(extra="forbid"),
+        evidence=(str, Field(max_length=300, description="Shortest exact candidate fragment.")),
+        who=(Literal[speakers] if speakers else str, ...),
+        name=(str, Field(max_length=80, description="The personal name the prose gives them.")),
+    )
     return create_model(base.__name__, __base__=base, entrances=(list[entrance], Field(
         max_length=6, description=("Each person this candidate shows arriving into the scene place "
-                                   "during this turn (walks in, comes up, appears). [] if nobody."))))
+                                   "during this turn (walks in, comes up, appears). [] if nobody."))),
+        names_given=(list[naming], Field(max_length=4, description=(
+            "Each personal name the candidate gives a cast member here (self-introduction or "
+            "narration) that differs from their cast name. [] if none."))))
 
 
-def _untyped_entrances(data: dict, candidate: str) -> list[NarrationViolation]:
+def _untyped_entrances(data: dict, candidate: str, authority: TurnAuthority) -> list[NarrationViolation]:
+    """Arrivals and identities are typed facts: prose can neither stage nor rename anyone."""
+    revealed = authority.addressed_response.revealed_name if authority.addressed_response else None
     return [
+        NarrationViolation(
+            violation_type="canon_conflict", severity="error", evidence=item["evidence"],
+            correction=f"Не давай имени «{item['name']}»: в фактах он «{item['who']}».",
+        )
+        for item in data.get("names_given") or []
+        if identity_key(item.get("name", "")) not in {identity_key(item.get("who", "")), identity_key(revealed or "")}
+        and item.get("evidence", "").strip() in candidate
+    ] + [
         NarrationViolation(
             violation_type="invalid_movement", severity="error", evidence=item["evidence"],
             correction="Убери появление этого человека: его приход не типизирован в фактах хода.",
@@ -173,7 +194,8 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    does not itself prove the character arrived; require a typed transition.
    Mentions, memories and rumours about other places are allowed. Movement
    within the authoritative current location is allowed. Someone walking into the place is
-   movement too: bind every staged entrance in entrances to its cast name.
+   movement too: bind every staged entrance in entrances to its cast name. A cast member's
+   identity is a fact too: list in names_given any personal name the prose gives them.
 
 Present characters may speak, answer, refuse, stay silent, gesture, move inside the place, share
 opinions, claims or new information. None of that is required and none of it is a violation.
@@ -183,6 +205,7 @@ For every error, evidence is the shortest exact fragment of the candidate and co
 short prose-only fix in Russian. Return exactly:
 {
   "entrances": [{"evidence": "exact fragment", "who": "cast name|background_crowd|untyped_person"}],
+  "names_given": [{"evidence": "exact fragment", "who": "cast name", "name": "name given in prose"}],
   "verdict": "pass|repair_required",
   "summary": "short reason in Russian",
   "violations": [
@@ -362,7 +385,7 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     violations=[*extracted.violations, *conflicts][:12],
                 )
         result = NarrationValidationResult.model_validate(data)
-        staged = _untyped_entrances(data, candidate_text)
+        staged = _untyped_entrances(data, candidate_text, authority)
         if staged:
             result = result.model_copy(update={"verdict": "repair_required",
                                                "violations": [*result.violations, *staged][:12]})
