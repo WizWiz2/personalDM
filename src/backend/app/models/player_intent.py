@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.addressed_response import AddressedResponse
+from app.models.item_state import ItemContentRevelation, ItemPropertyChange, RequestedInventoryAction
 from app.models.turn_authority import PlannedItemIntroduction, PlannedWorldMove
 
 
@@ -35,6 +36,9 @@ class PlayerActionIntent(BaseModel):
 
     action_type: IntentActionType
     intent: str = Field(min_length=2, max_length=500)
+    subject_item_id: UUID | None = None
+    requested_inventory: RequestedInventoryAction | None = None
+    expected_effect: Literal["ordinary", "item_creation", "item_change"] = "ordinary"
 
     # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
@@ -47,7 +51,8 @@ class PlayerActionIntent(BaseModel):
 
     # Inventory authority is identity based. IDs must come from authoritative context.
     item_id: UUID | None = None
-    inventory_operation: Literal["take", "drop", "give", "place", "reposition"] | None = None
+    produced_item_action_index: int | None = Field(default=None, ge=0, le=7)
+    inventory_operation: Literal["take", "drop", "give", "place", "reposition", "store"] | None = None
     inventory_target_id: UUID | None = None
     item_placement_detail: str | None = Field(default=None, max_length=300)
 
@@ -58,6 +63,10 @@ class PlayerActionIntent(BaseModel):
 
     @model_validator(mode="after")
     def validate_domain_fields(self):
+        if self.expected_effect == "item_change" and self.subject_item_id is None and self.item_id is None:
+            raise ValueError("a requested physical property change requires its registered subject")
+        if self.requested_inventory is not None and self.action_type != "service":
+            raise ValueError("an addressed inventory request belongs to a service action")
         if self.action_type == "movement":
             if not self.destination_location:
                 raise ValueError("movement intent requires destination_location")
@@ -70,14 +79,17 @@ class PlayerActionIntent(BaseModel):
 
         inventory_values = (
             self.item_id,
+            self.produced_item_action_index,
             self.inventory_operation,
             self.inventory_target_id,
             self.item_placement_detail,
         )
         if self.action_type == "inventory":
-            if self.item_id is None or self.inventory_operation is None:
+            if (self.item_id is None and self.produced_item_action_index is None) or self.inventory_operation is None:
                 raise ValueError("inventory intent requires item_id and inventory_operation")
-            if self.item_placement_detail and self.inventory_operation not in {"place", "reposition"}:
+            if self.item_id is not None and self.produced_item_action_index is not None:
+                raise ValueError("inventory intent must select one existing or produced identity")
+            if self.item_placement_detail and self.inventory_operation not in {"place", "reposition", "store"}:
                 raise ValueError("placement detail requires place or reposition intent")
             if self.inventory_operation == "reposition" and not self.item_placement_detail:
                 raise ValueError("reposition requires exact placement detail")
@@ -99,6 +111,7 @@ class PlayerIntentContract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str = Field(min_length=2, max_length=500)
+    spoken_identity_evidence: str | None = Field(default=None, max_length=500)
     actions: list[PlayerActionIntent] = Field(default_factory=list, max_length=8)
 
     # Speech/response ownership is separate from executable world actions.
@@ -168,6 +181,7 @@ class ActionOutcomeDecision(BaseModel):
     action_index: int = Field(ge=0, le=7)
     resolution: ActionResolution
     safe_mundane: bool = False
+    npc_response: Literal["accepted", "refused", "not_applicable"] = "not_applicable"
     observable_outcome: str | None = Field(default=None, max_length=1000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
     # A new place's name, containment and resident slot come from its generated profile.
@@ -223,6 +237,17 @@ class NpcItemHandoff(BaseModel):
     after_action_index: int | None = Field(default=None, ge=0, le=7)
 
 
+class PlayerItemHandoff(BaseModel):
+    """A voluntary player offer accepted by a present NPC in the resolved outcome."""
+
+    model_config = ConfigDict(extra="forbid")
+    item_id: UUID
+    recipient_id: UUID
+    offer_evidence: str = Field(min_length=5, max_length=500)
+    evidence: str = Field(min_length=5, max_length=500)
+    after_action_index: int | None = Field(default=None, ge=0, le=7)
+
+
 class TurnOutcomeDecision(BaseModel):
     """World-facing semantics after player intent has been frozen."""
 
@@ -232,6 +257,9 @@ class TurnOutcomeDecision(BaseModel):
     npc_introductions: list[OutcomeNpcIntroduction] = Field(default_factory=list, max_length=4)
     item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
     npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
+    player_item_handoffs: list[PlayerItemHandoff] = Field(default_factory=list, max_length=4)
+    item_revelations: list[ItemContentRevelation] = Field(default_factory=list, max_length=4)
+    item_property_changes: list[ItemPropertyChange] = Field(default_factory=list, max_length=8)
     world_move: PlannedWorldMove | None = None
 
     # These fields constrain narration/external consequences only; they cannot add player actions.

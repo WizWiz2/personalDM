@@ -11,9 +11,9 @@ from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.providers.llm_provider import LLMProvider, LLMProviderAuthenticationError, LLMProviderError
 from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
-from app.services.chatgpt_auth_service import ChatGPTAuthService
+from app.services.chatgpt_auth_service import ChatGPTAuthError, ChatGPTAuthService
 from app.services.llm_usage_tracker import record_provider_telemetry
 
 
@@ -140,7 +140,10 @@ class RoleModelRouter:
         if primary is None:
             return None
         if primary.provider_kind == "chatgpt":
-            primary_key = await asyncio.to_thread(ChatGPTAuthService().get_access_token)
+            try:
+                primary_key = await asyncio.to_thread(ChatGPTAuthService().get_access_token)
+            except ChatGPTAuthError as exc:
+                raise LLMProviderAuthenticationError(str(exc)) from exc
         else:
             primary_key = await self._config_repo.get_decrypted_key(campaign_id)
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import faulthandler
+import logging
 import os
 import sys
 import traceback
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -34,7 +36,9 @@ def _install_crash_diagnostics() -> None:
     global _CRASH_LOG_HANDLE
     if _CRASH_LOG_HANDLE is not None:
         return
-    path = Path(os.getenv("PDM_CRASH_LOG", "data/personal-dm-crash.log"))
+    from app.config import settings
+
+    path = Path(os.getenv("PDM_CRASH_LOG") or Path(settings.DATA_DIR) / "personal-dm-crash.log")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = path.open("a", encoding="utf-8", buffering=1)
@@ -47,6 +51,19 @@ def _install_crash_diagnostics() -> None:
         return
 
     _CRASH_LOG_HANDLE = handle
+    # Uvicorn handles ASGI/lifespan exceptions itself, bypassing sys.excepthook.
+    # Persist those diagnostics even when the launcher redirects its streams.
+    try:
+        handler = RotatingFileHandler(
+            path.with_name(path.stem + "-errors.log"),
+            maxBytes=5_000_000, backupCount=2, encoding="utf-8",
+        )
+        handler.setLevel(logging.ERROR)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(handler)
+        logging.getLogger("uvicorn.error").addHandler(handler)
+    except OSError:
+        pass
     try:
         faulthandler.enable(file=handle, all_threads=True)
     except (RuntimeError, OSError):

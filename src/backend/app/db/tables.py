@@ -462,6 +462,40 @@ class Location(Base):
     )
 
 
+class ItemCreationEffect(Base):
+    __tablename__ = "item_creation_effects"
+    source_step_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("action_steps.id", ondelete="CASCADE"), primary_key=True)
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("items.entity_id", ondelete="CASCADE"), primary_key=True, index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ItemPropertyEffect(Base):
+    """An append-only physical property receipt retired with its source action."""
+    __tablename__ = "item_property_effects"
+    source_step_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("action_steps.id", ondelete="CASCADE"), primary_key=True)
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("items.entity_id", ondelete="CASCADE"), primary_key=True, index=True)
+    property_name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ItemContentDisclosure(Base):
+    __tablename__ = "item_content_disclosures"
+
+    source_step_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("action_steps.id", ondelete="CASCADE"), primary_key=True,
+    )
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("items.entity_id", ondelete="CASCADE"), primary_key=True, index=True,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class Item(Base):
     __tablename__ = "items"
 

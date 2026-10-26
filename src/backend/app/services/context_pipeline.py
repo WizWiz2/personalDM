@@ -105,6 +105,18 @@ class SceneStateContextProvider:
         owned = ", ".join(
             f"{name} [id={entity_id}]" for entity_id, name in owned_rows
         ) or "none recorded"
+        registered = ""
+        if request.acting_character_id is None and isinstance(self._session, AsyncSession):
+            from app.services.item_state_authority import load_item_states
+
+            items = await load_item_states(self._session, request.campaign_id)
+            registered = (
+                "Registered items: " + ", ".join(f"{item.name} [id={item.item_id}]" for item in items)
+                + "\n[CURRENT ITEM POSITIONS — executor-owned, override old prose]\n"
+                + "\n".join(item.model_dump_json() for item in items)
+                + "\nThese identities include unreachable items. Selecting an ID does not authorize "
+                  "success; execution checks custody and actual physical presence.\n"
+            )
         present = ", ".join(
             f"{name} [id={entity_id}]"
             for entity_id, name in zip(state.participant_ids, state.participant_names)
@@ -113,7 +125,8 @@ class SceneStateContextProvider:
             "[STRUCTURED ACTION REFERENCES]\n"
             + (f"Controlled character: {campaign.player_character_id}\n" if campaign else "")
             + f"Player-owned items: {owned}\n"
-            f"Physically present characters: {present}\n"
+            + registered
+            + f"Physically present characters: {present}\n"
             "Planner inventory contract:\n"
             "- Any explicit take/drop/place/give that changes durable item ownership or location "
             "MUST be emitted as an inventory action_sequence step, even when it is the only "

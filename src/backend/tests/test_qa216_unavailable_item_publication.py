@@ -32,9 +32,11 @@ def test_valid_completed_receipt_for_same_item_is_allowed():
         "action_type": "inventory", "status": "completed",
         "item_name": item, "observable_outcome": "Пластина получена."
     }]})
+    validation = NarrationValidationResult(verdict="pass")
+    validation._item_states_verified = True
     result, meta = NarrationPublicationGuard.publish(
         auth, "Ты получаешь медную пластину Оста.",
-        NarrationValidationResult(verdict="pass"),
+        validation,
     )
     assert meta["mode"] == "validated_candidate"
     assert "пластину" in result
@@ -53,9 +55,11 @@ def test_completed_receipt_for_other_item_does_not_authorize_plate():
 
 
 def test_ordinary_mention_without_claiming_possession_is_allowed():
+    validation = NarrationValidationResult(verdict="pass")
+    validation._item_states_verified = True
     _, meta = NarrationPublicationGuard.publish(
         authority(),
         "Алиса всё ещё хранит медную пластину Оста в конторе.",
-        NarrationValidationResult(verdict="pass"),
+        validation,
     )
     assert meta["mode"] == "validated_candidate"

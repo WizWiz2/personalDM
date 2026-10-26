@@ -172,7 +172,7 @@ def deterministic_narration_validator(request):
 
     async def bridge_authority_validation(_self, selection, authority, candidate_text):
         legacy = NarrationValidator(None, None)
-        return await legacy.validate(
+        checked = await legacy.validate(
             selection,
             [
                 ChatMessage(
@@ -183,6 +183,11 @@ def deterministic_narration_validator(request):
             candidate_text,
             confirmed_speaker_name=authority.acting_character_name,
         )
+        # This seam substitutes for the COMPLETE current gate, including item
+        # audit. Tests of that audit opt out with interagent_contract_enforced.
+        checked = checked.model_copy(deep=True)
+        checked._item_states_verified = checked.verdict == "pass"
+        return checked
 
     authority_patch = (
         patch.object(

@@ -27,12 +27,13 @@ from app.models.session_zero_interview import (
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import ModelRole, RoleModelRouter
-from app.services.session_zero_service import SessionZeroService
 from app.services.session_zero_reply_quality import assistant_message_incomplete
+from app.services.session_zero_service import SessionZeroService
 from app.services.starter_identity import (
     apply_established_starter_names,
     reconcile_starter_npcs,
 )
+from app.services.starter_item_custody import reconcile_starter_item_custody
 
 
 class SessionZeroInterviewIncompleteError(ValueError):
@@ -140,6 +141,9 @@ class SessionZeroAgent:
   ключ в руке героя. Для каждого сохрани canonical_name, description и
   initial_placement (где именно находится в пределах сцены).
 - held_by_player=true ставь ТОЛЬКО если герой уже держит предмет на старте.
+- held_by_npc — точное имя из starter_npcs, если NPC держит предмет или распоряжается им
+  (включая почту у хозяйки на конторке). Не заменяй владельца текстом initial_placement.
+  Для предмета без владельца held_by_npc=null; не назначай героя и NPC одновременно.
 - Не записывай слухи о вещах, будущее возможное сокровище, обычный декор,
   предположения, ненайденные предметы или объекты лишь из целей персонажа.
 - При отсутствии подтверждённых предметов ставь starter_items=[]; не создавай
@@ -371,6 +375,9 @@ class SessionZeroInterviewService:
 
         if finalize_requested:
             merged = await self._bind_established_names(selection, merged, state)
+            merged = await reconcile_starter_item_custody(
+                self._router, self._provider, selection, merged, state.messages,
+            )
 
         missing = self.missing_fields(merged)
         ready = finalize_requested and not missing

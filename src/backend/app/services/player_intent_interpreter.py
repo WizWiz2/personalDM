@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from functools import reduce
 from operator import or_
 from typing import Any, Literal
@@ -11,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from app.config import settings
 from app.models.player_intent import DayPart, IntentActionType, PlayerIntentContract
+from app.models.item_state import RequestedInventoryAction
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.linguistic_intent_analyzer import (
@@ -31,6 +31,9 @@ Speech is NOT an executable action, even in imperative form: "назовись",
 information_request_only=true, addressed_response_requested=true and the current addressee's
 designation (or null for unspecified people). A name question also sets identity_reveal_requested.
 Do not invent service/interaction/observation actions for asking, speaking or listening to a reply.
+spoken_identity_evidence is a verbatim fragment where the human actually introduces the protagonist
+to another character now ("Я Ирма Вейс"). Otherwise null: private thoughts, hypothetical, negative,
+quoted third-party speech or mere mentions of a name are not an introduction.
 Questions to the narrator about existing state use actions=[], information_request_only=true,
 world_state_question=true, addressed_response_requested=false; they do not execute the queried event.
 
@@ -40,7 +43,8 @@ and response flags. Preserve alternatives/conditions in pending_player_choice/pr
 Also preserve every explicit negative action boundary there (e.g. inspect without touching): a
 sensory description is not permission to perform a prohibited voluntary action.
 actor_role=speaker for the human's act, addressee for a requested physical act by another person.
-An addressee's physical act is service, not the speaker's inventory; mark the expected response.
+An addressee's physical act is a request, not the speaker's inventory. Preserve its exact
+item/operation/target/placement fields and actor_role=addressee; mark the expected response.
 
 movement is the intention to reach another location, even when blocked. Keep the selected endpoint,
 never substitute a known place or classify a failed move as interaction. Two committed endpoints
@@ -58,9 +62,22 @@ and never drop the later act because an earlier act dominates the sentence. Conn
 not proof of multiplicity; a commitment the human actually stated is.
 Success and blockers are resolved only AFTER this extraction, including for known impossible attempts.
 Inventory: take/drop/place/give/reposition with exact contextual IDs; give also needs inventory_target_id.
+For an observation, reading or interaction with one existing item, bind subject_item_id to its
+catalogued ID. This identifies the subject without changing custody; do not mix similar documents.
+Classify expected_effect by the committed act: item_creation produces a distinct persistent
+artifact; item_change physically alters an existing item's properties or a component; ordinary
+otherwise. Bind subject_item_id for item_change. Reading alone is not a property change.
+Retain every committed return journey, including one expressed by the final placement of an
+object back in the original room. It is a separate travel action, not permission for remote placement.
+For a later inventory action on an artifact created earlier in THIS input, use
+produced_item_action_index of its creation action, with item_id=null. Never substitute the
+materials or an older similar artifact. This local reference is bound by the compiler after
+the creation is resolved; it does not claim the artifact already exists.
 drop releases the item into the place; place deliberately positions it on/in a named surface/container.
 For place or reposition, copy the explicitly requested exact destination surface into item_placement_detail.
 Reposition changes position within the same room without transferring ownership.
+store takes or retains custody while placing an accessible item in the actor's safekeeping.
+Unlike place/drop, it does not release custody to the room. Record the requested storage detail.
 Do not guess a surface. If no surface was specified leave null.
 Other actions carry no inventory fields. rest/wait carry time only when supplied by the human.
 Seeking local people sets addressed_response_requested=true, retaining any real movement;
@@ -77,7 +94,7 @@ _ACTION_TYPES = {
     "inventory",
     "other",
 }
-_INVENTORY_OPERATIONS = {"take", "drop", "give", "place", "reposition"}
+_INVENTORY_OPERATIONS = {"take", "drop", "give", "place", "reposition", "store"}
 
 
 class PlayerActionIntentDraft(BaseModel):
@@ -93,6 +110,8 @@ class PlayerActionIntentDraft(BaseModel):
 
     action_type: IntentActionType
     actor_role: Literal["speaker", "addressee"] = "speaker"
+    requested_actor_id: str | None = None
+    expected_effect: Literal["ordinary", "item_creation", "item_change"] = "ordinary"
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     destination_reference: str | None = None
@@ -101,9 +120,11 @@ class PlayerActionIntentDraft(BaseModel):
         "ordinary", "special", "teleportation", "force", "stealth", "ability"
     ] = "ordinary"
     item_id: str | None = None
+    produced_item_action_index: int | None = Field(default=None, ge=0, le=7)
     inventory_operation: str | None = None
     inventory_target_id: str | None = None
     item_placement_detail: str | None = None
+    subject_item_id: str | None = None
     elapsed_time: str | None = None
     time_after: DayPart | None = None
 
@@ -119,6 +140,7 @@ class PlayerIntentContractDraft(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     summary: str = Field(min_length=2, max_length=500)
+    spoken_identity_evidence: str | None = Field(default=None, max_length=500)
     actions: list[PlayerActionIntentDraft] = Field(max_length=8)
     addressed_response_requested: bool = False
     addressed_character_name: str | None = None
@@ -156,7 +178,7 @@ class _MovementWire(_ActionWire):
 class _InventoryWire(_ActionWire):
     action_type: Literal["inventory"]
     item_id: UUID
-    inventory_operation: Literal["take", "drop", "place", "reposition"]
+    inventory_operation: Literal["take", "drop", "place", "reposition", "store"]
     item_placement_detail: str | None = Field(default=None, max_length=300)
 
 
@@ -167,6 +189,15 @@ class _GiveWire(_ActionWire):
     inventory_target_id: UUID
 
 
+class _ProducedInventoryWire(_ActionWire):
+    action_type: Literal["inventory"]
+    item_id: None = None
+    produced_item_action_index: int = Field(ge=0, le=7)
+    inventory_operation: Literal["take", "drop", "give", "place", "reposition", "store"]
+    inventory_target_id: UUID | None = None
+    item_placement_detail: str | None = Field(default=None, max_length=300)
+
+
 class _TimeWire(_ActionWire):
     action_type: Literal["rest", "wait"]
     elapsed_time: str | None = None
@@ -175,6 +206,14 @@ class _TimeWire(_ActionWire):
 
 class _LocalActionWire(_ActionWire):
     action_type: Literal["service", "interaction", "observation", "other"]
+    subject_item_id: UUID | None = None
+    expected_effect: Literal["ordinary", "item_creation", "item_change"]
+
+    @model_validator(mode="after")
+    def require_property_subject(self):
+        if self.expected_effect == "item_change" and self.subject_item_id is None:
+            raise ValueError("A physical property change requires its existing subject_item_id")
+        return self
 
 
 class _IntentWire(PlayerIntentContractDraft):
@@ -187,12 +226,13 @@ class _IntentWire(PlayerIntentContractDraft):
                 "addressed_response_requested", "addressed_character_name",
                 "identity_reveal_requested", "information_request_only", "world_state_question",
                 "time_advance",
+                "spoken_identity_evidence",
             ],
         },
     )
     # Conditional requirements belong in the model-facing schema: a movement needs a destination,
     # and a transfer needs an item and recipient. Keep the permissive draft for legacy normalization.
-    actions: list[_MovementWire | _InventoryWire | _GiveWire | _TimeWire | _LocalActionWire] = (
+    actions: list[_MovementWire | _InventoryWire | _GiveWire | _ProducedInventoryWire | _TimeWire | _LocalActionWire] = (
         Field(max_length=8)
     )
 
@@ -203,6 +243,8 @@ _IntentWire.__name__ = "PlayerIntentContractDraft"
 def _intent_wire_model(context_messages: list[ChatMessage]):
     owned = action_reference_catalog(context_messages, "Player-owned items:")
     objects = action_reference_catalog(context_messages, "Objects physically here:")
+    registered = action_reference_catalog(context_messages, "Registered items:")
+    objects = {**registered, **objects}
     people = action_reference_catalog(context_messages, "Physically present characters:")
     controlled_id = next((
         line.removeprefix("Controlled character:").strip()
@@ -213,7 +255,12 @@ def _intent_wire_model(context_messages: list[ChatMessage]):
     # Legacy/unit contexts may omit catalogs. Production always publishes these sections.
     if not owned and not objects and not people:
         return _IntentWire
-    variants = [_MovementWire, _TimeWire, _LocalActionWire]
+    variants = [_MovementWire, _TimeWire, _ProducedInventoryWire, _LocalActionWire]
+    if owned or objects:
+        variants[-1] = create_model(
+            "ReferencedLocalAction", __base__=_LocalActionWire,
+            subject_item_id=(Literal[tuple(sorted(owned.keys() | objects.keys()))] | None, None),
+        )
     if owned or objects:
         variants.append(create_model(
             "ReferencedInventoryAction", __base__=_InventoryWire,
@@ -223,8 +270,16 @@ def _intent_wire_model(context_messages: list[ChatMessage]):
     if owned and recipients:
         variants.append(create_model(
             "ReferencedGiveAction", __base__=_GiveWire,
+            actor_role=(Literal["speaker"], "speaker"),
             item_id=(Literal[tuple(sorted(owned))], ...),
             inventory_target_id=(Literal[tuple(sorted(recipients))], ...),
+        ))
+    if objects and people:
+        variants.append(create_model(
+            "ReferencedRequestedGiveAction", __base__=_GiveWire,
+            actor_role=(Literal["addressee"], "addressee"),
+            item_id=(Literal[tuple(sorted(objects))], ...),
+            inventory_target_id=(Literal[tuple(sorted(people))], ...),
         ))
     action_model = reduce(or_, variants)
 
@@ -249,10 +304,14 @@ class ActionOwnershipDecision(BaseModel):
 
     action_index: int = Field(ge=0, le=7)
     actor_role: Literal["speaker", "addressee"]
+    expected_effect: Literal["ordinary", "item_creation", "item_change"] = "ordinary"
+    subject_item_id: UUID | None = None
     action_type: IntentActionType | None = None
     item_id: UUID | None = None
-    inventory_operation: Literal["take", "drop", "place", "reposition", "give"] | None = None
+    produced_item_action_index: int | None = Field(default=None, ge=0, le=7)
+    inventory_operation: Literal["take", "drop", "place", "reposition", "store", "give"] | None = None
     inventory_target_id: UUID | None = None
+    item_placement_detail: str | None = Field(default=None, max_length=300)
     elapsed_time: str | None = None
     time_after: DayPart | None = None
     contribution_kind: Literal["world_action", "speech"] = "world_action"
@@ -268,6 +327,13 @@ class ActionOwnershipDecision(BaseModel):
     evidence_quote: str = Field(default="", max_length=500)
 
 
+class MissingIntentAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    before_action_index: int = Field(ge=0, le=8)
+    evidence_quote: str = Field(min_length=2, max_length=500)
+    action: PlayerActionIntentDraft
+
+
 class IntentSemanticOwnershipReview(BaseModel):
     """Classify actor and durable effect without changing action text or order."""
 
@@ -277,6 +343,7 @@ class IntentSemanticOwnershipReview(BaseModel):
     information_request_only: bool
     information_recipient: Literal["narrator", "character", "none"]
     addressed_character_name: str | None = Field(default=None, max_length=120)
+    missing_actions: list[MissingIntentAction] = Field(default_factory=list, max_length=8)
 
 
 def _intent_semantic_review_wire(
@@ -285,6 +352,8 @@ def _intent_semantic_review_wire(
 ):
     owned = action_reference_catalog(context_messages or [], "Player-owned items:")
     objects = action_reference_catalog(context_messages or [], "Objects physically here:")
+    registered = action_reference_catalog(context_messages or [], "Registered items:")
+    objects = {**registered, **objects}
     people = action_reference_catalog(context_messages or [], "Physically present characters:")
     items = tuple(sorted(owned.keys() | objects.keys()))
     recipients = tuple(sorted(reference for reference, name in people.items() if name != controlled_name))
@@ -292,8 +361,10 @@ def _intent_semantic_review_wire(
     recipient_type = UUID | None
     if items or people:
         item_type = Literal[items] | None if items else type(None)
-    if recipients or people:
-        recipient_type = Literal[recipients] | None if recipients else type(None)
+    if people:
+        # A requested NPC give can target the controlled character. The actor's
+        # role, not a globally PC-excluding catalog, determines legal direction.
+        recipient_type = Literal[tuple(sorted(people))] | None
 
     class IndexedActionOwnershipDecision(ActionOwnershipDecision):
         model_config = ConfigDict(
@@ -304,15 +375,19 @@ def _intent_semantic_review_wire(
                     "spatial_effect", "destination_location",
                     "action_type", "item_id", "inventory_operation", "inventory_target_id",
                     "elapsed_time", "time_after",
+                    "evidence_quote",
                 ],
             },
         )
         action_index: Literal[tuple(range(action_count))]
         item_id: item_type = None
         inventory_target_id: recipient_type = None
+        subject_item_id: item_type = None
 
         @model_validator(mode="after")
         def require_inventory_references(self):
+            if self.expected_effect == "item_change" and not (self.subject_item_id or self.item_id):
+                raise ValueError("A physical property change requires its registered subject")
             if self.contribution_kind == "world_action" and self.action_type == "movement":
                 if self.spatial_effect != "travel" or not _compact(self.destination_location):
                     raise ValueError(
@@ -322,10 +397,15 @@ def _intent_semantic_review_wire(
             elif self.action_type is not None and self.spatial_effect == "travel":
                 raise ValueError("Travel to a different place requires action_type=movement")
             if self.contribution_kind == "world_action" and self.action_type == "inventory":
-                if not self.item_id or not self.inventory_operation:
+                if (not self.item_id and self.produced_item_action_index is None) or not self.inventory_operation:
                     raise ValueError("Inventory act requires the catalogued item and ownership operation")
+                if self.produced_item_action_index is not None and self.produced_item_action_index >= self.action_index:
+                    raise ValueError("A produced item reference must point to an earlier committed creation")
                 if self.inventory_operation == "give" and not self.inventory_target_id:
                     raise ValueError("Giving an item requires the catalogued recipient")
+                if (self.inventory_operation == "give" and self.actor_role == "speaker"
+                        and people and str(self.inventory_target_id) not in recipients):
+                    raise ValueError("A player give requires a recipient other than the controlled character")
             return self
 
     class MovingOwnership(IndexedActionOwnershipDecision):
@@ -347,14 +427,28 @@ def _intent_semantic_review_wire(
         item_id: Literal[items] if items else UUID = Field(
             description="Select the exact registered item's ID."
         )
-        inventory_operation: Literal["take", "drop", "place", "reposition"]
+        inventory_operation: Literal["take", "drop", "place", "reposition", "store"]
         inventory_target_id: None = None
         elapsed_time: None = None
         time_after: None = None
 
     class GivingOwnership(InventoryOwnership):
+        actor_role: Literal["speaker"]
         inventory_operation: Literal["give"]
         inventory_target_id: Literal[recipients] if recipients else UUID
+
+    class RequestedGivingOwnership(InventoryOwnership):
+        actor_role: Literal["addressee"]
+        inventory_operation: Literal["give"]
+        inventory_target_id: Literal[tuple(sorted(people))] if people else UUID
+
+    class ProducedInventoryOwnership(IndexedActionOwnershipDecision):
+        contribution_kind: Literal["world_action"]
+        action_type: Literal["inventory"]
+        spatial_effect: Literal["local"]
+        item_id: None = None
+        produced_item_action_index: int = Field(ge=0, le=7)
+        inventory_operation: Literal["take", "drop", "give", "place", "reposition", "store"]
 
     class TemporalOwnership(IndexedActionOwnershipDecision):
         contribution_kind: Literal["world_action"]
@@ -389,11 +483,13 @@ def _intent_semantic_review_wire(
 
     # Native decoding gets conditional shapes. The permissive Python boundary below still
     # accepts legacy sparse fixtures, while checking every explicit typed decision.
-    ownership_variants = [MovingOwnership, TemporalOwnership, LocalOwnership, SpeechOwnership]
+    ownership_variants = [MovingOwnership, TemporalOwnership, LocalOwnership, SpeechOwnership, ProducedInventoryOwnership]
     if items or not people:
         ownership_variants.append(InventoryOwnership)
         if recipients or not people:
             ownership_variants.append(GivingOwnership)
+        if people or not context_messages:
+            ownership_variants.append(RequestedGivingOwnership)
     ownership_model = reduce(or_, ownership_variants)
 
     class TypedOwnershipSchema(IntentSemanticOwnershipReview):
@@ -411,6 +507,11 @@ def _intent_semantic_review_wire(
 
         @model_validator(mode="after")
         def validate_grounding(self):
+            if len(self.missing_actions) + action_count > 8:
+                raise ValueError("The complete committed sequence exceeds eight atomic actions")
+            for missing in self.missing_actions:
+                if missing.before_action_index > action_count or missing.evidence_quote not in player_input:
+                    raise ValueError("An omitted act needs its ordered insertion point and exact human evidence")
             if controlled_name and _compact(self.addressed_character_name).casefold() == controlled_name.casefold():
                 raise ValueError(
                     "The controlled character cannot answer their own question. "
@@ -441,8 +542,14 @@ def _intent_semantic_review_wire(
 
 _OWNERSHIP_REVIEW_PROMPT = """[INTENT SEMANTIC OWNERSHIP ADJUDICATOR]
 Judge contribution kind and ownership in the latest human turn. Do not resolve outcomes, edit
-action text, add/reorder actions, choose routes, or write story prose. Return exactly
+existing action text, reorder existing actions, choose routes, or write story prose. Return exactly
 IntentSemanticOwnershipReview.
+Also compare the COMPLETE input with the extracted sequence. For each genuinely omitted committed
+act return missing_actions with its full typed action, shortest verbatim evidence_quote and
+before_action_index (the existing index before which it belongs, action_count to append).
+Do not add implied choices, prerequisites the human did not commit to, hypothetical future acts,
+negative boundaries or duplicate existing acts. A return explicitly committed in the result clause
+still needs its own movement before an act back in the original place. Preserve that order.
 
 For every extracted index first classify contribution_kind by meaning:
 - speech: asking, answering, explaining, naming oneself, greeting, telling information, or staging
@@ -458,6 +565,11 @@ their own addressee; an unregistered interlocutor keeps the designation used by 
 Then decide from the complete utterance who performs the contribution:
 - speaker: the human-controlled player character commits to performing it;
 - addressee: the human asks another character to perform it.
+Preserve expected_effect from the physical commitment: item_creation makes a distinct durable
+artifact, item_change alters a registered item's properties or component, ordinary otherwise.
+For item_change select subject_item_id. This classifies the requested effect, never grants success.
+For an inventory action on this input's newly created artifact select produced_item_action_index
+of the earlier creation and item_id=null. Never bind its source materials or another existing item.
 
 Also adjudicate spatial_effect for each contribution: travel reaches a different physical place,
 local manipulates or inspects something without changing place, none is speech or non-spatial acts.
@@ -468,8 +580,15 @@ otherwise return null. This corrects classification only: preserve order, actor 
 Independently select action_type by the act's durable effect, regardless of the extraction's label.
 Any change of a registered item's owner or physical placement is inventory, including placing it
 on furniture and withdrawing the hand. Select item_id from the catalog and the take/drop/place/give
+or store (take/keep custody while placing in the actor's safekeeping)
 operation; give also selects inventory_target_id. Reposition a registered item within the same location using a typed
 reposition operation and exact placement detail. This is NOT an interaction/other action.
+Direction and actor are distinct: "Марта, отдай письмо — хочу перенести его" asks the
+ADDRESSEE to give it to the player. The first clause is NOT a player give, and the
+second clause expresses a future purpose, not another committed transfer now.
+"Верни мне письмо" likewise asks the NPC to act; its possible consent and receive
+receipt belong to outcome resolution. "Передаю Марте письмо" is a speaker give.
+evidence_quote must contain the predicate of THIS act, not the speaker's later purpose.
 Rest or waiting with elapsed time is rest/wait: preserve elapsed_time and time_after from the input.
 Other domains keep inventory and temporal fields null. Speech uses action_type=null.
 
@@ -510,87 +629,7 @@ def _destination_binding_wire(indices: list[int], references: dict[str, str]):
     )
 
 
-# QA-213 F-32: a narrow deterministic rescue for unambiguous first-person
-# physical placement that a control model mislabeled as generic interaction.
-# Never bind a new item from prose: only trusted UUID/name catalog entries qualify.
-_PLACEMENT_VERB = re.compile(
-    r"\b(?:кладу|укладываю|положу|положил|положила|ставлю|поставлю|"
-    r"перекладываю|переставляю|помещаю|оставляю|убираю)\b", re.I
-)
-_PLACEMENT_SURFACE = re.compile(
-    r"\b(?:между|под|на|за|возле|рядом с|около|у|в)\s+\S.{0,260}$", re.I
-)
-_TOKEN = re.compile(r"[а-яёa-z0-9]+", re.I)
-
-
-def _repair_unambiguous_local_placement(
-    draft: PlayerIntentContractDraft,
-    player_input: str,
-    context_messages: list[ChatMessage],
-) -> bool:
-    owned = action_reference_catalog(context_messages, "Player-owned items:")
-    floor = action_reference_catalog(context_messages, "Objects physically here:")
-    catalog = {**floor, **owned}
-    if not catalog or not draft.actions:
-        return False
-
-    repaired = False
-    for action in draft.actions:
-        if action.actor_role != "speaker":
-            continue
-        typed_placement = action.action_type == "inventory"
-        if typed_placement:
-            if action.inventory_operation not in {"place", "reposition"} or action.item_placement_detail:
-                continue
-        elif action.action_type not in {"interaction", "other"}:
-            continue
-        phrase = action.intent if len(draft.actions) > 1 else player_input
-        verb = _PLACEMENT_VERB.search(phrase)
-        if not verb or re.search(r"\bне\s+$", phrase[:verb.start()], re.I):
-            continue
-        tail = phrase[verb.end():]
-        # A specifically named carried container is a custody-preserving
-        # reposition, but only of a registered item already owned by the hero.
-        stow = bool(re.search(r"\bв\s+(?:сумк|рюкзак|карман)", tail, re.I))
-        surface = _PLACEMENT_SURFACE.search(tail)
-        if not surface:
-            continue
-        words = _TOKEN.findall(tail.casefold())
-        matching = []
-        for item_id, name in catalog.items():
-            tokens = _TOKEN.findall(name.casefold())
-            if not tokens:
-                continue
-            # A registered item can have a descriptive canonical name,
-            # e.g. "письмо Оста Эндлина", while the player simply says "письмо".
-            # The unique catalog match below remains mandatory: no guessing.
-            stems = [token.rstrip("аеёиоуыэюя") if len(token) > 4 else token
-                     for token in tokens]
-            if any(len(stem) >= 4 and any(word.startswith(stem) for word in words)
-                   for stem in stems):
-                matching.append(item_id)
-        if len(matching) != 1:
-            continue  # Ambiguity or absent catalog evidence is never guessed.
-        item_id = matching[0]
-        if stow and item_id not in owned:
-            continue  # Placing a floor item in one's own bag requires an explicit take.
-        if typed_placement and str(action.item_id) != item_id:
-            continue  # Do not rewrite a model's already-bound item identity.
-        action.action_type = "inventory"
-        action.item_id = item_id
-        if not typed_placement or stow:
-            action.inventory_operation = (
-                "reposition" if stow or item_id not in owned else "place"
-            )
-        action.inventory_target_id = None
-        action.item_placement_detail = surface.group(0).strip().rstrip(".")
-        repaired = True
-    if repaired:
-        draft.information_request_only = False
-    return repaired
-
-
-def _compact(value: object) -> str:
+def _compact(value) -> str:
     return " ".join(str(value or "").split())
 
 
@@ -613,21 +652,25 @@ def _normalized_action(
 
     operation = _inventory_operation(action)
     item_id = _compact(action.item_id) or None
+    produced_index = action.produced_item_action_index
     inventory_target_id = _compact(action.inventory_target_id) or None
 
     # An explicit item identity plus an inventory verb is stronger evidence than a noisy action_type
     # label emitted by the model (for example it occasionally called "put the key on the floor" a
     # movement). Conversely, merely mentioning an entity/item ID must not turn an ordinary switch
     # interaction into inventory manipulation.
-    if item_id and operation:
+    if (item_id or produced_index is not None) and operation:
         action_type = "inventory"
 
     intent = _compact(action.intent) or fallback_intent
     payload: dict[str, Any] = {
         "action_type": action_type,
         "intent": intent,
+        "subject_item_id": action.subject_item_id,
+        "expected_effect": action.expected_effect,
         "destination_location": None,
         "item_id": None,
+        "produced_item_action_index": None,
         "inventory_operation": None,
         "inventory_target_id": None,
         "item_placement_detail": None,
@@ -640,10 +683,17 @@ def _normalized_action(
         # No selected place, no trip (ban 4): a local step, not a failed turn.
         action_type = "interaction"
     if action_type == "inventory" and not (
-        item_id and operation and (operation != "give" or inventory_target_id)
+        (item_id or produced_index is not None) and operation and (operation != "give" or inventory_target_id)
     ):
         # Without a catalogued item/operation/recipient nothing changes hands; the act stays local.
         action_type = "interaction"
+    if action_type == "inventory" and operation == "reposition" and not _compact(
+        action.item_placement_detail
+    ):
+        # A gesture with no specified surface cannot authorize a placement. Keep a
+        # read-only act instead of failing the entire turn or inventing a destination.
+        action_type = "observation"
+        payload["intent"] = f"Уточнить текущее положение предмета без перемещения: {intent}"[:500]
     payload["action_type"] = action_type
 
     if action_type == "movement":
@@ -661,11 +711,12 @@ def _normalized_action(
         payload.update(
             {
                 "item_id": item_id,
+                "produced_item_action_index": produced_index,
                 "inventory_operation": operation,
                 "inventory_target_id": inventory_target_id if operation == "give" else None,
                 "item_placement_detail": (
                     _compact(action.item_placement_detail)[:300] or None
-                    if operation in {"place", "reposition"} else None
+                    if operation in {"place", "reposition", "store"} else None
                 ),
             }
         )
@@ -690,14 +741,23 @@ def normalize_intent_draft(
     fallback = _compact(player_input)
     summary = _compact(draft.summary) or fallback
     source_actions = [] if draft.information_request_only else list(draft.actions)
+    requests = {}
     addressee_owned = False
-    for action in source_actions:
+    for index, action in enumerate(source_actions):
         if action.actor_role == "addressee":
             # The machine owns the role. An addressed act is service for that person,
             # never an inventory mutation by the speaker, even if the human also refused
             # to do it themselves.
+            if action.requested_actor_id and (action.item_id or action.produced_item_action_index is not None) and action.inventory_operation:
+                requests[index] = RequestedInventoryAction(
+                    actor_id=action.requested_actor_id, item_id=action.item_id,
+                    produced_item_action_index=action.produced_item_action_index,
+                    operation=action.inventory_operation, target_id=action.inventory_target_id,
+                    placement_detail=action.item_placement_detail,
+                )
             action.action_type = "service"
             action.item_id = None
+            action.produced_item_action_index = None
             action.inventory_operation = None
             action.inventory_target_id = None
             action.item_placement_detail = None
@@ -706,6 +766,8 @@ def normalize_intent_draft(
         _normalized_action(player_input, action, fallback_intent=fallback)
         for action in source_actions
     ]
+    for index, request in requests.items():
+        actions[index]["requested_inventory"] = request.model_dump(mode="json")
     if draft.information_request_only or (
         source_actions and all(action.actor_role == "addressee" for action in source_actions)
     ):
@@ -713,6 +775,11 @@ def normalize_intent_draft(
     return PlayerIntentContract.model_validate(
         {
             "summary": summary,
+            "spoken_identity_evidence": (
+                draft.spoken_identity_evidence
+                if draft.spoken_identity_evidence and draft.spoken_identity_evidence in player_input
+                else None
+            ),
             "actions": actions,
             "addressed_response_requested": (
                 bool(draft.addressed_response_requested) or addressee_owned
@@ -863,12 +930,19 @@ class PlayerIntentInterpreter:
         for ownership in review.action_ownership:
             action = draft.actions[ownership.action_index]
             action.actor_role = ownership.actor_role
+            if "expected_effect" in ownership.model_fields_set:
+                action.expected_effect = ownership.expected_effect
+            if ownership.subject_item_id is not None:
+                action.subject_item_id = str(ownership.subject_item_id)
             if ownership.contribution_kind == "world_action" and ownership.action_type is not None:
                 action.action_type = ownership.action_type
                 if ownership.action_type == "inventory":
-                    action.item_id = ownership.item_id
+                    action.item_id = str(ownership.item_id) if ownership.item_id else None
+                    action.produced_item_action_index = ownership.produced_item_action_index
                     action.inventory_operation = ownership.inventory_operation
                     action.inventory_target_id = ownership.inventory_target_id
+                    if ownership.item_placement_detail is not None:
+                        action.item_placement_detail = ownership.item_placement_detail
                 if ownership.action_type in {"rest", "wait"}:
                     action.elapsed_time = ownership.elapsed_time
                     action.time_after = ownership.time_after
@@ -962,6 +1036,30 @@ class PlayerIntentInterpreter:
                     "remaining": len(draft.actions),
                 }
             )
+        if review.missing_actions:
+            # Index insertion is based on the original candidates, including any
+            # subsequently classified as speech. Keep the relative order of both.
+            original = list(draft.actions)
+            kept_before = {index: sum(kinds[prior] == "world_action" for prior in range(index))
+                           for index in range(len(kinds) + 1)}
+            additions = sorted(enumerate(review.missing_actions),
+                               key=lambda pair: (pair[1].before_action_index, pair[0]))
+            for offset, (_, missing) in enumerate(additions):
+                original.insert(kept_before[missing.before_action_index] + offset, missing.action)
+            draft.actions = original
+            draft.information_request_only = False
+            self.audit.append({"phase": "intent_coverage_repair", "added": [
+                missing.model_dump(mode="json") for missing in review.missing_actions]})
+        # Local result references use the extracted indices. Speech removal and
+        # insertion of omitted acts must not silently retarget a produced object.
+        remap = {index: sum(kinds[prior] == "world_action" for prior in range(index))
+                 + sum(missing.before_action_index <= index for missing in review.missing_actions)
+                 for index in kinds if kinds[index] == "world_action"}
+        for action in draft.actions:
+            if action.produced_item_action_index is not None:
+                if action.produced_item_action_index not in remap:
+                    raise ValueError("Produced item reference points to a discarded speech contribution")
+                action.produced_item_action_index = remap[action.produced_item_action_index]
         return review
 
     async def _bind_destinations(
@@ -990,6 +1088,10 @@ class PlayerIntentInterpreter:
                             "of the SAME known place in LOCATION REFERENCES (each has name, parent, "
                             "description and the opening of the scene held there, so a spot where an earlier "
                             "scene took place belongs to that location's ID). Compare meanings, not spelling. "
+                            "exit_labels_from_current are established routes: an outward step via such "
+                            "a route reuses its destination ID even if its name is a generic opening "
+                            "placeholder and the input specifies a porch/courtyard detail. Never select "
+                            "new to rename or flesh out the same existing exit's destination. "
                             "Stepping to someone or something within sight and earshot of those present "
                             "keeps the current location's ID (current=true). Select new_in:<ID> for an uncatalogued separate "
                             "place that one leaves earshot to reach, with the ID of the known place it lies "
@@ -1022,7 +1124,16 @@ class PlayerIntentInterpreter:
             bindings = wire.model_validate(data).model_dump()
             self.audit.append({"phase": "destination_identity", "bindings": bindings})
             for index in unresolved:
-                draft.actions[index].destination_reference = bindings[f"action_{index}"]
+                reference = bindings[f"action_{index}"]
+                # An exact engine-owned route label outranks a model's "new" choice.
+                route_matches = [
+                    key for key, place in (catalog or {}).items()
+                    if any(_compact(unresolved[index]).casefold() == _compact(label).casefold()
+                           for label in place.get("exit_labels_from_current", []))
+                ]
+                if len(route_matches) == 1:
+                    reference = route_matches[0]
+                draft.actions[index].destination_reference = reference
         for action in draft.actions:
             reference = action.destination_reference
             if action.action_type == "movement" and (
@@ -1079,11 +1190,15 @@ class PlayerIntentInterpreter:
             )
             draft = PlayerIntentContractDraft.model_validate(data)
             await self._review_semantic_ownership(selection, player_input, draft, context_messages)
+            people = action_reference_catalog(context_messages, "Physically present characters:")
+            for action in draft.actions:
+                if action.actor_role == "addressee":
+                    matches = [reference for reference, name in people.items()
+                               if _compact(name).casefold() == _compact(draft.addressed_character_name).casefold()]
+                    action.requested_actor_id = matches[0] if len(matches) == 1 else None
             await self._bind_destinations(
                 selection, draft, player_input, references, context_messages, location_catalog,
             )
-            if _repair_unambiguous_local_placement(draft, player_input, context_messages):
-                self.audit.append({"phase": "grounded_placement_repair", "reason": "unambiguous_catalog_item"})
             contract = normalize_intent_draft(draft, player_input)
             self.audit.append(
                 {

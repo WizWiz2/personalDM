@@ -158,7 +158,7 @@ async def test_outcome_compiler_rejects_unconfirmed_npc_handoff():
     decision = TurnOutcomeDecision(
         action_outcomes=[ActionOutcomeDecision(
             action_index=0, resolution="auto_success",
-            observable_outcome="Алиса отказывает в передаче.",
+            observable_outcome="Алиса отказывает в передаче.", npc_response="refused",
         )],
         npc_item_handoffs=[NpcItemHandoff(
             item_id=item, giver_id=giver,

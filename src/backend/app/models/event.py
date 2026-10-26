@@ -18,6 +18,7 @@ class EventRead(BaseModel):
     id: UUID
     campaign_id: UUID
     event_type: str
+    status: str = "active"
     description: str
     world_time: str | None
     location_id: UUID | None

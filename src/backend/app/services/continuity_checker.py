@@ -113,6 +113,8 @@ class ContinuityChecker:
             return False, scene_error
 
         if change_type == ChangeType.FACT:
+            if payload.get("_item_fact_domain") in {"custody_or_placement", "unverified"}:
+                return False, payload.get("_validation_error") or "Item physical state is executor-owned"
             subject = payload.get("subject")
             predicate = payload.get("predicate")
             if not subject or not predicate:

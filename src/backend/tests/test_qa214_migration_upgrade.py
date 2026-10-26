@@ -31,7 +31,16 @@ async def test_unversioned_preplacement_db_gets_backup_and_new_columns(tmp_path,
     await asyncio.to_thread(prepare_previous_leaf)
     await asyncio.to_thread(_migrate_sqlite)
     with sqlite3.connect(db) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "a9d0e1f2a3b4"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "c1f2a3b4c5d6"
+        assert {"source_step_id", "item_id", "content"} <= {
+            row[1] for row in conn.execute("PRAGMA table_info(item_content_disclosures)")
+        }
+        assert {"source_step_id", "item_id", "property_name", "value"} <= {
+            row[1] for row in conn.execute("PRAGMA table_info(item_property_effects)")
+        }
+        assert "source_action_index" in {
+            row[1] for row in conn.execute("PRAGMA table_info(action_steps)")
+        }
         assert {"item_previous_placement_detail", "item_result_placement_detail"} <= {
             row[1] for row in conn.execute("PRAGMA table_info(action_steps)")
         }

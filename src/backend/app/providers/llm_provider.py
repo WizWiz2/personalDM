@@ -20,6 +20,10 @@ class LLMProviderError(RuntimeError):
     """Raised when a provider request cannot produce a usable model response."""
 
 
+class LLMProviderAuthenticationError(LLMProviderError):
+    """Stored credentials require user repair before generation can resume."""
+
+
 class LLMProviderTruncatedError(LLMProviderError):
     """Raised when a provider exhausts its output budget before finishing."""
 

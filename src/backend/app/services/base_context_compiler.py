@@ -529,7 +529,7 @@ class ContextCompiler:
             witnessed = await witnesses_of(self._session, [memory.id for memory in memories])
             player_id = campaign.player_character_id if campaign else None
             for belief in (belief for beliefs in held.values() for belief in beliefs):
-                if belief.source_character_id in held:
+                if belief.source_character_id in held and belief.source_character_id != player_id:
                     said.setdefault(belief.source_character_id, {})[
                         self._belief_repo.normalize(belief.proposition)
                     ] = belief
@@ -559,7 +559,8 @@ class ContextCompiler:
                     ]
                     for header, group in (
                         ("Private knowledge", [
-                            b for b in held[character.id] if b.source_character_id not in held
+                            b for b in held[character.id]
+                            if b.source_character_id not in held or b.source_character_id == player_id
                         ]),
                         (("Already said by this character (established: stay consistent with it, "
                           "never repeat it word for word)"), list(said.get(character.id, {}).values())),

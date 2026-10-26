@@ -3,7 +3,7 @@ from __future__ import annotations
 import unicodedata
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 _TRACE_TEXT_LIMIT = 300
 _EXCERPT_CONTEXT = 80
@@ -112,6 +112,8 @@ class GrantedNarration(BaseModel):
 
 class NarrationValidationResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
+    # Runtime attestation, never accepted from model JSON or serialized as a fact.
+    _item_states_verified: bool = PrivateAttr(default=False)
 
     verdict: Literal["pass", "repair_required"]
     summary: str = Field(default="", max_length=1500)

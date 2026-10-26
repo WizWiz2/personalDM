@@ -85,6 +85,7 @@ class ActionStep(Base):
         index=True,
     )
     step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_action_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     action_type: Mapped[str] = mapped_column(String(50), nullable=False)
     intent: Mapped[str] = mapped_column(Text, nullable=False)
     resolution: Mapped[str] = mapped_column(String(50), nullable=False)

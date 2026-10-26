@@ -5,11 +5,13 @@ from dataclasses import dataclass, replace
 from uuid import UUID, uuid5
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Entity, Item, NpcIdentityAnchor, SceneParticipant, Turn
+from app.db.tables import Entity, Item, ItemContentDisclosure, ItemCreationEffect, NpcIdentityAnchor, SceneParticipant, Turn
+from app.db.action_sequence_table import ActionSequence, ActionStep
+from app.services.item_content_authority import revealed_item_contents
 from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
 from app.models.entity import EntityCreate, EntityType
@@ -125,6 +127,8 @@ class TurnOutcomeMaterializer:
             known_names.add(key)
 
         item_ids: list[UUID] = []
+        disclosed_contents = (await revealed_item_contents(self._session, authority.campaign_id)
+                              if any(item.copy_of_item_id for item in authority.allowed_new_items) else {})
         known_items = await self._entities.list_by_campaign(
             authority.campaign_id, entity_type="item",
         )
@@ -138,6 +142,34 @@ class TurnOutcomeMaterializer:
             authority.target_scene_id
         )
         for introduction in authority.allowed_new_items:
+            if introduction.reserved_item_id is not None:
+                executed = (await self._session.execute(
+                    select(ItemCreationEffect.item_id)
+                    .join(ActionStep, ActionStep.id == ItemCreationEffect.source_step_id)
+                    .join(ActionSequence, ActionSequence.id == ActionStep.sequence_id)
+                    .where(ItemCreationEffect.item_id == str(introduction.reserved_item_id),
+                           ActionSequence.campaign_id == str(authority.campaign_id),
+                           ActionSequence.trigger_turn_id == str(source_turn_id),
+                           ActionSequence.status.in_(("prepared", "applied")), ActionStep.status == "completed")
+                )).scalar_one_or_none()
+                if executed:
+                    item_ids.append(UUID(executed))
+                    continue
+                raise ValueError("Reserved item introduction has no completed creation receipt")
+            source_step = None
+            item_location_id = location_id
+            if introduction.after_action_index is not None:
+                source_step = (await self._session.execute(
+                    select(ActionStep).join(ActionSequence, ActionSequence.id == ActionStep.sequence_id)
+                    .where(ActionSequence.campaign_id == str(authority.campaign_id),
+                           ActionSequence.trigger_turn_id == str(source_turn_id),
+                           ActionSequence.status.in_(("prepared", "applied")),
+                           ActionStep.status == "completed",
+                           func.coalesce(ActionStep.source_action_index, ActionStep.step_index) == introduction.after_action_index)
+                    .order_by(ActionStep.step_index).limit(1)
+                )).scalar_one_or_none()
+                if source_step and source_step.target_scene_id:
+                    item_location_id = await self._scenes.get_location_id(UUID(source_step.target_scene_id))
             key = identity_key(introduction.canonical_name)
             if key in occupied:
                 continue  # Repeated evidence refers to the same object, never a new clone.
@@ -165,7 +197,7 @@ class TurnOutcomeMaterializer:
                     ),
                     current_location_id=(
                         None if introduction.owned_by_player
-                        else str(location_id) if location_id else None
+                        else str(item_location_id) if item_location_id else None
                     ),
                     is_unique=True,
                     placement_detail=(
@@ -174,6 +206,11 @@ class TurnOutcomeMaterializer:
                     ),
                 )
             )
+            if introduction.copy_of_item_id and str(introduction.copy_of_item_id) in disclosed_contents:
+                if source_step:
+                    await self._session.flush()
+                    self._session.add(ItemContentDisclosure(source_step_id=source_step.id, item_id=str(item.id),
+                        content=disclosed_contents[str(introduction.copy_of_item_id)][0]))
             item_ids.append(item.id)
             occupied.add(key)
         await self._session.flush()

@@ -52,7 +52,17 @@ class SessionZeroStarterItem(BaseModel):
     description: str | None = Field(default=None, max_length=800)
     initial_placement: str | None = Field(default=None, max_length=300)
     held_by_player: bool = False
+    held_by_npc: str | None = Field(
+        default=None, min_length=1, max_length=160,
+        description="Exact starter NPC name holding or controlling this item, otherwise null.",
+    )
     present_at_start: bool = True
+
+    @model_validator(mode="after")
+    def single_holder(self):
+        if self.held_by_player and self.held_by_npc:
+            raise ValueError("A starter item cannot have two holders")
+        return self
 
 
 class SessionZeroWorldDraft(BaseModel):

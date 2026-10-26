@@ -66,8 +66,10 @@ def test_static_description_of_item_without_transfer_is_allowed():
         observable_consequences=["Монета лежит на столе."],
     )
     text = "Монета лежит на столе, рядом с пыльной лампой."
+    validation = NarrationValidationResult(verdict="pass")
+    validation._item_states_verified = True  # this publication-only fixture represents a complete semantic audit
     published, metadata = NarrationPublicationGuard.publish(
-        authority, text, NarrationValidationResult(verdict="pass"),
+        authority, text, validation,
     )
     assert published == text
     assert metadata["mode"] == "validated_candidate"

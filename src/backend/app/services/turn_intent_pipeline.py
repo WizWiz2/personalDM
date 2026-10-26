@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import Campaign, Character, Entity, Item, Turn
@@ -29,7 +30,7 @@ from app.services.turn_outcome_resolver import (
     seeks_contact_or_presence,
     solo_physical_presence,
 )
-from app.services.turn_planner import ActionSequencePlan, TurnPlanningError
+from app.services.turn_planner import ActionSequencePlan, PlanContractError, TurnPlanningError
 
 _INSTALLED = False
 
@@ -116,6 +117,11 @@ class TurnIntentPlanningPipeline:
             here = str((await self._compiler._world(campaign_id))[1].location_id)
         except TurnPlanningError:
             here = None
+        exit_labels: dict[str, list[str]] = {}
+        if here and here != "None":
+            for route in await self._compiler._state.list_exits(campaign_id, UUID(here)):
+                if route.active and route.discovered:
+                    exit_labels.setdefault(str(route.to_location_id), []).append(route.label)
         return names, {
             key: {
                 "name": location.canonical_name,
@@ -123,6 +129,7 @@ class TurnIntentPlanningPipeline:
                 "description": (location.description or "")[:240],
                 "scene_opening": (openings.get(key) or "")[:240],
                 "current": key == here,
+                "exit_labels_from_current": exit_labels.get(key, []),
             }
             for location in locations
             for key in [str(location.id)]
@@ -169,6 +176,19 @@ class TurnIntentPlanningPipeline:
                 campaign_id, scene_id,
             )
         world_context = context_messages
+        if isinstance(self._session, AsyncSession) and world_context:
+            setup = await CampaignSetupRepository(self._session).get(campaign_id)
+            if setup and setup.status == "completed":
+                agreements = json.dumps({"starting_situation": setup.starting_situation,
+                                         "world_summary": setup.world_summary}, ensure_ascii=False)
+                first = world_context[0]
+                world_context = [ChatMessage(role=first.role, content=first.content
+                    + "\n[SESSION AGREEMENTS — standing conditions, not current positions]\n"
+                    + agreements
+                    + "\nEvaluate promised conditions using current knowledge/input. A refusal on an "
+                      "earlier request does not erase these terms. Actual inventory and later "
+                      "grounded changes remain authoritative; never reset physical state to the opening."),
+                    *world_context[1:]]
         # Outcome resolution must know existing NPC-held item identities, or
         # a legitimate handoff cannot produce a verified giver/item receipt.
         # Only physically co-located characters are eligible to give objects.
@@ -271,7 +291,25 @@ class TurnIntentPlanningPipeline:
         decision = decision.model_copy(update={"narration_guidance": guidance})
         decision = apply_due_deadline(decision, contract, momentum)
 
-        plan = await self._compiler.compile(campaign_id, contract, decision)
+        for attempt in range(2):
+            try:
+                plan = await self._compiler.compile(campaign_id, contract, decision, player_input=user_input)
+                break
+            except PlanContractError as exc:
+                if attempt:
+                    raise
+                # No execution has started. Repair the model's decision, keeping
+                # the human's frozen acts and the authoritative world unchanged.
+                decision = await self._outcomes.resolve(
+                    selection, world_context, user_input, contract,
+                    resident_slots=resident_slots,
+                    destination_cast=await self._destination_cast(campaign_id, contract, names),
+                    repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
+                )
+                decision = apply_due_deadline(apply_moves_to_outcome_decision(decision, director), contract, momentum)
+                missing = await self._compiler.missing_destination_profiles(campaign_id, contract, decision)
+                if missing:
+                    decision = await self._outcomes.enrich_destination_profiles(selection, user_input, decision, missing)
         return plan, {
             "architecture": "frozen_player_intent_v1",
             "outcome_owner": outcome_owner,

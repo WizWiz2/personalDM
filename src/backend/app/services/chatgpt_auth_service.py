@@ -112,8 +112,11 @@ class ChatGPTAuthService:
         try:
             encrypted = self.profile_file.read_text(encoding="utf-8").strip()
             payload = json.loads(decrypt_secret(encrypted))
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            raise ChatGPTAuthError("Сохранённая сессия ChatGPT повреждена") from exc
+        except (OSError, ValueError, TypeError, RuntimeError) as exc:
+            raise ChatGPTAuthError(
+                "Не удалось прочитать сохранённую сессию ChatGPT. "
+                "Проверьте ключ шифрования или переподключите аккаунт."
+            ) from exc
         if not isinstance(payload, dict):
             raise ChatGPTAuthError("Сохранённая сессия ChatGPT имеет неверный формат")
         return payload

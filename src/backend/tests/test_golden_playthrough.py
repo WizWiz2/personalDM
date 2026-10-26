@@ -190,11 +190,13 @@ def _compound_plan() -> CoordinatedTurnPlan:
 
 
 def _passed() -> NarrationValidationResult:
-    return NarrationValidationResult(
+    checked = NarrationValidationResult(
         verdict="pass",
         summary="Текст соблюдает typed authority и agency игрока.",
         violations=[],
     )
+    checked._item_states_verified = True
+    return checked
 
 
 def _repair_required() -> NarrationValidationResult:

@@ -2,19 +2,54 @@ from __future__ import annotations
 
 import json
 import unicodedata
+from typing import Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from app.config import settings
-from app.models.narration_validation import NarrationValidationResult
+from app.models.item_state import ItemPositionClaim
+from app.models.narration_validation import NarrationValidationResult, NarrationViolation
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.actor_turn_authority_guard import speech_spans
+from app.services.item_state_authority import item_position_violations
 from app.services.llm_usage_tracker import record_decision
 from app.services.narration_validator import NarrationValidationError
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 
-
 FOUR_BANS = frozenset({"absent_character", "canon_conflict", "player_agency", "invalid_movement"})
+
+
+class ItemNarrationReview(BaseModel):
+    item_id: UUID
+    reference: Literal["absent", "mention", "position"]
+    claims: list[ItemPositionClaim] = Field(max_length=16)
+
+
+class InventoryNarrationValidation(BaseModel):
+    # Extraction comes before the verdict: the model must inspect the candidate first.
+    item_reviews: list[ItemNarrationReview]
+    verdict: Literal["pass", "repair_required"]
+    summary: str = Field(default="", max_length=1500)
+    violations: list[NarrationViolation] = Field(default_factory=list, max_length=12)
+
+
+def inventory_validation_model(authority: TurnAuthority) -> type[BaseModel]:
+    """Make completeness a schema property, rather than a model's counting task.
+
+    Each registered identity is a required object key. Nothing is inferred absent
+    from an omitted review; native decoding and provider repair require that review.
+    """
+    reviews = create_model(
+        "ItemReviewsByIdentity", __config__=ConfigDict(extra="forbid"),
+        **{str(state.item_id): (ItemNarrationReview, ...) for state in authority.item_states},
+    )
+    return create_model(
+        "CompleteInventoryValidation", __base__=InventoryNarrationValidation,
+        item_reviews=(reviews, ...),
+    )
 
 
 def _gap(text: str) -> bool:
@@ -62,7 +97,7 @@ class TurnAuthorityValidator:
     """One control-model call that judges prose against the four bans of a typed TurnAuthority.
 
     What is not forbidden is allowed. The typed facts come from ``TurnAuthority.validator_payload``;
-    there are no deterministic prose heuristics, coverage checks or second reviews here.
+    item reviews must cover the supplied snapshot before a pass can be published.
     """
 
     SYSTEM_PROMPT = """[FOUR BANS NARRATION CHECK]
@@ -78,9 +113,26 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    a confirmed new physical item in allowed_new_items, or the result of an executed
    step (a completed step happened, a blocked step did not). Do not deny the existence
    or possession of a confirmed item merely because it is not on the floor.
+   Snapshots are AFTER execution. A refusal or assertion of impossibility that undoes an already
+   completed act is a conflict even when it accurately names the final position. Do not mistake
+   a completed transfer's result for a precondition that prevented that transfer.
+   item_states is the authoritative CURRENT custody and placement, overriding old dialogue,
+   established_state and every generic service/interaction outcome.
+   Its properties are the current physical conditions of that exact item or its components.
+   A completed property change remains true on later turns; old appearance prose cannot reset it.
+   A static assertion
+   "the letter lies on the counter" conflicts with owner_id=player just as a false transfer
+   does. A service receipt or NPC consent is NEVER an inventory receipt.
+   revealed_content is immutable disclosed content belonging to that exact item_id. Do not
+   interchange documents or claim their written text/signature contains an author, instruction or
+   condition absent from that content. External investigation may reveal authorship or meaning
+   without rewriting the document; a character's interpretation is not the document's literal text.
    Also do not physically introduce a new UNIQUE PLOT-SIGNIFICANT object (a named key,
    ledger, document or irreplaceable clue) that is absent from both objects_here and
    allowed_new_items, or transfer its custody without an executed inventory step.
+   Any distinct persistent artifact the hero creates, keeps, places or uses later is significant
+   in this sense, even if its material is ordinary. Producing a derivative artifact is a new
+   physical result requiring allowed_new_items; it is not a free background detail.
    Ordinary backdrop objects, sensory scenery and things mentioned in dialogue are not
    violations. Do not confuse unknown physical presence with confirmed absence.
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or
@@ -116,13 +168,52 @@ short prose-only fix in Russian. Return exactly:
 }
 """
 
+    ITEM_REVIEW_PROMPT = """[MANDATORY ITEM AUDIT: DO THIS BEFORE DECIDING THE VERDICT]
+Return the InventoryNarrationValidation JSON schema, starting with item_reviews.
+item_reviews is an object keyed by the exact item IDs required by the response schema.
+For EACH key return its review, even if the item is absent from the prose. Never omit a key.
+Read the CANDIDATE, not just the player's input. Extract what the prose actually asserts even
+when it is false. Do not copy the authoritative position into a claim to make it agree.
+reference=absent: no mention of that item, claims=[].
+reference=mention: the item is mentioned but no position or possession is asserted, claims=[].
+reference=position: ANY assertion of who holds/keeps/receives it, or where it lies/hangs/is placed.
+Static, passive and pronoun references count. Extract EVERY positive position assertion as a claim.
+Do not turn a denial of a position into an assertion of that position; check denials under canon_conflict.
+Examples: "Перед Мартой на конторке лежит письмо" is position, mode=located, owner_id=null.
+"Письмо теперь хранится у Марты" is position, mode=owned, owner_id=Marta's ID.
+Both conflict with a letter still owned by the player, even if no transfer verb occurs.
+"Какое письмо?" is mention; "она протягивает ладонь" asserts no letter position.
+
+For claims use exact IDs from facts; evidence is an exact candidate fragment.
+scope=current for narrator-confirmed reality, including past-tense narration of this turn;
+past only for explicitly earlier/recalled events; speech for quoted claims; conditional for wishes.
+mode=owned for custody/holding, located for a surface or room without a stated holder.
+Distinguish aspect=custody from placement and custody_and_placement. A key under NPC control
+can hang on its established board without ceasing to belong to that NPC. placement_matches=true
+only if the surface agrees semantically with placement_detail; placement_conflicts=true if not.
+The room of an owner is not a new loose-item location.
+An actual inventory_receipts entry permits scope=executed_action, action_step_index and
+moment=before for the source position INSIDE that action or after for its result. For example,
+"ты снимаешь письмо с металла" can render a completed take from metal. A standalone current
+assertion must match final item_states. A blocked step authorizes no transfer.
+Creation receipts use item_operation=create and authorize their own AFTER state. A compound
+turn may create, carry and place one artifact in different locations. Rendered intermediate
+states use their actual receipt and moment; never compare them to the end-of-turn snapshot.
+Location IDs in each receipt identify the owner's room at that moment, not the owner's final room.
+After item_reviews, check the four bans below and return verdict, summary and violations.
+For errors, evidence is an exact quote and correction is a short prose-only fix in Russian.
+
+"""
+
     def __init__(self, router: RoleModelRouter):
         self._router = router
         self._provider = LLMProvider()
+        self._response_retries = 0
 
     @property
     def telemetry(self) -> dict:
-        return dict(self._provider.last_telemetry or {})
+        return {**dict(self._provider.last_telemetry or {}),
+                "validation_response_retries": self._response_retries}
 
     async def validate(
         self,
@@ -131,6 +222,7 @@ short prose-only fix in Russian. Return exactly:
         candidate_text: str,
     ) -> NarrationValidationResult:
         role = ModelRole.NARRATION_VALIDATOR.value
+        self._response_retries = 0
         try:
             result = await self._validate(selection, authority, candidate_text)
         except NarrationValidationError as exc:
@@ -148,7 +240,10 @@ short prose-only fix in Russian. Return exactly:
         if not candidate_text.strip():
             raise NarrationValidationError("Narrator returned empty prose")
         messages = [
-            ChatMessage(role="system", content=self.SYSTEM_PROMPT),
+            ChatMessage(role="system", content=(
+                self.ITEM_REVIEW_PROMPT + self.SYSTEM_PROMPT.split("For every error,")[0]
+                if authority.item_states else self.SYSTEM_PROMPT
+            )),
             ChatMessage(
                 role="user",
                 content=(
@@ -159,20 +254,88 @@ short prose-only fix in Russian. Return exactly:
                 ),
             ),
         ]
-        try:
-            data = await self._router.generate_json(
-                self._provider,
-                selection,
-                messages,
-                max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS, 700),
-                temperature=0.0,
-                response_model=NarrationValidationResult,
+        for attempt in range(2):
+            try:
+                data = await self._router.generate_json(
+                    self._provider,
+                    selection,
+                    messages,
+                    max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS,
+                                   max(1600, 450 * len(authority.item_states)) if authority.item_states else 700),
+                    temperature=0.0,
+                    response_model=inventory_validation_model(authority) if authority.item_states else NarrationValidationResult,
+                )
+            except (LLMProviderError, ValueError, TypeError) as exc:
+                raise NarrationValidationError(str(exc)) from exc
+            try:
+                return self._interpret(authority, candidate_text, data)
+            except (NarrationValidationError, ValueError, TypeError) as exc:
+                if attempt:
+                    raise NarrationValidationError(str(exc)) from exc
+                self._response_retries = 1
+                record_decision("validate", "response_repair", {"error": str(exc)[:500]},
+                                role=ModelRole.NARRATION_VALIDATOR.value)
+                messages = [*messages,
+                    ChatMessage(role="assistant", content=json.dumps(data, ensure_ascii=False)),
+                    ChatMessage(role="user", content=(
+                        "[REPAIR VALIDATOR RESPONSE]\n"
+                        "Your response could not be checked: " + str(exc)[:500]
+                        + ". Recheck the SAME candidate against the SAME facts. Return the complete "
+                        "validation JSON, covering every item once. Each positional claim needs an "
+                        "exact candidate excerpt, without paraphrase or added punctuation. "
+                        "Simple mentions require no claim or quote. Do not rewrite the narration "
+                        "and do not change facts to match it."
+                    )),
+                ]
+        raise NarrationValidationError("Validator response repair exhausted")
+
+    @staticmethod
+    def _interpret(authority: TurnAuthority, candidate_text: str, data: dict) -> NarrationValidationResult:
+        if authority.item_states:
+            if isinstance(data.get("item_reviews"), dict):
+                keyed = data["item_reviews"]
+                expected_keys = {str(state.item_id) for state in authority.item_states}
+                if set(keyed) != expected_keys or any(
+                    str(review.get("item_id")) != key for key, review in keyed.items()
+                ):
+                    raise NarrationValidationError("Item review keys must match their registered identities")
+                data = {**data, "item_reviews": list(keyed.values())}
+            extracted = InventoryNarrationValidation.model_validate(data)
+            expected = {state.item_id for state in authority.item_states}
+            reviewed = [review.item_id for review in extracted.item_reviews]
+            if len(reviewed) != len(expected) or set(reviewed) != expected:
+                raise NarrationValidationError("Item reviews must cover every registered item exactly once")
+            claims = []
+            for review in extracted.item_reviews:
+                if review.reference == "position" and not review.claims:
+                    raise NarrationValidationError("Item position review has no extracted claims")
+                if review.reference != "position" and review.claims:
+                    raise NarrationValidationError("Item claims require a position review")
+                state = next(state for state in authority.item_states if state.item_id == review.item_id)
+                if review.reference == "absent" and state.name.casefold() in candidate_text.casefold():
+                    raise NarrationValidationError("Explicit item mention was marked absent")
+                if any(claim.item_id != review.item_id for claim in review.claims):
+                    raise NarrationValidationError("Item review refers to another item")
+                for claim in review.claims:
+                    if claim.evidence not in candidate_text:
+                        claim.evidence = claim.evidence.strip().strip('«»"“”„')
+                    if not claim.evidence or claim.evidence not in candidate_text:
+                        raise NarrationValidationError("Item position evidence is not in the candidate")
+                claims.extend(review.claims)
+            conflicts = item_position_violations(
+                authority.item_states, claims, candidate_text,
+                authority.inventory_receipts(),
             )
-            return four_bans_only(
-                NarrationValidationResult.model_validate(data), authority, candidate_text
-            )
-        except (LLMProviderError, ValueError, TypeError) as exc:
-            raise NarrationValidationError(str(exc)) from exc
+            if conflicts:
+                return NarrationValidationResult(
+                    verdict="repair_required", summary="Положение предмета противоречит канону.",
+                    violations=[*extracted.violations, *conflicts][:12],
+                )
+        result = four_bans_only(
+            NarrationValidationResult.model_validate(data), authority, candidate_text
+        )
+        result._item_states_verified = authority.item_states_loaded or bool(authority.item_states)
+        return result
 
     @staticmethod
     def repair_prompt(

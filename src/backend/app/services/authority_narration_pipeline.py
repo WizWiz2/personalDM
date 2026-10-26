@@ -278,11 +278,18 @@ class AuthorityNarrationPipeline:
         repair_attempts: int,
         telemetry: dict,
         publication: dict,
+        validation_result: NarrationValidationResult | None = None,
         reason: str | None = None,
         beat: GrantedBeat | None = None,
     ) -> AuthorityNarrationResult:
         if leaked_meta_lines(text):
             raise NarrationValidationError("Narrator output contains internal model notes")
+        if publication.get("mode") == "validated_candidate":
+            text, publication = NarrationPublicationGuard.publish(
+                authority, text, validation_result or NarrationValidationResult(verdict="pass"),
+            )
+            if publication["mode"] == "authority_projection":
+                status = "safe_fallback"
         text = consistent_script(text, authority.present_character_names)
         text = NarrationPublicationGuard.include_critical_world_outcome(authority, text)
         gate = await audit.finalize(
@@ -323,6 +330,9 @@ class AuthorityNarrationPipeline:
         """Publish the typed step outcome as plain text; raises only if there is none."""
         record_decision("publish", "authority_projection", {"reason": reason[:500]})
         text, publication = NarrationPublicationGuard.publish(authority, "", None)
+        if authority.item_states:
+            text = NarrationPublicationGuard.render_item_states(authority)
+            publication = {**publication, "mode": "item_state_projection"}
         return await self._finish(
             audit=audit,
             run=run,
@@ -375,7 +385,8 @@ class AuthorityNarrationPipeline:
         validator_model = validation_selection.config.model_name if validation_selection else None
         run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, draft, validator_model)
 
-        def accepted(text: str, status: str, attempts: int, reason: str | None = None, beat=None):
+        def accepted(text: str, status: str, attempts: int, reason: str | None = None,
+                     beat=None, validation=None):
             record_decision("publish", "validated_candidate", {"status": status})
             return self._finish(
                 audit=audit,
@@ -386,6 +397,7 @@ class AuthorityNarrationPipeline:
                 repair_attempts=attempts,
                 telemetry=telemetry,
                 publication={"mode": "validated_candidate", "validated_surface": True},
+                validation_result=validation,
                 reason=reason,
                 beat=beat,
             )
@@ -440,9 +452,9 @@ class AuthorityNarrationPipeline:
                 if result.verdict == "pass":
                     if beat_failure:
                         return await accepted(
-                            draft, "passed", 0, reason=f"beat_unhonored: {beat_failure}"
+                            draft, "passed", 0, reason=f"beat_unhonored: {beat_failure}", validation=result,
                         )
-                    return await accepted(draft, "passed", 0, beat=beat)
+                    return await accepted(draft, "passed", 0, beat=beat, validation=result)
 
             record_decision(
                 "repair", "requested", {"strategy": "single_model_repair"},
@@ -491,8 +503,9 @@ class AuthorityNarrationPipeline:
                         return await accepted(
                             repaired, "repaired", 1,
                             reason=f"beat_unhonored: {repaired_failure}",
+                            validation=repaired_result,
                         )
-                    return await accepted(repaired, "repaired", 1, beat=repaired_beat)
+                    return await accepted(repaired, "repaired", 1, beat=repaired_beat, validation=repaired_result)
             return await self._fallback(
                 audit=audit,
                 run=run,

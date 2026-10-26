@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.addressed_response import AddressedResponse
+from app.models.item_state import ItemStateSnapshot
 from app.models.session_zero import NARRATIVE_PERSON, NarrativePerson
 
 
@@ -42,6 +43,9 @@ class PlannedItemIntroduction(BaseModel):
     evidence: str = Field(min_length=5, max_length=500)
     owned_by_player: bool = False
     placement_detail: str | None = Field(default=None, max_length=300)
+    after_action_index: int | None = Field(default=None, ge=0, le=7)
+    copy_of_item_id: UUID | None = None
+    reserved_item_id: UUID | None = None  # allocated by compiler, never by a model
 
 
 class PlannedWorldMove(BaseModel):
@@ -110,6 +114,9 @@ class TurnAuthority(BaseModel):
     world_move: PlannedWorldMove | None = None
     allowed_existing_npc_arrivals: list[ExistingNpcArrival] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
+    item_states: list[ItemStateSnapshot] = Field(default_factory=list)
+    # Empty authoritative inventory differs from an older/incomplete frame.
+    item_states_loaded: bool = False
     # Registered objects not physically available to the player.
     unavailable_item_names: list[str] = Field(default_factory=list)
 
@@ -229,9 +236,33 @@ class TurnAuthority(BaseModel):
                     "action_type": step.get("action_type"),
                     "status": step.get("status"),
                     "outcome": outcome or None,
+                    "item_property_changes": step.get("item_property_changes") or [],
+                    "step_index": step.get("step_index"),
+                    "source_location_id": step.get("source_location_id"),
+                    "target_location_id": step.get("target_location_id"),
                 }
             )
         return result
+
+    def inventory_receipts(self) -> list[dict]:
+        """Executed physical transitions, including their actual before/after states."""
+        steps = (self.action_sequence or {}).get("steps") or []
+        keys = (
+            "item_id", "item_name", "item_operation", "item_previous_owner_id",
+            "item_previous_location_id", "item_previous_placement_detail",
+            "item_result_owner_id", "item_result_location_id", "item_result_placement_detail",
+        )
+        receipts = []
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict) or step.get("status") != "completed":
+                continue
+            frame = {"step_index": step.get("step_index", index),
+                     "source_location_id": step.get("source_location_id"),
+                     "target_location_id": step.get("target_location_id")}
+            if step.get("action_type") == "inventory":
+                receipts.append({**frame, **{key: step.get(key) for key in keys}})
+            receipts.extend({**frame, **created} for created in step.get("created_items", []))
+        return receipts
 
     def validator_payload(self) -> dict:
         """Typed facts the four bans are judged against, and nothing else."""
@@ -249,6 +280,8 @@ class TurnAuthority(BaseModel):
             "scene_time": self.scene_time,
             "allowed_new_items": [item.canonical_name for item in self.allowed_new_items],
             "objects_here": self.object_names,
+            "item_states": [state.model_dump(mode="json") for state in self.item_states],
+            "inventory_receipts": self.inventory_receipts(),
             "unavailable_items": self.unavailable_item_names,
             "approved_world_move": (
                 self.world_move.model_dump(mode="json") if self.world_move else None

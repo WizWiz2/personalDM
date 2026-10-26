@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
 
@@ -13,60 +11,9 @@ class NarrationPublicationError(RuntimeError):
 class NarrationPublicationGuard:
     """Publish validated prose verbatim, or the typed step outcomes as plain text.
 
-    No prose filtering happens here: the single validator call already judged the four bans.
+    Complete validated frames pass verbatim. Older frames retain a conservative
+    inventory fallback until their state has been checked.
     """
-
-    @staticmethod
-    def _unreceipted_item_claim(authority: TurnAuthority, candidate: str) -> bool:
-        """Flag clear physical item actions that have no executed custody receipt.
-
-        This is intentionally narrow, not a replacement for semantic validation.
-        In-world static item descriptions and dialogue may still be narrated.
-        """
-        sequence = authority.action_sequence or {}
-        steps = sequence.get("steps") or []
-        completed_items = {
-            str(step.get("item_name") or "").casefold()
-            for step in steps
-            if isinstance(step, dict) and step.get("action_type") == "inventory"
-            and step.get("status") == "completed"
-        }
-        if not re.search(
-            r"(?i)\b(?:взял[аи]?|забрал[аи]?|передал[аи]?|"
-            r"переложил[аи]?|положил[аи]?|убрал[аи]?|сунул[аи]?|"
-            r"достал[аи]?|показал[аи]?|предъявил[аи]?|"
-            r"доста[юеёшьтм]+|показыва[юешьтм]+|предъявля[юешьтм]+)\b",
-            candidate,
-        ):
-            return False
-        # Only names the authoritative frame recognizes. Fresh approved item
-        # introductions have their own materialization receipt.
-        newly_created = {
-            item.canonical_name.casefold() for item in authority.allowed_new_items
-        }
-        names = [
-            name for name in [*authority.object_names, *authority.unavailable_item_names]
-            if name.casefold() not in newly_created and name.casefold() not in completed_items
-        ]
-        for name in names:
-            tokens = re.findall(r"[а-яёa-z0-9]+", name.casefold())
-            for token in tokens:
-                stem = token.rstrip("аеёиоуыэюя") if len(token) > 4 else token
-                if len(stem) >= 4 and re.search(r"(?i)\b" + re.escape(stem), candidate):
-                    return True
-        # A blocked offscreen item can be absent from the scene's object list.
-        # Exact substantive words shared with the player's attempted item action
-        # are enough to refuse narration of a new hand-off without a receipt.
-        if any(
-            isinstance(step, dict) and step.get("status") == "blocked"
-            for step in steps
-        ):
-            from_input = re.findall(r"[а-яёa-z0-9]{5,}", authority.player_input.casefold())
-            for token in from_input:
-                stem = token.rstrip("аеёиоуыэюя")
-                if len(stem) >= 4 and re.search(r"(?i)\b" + re.escape(stem), candidate):
-                    return True
-        return False
 
     @classmethod
     def publish(
@@ -76,6 +23,15 @@ class NarrationPublicationGuard:
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
         text = (candidate or "").strip()
+        # A full typed item check has already compared semantic claims with the
+        # snapshot and receipts. Do not reject its passing prose a second time
+        # using vocabulary or the mere presence of a blocked inventory attempt.
+        if text and validation is not None and validation.verdict == "pass" and validation._item_states_verified:
+            return text, {
+                "mode": "validated_candidate", "validated_surface": True,
+                "item_states_verified": True, "candidate_characters": len(text),
+                "published_characters": len(text),
+            }
         # QA-213 F-33: a semantic "pass" alone cannot certify a failed
         # inventory mutation. On a blocked physical step publish the typed
         # outcome, not a fluent account of an item hand-off that never occurred.
@@ -86,7 +42,12 @@ class NarrationPublicationGuard:
             and step.get("status") == "blocked"
             for step in steps
         )
-        unsupported_item_claim = cls._unreceipted_item_claim(authority, text)
+        # A legacy frame without a completed item audit cannot certify item state.
+        # Do not guess physical effects from Russian verbs, noun stems or punctuation.
+        unsupported_item_claim = bool(
+            authority.object_names or authority.unavailable_item_names or authority.item_states
+            or any(isinstance(step, dict) and step.get("item_id") for step in steps)
+        )
         if (
             text and not blocked_inventory and not unsupported_item_claim
             and validation is not None and validation.verdict == "pass"
@@ -97,9 +58,11 @@ class NarrationPublicationGuard:
                 "published_characters": len(text),
                 "validated_surface": True,
             }
-        fallback = cls.render_authority(authority)
+        fallback = (cls.render_item_states(authority) if authority.item_states
+                    and (unsupported_item_claim or validation is None) else cls.render_authority(authority))
         return fallback, {
             "blocked_inventory_override": blocked_inventory,
+            "unsupported_item_claim": unsupported_item_claim,
             "mode": "authority_projection",
             "candidate_characters": len(candidate or ""),
             "published_characters": len(fallback),
@@ -125,6 +88,38 @@ class NarrationPublicationGuard:
         if not outcome or outcome.casefold() in text.casefold():
             return text
         return f"{text.rstrip()}\n\n{outcome}"
+
+    @classmethod
+    def render_item_states(cls, authority: TurnAuthority) -> str:
+        """Safe in-world projection without repeating an unexecuted service handoff."""
+        parts = []
+        # Even degradation should retain the player's earned results. These are
+        # executed structured results, never salvaged fragments of rejected prose.
+        for step in authority.executed_steps():
+            if step["status"] == "completed" and (step["action_type"] in {"movement", "inventory", "wait", "rest"}
+                                                   or step.get("item_property_changes")):
+                cls._append_unique(parts, step["outcome"])
+            elif step["status"] == "completed" and step["outcome"] and any(
+                state.revealed_content and state.revealed_content in step["outcome"]
+                for state in authority.item_states
+            ):
+                cls._append_unique(parts, step["outcome"])
+        if authority.target_location_path:
+            parts.append(f"Ты находишься здесь: {authority.target_location_path[-1]}.")
+        for state in authority.item_states:
+            if state.owner_id:
+                parts.append(f"{state.name}. Владелец: {state.owner_name or 'не уточнён'}.")
+            elif state.location_id:
+                place = state.location_name or "в прежнем месте"
+                detail = f", {state.placement_detail}" if state.placement_detail else ""
+                parts.append(cls._as_sentence(f"{state.name}: {place}{detail}"))
+            else:
+                parts.append(f"Местонахождение предмета «{state.name}» пока не установлено.")
+        for step in authority.executed_steps():
+            if step["status"] == "blocked":
+                cls._append_unique(parts, step["outcome"])
+                break
+        return " ".join(parts) or cls.render_authority(authority)
 
     @classmethod
     def render_authority(cls, authority: TurnAuthority) -> str:
@@ -159,6 +154,8 @@ class NarrationPublicationGuard:
 
     @classmethod
     def has_typed_outcome(cls, authority: TurnAuthority) -> bool:
+        if authority.item_states:
+            return True
         try:
             cls.render_authority(authority)
         except NarrationPublicationError:

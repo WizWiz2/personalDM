@@ -12,6 +12,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.models.turn_authority import TurnAuthority
 from app.db.tables import Entity, Item
 from app.services.entity_identity import identity_key
+from app.services.item_state_authority import load_item_states
 from app.services.scene_state_service import SceneStateService
 from app.services.outcome_fact_authority import established_state_lines, established_subjects
 from app.services.turn_authority_planner import CoordinatedTurnPlan
@@ -174,11 +175,13 @@ class TurnAuthorityService:
         executed_steps = (
             (plan.scene_transition.execution_report or {}).get("steps", []) if plan else []
         )
-        completed_indices = {
-            step.get("step_index", index)
-            for index, step in enumerate(executed_steps)
-            if step.get("status") == "completed"
-        }
+        source_groups = {}
+        for index, step in enumerate(executed_steps):
+            source = step.get("source_action_index")
+            source = step.get("step_index", index) if source is None else source
+            source_groups.setdefault(source, []).append(step.get("status"))
+        completed_indices = {source for source, statuses in source_groups.items()
+                             if all(status == "completed" for status in statuses)}
 
         def prerequisite_completed(effect) -> bool:
             return effect.after_action_index is None or effect.after_action_index in completed_indices
@@ -275,21 +278,18 @@ class TurnAuthorityService:
             allowed_new_items=(
                 [
                     item for item in plan.item_introductions
-                    if item.evidence.casefold() in (
-                        " ".join([
-                            *plan.observable_consequences,
-                            *[
-                                str(step.observable_outcome or "")
-                                for step in plan.action_sequence.steps
-                                if step.resolution == "auto_success"
-                            ],
-                        ]).casefold()
-                    )
-                    and item.canonical_name.casefold() in item.evidence.casefold()
+                    if item.after_action_index in completed_indices
+                    or (item.after_action_index is None and not (
+                        plan.resolution in {"failure", "uncertain"}
+                        or (executed_steps and not completed_indices)
+                    ))
                 ] if plan else []
             ),
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
+            item_states=(await load_item_states(self._session, campaign_id)
+                         if isinstance(self._session, AsyncSession) else []),
+            item_states_loaded=isinstance(self._session, AsyncSession),
             unavailable_item_names=unavailable_items,
             world_move=world_move,
             resolution=(plan.resolution if plan else "conversation"),

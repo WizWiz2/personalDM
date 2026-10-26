@@ -104,7 +104,8 @@ class PlayableBootstrapService:
         # Typed plot props are seeded before the generic fallback detail.
         # Their identity/position is established in Session Zero, not inferred
         # by the narrator from the opening prose or the player's later wishes.
-        for spec in await self._structured_starter_items(campaign_id):
+        starter_items = await self._structured_starter_items(campaign_id)
+        for spec in starter_items:
             new_id = await self._ensure_structured_item(
                 campaign_id, starting_location_id, player_character_id, spec,
             )
@@ -112,7 +113,7 @@ class PlayableBootstrapService:
                 created_object_id = new_id
 
         state = await self._state.require_valid(campaign_id, scene_id)
-        if not state.object_ids:
+        if not state.object_ids and not starter_items:
             created_object_id = await self._create_starter_object(
                 campaign_id,
                 starting_location_id,
@@ -150,7 +151,7 @@ class PlayableBootstrapService:
         has_other_character = any(
             value != player_character_id for value in final.participant_ids
         )
-        if not (has_other_character or final.object_ids or final.available_exits):
+        if not (has_other_character or final.object_ids or starter_items or final.available_exits):
             raise ValueError("Session Zero produced no actionable starting affordance")
         if not final.scene_goal:
             raise ValueError("Session Zero produced no structured starting hook")
@@ -224,6 +225,20 @@ class PlayableBootstrapService:
         if any(identity_key(item.canonical_name) == identity_key(spec.canonical_name)
                for item in existing):
             return None
+        owner_id = player_character_id if spec.held_by_player else None
+        if spec.held_by_npc:
+            holders = [
+                person for person in await self._entities.list_by_campaign(
+                    campaign_id, entity_type="character",
+                )
+                if identity_key(person.canonical_name) == identity_key(spec.held_by_npc)
+            ]
+            if len(holders) != 1:
+                raise ValueError("Starter item holder must identify exactly one starter NPC")
+            holder = await self._entities.get_character(holders[0].id)
+            if holder is None or holder.current_location_id != location_id:
+                raise ValueError("Starter item holder must be physically present")
+            owner_id = holder.id
         entity = await self._entities.create(
             campaign_id,
             EntityCreate(
@@ -241,8 +256,8 @@ class PlayableBootstrapService:
                 entity_id=str(entity.id),
                 item_type="plot_clue",
                 physical_properties=spec.description,
-                current_owner_id=str(player_character_id) if spec.held_by_player else None,
-                current_location_id=None if spec.held_by_player else str(location_id),
+                current_owner_id=str(owner_id) if owner_id else None,
+                current_location_id=None if owner_id else str(location_id),
                 placement_detail=spec.initial_placement if not spec.held_by_player else None,
                 is_unique=True,
             )

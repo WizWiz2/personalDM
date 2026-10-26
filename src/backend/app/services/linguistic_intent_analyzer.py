@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal
 
-
 ActorRole = Literal["speaker", "addressee"]
 InformationRecipient = Literal["narrator", "character"]
 
@@ -40,8 +39,34 @@ def _russian_pipeline():
         ) from exc
 
 
+@lru_cache(maxsize=1)
+def _russian_morphology():
+    try:
+        import pymorphy3
+
+        return pymorphy3.MorphAnalyzer()
+    except (ImportError, OSError) as exc:
+        raise LinguisticParserUnavailable(
+            "Russian morphological dictionary is unavailable; reinstall backend dependencies"
+        ) from exc
+
+
+@lru_cache(maxsize=2048)
+def _dictionary_role(word: str) -> ActorRole | None:
+    """Resolve only an unambiguous finite-verb form, with UD providing its context/POS.
+
+    The statistical tagger can label an imperative as first person. A grammatical
+    dictionary corrects that error without a vocabulary of application commands.
+    Ambiguous forms leave the contextual/semantic analysis authoritative.
+    """
+    analyses = [entry for entry in _russian_morphology().parse(word) if entry.tag.POS == "VERB"]
+    roles = {"addressee" if entry.tag.mood == "impr" else "speaker"
+             if entry.tag.person == "1per" else None for entry in analyses}
+    return next(iter(roles)) if len(roles) == 1 and None not in roles else None
+
+
 class LinguisticIntentAnalyzer:
-    """Extract grammatical ownership from a Russian UD parse, without lexical rules."""
+    """Extract grammatical ownership from UD context and unambiguous morphology."""
 
     def __init__(self, pipeline: Any | None = None):
         self._pipeline = pipeline
@@ -59,6 +84,10 @@ class LinguisticIntentAnalyzer:
         roles: set[ActorRole] = set()
         for token in doc:
             if token.pos_ not in {"VERB", "AUX"}:
+                continue
+            dictionary_role = _dictionary_role(token.text)
+            if dictionary_role is not None:
+                roles.add(dictionary_role)
                 continue
             if "Imp" in cls._values(token, "Mood"):
                 roles.add("addressee")

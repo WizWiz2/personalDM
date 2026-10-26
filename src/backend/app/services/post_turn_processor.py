@@ -591,6 +591,11 @@ class PostTurnProcessor:
                         assistant,
                         proposals,
                     )
+                    from app.services.player_introduction_memory import introduction_knowledge
+
+                    proposals.extend(await introduction_knowledge(
+                        self._session, campaign_id, assistant, user_turn, self._snapshot_dict(assistant),
+                    ))
                     taxonomy = MemoryTaxonomyService(self._session)
                     proposals = await taxonomy.classify_batch(
                         campaign_id,
@@ -623,6 +628,12 @@ class PostTurnProcessor:
                     # objective fluents/relations, legacy FACT/RELATIONSHIP proposals are removed
                     # before validation/persistence so they cannot later be accepted or replayed.
                     proposals = self._respect_semantic_ownership(proposals)
+                    from app.services.item_fact_guard import guard_item_facts
+
+                    proposals = await guard_item_facts(
+                        self._session, campaign_id, proposals,
+                        router=getattr(scribe, "_model_router", None),
+                    )
                     checker = ContinuityChecker(self._session)
                     for proposal in proposals:
                         valid, warning = await checker.validate_change(
