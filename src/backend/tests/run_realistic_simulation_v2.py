@@ -21,6 +21,7 @@ from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.event_repo import EventRepository
 from app.db.repositories.fact_repo import FactRepository
+from app.services.memory_operations import MemoryOperationsService
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.scene_repo import SceneRepository
@@ -565,7 +566,7 @@ class ScenarioDirector:
                 source_turns=[source_turn_id] if source_turn_id else [],
             ),
         )
-        await self.curator.close_scene(self.current.scene_id)
+        await MemoryOperationsService(self.session).close_theses(self.current.scene_id, "scene_closed")
         await self.scenes.update(
             self.current.scene_id,
             SceneUpdate(status="completed"),

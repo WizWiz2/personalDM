@@ -163,24 +163,6 @@ class ThesisCurator:
         profile.closure_reason = reason
         await self._session.flush()
 
-    async def close_scene(self, scene_id: UUID) -> int:
-        """Resolve every operational thesis when a scene ends.
-
-        Durable consequences must already have been written as facts, events,
-        relationships or beliefs. A thesis is working memory and must not remain active
-        after its scene is completed, including pinned director instructions.
-        """
-        active = await self._scene_repo.list_theses_by_scene(scene_id, active_only=True)
-        for thesis in active:
-            await self._scene_repo.update_thesis(
-                thesis.id,
-                SceneThesisUpdate(status="resolved"),
-            )
-        await self._session.flush()
-        if self._supports_lifecycle(self._session):
-            await MemoryOperationsService(self._session).record_closed_scene(scene_id)
-        return len(active)
-
     async def _recent_scene_window(
         self,
         campaign_id: UUID,
@@ -237,6 +219,8 @@ class ThesisCurator:
         if not scene or scene.status != "active":
             return None
 
+        if self._supports_lifecycle(self._session):
+            await MemoryOperationsService(self._session).expire_scene_theses(campaign_id, scene_id)
         active = await self._scene_repo.list_theses_by_scene(scene_id, active_only=True)
         entity_names: dict[str, str] = {}
         for entity_id in scene.participants:

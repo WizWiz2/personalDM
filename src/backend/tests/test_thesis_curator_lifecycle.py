@@ -141,21 +141,6 @@ async def test_low_similarity_unresolved_beat_survives_reused_model_id():
 
 
 @pytest.mark.asyncio
-async def test_close_scene_resolves_pinned_and_unpinned_working_memory():
-    pinned = thesis(priority=10, pinned=True)
-    mutable = thesis(priority=5, pinned=False)
-    repo = FakeSceneRepository([pinned, mutable])
-    curator = ThesisCurator(FakeSession())
-    curator._scene_repo = repo
-
-    count = await curator.close_scene(uuid4())
-
-    assert count == 2
-    assert pinned.status == "resolved"
-    assert mutable.status == "resolved"
-
-
-@pytest.mark.asyncio
 async def test_curator_does_not_call_old_scope_based_record_reconcile(monkeypatch):
     calls = []
 
@@ -170,24 +155,6 @@ async def test_curator_does_not_call_old_scope_based_record_reconcile(monkeypatc
     await curator.reconcile(uuid4(), uuid4(), desired=[])
 
     assert calls == []
-
-
-@pytest.mark.asyncio
-async def test_curator_records_scene_closure_when_lifecycle_storage_is_available(monkeypatch):
-    calls = []
-
-    async def record_closed_scene(self, scene_id):
-        calls.append(scene_id)
-
-    monkeypatch.setattr(MemoryOperationsService, "record_closed_scene", record_closed_scene)
-    scene_id = uuid4()
-    repo = FakeSceneRepository([thesis(pinned=True), thesis()])
-    curator = ThesisCurator(FullLifecycleFakeSession())
-    curator._scene_repo = repo
-
-    await curator.close_scene(scene_id)
-
-    assert calls == [scene_id]
 
 
 @pytest.mark.asyncio

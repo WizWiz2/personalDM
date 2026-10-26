@@ -8,6 +8,7 @@ from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_state_table import SceneRuntimeState
 from app.db.tables import Campaign, Scene, SceneParticipant
 from app.models.scene import SceneRead
+from app.services.memory_operations import MemoryOperationsService
 from app.services.presence_service import PresenceService
 
 
@@ -65,9 +66,12 @@ class SceneLifecycleService:
                 )
             )
         ).scalars().all()
+        memory = MemoryOperationsService(self._session)
         for scene in active_scenes:
             if scene.id != target.id:
                 scene.status = "completed"
+                # Working memory ends with its scene; the typed bridge carries goals/threads.
+                await memory.close_theses(UUID(scene.id), "scene_closed")
 
         target.status = "active"
         campaign.current_scene_id = target.id
