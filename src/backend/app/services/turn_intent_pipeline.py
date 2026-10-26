@@ -258,6 +258,7 @@ class TurnIntentPlanningPipeline:
                 initiative=(persona.initiative, momentum),
                 master_block=outcome_master_block(persona, list(director.moves)),
                 destination_cast=await self._destination_cast(campaign_id, contract, names),
+                known_places=names,
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
             # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so
@@ -309,8 +310,9 @@ class TurnIntentPlanningPipeline:
                     selection, world_context, user_input, contract,
                     resident_slots=resident_slots,
                     initiative=(persona.initiative, momentum),
-                master_block=outcome_master_block(persona, list(director.moves)),
+                    master_block=outcome_master_block(persona, list(director.moves)),
                     destination_cast=await self._destination_cast(campaign_id, contract, names),
+                    known_places=names,
                     repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
                 )
                 decision = apply_due_deadline(apply_moves_to_outcome_decision(decision, director), contract, momentum)

@@ -120,3 +120,19 @@ def test_a_named_absent_person_is_typed_offscreen_so_their_name_is_reserved():
     draft = _outcome_wire_model(0).model_validate({**BASE, "absent_people": [sought]})
     [npc] = normalize_outcome_draft(draft, PlayerIntentContract(summary="Спрашиваю.", actions=[])).npc_introductions
     assert npc.sent_for and not npc.arrives and npc.canonical_name == "Прохор Белов"
+
+
+def test_a_master_can_reveal_a_new_place_inside_a_known_one():
+    from uuid import UUID
+    from app.models.player_intent import PlayerIntentContract
+    from app.services.turn_outcome_resolver import normalize_outcome_draft
+    town = "6f1c3c1e-6b0a-4c55-9a51-0b6f6e0d2a11"
+    place = {"canonical_name": "Лабаз Ефима", "place": f"new_in:{town}",
+             "profile": "Старый лабаз на краю пристани, где речник сушит сети и прячет лодку."}
+    wire = _outcome_wire_model(0, known_places=(town,))
+    with pytest.raises(ValidationError):  # only inside a known place, by its ID
+        wire.model_validate({**BASE, "place_introductions": [{**place, "place": "new"}]})
+    draft = wire.model_validate({**BASE, "place_introductions": [place]})
+    [new] = normalize_outcome_draft(draft, PlayerIntentContract(summary="Жду.", actions=[])).place_introductions
+    assert new.parent_location_id == UUID(town) and new.canonical_name == "Лабаз Ефима"
+    assert _outcome_wire_model(0).model_json_schema()["properties"]["place_introductions"]["maxItems"] == 0

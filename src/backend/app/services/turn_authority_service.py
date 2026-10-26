@@ -293,6 +293,8 @@ class TurnAuthorityService:
                 ] if plan else []
             ),
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
+            allowed_new_places=(list(plan.place_introductions)
+                                if plan and plan.resolution not in {"failure", "uncertain"} else []),
             object_names=(list(target_state.object_names) if target_state else []),
             item_states=(await load_item_states(self._session, campaign_id)
                          if isinstance(self._session, AsyncSession) else []),

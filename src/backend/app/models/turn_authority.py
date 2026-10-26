@@ -36,6 +36,14 @@ class PlannedNpcIntroduction(BaseModel):
     sent_for: bool = False
 
 
+class PlannedPlaceIntroduction(BaseModel):
+    """A place the world reveals inside a known place; it becomes a travel reference."""
+
+    canonical_name: str = Field(min_length=2, max_length=80)
+    profile: str = Field(min_length=32, max_length=600)
+    parent_location_id: UUID
+
+
 class PlannedItemIntroduction(BaseModel):
     """A significant physical object, justified by an approved current-turn outcome."""
 
@@ -114,6 +122,7 @@ class TurnAuthority(BaseModel):
     known_absent_character_names: list[str] = Field(default_factory=list)
     allowed_new_npcs: list[PlannedNpcIntroduction] = Field(default_factory=list)
     allowed_new_items: list[PlannedItemIntroduction] = Field(default_factory=list)
+    allowed_new_places: list[PlannedPlaceIntroduction] = Field(default_factory=list)
     world_move: PlannedWorldMove | None = None
     allowed_existing_npc_arrivals: list[ExistingNpcArrival] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
@@ -322,6 +331,7 @@ class TurnAuthority(BaseModel):
             ),
             "objects_here": self.object_names,
             "new_objects": [item.model_dump(mode="json") for item in self.allowed_new_items],
+            "new_places": [place.canonical_name for place in self.allowed_new_places],
             "approved_world_move": (
                 self.world_move.model_dump(mode="json") if self.world_move else None
             ),

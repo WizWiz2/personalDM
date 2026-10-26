@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, func, select
 
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Character, Entity, Location, Item, ItemContentDisclosure, ItemCreationEffect, NpcIdentityAnchor, SceneParticipant, Turn
 from app.db.action_sequence_table import ActionSequence, ActionStep
@@ -15,6 +16,7 @@ from app.services.item_content_authority import revealed_item_contents
 from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
 from app.models.entity import EntityCreate, EntityType
+from app.models.location import LocationCreate
 from app.models.narration_validation import GrantedBeat
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.entity_identity import identity_key
@@ -41,6 +43,7 @@ class IdentityUpdate:
 class MaterializedTurnOutcome:
     introduced_character_ids: tuple[UUID, ...] = ()
     introduced_item_ids: tuple[UUID, ...] = ()
+    introduced_place_ids: tuple[UUID, ...] = ()
     arrived_existing_participants: tuple[tuple[UUID, UUID], ...] = ()
     identity_updates: tuple[IdentityUpdate, ...] = ()
 
@@ -51,7 +54,7 @@ class MaterializedTurnOutcome:
     @property
     def has_changes(self) -> bool:
         return bool(
-            self.introduced_character_ids or self.introduced_item_ids
+            self.introduced_character_ids or self.introduced_item_ids or self.introduced_place_ids
             or self.arrived_existing_participants or self.identity_updates
         )
 
@@ -77,7 +80,7 @@ class TurnOutcomeMaterializer:
     ) -> MaterializedTurnOutcome:
         reveal_requested = bool(authority.addressed_response and authority.addressed_response.revealed_name)
         if not (
-            authority.allowed_new_npcs or authority.allowed_new_items
+            authority.allowed_new_npcs or authority.allowed_new_items or authority.allowed_new_places
             or authority.allowed_existing_npc_arrivals or reveal_requested
         ):
             return MaterializedTurnOutcome()
@@ -213,11 +216,23 @@ class TurnOutcomeMaterializer:
                         content=disclosed_contents[str(introduction.copy_of_item_id)][0]))
             item_ids.append(item.id)
             occupied.add(key)
+        place_ids = []
+        places = LocationRepository(self._session)
+        taken = {identity_key(place.canonical_name) for place in await places.list_by_campaign(authority.campaign_id)
+                 if place.status != "inactive"}
+        for place in authority.allowed_new_places:
+            if identity_key(place.canonical_name) not in taken:  # a known name is that known place
+                place_ids.append((await places.create(authority.campaign_id, LocationCreate(
+                    canonical_name=place.canonical_name, description=place.profile,
+                    parent_location_id=place.parent_location_id,
+                    custom_fields={"created_by": "world_outcome", "introduction_turn_id": str(source_turn_id)},
+                ))).id)
         await self._session.flush()
         identity_update = await self._reveal_identity(authority, source_turn_id)
         return MaterializedTurnOutcome(
             introduced_character_ids=tuple(created_ids),
             introduced_item_ids=tuple(item_ids),
+            introduced_place_ids=tuple(place_ids),
             arrived_existing_participants=tuple(arrived_existing),
             identity_updates=(identity_update,) if identity_update else (),
         )
@@ -454,6 +469,8 @@ class TurnOutcomeMaterializer:
             # Existing characters must never be deleted. Remove only the participant relation
             # inserted by this turn; historical participation in older scenes stays intact.
             await self._scenes.remove_participant(scene_id, entity_id)
+        for entity_id in outcome.introduced_place_ids:
+            (await self._session.get(Entity, str(entity_id))).status = "inactive"  # as undo does
         for entity_id in outcome.introduced_item_ids:
             item = await self._session.get(Item, str(entity_id))
             if item:
