@@ -15,7 +15,7 @@ from app.services.narration_publication_guard import (
     NarrationPublicationError,
     NarrationPublicationGuard,
 )
-from app.services.turn_authority_validator import TurnAuthorityValidator, four_bans_only
+from app.services.turn_authority_validator import TurnAuthorityValidator, entrance_model, four_bans_only
 
 pytestmark = pytest.mark.interagent_contract_enforced
 
@@ -306,3 +306,23 @@ def test_background_crowd_is_allowed_but_a_quoted_stranger_or_known_absentee_is_
     assert judged("За длинными столами теснились приезжие") == "pass"
     assert judged("Один из речников бросил") == "repair_required"
     assert judged("Шептун стоит у двери", known="Шептун") == "repair_required"
+
+
+def test_an_untyped_individual_walking_in_is_a_movement_error_but_a_crowd_is_not():
+    """replay15 k8: «вошедший пожилой речник направился к стойке» passed with no typed arrival."""
+    prose = "Дверь открылась, и вошедший пожилой речник направился к стойке. Следом ввалились извозчики."
+    authority = _authority()
+    schema = entrance_model(
+        authority, NarrationValidationResult).model_json_schema()
+    who = schema["$defs"]["StagedEntrance"]["properties"]["who"]["enum"]
+    assert "Дежурный" in who and "untyped_person" in who and "Шептун" not in who
+
+    def judged(*entrances):
+        data = {**_verdict(), "entrances": [{"evidence": e, "who": w} for e, w in entrances]}
+        return TurnAuthorityValidator._interpret(authority, prose, data)
+
+    assert judged(("Следом ввалились извозчики", "background_crowd")).verdict == "pass"
+    assert judged(("Дверь открылась", "Дежурный")).verdict == "pass"
+    staged = judged(("вошедший пожилой речник направился к стойке", "untyped_person"))
+    assert staged.verdict == "repair_required"
+    assert staged.violations[0].violation_type == "invalid_movement"

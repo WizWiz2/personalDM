@@ -52,6 +52,39 @@ def inventory_validation_model(authority: TurnAuthority) -> type[BaseModel]:
     )
 
 
+def entrance_model(authority: TurnAuthority, base: type[BaseModel]) -> type[BaseModel]:
+    """Every arrival the prose stages is bound to a cast name it is allowed to bring (replay15 k8).
+
+    A person walking in is a movement fact: it must be typed upstream (present, an approved newcomer
+    or a typed arrival). The validator only binds each staged entrance to one of those names.
+    """
+    names = tuple(dict.fromkeys([
+        *authority.present_character_names, *authority.allowed_new_npc_names,
+        *authority.allowed_existing_npc_arrival_names,
+    ])) + ("background_crowd", "untyped_person")
+    entrance = create_model(
+        "StagedEntrance", __config__=ConfigDict(extra="forbid"),
+        evidence=(str, Field(max_length=300, description="Shortest exact candidate fragment.")),
+        who=(Literal[names], Field(description=(
+            "Cast name of whoever enters; background_crowd for an anonymous group acting as one; "
+            "untyped_person for an individual with no cast name here."))),
+    )
+    return create_model(base.__name__, __base__=base, entrances=(list[entrance], Field(
+        max_length=6, description=("Each person this candidate shows arriving into the scene place "
+                                   "during this turn (walks in, comes up, appears). [] if nobody."))))
+
+
+def _untyped_entrances(data: dict, candidate: str) -> list[NarrationViolation]:
+    return [
+        NarrationViolation(
+            violation_type="invalid_movement", severity="error", evidence=item["evidence"],
+            correction="Убери появление этого человека: его приход не типизирован в фактах хода.",
+        )
+        for item in data.get("entrances") or []
+        if item.get("who") == "untyped_person" and item.get("evidence", "").strip() in candidate
+    ]
+
+
 def _gap(text: str) -> bool:
     return all(char.isspace() or unicodedata.category(char)[0] == "P" for char in text)
 
@@ -139,7 +172,8 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    even when the narrator omits travel verbs. A player's wish to go somewhere
    does not itself prove the character arrived; require a typed transition.
    Mentions, memories and rumours about other places are allowed. Movement
-   within the authoritative current location is allowed.
+   within the authoritative current location is allowed. Someone walking into the place is
+   movement too: bind every staged entrance in entrances to its cast name.
 
 Present characters may speak, answer, refuse, stay silent, gesture, move inside the place, share
 opinions, claims or new information. None of that is required and none of it is a violation.
@@ -148,6 +182,7 @@ Style, completeness, pacing, atmosphere and how a question is answered are not y
 For every error, evidence is the shortest exact fragment of the candidate and correction is a
 short prose-only fix in Russian. Return exactly:
 {
+  "entrances": [{"evidence": "exact fragment", "who": "cast name|background_crowd|untyped_person"}],
   "verdict": "pass|repair_required",
   "summary": "short reason in Russian",
   "violations": [
@@ -257,7 +292,8 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS,
                                    max(1600, 450 * len(authority.item_states)) if authority.item_states else 700),
                     temperature=0.0,
-                    response_model=inventory_validation_model(authority) if authority.item_states else NarrationValidationResult,
+                    response_model=entrance_model(authority, inventory_validation_model(authority)
+                                                  if authority.item_states else NarrationValidationResult),
                 )
             except (LLMProviderError, ValueError, TypeError) as exc:
                 raise NarrationValidationError(str(exc)) from exc
@@ -325,9 +361,12 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     verdict="repair_required", summary="Положение предмета противоречит канону.",
                     violations=[*extracted.violations, *conflicts][:12],
                 )
-        result = four_bans_only(
-            NarrationValidationResult.model_validate(data), authority, candidate_text
-        )
+        result = NarrationValidationResult.model_validate(data)
+        staged = _untyped_entrances(data, candidate_text)
+        if staged:
+            result = result.model_copy(update={"verdict": "repair_required",
+                                               "violations": [*result.violations, *staged][:12]})
+        result = four_bans_only(result, authority, candidate_text)
         result._item_states_verified = authority.item_states_loaded or bool(authority.item_states)
         return result
 
@@ -367,4 +406,4 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
         )
 
 
-__all__ = ["FOUR_BANS", "TurnAuthorityValidator", "four_bans_only"]
+__all__ = ["FOUR_BANS", "TurnAuthorityValidator", "entrance_model", "four_bans_only"]
