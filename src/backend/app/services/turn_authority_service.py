@@ -10,7 +10,7 @@ from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.models.turn_authority import ExistingNpcArrival, TurnAuthority
-from app.db.tables import Entity, Item
+from app.db.tables import Entity, Item, Location
 from app.services.entity_identity import identity_key
 from app.services.item_state_authority import load_item_states
 from app.services.scene_state_service import SceneStateService
@@ -43,6 +43,22 @@ class TurnAuthorityService:
         self._scene_state = SceneStateService(session)
         self._actors = ActorResolver(session)
         self._npc_introductions = NpcIntroductionResolver(session)
+
+    async def _place_frame(self, campaign_id: UUID, location_id: str | None) -> dict:
+        """Where the scene stands, from typed containment and exits only (replay15: Ладога from Молога)."""
+        if not location_id or not isinstance(self._session, AsyncSession):
+            return {}
+        chain, cursor = [], location_id
+        while cursor and len(chain) < 6:
+            row = (await self._session.execute(
+                select(Entity.canonical_name, Entity.description, Location.geography, Location.parent_location_id)
+                .join(Location, Location.entity_id == Entity.id).where(Entity.id == cursor))).first()
+            if row is None:
+                break
+            chain.insert(0, {"name": row[0], "profile": (row[2] or row[1] or "")[:300]})
+            cursor = row[3]
+        exits = await self._scene_state.list_exits(campaign_id, UUID(location_id))
+        return {"here_inside_out": chain, "reachable_from_here": sorted({e.to_location_name for e in exits})}
 
     async def build(
         self,
@@ -264,6 +280,7 @@ class TurnAuthorityService:
             and (owner_id is not None or item_location_id != current_location_id)
         ]
         authority = TurnAuthority(
+            place_frame=await self._place_frame(campaign_id, current_location_id),
             campaign_id=campaign_id,
             trigger_turn_id=trigger_turn_id,
             player_character_id=campaign.player_character_id,

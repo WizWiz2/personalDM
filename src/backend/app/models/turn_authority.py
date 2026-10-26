@@ -116,6 +116,8 @@ class TurnAuthority(BaseModel):
     transition_type: str = "none"
     source_location_path: list[str] = Field(default_factory=list)
     target_location_path: list[str] = Field(default_factory=list)
+    # Typed containment chain (outermost first, with stored profiles) and exit destinations of the scene.
+    place_frame: dict = Field(default_factory=dict)
     scene_time: str | None = None
 
     present_character_names: list[str] = Field(default_factory=list)
@@ -329,6 +331,7 @@ class TurnAuthority(BaseModel):
                 if self.addressed_response and self.addressed_response.revealed_name
                 else None
             ),
+            "place_frame": self.place_frame,
             "objects_here": self.object_names,
             "new_objects": [item.model_dump(mode="json") for item in self.allowed_new_items],
             "new_places": [place.canonical_name for place in self.allowed_new_places],
