@@ -11,7 +11,7 @@ from app.runtime_paths import backend_dir
 def test_migration_collapses_parallel_current_values(tmp_path, monkeypatch):
     db = tmp_path / "legacy.db"
     monkeypatch.setattr(settings, "DATABASE_URL", f"sqlite+aiosqlite:///{db}")
-    cfg = Config(str(backend_dir() / "alembic.ini"))
+    cfg = Config()  # no ini: alembic fileConfig would disable every existing logger
     cfg.set_main_option("script_location", str(backend_dir() / "alembic"))
     cfg.set_main_option("sqlalchemy.url", f"sqlite+aiosqlite:///{db}")
     command.upgrade(cfg, "c1f2a3b4c5d6")
