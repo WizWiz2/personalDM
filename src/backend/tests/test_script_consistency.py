@@ -15,3 +15,7 @@ def test_foreign_script_garbage_is_reported_not_rewritten() -> None:
     assert foreign_script_intrusions("Обычная русская проза with Latin.") == []
     # The repair vocabulary path stays untouched: intrusions never rewrite the text.
     assert consistent_script("Фонарь качается. 面 文字.", []) == "Фонарь качается. 面 文字."
+
+
+def test_unassigned_code_points_never_reach_prose():
+    assert consistent_script("протирать посуду.\U0005f7d9") == "протирать посуду."

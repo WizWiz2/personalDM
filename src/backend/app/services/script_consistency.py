@@ -30,8 +30,10 @@ def consistent_script(text: str, names: Iterable[str] = ()) -> str:
             return word
         return "".join(b.upper() if a.isupper() else b for a, b in zip(word, matches[0], strict=True))
 
+    # Unassigned, private-use and surrogate code points are never text (REPORT14 p7 U+5F7D9).
+    text = "".join(char for char in text or "" if unicodedata.category(char) not in {"Cn", "Co", "Cs"})
     return "".join(fixed(part) if part.isalpha() else part
-                   for _, chars in groupby(text or "", key=str.isalpha) for part in ["".join(chars)])
+                   for _, chars in groupby(text, key=str.isalpha) for part in ["".join(chars)])
 
 
 _INTRUDER_SCRIPTS = frozenset({
