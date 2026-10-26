@@ -314,6 +314,17 @@ def apply_moves_to_outcome_decision(
     )
 
 
+def outcome_master_block(master: GameMasterPersona, moves: list[DirectorMove]) -> str:
+    """The master's identity for the world's own decisions; the outcome call owns world moves."""
+    return (
+        f"\n[GAME MASTER — whose world this is]\n{master.display_name}\n{master.brief.strip()}\n"
+        "Director moves this turn: "
+        + ", ".join(f"{move} ({DIRECTOR_MOVE_LABELS_RU[move]})" for move in moves)
+        + "\nLet this master's identity choose what the world does, whom it brings and how threads "
+          "twist. Their world may introduce new people through npc_introductions.\n"
+    )
+
+
 def narrator_persona_block(master: GameMasterPersona) -> str:
     phrases = " | ".join(master.catchphrases[:5])
     return (
@@ -336,6 +347,7 @@ __all__ = [
     "apply_moves_to_narration_guidance",
     "apply_moves_to_outcome_decision",
     "narrator_persona_block",
+    "outcome_master_block",
     "pick_moves",
     "sampling_seed",
     "select_director_moves",

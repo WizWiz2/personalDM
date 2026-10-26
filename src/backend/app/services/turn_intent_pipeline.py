@@ -24,6 +24,7 @@ from app.services.master_service import MasterService
 from app.services.master_director import (
     apply_moves_to_narration_guidance,
     apply_moves_to_outcome_decision,
+    outcome_master_block,
 )
 from app.services.turn_outcome_resolver import (
     is_pure_ordinary_travel,
@@ -255,6 +256,7 @@ class TurnIntentPlanningPipeline:
                 force_introduce_contact=director.forced_introduce_contact,
                 resident_slots=resident_slots,
                 initiative=(persona.initiative, momentum),
+                master_block=outcome_master_block(persona, list(director.moves)),
                 destination_cast=await self._destination_cast(campaign_id, contract, names),
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
@@ -307,6 +309,7 @@ class TurnIntentPlanningPipeline:
                     selection, world_context, user_input, contract,
                     resident_slots=resident_slots,
                     initiative=(persona.initiative, momentum),
+                master_block=outcome_master_block(persona, list(director.moves)),
                     destination_cast=await self._destination_cast(campaign_id, contract, names),
                     repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
                 )

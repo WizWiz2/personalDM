@@ -1099,6 +1099,7 @@ class TurnOutcomeResolver:
         destination_cast: dict[str, list[str]] | None = None,
         repair_feedback: str | None = None,
         initiative: tuple[InitiativePolicy, dict] | None = None,
+        master_block: str = "",
     ) -> TurnOutcomeDecision:
         policy, momentum = initiative or (InitiativePolicy(), {})
         threads = {thread["thread_id"]: thread for thread in momentum.get("sources", [])
@@ -1226,6 +1227,7 @@ class TurnOutcomeResolver:
                             + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
                             + json.dumps(response_contract, ensure_ascii=False)
                             + empty_cast_guidance
+                            + master_block
                             + "".join(
                                 f"\n[DESTINATION CAST — typed] Physically at «{place}» when the "
                                 f"human arrives: {', '.join(cast)}. They are there; never resolve "

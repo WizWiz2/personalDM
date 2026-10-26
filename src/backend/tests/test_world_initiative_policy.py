@@ -74,3 +74,10 @@ def test_world_does_not_repeat_its_last_kind_while_another_is_allowed():
     assert "pressure" not in str(schema["$defs"]["ThreadWorldMove"]["properties"]["kind"])
     only = _wire(world_kinds=("pressure",), last_world_kind="pressure").model_json_schema()
     assert "pressure" in str(only["$defs"]["ThreadWorldMove"]["properties"]["kind"])
+
+
+def test_outcome_call_sees_whose_world_it_is():
+    from app.services.master_director import outcome_master_block
+    blocks = {p.id: outcome_master_block(p, ["npc_initiative"]) for p in list_presets()}
+    assert all(p.brief.strip() in blocks[p.id] and "npc_initiative" in blocks[p.id] for p in list_presets())
+    assert len(set(blocks.values())) == len(blocks)
