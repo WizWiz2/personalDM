@@ -289,7 +289,7 @@ class TurnOutcomeMaterializer:
             # Offscreen in the wider place this scene belongs to, until the world brings them.
             here = await self._session.get(Location, str(await self._scenes.get_location_id(authority.target_scene_id)))
             row = await self._session.get(Character, str(character.id))
-            row.current_location_id = (here.parent_location_id or here.id) if here else None
+            row.current_location_id = (here.parent_location_id or here.entity_id) if here else None
             return character
         await self._scenes.add_participant(
             authority.target_scene_id,

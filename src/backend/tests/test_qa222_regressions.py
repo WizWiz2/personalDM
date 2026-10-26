@@ -200,3 +200,27 @@ def test_native_boundary_cannot_exchange_the_frozen_document_subject():
     with pytest.raises(ValidationError, match="frozen subject"):
         wire.model_validate({"npc_introductions": [], "action_outcomes": [{"action_index": 0, "resolution": "auto_success", "observable_outcome": "Документ прочитан."}],
             "item_revelations": [{"item_id": str(other), "action_index": 0, "content": "Подменённое содержание."}]})
+
+
+@pytest.mark.asyncio
+async def test_an_offscreen_person_is_placed_at_a_root_place(db_session):
+    """Replay15 r1: an absent person typed at a place with no parent crashed on Location.id."""
+    from app.db.tables import Character, Entity
+    from app.models.player_intent import OutcomeNpcIntroduction
+    cid, room, _, _, _, _, scene = await _world(db_session)
+    text = "Спрашиваю о Прохоре Белове."
+    sought = OutcomeNpcIntroduction(canonical_name="Прохор Белов", role="речник", temporary_name=False,
+        personal_name_evidence="Прохоре Белове", reason="Его ищут.", sent_for=True,
+        description="Речник, первым рассказавший об огнях над Ладогой.",
+        appearance="Его здесь пока никто не видел, только слышали о нём.")
+    decision = TurnOutcomeDecision(action_outcomes=[], npc_introductions=[sought], resolution="conversation",
+                                   observable_consequences=["О Белове здесь слышали."])
+    plan = await ActionPlanCompiler(db_session).compile(
+        cid, PlayerIntentContract(summary=text, actions=[]), decision, player_input=text)
+    user = await TurnRepository(db_session).create(cid, TurnCreate(role="user", content=text, scene_id=scene))
+    authority = await TurnAuthorityService(db_session).build(campaign_id=cid, trigger_turn_id=user.id,
+        player_input=text, source_scene_id=scene, target_scene_id=scene, plan=plan, acting_character_id=None)
+    [created] = (await TurnOutcomeMaterializer(db_session).materialize(
+        authority, source_turn_id=user.id)).introduced_character_ids
+    assert (await db_session.get(Character, str(created))).current_location_id == str(room)
+    assert (await db_session.get(Entity, str(created))).canonical_name == "Прохор Белов"
