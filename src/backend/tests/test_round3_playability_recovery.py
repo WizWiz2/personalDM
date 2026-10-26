@@ -21,7 +21,7 @@ from app.models.scene import SceneCreate
 from app.models.turn import ChatMessage, TurnCreate
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.providers.llm_provider import LLMProviderTruncatedError
-from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services.authority_narration_pipeline import AuthorityNarrationPipeline, NarrationRefused
 from app.services.context_compiler import ContextCompiler
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.role_model_router import ModelRole, RoleModelSelection
@@ -203,7 +203,7 @@ class _BadNarratorProvider:
 
 @pytest.mark.interagent_contract_enforced
 @pytest.mark.asyncio
-async def test_second_semantic_reject_publishes_authority_instead_of_failing_turn(
+async def test_second_semantic_reject_gets_narrowed_contract_then_refuses(
     db_session: AsyncSession,
 ):
     campaign_id = uuid4()
@@ -242,18 +242,15 @@ async def test_second_semantic_reject_publishes_authority_instead_of_failing_tur
         ending_hook="Дежурный ждёт вопроса.",
     )
 
-    result = await pipeline.generate(
-        campaign_id=campaign_id,
-        trigger_turn_id=user_turn.id,
-        scene_id=None,
-        narrator_messages=[ChatMessage(role="system", content="Narrate")],
-        narrator_selection=narrator_selection,
-        authority=authority,
-    )
-
-    assert result.validation_status == "safe_fallback"
-    assert result.text == "На стук дверь открывает дежурный."
-    assert "ждёт вопроса" not in result.text
+    with pytest.raises(NarrationRefused):  # the projection is a contract, never the surface
+        await pipeline.generate(
+            campaign_id=campaign_id,
+            trigger_turn_id=user_turn.id,
+            scene_id=None,
+            narrator_messages=[ChatMessage(role="system", content="Narrate")],
+            narrator_selection=narrator_selection,
+            authority=authority,
+        )
 
 
 class _TruncateThenContinueProvider:

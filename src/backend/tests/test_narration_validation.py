@@ -166,23 +166,16 @@ async def test_validator_failure_keeps_unvalidated_draft_off_published_surface(
         )
 
     assert response.status_code == 200, response.text
-    # Round 26 established that the persisted/player-facing surface is a canonical security
-    # boundary. Operational fail-open status may preserve availability, but it may no longer expose
-    # the unvalidated draft to the player or post-turn memory/registrar consumers.
-    assert response.text != INVALID_DRAFT
+    # Validator outage is fail-closed: an honest refusal, never the unchecked draft.
+    assert INVALID_DRAFT not in response.text
     assert "Криповый бармен" not in response.text
+    assert "ход не опубликован" in response.text
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
-    assert history[-1]["content"] == response.text
-    assert history[-1]["content"] != INVALID_DRAFT
-    validation = await latest_validation(db_session)
-    assert validation.status == "failed_open"
-    assert validation.final_text == response.text
-    assert validation.final_text != INVALID_DRAFT
-    assert "control model unavailable" in (validation.failure_reason or "")
+    assert all(turn["role"] != "assistant" for turn in history)
 
 
 @pytest.mark.asyncio
-async def test_exhausted_repairs_publish_safe_authority_projection(
+async def test_exhausted_repairs_refuse_honestly_instead_of_a_raw_projection(
     client: TestClient,
     db_session: AsyncSession,
 ):
@@ -208,15 +201,7 @@ async def test_exhausted_repairs_publish_safe_authority_projection(
     assert response.status_code == 200, response.text
     assert INVALID_DRAFT not in response.text
     assert REPAIRED_TEXT not in response.text
-    assert "Generation failed" not in response.text
-    assert "visible consequence" in response.text
-
+    assert "visible consequence" not in response.text  # the typed outcome is never dumped raw
+    assert "ход не опубликован" in response.text
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
-    assert [turn["role"] for turn in history] == ["user", "assistant"]
-    assert history[-1]["content"] == response.text
-
-    validation = await latest_validation(db_session)
-    assert validation.status == "repaired"
-    assert validation.final_text == response.text
-    assert validation.repair_attempts == 1
-    assert "Absent NPC" in (validation.failure_reason or "")
+    assert all(turn["role"] != "assistant" for turn in history)

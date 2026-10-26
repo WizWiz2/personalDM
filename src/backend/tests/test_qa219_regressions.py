@@ -27,7 +27,7 @@ from app.models.turn import ChatMessage, TurnCreate
 from app.models.turn_authority import TurnAuthority
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.action_sequence_executor import ActionSequenceExecutor
-from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services.authority_narration_pipeline import AuthorityNarrationPipeline, NarrationRefused
 from app.services.continuity_checker import ContinuityChecker
 from app.services.item_fact_guard import guard_item_facts
 from app.services.item_state_authority import load_item_states
@@ -109,13 +109,11 @@ async def test_real_publication_path_cannot_bypass_inventory_guard(db_session, m
         "Алиса передаёт письмо Оста Эндлина.", None, {},
     )))
     monkeypatch.setattr(TurnAuthorityValidator, "validate", AsyncMock(return_value=NarrationValidationResult(verdict="pass")))
-    result = await pipeline.generate(
-        campaign_id=cid, trigger_turn_id=user.id, scene_id=scene, narrator_messages=[],
-        narrator_selection=SimpleNamespace(config=SimpleNamespace()), authority=auth,
-    )
-    assert "передаёт" not in result.text
-    assert "Вера" in result.text
-    assert result.telemetry["narration_validation"]["publication_guard"]["mode"] == "authority_projection"
+    with pytest.raises(NarrationRefused):  # an uncertified item claim is never published
+        await pipeline.generate(
+            campaign_id=cid, trigger_turn_id=user.id, scene_id=scene, narrator_messages=[],
+            narrator_selection=SimpleNamespace(config=SimpleNamespace()), authority=auth,
+        )
 
 
 @pytest.mark.asyncio
@@ -142,15 +140,15 @@ async def test_repeated_false_static_claim_falls_back_to_actual_item_state(db_se
     )
     pipeline = AuthorityNarrationPipeline(db_session, router)
     monkeypatch.setattr(pipeline, "_narrate", AsyncMock(return_value=(false_text, None, {})))
-    result = await pipeline.generate(
-        campaign_id=cid, trigger_turn_id=user.id, scene_id=scene, narrator_messages=[],
-        narrator_selection=SimpleNamespace(config=SimpleNamespace()), authority=auth,
-    )
-    assert false_text not in result.text
-    assert "Вера" in result.text
-    assert result.validation_status == "safe_fallback"
-    assert result.telemetry["narration_validation"]["publication_guard"]["mode"] == "item_state_projection"
-    assert router.generate_json.await_count == 2
+    with pytest.raises(NarrationRefused):
+        await pipeline.generate(
+            campaign_id=cid, trigger_turn_id=user.id, scene_id=scene, narrator_messages=[],
+            narrator_selection=SimpleNamespace(config=SimpleNamespace()), authority=auth,
+        )
+    # draft, repair, narrowed contract: each one checked against the real item state
+    assert router.generate_json.await_count == 3
+    contract = pipeline._narrate.await_args_list[-1].args[0][-1].content
+    assert "Вера" in contract
 
 
 @pytest.mark.asyncio
@@ -164,13 +162,11 @@ async def test_validator_outage_never_fail_opens_a_static_item_claim(db_session,
                          item_states=await load_item_states(db_session, cid))
     pipeline = AuthorityNarrationPipeline(db_session, SimpleNamespace(resolve=AsyncMock(return_value=None)))
     monkeypatch.setattr(pipeline, "_narrate", AsyncMock(return_value=("Письмо лежит на конторке.", None, {})))
-    result = await pipeline.generate(
-        campaign_id=cid, trigger_turn_id=user.id, scene_id=scene, narrator_messages=[],
-        narrator_selection=SimpleNamespace(config=SimpleNamespace()), authority=auth,
-    )
-    assert "на конторке" not in result.text
-    assert "Вера" in result.text
-    assert result.telemetry["narration_validation"]["publication_guard"]["mode"] == "item_state_projection"
+    with pytest.raises(NarrationRefused):
+        await pipeline.generate(
+            campaign_id=cid, trigger_turn_id=user.id, scene_id=scene, narrator_messages=[],
+            narrator_selection=SimpleNamespace(config=SimpleNamespace()), authority=auth,
+        )
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ import pytest
 from app.models.narration_validation import GrantedBeat, NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
-from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services.authority_narration_pipeline import AuthorityNarrationPipeline, NarrationRefused
 from app.services.narration_publication_guard import (
     NarrationPublicationError,
     NarrationPublicationGuard,
@@ -177,7 +177,7 @@ def test_fallback_raises_only_without_any_typed_outcome():
 
 
 @pytest.mark.asyncio
-async def test_rejected_repair_publishes_typed_outcome_after_exactly_two_checks(db_session, monkeypatch):
+async def test_rejected_repair_gets_a_narrowed_contract_never_a_raw_projection(db_session, monkeypatch):
     from app.db.repositories.turn_repo import TurnRepository
     from app.models.campaign import CampaignCreate
     from app.models.turn import TurnCreate
@@ -188,12 +188,14 @@ async def test_rejected_repair_publishes_typed_outcome_after_exactly_two_checks(
         campaign.id, TurnCreate(role="user", content="Стучу в дверь."),
     )
     await db_session.commit()
-    router = _Router(_verdict("player_agency"), _verdict("player_agency"))
+    router = _Router(_verdict("player_agency"), _verdict("player_agency"), _verdict())
     pipeline = AuthorityNarrationPipeline(db_session, router)
     drafts: list[str] = []
 
     async def narrate(messages, selection, *, temperature):
         drafts.append(messages[-1].content)
+        if "[NARROWED CONTRACT]" in messages[-1].content:
+            return "Ты стучишь, и дежурный приоткрывает дверь.", {"model": "narrator"}
         return "Рэт решает уйти.", {"model": "narrator"}
 
     monkeypatch.setattr(pipeline, "_generate_text", narrate)
@@ -206,10 +208,11 @@ async def test_rejected_repair_publishes_typed_outcome_after_exactly_two_checks(
         narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="narrator")),
         authority=authority,
     )
-    assert result.text == "Дежурный приоткрывает дверь."
-    assert result.validation_status == "safe_fallback"
-    assert len(drafts) == 2 and "[REPAIR REJECTED NARRATION]" in drafts[1]
-    assert len(router.calls) == 2
+    assert result.text == "Ты стучишь, и дежурный приоткрывает дверь."
+    assert result.validation_status == "repaired"
+    assert "[REPAIR REJECTED NARRATION]" in drafts[1]
+    assert "Дежурный приоткрывает дверь" in drafts[2]  # the typed outcome is the contract
+    assert len(router.calls) == 3
 
 
 @pytest.mark.asyncio
@@ -235,16 +238,15 @@ async def test_validator_outage_keeps_the_unchecked_draft_off_the_surface(db_ses
         return "Непроверенный черновик.", {"model": "narrator"}
 
     monkeypatch.setattr(pipeline, "_generate_text", narrate)
-    result = await pipeline.generate(
-        campaign_id=campaign.id,
-        trigger_turn_id=user_turn.id,
-        scene_id=None,
-        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
-        narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="narrator")),
-        authority=_authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id),
-    )
-    assert result.text == "Дежурный приоткрывает дверь."
-    assert result.validation_status == "failed_open"
+    with pytest.raises(NarrationRefused):  # fail-closed: nothing unchecked reaches the player
+        await pipeline.generate(
+            campaign_id=campaign.id,
+            trigger_turn_id=user_turn.id,
+            scene_id=None,
+            narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+            narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="narrator")),
+            authority=_authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id),
+        )
 
 
 @pytest.mark.asyncio

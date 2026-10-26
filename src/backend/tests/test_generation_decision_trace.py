@@ -184,13 +184,14 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
 
     assert "evaluate" not in steps
     repairs = [item for item in decisions if item["step"] == "repair"]
-    assert [item["payload"]["strategy"] for item in repairs] == ["single_model_repair"]
+    assert [item["payload"]["strategy"] for item in repairs] == ["single_model_repair", "narrowed_contract"]
     assert steps.count("validate") == 2
 
     final = decisions[-1]
     assert (final["step"], final["outcome"]) == ("final", "failed")
-    assert final["payload"] == {"error_type": "NarrationPublicationError", "reason": FAILURE}
-    assert decisions[-2]["step"] == "publish"
+    assert final["payload"]["error_type"] == "NarrationRefused"
+    assert FAILURE in final["payload"]["reason"]
+    assert decisions[-2]["step"] == "repair"  # never a raw projection publish
 
     calls = [item for item in timeline if item["kind"] == "call"]
     assert {item["role"] for item in calls} >= {"narrator", "narration_validator"}

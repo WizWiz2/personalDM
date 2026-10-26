@@ -103,7 +103,7 @@ def test_rejected_authority_preserves_cause_and_publishes_no_empty_turn(client: 
     assert not client.get(f"/api/campaigns/{campaign_id}/turns").json()
 
 
-def test_failed_generation_after_authority_is_contained(client: TestClient):
+def test_failed_generation_after_authority_refuses_honestly(client: TestClient):
     campaign_id = client.post(
         "/api/campaigns",
         json={"name": "Failure Handling"},
@@ -119,18 +119,12 @@ def test_failed_generation_after_authority_is_contained(client: TestClient):
         )
 
     assert response.status_code == 200
-    assert "Generation failed after retry" not in response.text
     assert "provider returned no usable content" not in response.text
-    assert "The action produces one visible consequence." in response.text
-
+    # No raw typed-outcome dump: an honest, retryable refusal with nothing published.
+    assert "The action produces one visible consequence." not in response.text
+    assert "ход не опубликован" in response.text
     active_turns = client.get(f"/api/campaigns/{campaign_id}/turns").json()
-    assert len(active_turns) == 2
-    assert active_turns[0]["role"] == "user"
-    assert active_turns[0]["status"] == "active"
-    assert active_turns[1]["role"] == "assistant"
-    assert active_turns[1]["status"] == "active"
-    assert active_turns[1]["parent_turn_id"] == active_turns[0]["id"]
-    assert active_turns[1]["content"] == response.text
+    assert all(turn["role"] != "assistant" for turn in active_turns)
 
 
 def test_regeneration_undoes_previous_pair_and_reexecutes_user_action(client: TestClient, mock_llm):
@@ -390,7 +384,7 @@ def test_planner_transition_rebuilds_narrator_context_without_old_npcs(
     assert snapshot["active_scene"]["location_id"] == state["bedroom"]["id"]
 
 
-def test_failed_narration_preserves_new_scene_transition(client: TestClient):
+def test_failed_narration_rolls_back_the_scene_transition(client: TestClient):
     state = _create_tavern_state(client)
 
     with patch(
@@ -410,23 +404,11 @@ def test_failed_narration_preserves_new_scene_transition(client: TestClient):
         )
 
     assert response.status_code == 200
-    assert "Generation failed after retry" not in response.text
-    assert "provider returned no usable content" not in response.text
-    assert "Игрок оказывается в закрытой гостевой комнате." in response.text
+    assert "Игрок оказывается в закрытой гостевой комнате." not in response.text
+    assert "ход не опубликован" in response.text
 
     snapshot = client.get(
         f"/api/campaigns/{state['campaign_id']}/debugger"
     ).json()
-    assert snapshot["active_scene"]["id"] != state["source_scene"]["id"]
-    assert snapshot["active_scene"]["location_id"] == state["bedroom"]["id"]
-    assert len(snapshot["scene_transitions"]) == 1
-    transition = snapshot["scene_transitions"][0]
-    assert transition["status"] in {"applied", "reused"}
-    assert snapshot["last_scene_transition"]["id"] == transition["id"]
-    target = next(
-        scene
-        for scene in snapshot["scenes"]
-        if scene["id"] == transition["target_scene_id"]
-    )
-    assert target["status"] == "active"
-    assert snapshot["campaign"]["player_location_id"] == state["bedroom"]["id"]
+    # Nothing was published, so the world is unchanged: the player is still in the tavern.
+    assert snapshot["active_scene"]["id"] == state["source_scene"]["id"]

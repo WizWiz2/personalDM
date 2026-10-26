@@ -14,7 +14,7 @@ from app.models.narration_validation import NarrationValidationResult
 from app.models.turn import ChatMessage, TurnCreate
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import LLMProviderError, LLMProviderTruncatedError
-from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services.authority_narration_pipeline import AuthorityNarrationPipeline, NarrationRefused
 from app.services.campaign_service import CampaignService
 from app.services.role_model_router import RoleModelRouter
 from app.services.turn_authority_validator import TurnAuthorityValidator
@@ -42,7 +42,7 @@ def _authority(*, campaign_id=None, trigger_turn_id=None) -> TurnAuthority:
         LLMProviderError("LLM returned HTTP 500: internal provider failure"),
     ],
 )
-async def test_provider_failure_publishes_typed_outcome_as_plain_text(
+async def test_provider_failure_is_an_honest_refusal(
     db_session,
     monkeypatch,
     error,
@@ -58,27 +58,23 @@ async def test_provider_failure_publishes_typed_outcome_as_plain_text(
     monkeypatch.setattr(pipeline, "_generate_text", fail_generation)
     authority = _authority()
 
-    result = await pipeline.generate(
-        campaign_id=authority.campaign_id,
-        trigger_turn_id=authority.trigger_turn_id,
-        scene_id=None,
-        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
-        narrator_selection=SimpleNamespace(
-            config=SimpleNamespace(model_name="gemma4:e4b")
-        ),
-        authority=authority,
-    )
+    with pytest.raises(NarrationRefused):
+        await pipeline.generate(
+            campaign_id=authority.campaign_id,
+            trigger_turn_id=authority.trigger_turn_id,
+            scene_id=None,
+            narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+            narrator_selection=SimpleNamespace(
+                config=SimpleNamespace(model_name="gemma4:e4b")
+            ),
+            authority=authority,
+        )
+    # Provider failure is an honest refusal; the typed outcome is never dumped as prose.
 
-    assert result.text == "Дверь оказывается открыта."
-    assert "Generation failed" not in result.text
-    assert "completion budget" not in result.text
-    assert "HTTP 500" not in result.text
-    assert result.validation_status == "safe_fallback"
-    assert result.telemetry["narration_degraded"] is True
 
 
 @pytest.mark.asyncio
-async def test_repair_generation_failure_finalizes_validation_audit_and_preserves_authority(
+async def test_repair_generation_failure_refuses_after_narrowed_contract(
     db_session,
     monkeypatch,
 ):
@@ -131,36 +127,22 @@ async def test_repair_generation_failure_finalizes_validation_audit_and_preserve
     monkeypatch.setattr(TurnAuthorityValidator, "validate", reject_player_agency)
 
     authority = _authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id)
-    result = await pipeline.generate(
-        campaign_id=campaign.id,
-        trigger_turn_id=user_turn.id,
-        scene_id=None,
-        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
-        narrator_selection=SimpleNamespace(
-            config=SimpleNamespace(model_name="gemma4:e4b")
-        ),
-        authority=authority,
-    )
-
-    run = (
-        await db_session.execute(
-            select(NarrationValidationRun).where(
-                NarrationValidationRun.trigger_turn_id == str(user_turn.id)
-            )
+    with pytest.raises(NarrationRefused):
+        await pipeline.generate(
+            campaign_id=campaign.id,
+            trigger_turn_id=user_turn.id,
+            scene_id=None,
+            narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+            narrator_selection=SimpleNamespace(
+                config=SimpleNamespace(model_name="gemma4:e4b")
+            ),
+            authority=authority,
         )
-    ).scalar_one()
 
-    assert result.text == "Дверь оказывается открыта."
-    assert result.validation_status == "safe_fallback"
-    assert run.status == "repaired"
-    assert run.final_text == result.text
-    assert run.failure_reason is not None
-    assert "LLMProviderTruncatedError" in run.failure_reason
-    assert "completion budget" not in result.text
 
 
 @pytest.mark.asyncio
-async def test_unhonored_beat_gets_one_repair_then_the_typed_fallback(db_session, monkeypatch):
+async def test_unhonored_beat_gets_one_repair_then_a_narrowed_contract(db_session, monkeypatch):
     """Grant → beat check fails → one repair still failing → projection.
 
     Beat tolerance keeps the validator in the loop: the fallback now requires the
@@ -208,23 +190,18 @@ async def test_unhonored_beat_gets_one_repair_then_the_typed_fallback(db_session
     authority = _authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id).model_copy(
         update={"beat_owner_id": host, "beat_owner_name": "Фёдор Андреевич Климов"}
     )
-    result = await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
-        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
-        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
-        narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="m"), source="x"),
-        authority=authority,
-    )
+    with pytest.raises(NarrationRefused):
+        await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
+            campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
+            narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+            narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="m"), source="x"),
+            authority=authority,
+        )
+    assert "grammatical subject" in sent[1][-1].content
+    assert decisions[:3] == [("beat", "unhonored"), ("repair", "requested"), ("beat", "unhonored")]
+    assert ("repair", "narrowed_contract") in decisions
+    assert ("publish", "authority_projection") not in decisions
 
-    assert len(sent) == 2 and "grammatical subject" in sent[1][-1].content
-    assert decisions == [
-        ("beat", "unhonored"), ("repair", "requested"), ("beat", "unhonored"),
-        ("publish", "authority_projection"),
-    ]
-    assert result.text == "Дверь оказывается открыта."
-    assert result.validation_status == "safe_fallback"
-    # The real ban rejection outranks the optional beat mismatch in the audit.
-    assert "Нарушен запрет" in result.telemetry["narration_validation"]["reason"]
-    assert "beat grant" not in result.telemetry["narration_validation"]["reason"]
 
 
 @pytest.mark.asyncio
@@ -328,7 +305,7 @@ async def test_foreign_script_garbage_goes_to_repair_not_the_surface(db_session,
 
 
 @pytest.mark.asyncio
-async def test_foreign_script_still_present_after_repair_falls_back_safely(db_session, monkeypatch):
+async def test_foreign_script_still_present_after_narrowed_retry_refuses(db_session, monkeypatch):
     """A repeated CJK intrusion is rejected without dereferencing a missing validator result."""
     import app.services.authority_narration_pipeline as module
     from app.models.narration_validation import NarrationValidationResult
@@ -364,18 +341,17 @@ async def test_foreign_script_still_present_after_repair_falls_back_safely(db_se
     ).model_copy(update={
         "beat_owner_id": host, "beat_owner_name": "Смотритель",
     })
-    result = await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
-        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
-        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
-        narrator_selection=SimpleNamespace(
-            config=SimpleNamespace(model_name="m"), source="test"
-        ),
-        authority=authority,
-    )
+    with pytest.raises(NarrationRefused):
+        await AuthorityNarrationPipeline(db_session, FakeRouter()).generate(
+            campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
+            narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+            narrator_selection=SimpleNamespace(
+                config=SimpleNamespace(model_name="m"), source="test"
+            ),
+            authority=authority,
+        )
+    assert len(calls) == 3  # draft, repair, narrowed contract
 
-    assert len(calls) == 2
-    assert result.validation_status == "safe_fallback"
-    assert "码头" not in result.text
 
 
 @pytest.mark.asyncio

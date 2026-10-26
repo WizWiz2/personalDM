@@ -20,13 +20,28 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.actor_turn_authority_guard import _word_key, segment_actor_response
-from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narration_publication_guard import (
+    NarrationPublicationError,
+    NarrationPublicationGuard,
+)
 from app.services.narration_meta_guard import leaked_meta_lines
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.script_consistency import consistent_script, foreign_script_intrusions
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.llm_usage_tracker import record_decision, record_provider_telemetry
 from app.services.turn_authority_validator import TurnAuthorityValidator
+
+
+class NarrationRefused(RuntimeError):
+    """Honest failure: nothing is published and the saga rolls the turn back."""
+
+
+NARROWED_CONTRACT = (
+    "[NARROWED CONTRACT]\nThe previous narration was rejected: {reason}\n"
+    "Narrate ONLY the confirmed outcomes below, in your own voice and style as this master, "
+    "second person, in Russian. Add no new people, objects, places, facts or player actions.\n"
+    "CONFIRMED OUTCOMES:\n{contract}"
+)
 
 
 @dataclass(frozen=True)
@@ -284,17 +299,11 @@ class AuthorityNarrationPipeline:
     ) -> AuthorityNarrationResult:
         if leaked_meta_lines(text):
             raise NarrationValidationError("Narrator output contains internal model notes")
-        if publication.get("mode") == "validated_candidate":
-            text, publication = NarrationPublicationGuard.publish(
-                authority, text, validation_result or NarrationValidationResult(verdict="pass"),
-            )
-            if publication["mode"] == "authority_projection":
-                status = "safe_fallback"
         text = consistent_script(text, authority.present_character_names)
         text = NarrationPublicationGuard.include_critical_world_outcome(authority, text)
         gate = await audit.finalize(
             run,
-            status="repaired" if status == "safe_fallback" else status,
+            status=status,
             final_text=text,
             repair_attempts=repair_attempts,
             failure_reason=reason[:2000] if reason else None,
@@ -314,35 +323,6 @@ class AuthorityNarrationPipeline:
             validation_run_id=gate.validation_run_id,
             validation_status=status,
             beat=beat,
-        )
-
-    async def _fallback(
-        self,
-        *,
-        audit: NarrationValidator,
-        run,
-        authority: TurnAuthority,
-        reason: str,
-        repair_attempts: int,
-        telemetry: dict,
-        status: str = "safe_fallback",
-    ) -> AuthorityNarrationResult:
-        """Publish the typed step outcome as plain text; raises only if there is none."""
-        record_decision("publish", "authority_projection", {"reason": reason[:500]})
-        text, publication = NarrationPublicationGuard.publish(authority, "", None)
-        if authority.item_states:
-            text = NarrationPublicationGuard.render_item_states(authority)
-            publication = {**publication, "mode": "item_state_projection"}
-        return await self._finish(
-            audit=audit,
-            run=run,
-            authority=authority,
-            text=text,
-            status=status,
-            repair_attempts=repair_attempts,
-            telemetry=telemetry,
-            publication=publication,
-            reason=reason,
         )
 
     async def generate(
@@ -368,15 +348,7 @@ class AuthorityNarrationPipeline:
                 temperature=settings.NARRATOR_TEMPERATURE,
             )
         except LLMProviderError as exc:
-            run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, "", None)
-            return await self._fallback(
-                audit=audit,
-                run=run,
-                authority=authority,
-                reason=f"narrator failed: {type(exc).__name__}: {exc}",
-                repair_attempts=0,
-                telemetry={**self.last_telemetry, "narration_degraded": True},
-            )
+            raise NarrationRefused(f"narrator failed: {type(exc).__name__}: {exc}") from exc
         validation_selection = await self._router.resolve(
             campaign_id,
             ModelRole.NARRATION_VALIDATOR,
@@ -385,10 +357,18 @@ class AuthorityNarrationPipeline:
         validator_model = validation_selection.config.model_name if validation_selection else None
         run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, draft, validator_model)
 
-        def accepted(text: str, status: str, attempts: int, reason: str | None = None,
-                     beat=None, validation=None):
-            record_decision("publish", "validated_candidate", {"status": status})
-            return self._finish(
+        async def accepted(text: str, status: str, attempts: int, reason: str | None = None,
+                           beat=None, validation=None, narrowed: bool = False):
+            _, publication = NarrationPublicationGuard.publish(authority, text, validation)
+            if publication["mode"] != "validated_candidate":
+                reason_now = "item state not certified by the typed check"
+                if narrowed:
+                    raise NarrationRefused(reason_now)
+                # An uncertified item claim: the typed outcome becomes the next contract.
+                return await narrow(reason_now, attempts)
+            record_decision("publish", "narrowed_candidate" if narrowed else "validated_candidate",
+                            {"status": status})
+            return await self._finish(
                 audit=audit,
                 run=run,
                 authority=authority,
@@ -396,33 +376,39 @@ class AuthorityNarrationPipeline:
                 status=status,
                 repair_attempts=attempts,
                 telemetry=telemetry,
-                publication={"mode": "validated_candidate", "validated_surface": True},
+                publication={"mode": "narrowed_candidate" if narrowed else "validated_candidate",
+                             "validated_surface": True},
                 validation_result=validation,
                 reason=reason,
                 beat=beat,
             )
 
-        async def validator_down(reason: str):
-            # An unchecked draft stays off the surface while a typed outcome exists.
-            # Fail-open publishes the draft only when there is nothing typed to show.
-            if (
-                settings.NARRATION_VALIDATOR_FAIL_OPEN
-                and not NarrationPublicationGuard.has_typed_outcome(authority)
-                and not leaked_meta_lines(draft)
-            ):
-                return await accepted(draft, "failed_open", 0, reason)
-            return await self._fallback(
-                audit=audit,
-                run=run,
-                authority=authority,
-                reason=reason,
-                repair_attempts=0,
-                telemetry=telemetry,
-                status="failed_open" if settings.NARRATION_VALIDATOR_FAIL_OPEN else "safe_fallback",
-            )
+        async def narrow(reason: str, attempts: int):
+            """The typed outcome is a contract for one more narrator pass, never a publication."""
+            record_decision("repair", "narrowed_contract", {"strategy": "narrowed_contract", "reason": reason[:500]},
+                            role=ModelRole.NARRATOR.value)
+            try:
+                contract = NarrationPublicationGuard.render_contract(authority)
+            except NarrationPublicationError as exc:
+                raise NarrationRefused(f"{reason}; {exc}") from exc
+            try:
+                text, _, _ = await self._narrate(
+                    [*narrator_messages, ChatMessage(role="user", content=NARROWED_CONTRACT.format(
+                        reason=reason[:600], contract=contract))],
+                    narrator_selection, authority, temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+                )
+            except LLMProviderError as exc:
+                raise NarrationRefused(f"{reason}; narrowed narrator failed: {exc}") from exc
+            if not (foreign_script_intrusions(text) or leaked_meta_lines(text)
+                    or await self._repeats(campaign_id, text)):
+                result = await self._check(**check, candidate=text, attempt_index=attempts + 1)
+                if result.verdict == "pass":
+                    return await accepted(text, "repaired", attempts + 1, reason=reason,
+                                          validation=result, narrowed=True)
+            raise NarrationRefused(f"{reason}; narrowed retry did not pass")
 
         if validation_selection is None:
-            return await validator_down("validator routing unavailable")
+            raise NarrationRefused("validator routing unavailable")
 
         validator = TurnAuthorityValidator(self._router)
         check = {
@@ -478,14 +464,7 @@ class AuthorityNarrationPipeline:
                     temperature=settings.NARRATION_REPAIR_TEMPERATURE,
                 )
             except LLMProviderError as exc:
-                return await self._fallback(
-                    audit=audit,
-                    run=run,
-                    authority=authority,
-                    reason=f"repair narrator failed: {type(exc).__name__}: {exc}",
-                    repair_attempts=1,
-                    telemetry=telemetry,
-                )
+                return await narrow(f"repair narrator failed: {type(exc).__name__}: {exc}", 1)
             telemetry = {**telemetry, "repair_generation": repair_telemetry}
             repaired_failure = self._beat_failure(authority, repaired, repaired_beat)
             repeats = await self._repeats(campaign_id, repaired)
@@ -506,11 +485,8 @@ class AuthorityNarrationPipeline:
                             validation=repaired_result,
                         )
                     return await accepted(repaired, "repaired", 1, beat=repaired_beat, validation=repaired_result)
-            return await self._fallback(
-                audit=audit,
-                run=run,
-                authority=authority,
-                reason=(
+            return await narrow(
+                (
                     # The four-ban validator is authoritative: a failed NPC beat
                     # must not mask a real canon/player-agency violation in the
                     # published audit reason.
@@ -524,11 +500,11 @@ class AuthorityNarrationPipeline:
                     if repaired_failure
                     else "narration still breaks a ban after one repair"
                 ),
-                repair_attempts=1,
-                telemetry=telemetry,
+                1,
             )
         except NarrationValidationError as exc:
-            return await validator_down(f"authority validator failed: {exc}")
+            # Validator timeout/failure is fail-closed: an unchecked draft is never published.
+            raise NarrationRefused(f"authority validator failed: {exc}") from exc
 
 
 __all__ = ["AuthorityNarrationPipeline", "AuthorityNarrationResult"]

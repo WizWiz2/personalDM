@@ -118,7 +118,6 @@ class Settings(BaseSettings):
     NARRATION_VALIDATOR_MAX_TOKENS: int = 1100
     NARRATION_REPAIR_TEMPERATURE: float = 0.25
     NARRATION_REPAIR_ATTEMPTS: int = 2
-    NARRATION_VALIDATOR_FAIL_OPEN: bool = True
 
     # Narrative and structured control calls have different completion needs.
     RESPONSE_RESERVE_TOKENS: int = 2048
