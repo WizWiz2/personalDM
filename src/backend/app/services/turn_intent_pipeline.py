@@ -102,16 +102,24 @@ class TurnIntentPlanningPipeline:
             cast.setdefault(names.get(location_id, location_id), []).append(name)
         return cast
 
-    async def _uncast_names(self, campaign_id, contract) -> tuple[str, ...]:
-        """Names the human spoke of that no character carries yet (a surname alone matches its bearer)."""
-        if not contract.named_absent_people or not isinstance(self._session, AsyncSession):
+    async def _uncast(self, campaign_id, names) -> tuple[str, ...]:
+        """Personal names no character carries yet (a surname alone matches its bearer, replay16 k3)."""
+        if not names or not isinstance(self._session, AsyncSession):
             return ()
         known = [{identity_key(part) for part in name.split()} for name in (await self._session.execute(
             select(Entity.canonical_name).where(Entity.campaign_id == str(campaign_id),
                                                 Entity.entity_type == "character"))).scalars()]
-        return tuple(name for name in contract.named_absent_people if not any(
+        return tuple(name for name in names if not any(
             (parts := {identity_key(part) for part in name.split()}) <= bearer or bearer <= parts
             for bearer in known if bearer))
+
+    async def _without_carried_offscreen(self, campaign_id, decision):
+        """An offscreen person whose personal name a character already carries is that character."""
+        named = [npc.canonical_name for npc in decision.npc_introductions if npc.sent_for and not npc.temporary_name]
+        fresh = set(await self._uncast(campaign_id, named)) if isinstance(self._session, AsyncSession) else set(named)
+        return decision.model_copy(update={"npc_introductions": [
+            npc for npc in decision.npc_introductions
+            if not npc.sent_for or npc.temporary_name or npc.canonical_name in fresh]})
 
     async def _location_catalog(self, campaign_id) -> tuple[dict[str, str], dict[str, dict]]:
         """Known places for destination binding; current marks where the player is now."""
@@ -271,7 +279,7 @@ class TurnIntentPlanningPipeline:
                 master_block=outcome_master_block(persona, list(director.moves)),
                 destination_cast=await self._destination_cast(campaign_id, contract, names),
                 known_places=names,
-                required_absent=await self._uncast_names(campaign_id, contract),
+                required_absent=await self._uncast(campaign_id, contract.named_absent_people),
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
             # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so
@@ -309,6 +317,7 @@ class TurnIntentPlanningPipeline:
         )
         decision = decision.model_copy(update={"narration_guidance": guidance})
         decision = apply_due_deadline(decision, contract, momentum)
+        decision = await self._without_carried_offscreen(campaign_id, decision)
 
         for attempt in range(2):
             try:
@@ -326,10 +335,11 @@ class TurnIntentPlanningPipeline:
                     master_block=outcome_master_block(persona, list(director.moves)),
                     destination_cast=await self._destination_cast(campaign_id, contract, names),
                     known_places=names,
-                    required_absent=await self._uncast_names(campaign_id, contract),
+                    required_absent=await self._uncast(campaign_id, contract.named_absent_people),
                     repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
                 )
                 decision = apply_due_deadline(apply_moves_to_outcome_decision(decision, director), contract, momentum)
+                decision = await self._without_carried_offscreen(campaign_id, decision)
                 missing = await self._compiler.missing_destination_profiles(campaign_id, contract, decision)
                 if missing:
                     decision = await self._outcomes.enrich_destination_profiles(selection, user_input, decision, missing)
