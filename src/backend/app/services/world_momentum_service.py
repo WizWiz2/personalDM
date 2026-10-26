@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.scene_repo import SceneRepository
@@ -125,7 +125,8 @@ class WorldMomentumService:
                 Entity.campaign_id == str(campaign_id),
                 Entity.entity_type == "character",
                 Entity.id != (campaign.player_character_id or ""),
-                Entity.id.in_(seen_ids),
+                # Encountered actors, and people someone was sent to fetch (offscreen errand targets).
+                or_(Entity.id.in_(seen_ids), func.json_extract(Entity.custom_fields, "$.sent_for").is_(True)),
                 Character.current_location_id.is_not(None),
             )
             .order_by(Entity.canonical_name)

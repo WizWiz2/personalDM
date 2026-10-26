@@ -55,3 +55,15 @@ def test_masters_differ_in_patience_kinds_and_harshness():
     assert (keeper.harshness, referee.harshness) == ("gentle", "harsh")
     assert "pressure" not in keeper.world_moves and "pressure" in referee.world_moves
     assert InitiativePolicy().patience_turns == 3
+
+
+def test_arrival_of_a_threads_own_person_needs_no_new_introduction():
+    # The river-man sent for at errand time is the thread's actor; the world brings that ID.
+    wire = _wire(world_kinds=("arrival",))
+    move = {"thread_id": "thread_1", "kind": "arrival", "outcome": "В трактир входит речник."}
+    assert wire.model_validate({**BASE, "world_move": move}).world_move.kind == "arrival"
+
+
+def test_sent_for_person_is_typed_offscreen_not_present():
+    from app.services.turn_outcome_resolver import OutcomeNpcIntroductionDraft
+    assert "sent_for" in OutcomeNpcIntroductionDraft.model_json_schema()["properties"]

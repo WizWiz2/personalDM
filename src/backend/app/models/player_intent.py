@@ -219,6 +219,7 @@ class OutcomeNpcIntroduction(BaseModel):
     after_action_index: int | None = Field(default=None, ge=0, le=7)
     resident_slot: str | None = Field(default=None, max_length=64)
     arrives: bool = False
+    sent_for: bool = False  # created offscreen as an errand's target; arrives by a world move
 
     @model_validator(mode="after")
     def stable_name_requires_evidence(self):

@@ -193,8 +193,11 @@ schema then requires a world_move. outcome is one concrete observable developmen
 Kinds: pressure (a thread tightens), information (news reaches the hero through existing
 communication), deadline (due_phase equals the clock phase; one-shot), npc_action (the
 thread's actor acts at their own place, or here if present), npc_move (the thread's actor
-takes ONE listed available_destinations edge, never into the hero's place), arrival (the
-thread is fulfilled or advanced by a person arriving here, typed in npc_introductions).
+takes ONE listed available_destinations edge, never into the hero's place), arrival (a
+person arrives here: the thread's actor when it has one, such as someone sent for; otherwise
+a newcomer typed in npc_introductions). When an NPC here agrees to send for a person who is
+not in the cast, type that person in npc_introductions with sent_for=true: they exist from
+then on, offscreen, and their current_goal is why they would come.
 master_harshness sets how hard independent moves and failures land: gentle = the world
 offers, helps and informs, costs stay soft; fair = proportionate costs; harsh = costs land
 now, threats press, NPCs pursue their own interest even against the hero.
@@ -350,6 +353,9 @@ class OutcomeNpcIntroductionDraft(BaseModel):
     reason: str = Field(min_length=2, max_length=500)
     after_action_index: int | None = Field(default=None, ge=0, le=7)
     resident_slot: str | None = Field(default=None, description="ID of the place this person keeps.")
+    sent_for: bool = Field(default=False, description=(
+        "Someone here is sent to fetch this person: they exist from now on but stay offscreen "
+        "until a world_move of kind arrival brings them."))
 
     @model_validator(mode="after")
     def validate_identity(self):
@@ -605,7 +611,7 @@ def _outcome_wire_model(
     kinds = tuple(
         kind for kind in world_kinds
         if (kind not in {"npc_action", "npc_move"} or any((world_threads or {}).values()))
-        and (kind != "arrival" or introduction_cap)
+        and (kind != "arrival" or introduction_cap or any((world_threads or {}).values()))
     )
     world_move_type = type(None)
     if world_threads and kinds:
@@ -698,7 +704,7 @@ def _outcome_wire_model(
             move = self.world_move
             if move is not None and move.kind in {"npc_action", "npc_move"} and not world_threads[move.thread_id]:
                 raise ValueError("npc_action/npc_move must name a thread that has an actor")
-            if move is not None and move.kind == "arrival" and not (
+            if move is not None and move.kind == "arrival" and not world_threads[move.thread_id] and not (
                 self.npc_introductions or any(getattr(item, "arriving", None) for item in self.action_outcomes)
             ):
                 raise ValueError("an arrival world_move requires the arriving person in npc_introductions")
@@ -922,6 +928,7 @@ def normalize_outcome_draft(
                 "after_action_index": npc.after_action_index,
                 "resident_slot": npc.resident_slot,
                 "arrives": arrives,
+                "sent_for": bool(getattr(npc, "sent_for", False)) and not arrives,
             }
         )
 
