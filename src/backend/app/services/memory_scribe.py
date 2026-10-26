@@ -562,8 +562,12 @@ FACT SEMANTICS:
         elif change_type == ChangeType.ITEM_TRANSFER:
             if not resolved.get("item_id"):
                 return None
-            if bool(resolved.get("owner_id")) == bool(resolved.get("location_id")):
+            # The model may provide both the holder and the scene of a handoff.
+            # Item custody uses one physical position: a held item is carried.
+            if not resolved.get("owner_id") and not resolved.get("location_id"):
                 return None
+            if resolved.get("owner_id"):
+                resolved["location_id"] = None
         elif change_type == ChangeType.EVENT:
             if not resolved.get("event_type") or not resolved.get("description"):
                 return None

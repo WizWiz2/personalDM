@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
 from sqlalchemy import select
@@ -13,7 +14,7 @@ from app.db.repositories.fact_repo import FactRepository
 from app.db.repositories.narrative_detail_repo import NarrativeDetailRepository
 from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Item, Turn
+from app.db.tables import Event, Item, Turn
 from app.models.belief import BeliefCreate
 from app.models.character import CharacterUpdate
 from app.models.event import EventCreate
@@ -67,7 +68,6 @@ class CanonApplier:
         if (
             source_turn is None
             or source_turn.campaign_id != str(campaign_id)
-            or not source_turn.parent_turn_id
         ):
             return False
 
@@ -76,7 +76,9 @@ class CanonApplier:
             .join(ActionSequence, ActionStep.sequence_id == ActionSequence.id)
             .where(
                 ActionSequence.campaign_id == str(campaign_id),
-                ActionSequence.trigger_turn_id == source_turn.parent_turn_id,
+                ActionSequence.trigger_turn_id == (
+                    source_turn.id if source_turn.role == "user" else source_turn.parent_turn_id
+                ),
                 ActionSequence.status.in_(("prepared", "applied")),
                 ActionStep.item_id == str(item_id),
                 ActionStep.status == "completed",
@@ -180,6 +182,8 @@ class CanonApplier:
             return
 
         if change_type == ChangeType.FACT:
+            if payload.get("_item_fact_domain") in {"custody_or_placement", "unverified"}:
+                raise ValueError("Item physical state cannot be written as a prose fact")
             await self._facts.apply_change(
                 campaign_id,
                 FactCreate(
@@ -367,6 +371,22 @@ class CanonApplier:
             return
 
         if change_type == ChangeType.EVENT:
+            # A Scribe event repeating an executor's exact handoff is evidence for
+            # that event, not another handoff. Keep separate receipts for distinct items.
+            event_type = payload.get("event_type", "general")
+            if event_type in {"item_transfer", "movement"}:
+                source = await self._session.get(Turn, str(source_turn_id))
+                source_ids = {str(source_turn_id)}
+                if source and source.parent_turn_id:
+                    source_ids.add(source.parent_turn_id)
+                duplicate = (await self._session.execute(select(Event.id).where(
+                    Event.campaign_id == str(campaign_id),
+                    Event.event_type == event_type,
+                    Event.description == payload.get("description"),
+                    Event.source_turns.in_([json.dumps([key]) for key in source_ids]),
+                ).limit(1))).scalar_one_or_none()
+                if duplicate:
+                    return
             await self._events.create(
                 campaign_id,
                 EventCreate(

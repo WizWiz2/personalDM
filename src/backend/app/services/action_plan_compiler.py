@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,13 +15,17 @@ from app.models.player_intent import (
     PlayerIntentContract,
     TurnOutcomeDecision,
 )
+from app.models.item_state import ItemStateSnapshot
 from app.models.turn_authority import PlannedNpcIntroduction
+from app.services.item_state_authority import load_item_states
+from app.services.entity_identity import identity_key
 from app.services.scene_state_service import SceneStateService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_planner import (
     ActionSequencePlan,
     ActionStepPlan,
     NarrationPolicy,
+    PlanContractError,
     SceneTransitionPlan,
     TurnPlanningError,
 )
@@ -110,12 +114,12 @@ class ActionPlanCompiler:
         by_index = {}
         for item in decision.action_outcomes:
             if item.action_index in by_index:
-                raise TurnPlanningError(
+                raise PlanContractError(
                     f"outcome resolver returned duplicate action_index={item.action_index}"
                 )
             by_index[item.action_index] = item
         if set(by_index) != expected:
-            raise TurnPlanningError(
+            raise PlanContractError(
                 "outcome resolver must return exactly one outcome per frozen action; "
                 f"expected={sorted(expected)} got={sorted(by_index)}"
             )
@@ -298,7 +302,7 @@ class ActionPlanCompiler:
         # containment come from the generated profile, never from the player's inflected wording.
         destination = outcome.destination
         if destination is None:
-            raise TurnPlanningError("new destination lacks a generated name and durable profile")
+            raise PlanContractError("new destination lacks a generated name and durable profile")
         name = " ".join(destination.name.split())
         # Containment is the binder's typed choice of a known place (new_in:<ID>), else none.
         parent = getattr(by_id.get(action.destination_parent_location_id), "canonical_name", None)
@@ -331,6 +335,19 @@ class ActionPlanCompiler:
 
     @staticmethod
     def _compile_nonmovement(action: PlayerActionIntent, outcome) -> ActionStepPlan:
+        request = action.requested_inventory
+        if request is not None and outcome.npc_response != "refused":
+            return ActionStepPlan(
+                action_type="inventory", intent=action.intent,
+                resolution=outcome.resolution, safe_mundane=outcome.safe_mundane,
+                observable_outcome=outcome.observable_outcome,
+                blocking_reason=outcome.blocking_reason, public_blocking_reason=outcome.blocking_reason,
+                item_id=request.item_id, inventory_operation=request.operation,
+                inventory_actor_id=request.actor_id, inventory_target_id=request.target_id,
+                item_placement_detail=request.placement_detail,
+            )
+        if request is not None and outcome.resolution == "auto_success":
+            raise PlanContractError("An addressed physical action cannot succeed while its actor refuses")
         transition = SceneTransitionPlan()
         if (
             action.action_type in {"rest", "wait"}
@@ -356,6 +373,7 @@ class ActionPlanCompiler:
             item_id=action.item_id,
             inventory_operation=action.inventory_operation,
             inventory_target_id=action.inventory_target_id,
+            item_placement_detail=action.item_placement_detail,
             transition=transition,
         )
 
@@ -364,6 +382,8 @@ class ActionPlanCompiler:
         campaign_id: UUID,
         contract: PlayerIntentContract,
         decision: TurnOutcomeDecision,
+        *,
+        player_input: str | None = None,
     ) -> CoordinatedTurnPlan:
         _scene_id, state, locations = await self._world(campaign_id)
         by_id = {item.id: item for item in locations}
@@ -371,9 +391,68 @@ class ActionPlanCompiler:
         cursor = (state.location_id, None)
         steps: list[ActionStepPlan] = []
         discovery_steps: list[int] = []
+        introductions = [item.model_copy(deep=True) for item in decision.item_introductions]
+        created_by_source = {}
+        if any(item.after_action_index is not None for item in introductions):
+            known = (await self._session.execute(select(Entity).where(
+                Entity.campaign_id == str(campaign_id), Entity.entity_type == "item"
+            ))).scalars().all()
+            occupied = {identity_key(name) for entity in known for name in (
+                entity.canonical_name, *json.loads(entity.aliases or "[]"))}
+            for introduction in introductions:
+                source = introduction.after_action_index
+                if source is None:
+                    continue
+                if source >= len(contract.actions):
+                    raise PlanContractError("Item creation refers to a nonexistent source action")
+                if outcome_by_index[source].resolution != "auto_success":
+                    continue
+                key = identity_key(introduction.canonical_name)
+                if key in occupied:
+                    raise PlanContractError("A new artifact requires an identity distinct from existing items")
+                occupied.add(key)
+                introduction.reserved_item_id = uuid4()
+                created_by_source.setdefault(source, []).append(introduction)
+
+        def produced_identity(reference, current_index):
+            artifacts = created_by_source.get(reference, ())
+            if reference >= current_index or len(artifacts) != 1:
+                raise PlanContractError("A produced item reference needs one distinct successful earlier creation")
+            return artifacts[0].reserved_item_id
 
         for index, action in enumerate(contract.actions):
+            effective_action = action
+            produced_reference = (action.produced_item_action_index if action.produced_item_action_index is not None
+                                  else action.requested_inventory.produced_item_action_index
+                                  if action.requested_inventory else None)
+            if (produced_reference is not None and produced_reference < index
+                    and outcome_by_index[produced_reference].resolution != "auto_success"):
+                steps.append(ActionStepPlan(action_type="inventory", intent=action.intent,
+                    source_action_index=index, resolution="blocked",
+                    blocking_reason="Предмет не создан предыдущим действием.",
+                    public_blocking_reason="Предмет не создан предыдущим действием."))
+                continue
+            if action.produced_item_action_index is not None:
+                effective_action = action.model_copy(update={
+                    "item_id": produced_identity(action.produced_item_action_index, index),
+                    "produced_item_action_index": None,
+                })
+            if action.requested_inventory and action.requested_inventory.produced_item_action_index is not None:
+                request = action.requested_inventory
+                effective_action = action.model_copy(update={"requested_inventory": request.model_copy(update={
+                    "item_id": produced_identity(request.produced_item_action_index, index),
+                    "produced_item_action_index": None,
+                })})
             outcome = outcome_by_index[index]
+            if outcome.resolution == "auto_success":
+                if action.expected_effect == "item_creation" and not any(
+                    item.after_action_index == index for item in decision.item_introductions
+                ):
+                    raise PlanContractError("Successful artifact creation is missing its typed item introduction")
+                if action.expected_effect == "item_change" and not any(
+                    change.action_index == index for change in decision.item_property_changes
+                ):
+                    raise PlanContractError("Successful physical change is missing its typed property effect")
             if action.action_type == "movement":
                 step, next_cursor, discovery = await self._compile_movement(
                     campaign_id=campaign_id,
@@ -391,8 +470,148 @@ class ActionPlanCompiler:
                 if discovery and step.resolution == "auto_success":
                     discovery_steps.append(index)
             else:
-                step = self._compile_nonmovement(action, outcome)
+                step = self._compile_nonmovement(effective_action, outcome)
+            step.item_creations = list(created_by_source.get(index, ()))
+            step.source_action_index = index
             steps.append(step)
+
+        if decision.item_property_changes:
+            registered = {state.item_id for state in await load_item_states(self._session, campaign_id)}
+            seen = set()
+            for change in decision.item_property_changes:
+                if change.action_index >= len(contract.actions):
+                    raise PlanContractError("Property effect refers to a nonexistent frozen action")
+                source = contract.actions[change.action_index]
+                step = steps[change.action_index]
+                subject = source.subject_item_id or source.item_id
+                key = (change.action_index, change.item_id, change.property_name)
+                if (key in seen or change.item_id not in registered or subject != change.item_id
+                        or step.resolution != "auto_success"
+                        or source.action_type in {"movement", "wait", "rest"}
+                        or change.property_name in ItemStateSnapshot.model_fields):
+                    raise PlanContractError("Physical property effect requires a distinct successful act on its frozen item")
+                step.item_property_changes.append(change)
+                seen.add(key)
+
+        # NPC actions are external outcomes, not player-owned intents. A willing
+        # local giver may transfer an existing registered item only via an
+        # executed receipt; never via an asynchronous Scribe suggestion.
+        deferred_effects: list[ActionStepPlan] = []
+
+        def existing_inventory(item_id, source_index):
+            return next((step for step in steps if step.item_id == item_id
+                         and step.action_type == "inventory"
+                         and source_index in {None, step.source_action_index}), None)
+
+        for handoff in decision.npc_item_handoffs:
+            # A player's take and a willing keeper's handoff are the same
+            # physical act from opposite sides. Compile that existing step as
+            # receive, rather than discarding consent and trying to take an owned item.
+            receiving_step = existing_inventory(handoff.item_id, handoff.after_action_index)
+            # The typed handoff is the resolver's commitment, not a second
+            # quotation of its prose summary. Identity, prerequisites and actual
+            # possession/presence are checked structurally, never by text equality.
+            if handoff.after_action_index is not None:
+                prerequisite = next(
+                    (row for row in decision.action_outcomes
+                     if row.action_index == handoff.after_action_index),
+                    None,
+                )
+                if prerequisite is None or prerequisite.resolution != "auto_success":
+                    raise PlanContractError("NPC item handoff depends on an unfinished action")
+                if prerequisite.npc_response == "refused":
+                    raise PlanContractError("NPC item handoff lacks an approved response")
+            if receiving_step is not None:
+                if receiving_step.resolution != "auto_success":
+                    raise PlanContractError("NPC handoff contradicts an uncompleted inventory act")
+                receiving_step.inventory_operation = "receive"
+                receiving_step.inventory_actor_id = None
+                receiving_step.inventory_target_id = handoff.giver_id
+                receiving_step.item_placement_detail = None
+                receiving_step.observable_outcome = handoff.evidence
+                continue
+            if len(steps) + len(deferred_effects) >= 16:
+                raise PlanContractError("Too many actions for a typed NPC item handoff")
+            deferred_effects.append(ActionStepPlan(
+                source_action_index=handoff.after_action_index,
+                action_type="inventory",
+                intent="NPC voluntarily transfers an existing item to the player",
+                resolution="auto_success",
+                observable_outcome=handoff.evidence,
+                item_id=handoff.item_id,
+                inventory_operation="receive",
+                inventory_target_id=handoff.giver_id,
+            ))
+
+        if decision.item_revelations:
+            item_states = {item.item_id: item for item in await load_item_states(self._session, campaign_id)}
+            used_sources = set()
+            reading_results = {}
+            turn_contents = {item.item_id: item.revealed_content for item in item_states.values()
+                             if item.revealed_content is not None}
+            for revelation in decision.item_revelations:
+                key = (revelation.action_index, revelation.item_id)
+                if revelation.action_index >= len(contract.actions) or key in used_sources:
+                    raise PlanContractError("A revelation must identify one distinct source action")
+                step = steps[revelation.action_index]
+                item = item_states.get(revelation.item_id)
+                subject = contract.actions[revelation.action_index].subject_item_id
+                if subject is not None and subject != revelation.item_id:
+                    raise PlanContractError("A revelation cannot change the frozen action's subject item")
+                if item is None or step.resolution != "auto_success" or step.action_type in {"movement", "inventory", "wait", "rest"}:
+                    raise PlanContractError("Item content requires a successful reading/inspection action")
+                content = turn_contents.setdefault(item.item_id, revelation.content)
+                step.item_revelations.append(revelation.model_copy(update={"content": content}))
+                # Canonical content owns this result, even if a model paraphrased
+                # another document into its redundant observable_outcome.
+                reading_results.setdefault(revelation.action_index, []).append(f"{item.name}: {content}")
+                used_sources.add(key)
+            for index, results in reading_results.items():
+                steps[index].observable_outcome = "\n\n".join(results)
+
+        for handoff in decision.player_item_handoffs:
+            offer_source = player_input if player_input is not None else contract.summary
+            if handoff.offer_evidence not in offer_source or contract.pending_player_choice:
+                raise PlanContractError("Player item handoff lacks a committed player offer")
+            if handoff.after_action_index is not None:
+                prerequisite = outcome_by_index.get(handoff.after_action_index)
+                if prerequisite is None or prerequisite.resolution != "auto_success":
+                    raise PlanContractError("Player item handoff depends on an unfinished action")
+                if prerequisite.npc_response == "refused":
+                    raise PlanContractError("Player item handoff contradicts the recipient's refusal")
+            giving_step = existing_inventory(handoff.item_id, handoff.after_action_index)
+            if giving_step is not None:
+                if giving_step.resolution != "auto_success":
+                    raise PlanContractError("Accepted offer contradicts an uncompleted inventory act")
+                giving_step.inventory_operation = "give"
+                giving_step.inventory_actor_id = None
+                giving_step.inventory_target_id = handoff.recipient_id
+                giving_step.observable_outcome = handoff.evidence
+                continue
+            if len(steps) + len(deferred_effects) >= 16:
+                raise PlanContractError("Too many actions for a typed player item handoff")
+            deferred_effects.append(ActionStepPlan(
+                source_action_index=handoff.after_action_index,
+                action_type="inventory", intent="Передать предложенный предмет согласившемуся NPC",
+                resolution="auto_success", observable_outcome=handoff.evidence,
+                item_id=handoff.item_id, inventory_operation="give",
+                inventory_target_id=handoff.recipient_id,
+            ))
+
+        # Effects happen at their originating act, before a subsequent journey.
+        # Frozen action identity is independent of the number of executable receipts.
+        if deferred_effects:
+            expanded = []
+            for step in steps:
+                linked = [effect for effect in deferred_effects
+                          if effect.source_action_index == step.source_action_index]
+                if linked and step.action_type == "service":
+                    step.observable_outcome = "Согласие на передачу получено."  # physical results belong to receipts below
+                expanded.extend([step, *linked])
+            expanded.extend(effect for effect in deferred_effects if effect.source_action_index is None)
+            steps = expanded
+            discovery_steps = [index for index, step in enumerate(steps)
+                               if step.action_type == "movement" and step.source_action_index in discovery_steps]
 
         first = next((step for step in steps if step.resolution == "auto_success"), None)
         if contract.time_advance and first is not None and not any(
@@ -407,7 +626,7 @@ class ActionPlanCompiler:
                     time_after=contract.time_advance, reason=first.intent,
                 )
 
-        introductions = [
+        npc_introductions = [
             PlannedNpcIntroduction(
                 canonical_name=item.canonical_name,
                 identity_reference=item.identity_reference,
@@ -415,6 +634,7 @@ class ActionPlanCompiler:
                 description=item.description,
                 appearance=item.appearance,
                 voice=item.voice,
+                current_goal=item.current_goal,
                 temporary_name=item.temporary_name,
                 personal_name_evidence=item.personal_name_evidence,
                 reason=item.reason,
@@ -437,7 +657,9 @@ class ActionPlanCompiler:
                 pending_player_choice=contract.pending_player_choice,
                 protected_player_decisions=contract.protected_player_decisions,
             ),
-            npc_introductions=introductions,
+            npc_introductions=npc_introductions,
+            item_introductions=introductions,
+            world_move=decision.world_move,
             addressed_response_requested=contract.addressed_response_requested,
             personal_name_revealed=False,
             identity_reveal_requested=contract.identity_reveal_requested,

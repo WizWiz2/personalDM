@@ -85,6 +85,7 @@ class ActionStep(Base):
         index=True,
     )
     step_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_action_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     action_type: Mapped[str] = mapped_column(String(50), nullable=False)
     intent: Mapped[str] = mapped_column(Text, nullable=False)
     resolution: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -117,6 +118,8 @@ class ActionStep(Base):
     item_operation: Mapped[str | None] = mapped_column(String(32), nullable=True)
     item_previous_owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     item_previous_location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    item_previous_placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    item_result_placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     item_result_owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     item_result_location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

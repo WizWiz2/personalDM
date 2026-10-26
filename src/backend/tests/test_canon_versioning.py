@@ -55,31 +55,148 @@ async def test_single_fact_revises_old_value_and_exact_assert_is_noop(
 
 
 @pytest.mark.asyncio
-async def test_a_known_entitys_new_scene_state_supersedes_the_old_whatever_its_predicate(
+async def test_scene_state_allows_explicit_multivalued_observations_and_targeted_revision(
     db_session: AsyncSession,
 ):
+    """Scene-state alone cannot assert single cardinality for an untyped subject.
+    Distinct values may coexist; a revision replaces only the specified old one."""
     campaign_id = uuid4()
-    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Scene state"))
-    attendant = await EntityRepository(db_session).create(
-        campaign_id, EntityCreate(entity_type=EntityType.CHARACTER, canonical_name="Служащий трактира")
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Multivalued scene observations")
     )
     repo, scene_id = FactRepository(db_session), uuid4()
 
-    async def state(subject, predicate, value, subject_id=None):
+    async def where(value, *, operation="assert", previous=None):
+        return await repo.apply_change(
+            campaign_id,
+            FactCreate(
+                subject="кровь", predicate="находится", object_value=value,
+                memory_kind="scene_state", scene_id=scene_id,
+            ),
+            operation=operation, cardinality="multi",
+            previous_object_value=previous,
+        )
+
+    first = await where("у порога")
+    second = await where("на лестнице")
+    assert {fact.object_value for fact in await repo.list_active(campaign_id)} == {
+        "у порога", "на лестнице",
+    }
+
+    correction = await where("на ступенях", operation="revise", previous="на лестнице")
+    assert (await repo.get_by_id(first.id)).is_current is True
+    assert (await repo.get_by_id(second.id)).superseded_by == correction.id
+    assert {fact.object_value for fact in await repo.list_active(campaign_id)} == {
+        "у порога", "на ступенях",
+    }
+
+
+@pytest.mark.asyncio
+async def test_scene_state_preserves_distinct_predicates_and_resolves_entity_aliases(
+    db_session: AsyncSession,
+):
+    """A typed entity can carry multiple scene properties; only the same predicate
+    is replaced, even if later prose calls the entity by another name."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Scene state properties")
+    )
+    attendant = await EntityRepository(db_session).create(
+        campaign_id, EntityCreate(
+            entity_type=EntityType.CHARACTER, canonical_name="Служащий трактира"
+        )
+    )
+    repo, scene_id = FactRepository(db_session), uuid4()
+
+    async def state(subject, predicate, value):
         return await repo.apply_change(campaign_id, FactCreate(
-            subject=subject, predicate=predicate, object_value=value, memory_kind="scene_state",
-            scene_id=scene_id, subject_entity_id=subject_id,
+            subject=subject, predicate=predicate, object_value=value,
+            memory_kind="scene_state", scene_id=scene_id,
+            subject_entity_id=attendant.id,
         ))
 
-    kitchen = await state("Служащий трактира", "занят на кухне", "переносит миски", attendant.id)
-    await state("служащий", "находится", "за стойкой", attendant.id)
-    await state("полтинник", "лежит", "на стойке")
-    await state("полтинник", "блестит", "в свете лампы")
+    first = await state("Служащий трактира", "держит", "книгу")
+    location = await state("служащий", "настроение", "тревожное")
+    updated = await state("служащий", "держит", "фонарь")
 
-    assert (await repo.get_by_id(kitchen.id)).is_current is False
-    assert sorted(fact.predicate for fact in await repo.list_active(campaign_id)) == [
-        "блестит", "лежит", "находится",
-    ]
+    assert (await repo.get_by_id(first.id)).is_current is False
+    assert (await repo.get_by_id(first.id)).superseded_by == updated.id
+    assert (await repo.get_by_id(location.id)).is_current is True
+    active = await repo.list_active(campaign_id)
+    assert {(fact.predicate, fact.object_value) for fact in active} == {
+        ("держит", "фонарь"), ("настроение", "тревожное"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_same_label_different_typed_objects_are_not_superseded(
+    db_session: AsyncSession,
+):
+    """Two distinct physical boats may share a narration label and predicate."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Two boats")
+    )
+    entities = EntityRepository(db_session)
+    boat_a = await entities.create(
+        campaign_id, EntityCreate(
+            entity_type=EntityType.ITEM, canonical_name="Лодка с красным парусом",
+        ),
+    )
+    boat_b = await entities.create(
+        campaign_id, EntityCreate(
+            entity_type=EntityType.ITEM, canonical_name="Лодка с белым парусом",
+        ),
+    )
+    repo, scene_id = FactRepository(db_session), uuid4()
+
+    async def boat(entity_id, name, value):
+        return await repo.apply_change(campaign_id, FactCreate(
+            subject=name, predicate="местоположение", object_value=value,
+            scene_id=scene_id, memory_kind="scene_state",
+            subject_entity_id=entity_id,
+        ))
+
+    old_a = await boat(boat_a.id, "лодка", "у причала")
+    old_b = await boat(boat_b.id, "лодка", "у мыса")
+    assert (await repo.get_by_id(old_a.id)).is_current is True
+    assert (await repo.get_by_id(old_b.id)).is_current is True
+
+    new_a = await boat(boat_a.id, "первая лодка", "у скал")
+    assert (await repo.get_by_id(old_a.id)).superseded_by == new_a.id
+    assert (await repo.get_by_id(old_b.id)).is_current is True
+    assert {
+        (fact.subject_entity_id, fact.object_value)
+        for fact in await repo.list_active(campaign_id)
+    } == {(boat_a.id, "у скал"), (boat_b.id, "у мыса")}
+
+
+@pytest.mark.asyncio
+async def test_untyped_scene_assertion_does_not_revise_a_typed_object(
+    db_session: AsyncSession,
+):
+    """An ambiguous prose label must not silently overwrite known entity state."""
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Typed and untyped")
+    )
+    boat = await EntityRepository(db_session).create(
+        campaign_id, EntityCreate(
+            entity_type=EntityType.ITEM, canonical_name="Сивая чайка",
+        ),
+    )
+    repo, scene_id = FactRepository(db_session), uuid4()
+    typed = await repo.apply_change(campaign_id, FactCreate(
+        subject="лодка", predicate="состояние", object_value="опечатана",
+        scene_id=scene_id, memory_kind="scene_state",
+        subject_entity_id=boat.id,
+    ))
+    untyped = await repo.apply_change(campaign_id, FactCreate(
+        subject="лодка", predicate="состояние", object_value="на плаву",
+        scene_id=scene_id, memory_kind="scene_state",
+    ))
+    assert (await repo.get_by_id(typed.id)).is_current is True
+    assert (await repo.get_by_id(untyped.id)).is_current is True
 
 
 @pytest.mark.asyncio

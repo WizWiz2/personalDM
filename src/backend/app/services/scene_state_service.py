@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
@@ -219,6 +219,16 @@ class SceneStateService:
                 .order_by(Entity.canonical_name)
             )
         ).all()
+        if scene.status == "active" and location_id:
+            # SceneParticipant on completed scenes is historical provenance.
+            # An ACTIVE scene, however, must expose only current physical
+            # occupants: a past membership row cannot teleport an NPC back
+            # after Scribe or structured actions moved them elsewhere.
+            participant_rows = [
+                (entity, character) for entity, character in participant_rows
+                if character is None
+                or character.current_location_id == str(location_id)
+            ]
         participant_ids = [UUID(entity.id) for entity, _ in participant_rows]
         participant_names = []
         identity_changed = False
@@ -243,12 +253,27 @@ class SceneStateService:
         if location_id:
             object_rows = (
                 await self._session.execute(
-                    select(Entity)
+                    select(Entity, Item)
                     .join(Item, Item.entity_id == Entity.id)
-                    .where(Item.current_location_id == str(location_id))
+                    .where(
+                        or_(
+                            Item.current_location_id == str(location_id),
+                            Item.current_owner_id == campaign.player_character_id,
+                        )
+                    )
                     .order_by(Entity.canonical_name)
                 )
+            ).all()
+
+        held_ids = set(
+            (
+                await self._session.execute(
+                    select(Item.entity_id).where(
+                        Item.current_owner_id == campaign.player_character_id,
+                    )
+                )
             ).scalars().all()
+        ) if campaign.player_character_id else set()
 
         exits = (
             await self.list_exits(campaign_id, location_id)
@@ -293,8 +318,15 @@ class SceneStateService:
             active_conflict=runtime.active_conflict,
             participant_ids=participant_ids,
             participant_names=participant_names,
-            object_ids=[UUID(item.id) for item in object_rows],
-            object_names=[item.canonical_name for item in object_rows],
+            object_ids=[UUID(entity.id) for entity, _ in object_rows],
+            object_names=[entity.canonical_name for entity, _ in object_rows],
+            object_placements={
+                entity.id: item.placement_detail
+                for entity, item in object_rows if item.placement_detail
+            },
+            player_inventory_names=[
+                entity.canonical_name for entity, _ in object_rows if entity.id in held_ids
+            ],
             available_exits=exits,
             invariant_errors=errors,
         )
@@ -387,6 +419,41 @@ class SceneStateService:
         )
         await self._session.flush()
 
+    TIME_PHASES = ("dawn", "morning", "day", "evening", "night")
+    TIME_ALIASES = (
+        ("рассвет", "dawn"),
+        ("утро", "morning"),
+        ("день", "day"),
+        ("вечер", "evening"),
+        ("ночь", "night"),
+    )
+
+    @classmethod
+    def normalize_day_part(cls, label: str | None) -> str | None:
+        if not label:
+            return None
+        label = label.casefold().strip()
+        if label in cls.TIME_PHASES:
+            return label
+        return dict(cls.TIME_ALIASES).get(label)
+
+    async def advance_published_turn(self, scene_id: UUID) -> str | None:
+        """Advance a lightweight turn-based clock after publication, never on retries.
+
+        An unspecified initial time stays unspecified until a structured time
+        transition establishes it. Turn order is not a substitute for real minutes.
+        """
+        runtime = await self.ensure_runtime_state(scene_id)
+        before = self.normalize_day_part(runtime.world_time_label)
+        if before and runtime.world_time_label != before:
+            runtime.world_time_label = before
+        runtime.world_time_order += 1
+        # F-34: dialogue count is not elapsed time. A long nighttime conversation
+        # must not silently become dawn (and fire a deadline) after 12 replies.
+        # The phase changes only via an explicitly approved time transition.
+        await self._session.flush()
+        return runtime.world_time_label if runtime.world_time_label != before else None
+
     async def inherit_transition_state(
         self,
         source_scene_id: UUID | None,
@@ -404,7 +471,8 @@ class SceneStateService:
         )
         target.world_time_order = (source.world_time_order if source else 0) + 1
         # The clock is the typed part of day; elapsed_time stays narration, never label text.
-        target.world_time_label = time_after or (source.world_time_label if source else None)
+        inherited = time_after or (source.world_time_label if source else None)
+        target.world_time_label = self.normalize_day_part(inherited) or inherited
         target.scene_goal = scene_goal if scene_goal is not None else (
             source.scene_goal if source else None
         )
@@ -426,10 +494,25 @@ class SceneStateService:
             + (f" ({item.access_rule})" if item.access_rule else "")
             for item in state.available_exits
         ) or "none recorded"
+        carried = set(state.player_inventory_names)
         objects = ", ".join(
             f"{name} [id={object_id}]"
+            + (f" [exact placement: {state.object_placements[str(object_id)]}]"
+               if str(object_id) in state.object_placements else "")
             for object_id, name in zip(state.object_ids, state.object_names)
+            if name not in carried
         ) or "none recorded"
+        # F-32: a carried item can be tucked into a named bag or pocket
+        # without ever leaving player custody; keep this exact location in
+        # narrator/intent context alongside the item name.
+        inventory = ", ".join(
+            name + (
+                f" [exact placement: {state.object_placements[str(item_id)]}]"
+                if str(item_id) in state.object_placements else ""
+            )
+            for item_id, name in zip(state.object_ids, state.object_names)
+            if name in carried
+        ) or ", ".join(state.player_inventory_names) or "none recorded"
         return (
             "[AUTHORITATIVE SCENE STATE]\n"
             f"Scene: {state.scene_title} ({state.scene_status})\n"
@@ -440,6 +523,7 @@ class SceneStateService:
             f"Active conflict: {state.active_conflict or 'none'}\n"
             f"Physically present characters: {participants}\n"
             f"Objects physically here: {objects}\n"
+            f"Objects carried by the player: {inventory}\n"
             f"Available exits: {exits}\n"
             + SCENE_RENDERER_RULES
         )

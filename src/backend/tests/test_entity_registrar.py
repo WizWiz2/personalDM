@@ -506,6 +506,218 @@ async def test_named_offscreen_person_becomes_an_off_scene_entity(db_session: As
     assert created.id not in scene_after.participants
 
 
+
+def test_name_inflection_gate_does_not_merge_similar_distinct_people():
+    """Edit-distance/prefix similarity is not proof of an identity or an inflection."""
+    from types import SimpleNamespace
+
+    mara = SimpleNamespace(canonical_name="Мара", aliases=[], status="active")
+    yund = SimpleNamespace(canonical_name="Юнд", aliases=[], status="active")
+    assert not EntityRegistrar._inflected_twin_of_existing("Марат", [mara])
+    assert not EntityRegistrar._inflected_twin_of_existing("Мара", [
+        SimpleNamespace(canonical_name="Марат", aliases=[], status="active")
+    ])
+    assert not EntityRegistrar._inflected_twin_of_existing("Юнда", [
+        SimpleNamespace(canonical_name="Юнд", aliases=[], status="dead")
+    ])
+    assert EntityRegistrar._inflected_twin_of_existing("Юнда", [yund])
+    assert EntityRegistrar._inflected_twin_of_existing("Юндом", [yund])
+
+
+@pytest.mark.asyncio
+async def test_inflected_surface_of_a_live_person_never_mints_a_twin(db_session: AsyncSession):
+    """Playtest 2026-10-12: «Юнда» read out of «пометка Юнда» became a second character
+    beside «Юнд» because identity equality was byte-exact. A case form of a live
+    single-token name is skipped: the prose stands, no canon is minted."""
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    yund = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name='Юнд', current_location_id=tavern.id,
+    ))
+    text = 'В старой тетради вывод: «место занято, пометка Юнда».'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(return_value={'characters': [{
+        'canonical_name': 'Юнда', 'temporary_name': False,
+        'presence': 'mentioned_only', 'evidence': text,
+        'name_surface': 'Юнда',
+    }]})
+
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, promotion_only=True,
+    )
+
+    assert result.created_ids == []
+    names = {
+        character.canonical_name
+        for character in await entities.list_by_campaign(campaign_id, 'character')
+    }
+    assert 'Юнда' not in names
+    assert (await entities.get_character(yund.id)).canonical_name == 'Юнд'
+
+
+@pytest.mark.asyncio
+async def test_adjacent_russian_name_is_created_when_published_scene_distinguishes_person(
+    db_session: AsyncSession,
+):
+    """«Макара» is a second character, not automatically a case form of «Макар»."""
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    entities = EntityRepository(db_session)
+    makar = await entities.create_character(campaign_id, CharacterCreate(
+        canonical_name="Макар", current_location_id=tavern.id,
+    ))
+    text = 'Макар стоит у двери. Девушка говорит: «Меня зовут Макара».'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=[
+        {"characters": [{
+            "canonical_name": "Макара", "temporary_name": False,
+            "presence": "present", "evidence": "Меня зовут Макара",
+            "personal_name_evidence": "Меня зовут Макара",
+        }]},
+        {"is_distinct_person": True, "evidence": "Меня зовут Макара"},
+    ])
+
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text,
+    )
+
+    assert len(result.created_ids) == 1
+    assert not result.conflicts
+    assert result.created_ids[0] != makar.id
+    created = await entities.get_character(result.created_ids[0])
+    assert created.canonical_name == "Макара"
+    assert (await entities.get_character(makar.id)).canonical_name == "Макар"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_adjacent_name_is_canon_gap_not_silent_drop(
+    db_session: AsyncSession,
+):
+    """If the narration does not establish distinctness, preserve the uncertainty."""
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    await EntityRepository(db_session).create_character(
+        campaign_id, CharacterCreate(canonical_name="Макар", current_location_id=tavern.id),
+    )
+    text = "В журнале фигурирует имя Макара."
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=[
+        {"characters": [{
+            "canonical_name": "Макара", "presence": "mentioned_only",
+            "evidence": "имя Макара", "temporary_name": False,
+            "name_surface": "Макара",
+        }]},
+        {"is_distinct_person": None, "evidence": "имя Макара"},
+    ])
+
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, promotion_only=True,
+    )
+
+    assert result.created_ids == []
+    assert len(result.conflicts) == 1
+    assert result.conflicts[0]["error"] == "Ambiguous adjacent-name identity"
+
+
+
+@pytest.mark.asyncio
+async def test_prepared_registrar_never_calls_llm_under_campaign_write_barrier(db_session):
+    from app.services.campaign_write_barrier import for_campaign
+
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    makar = await EntityRepository(db_session).create_character(
+        campaign_id, CharacterCreate(canonical_name="Макар", current_location_id=tavern.id),
+    )
+    await db_session.commit()
+    text = 'Макар у двери, а незнакомка говорит: «Меня зовут Макара».'
+    lock = for_campaign(campaign_id)
+    answers = iter([
+        {"characters": [{
+            "canonical_name": "Макара", "evidence": "Меня зовут Макара",
+            "personal_name_evidence": "Меня зовут Макара",
+        }]},
+        {"is_distinct_person": True, "evidence": "Меня зовут Макара"},
+    ])
+
+    async def model(*args, **kwargs):
+        assert not lock.locked(), "LLM called while campaign write barrier is held"
+        return next(answers)
+
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=model)
+    prepared = await registrar.prepare_from_turn(campaign_id, scene.id, uuid4(), text)
+    assert registrar._router.generate_json.await_count == 2
+    await db_session.rollback()
+    assert {e.canonical_name for e in await EntityRepository(db_session).list_by_campaign(
+        campaign_id, "character",
+    )} == {"Эйдан", "Макар"}
+    await db_session.rollback()
+    async with lock:
+        result = await registrar.register_from_turn(
+            campaign_id, scene.id, uuid4(), text, prepared=prepared,
+        )
+        await db_session.commit()
+
+    assert not result.conflicts
+    assert len(result.created_ids) == 1
+    assert registrar._router.generate_json.await_count == 2
+    assert (await EntityRepository(db_session).get_character(makar.id)).canonical_name == "Макар"
+    created = await EntityRepository(db_session).get_character(result.created_ids[0])
+    assert created.canonical_name == "Макара"
+
+
+@pytest.mark.asyncio
+async def test_registrar_preflight_provider_outage_is_a_noop(db_session):
+    from app.providers.llm_provider import LLMProviderError
+
+    campaign_id, _, _, _, scene = await _campaign_state(db_session)
+    await db_session.commit()
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(
+        side_effect=LLMProviderError("provider unavailable"),
+    )
+
+    prepared = await registrar.prepare_from_turn(
+        campaign_id, scene.id, uuid4(), "Бармен отодвинул стакан.",
+    )
+    assert prepared is None
+
+
+@pytest.mark.asyncio
+async def test_prepared_registrar_rejects_stale_identity_without_mutating(db_session):
+    from app.models.entity import EntityUpdate
+
+    campaign_id, tavern, _, _, scene = await _campaign_state(db_session)
+    makar = await EntityRepository(db_session).create_character(
+        campaign_id, CharacterCreate(canonical_name="Макар", current_location_id=tavern.id),
+    )
+    await db_session.commit()
+    text = 'Девушка говорит: «Меня зовут Макара».'
+    registrar = EntityRegistrar(db_session)
+    registrar._router.resolve = AsyncMock(return_value=object())
+    registrar._router.generate_json = AsyncMock(side_effect=[
+        {"characters": [{"canonical_name": "Макара", "evidence": "Меня зовут Макара"}]},
+        {"is_distinct_person": True, "evidence": "Меня зовут Макара"},
+    ])
+    prepared = await registrar.prepare_from_turn(campaign_id, scene.id, uuid4(), text)
+    await db_session.rollback()
+
+    await EntityRepository(db_session).update(
+        makar.id, EntityUpdate(canonical_name="Макар Старший"),
+    )
+    await db_session.commit()
+    result = await registrar.register_from_turn(
+        campaign_id, scene.id, uuid4(), text, prepared=prepared,
+    )
+
+    assert result.created_ids == []
+    assert result.conflicts[0]["error"] == "Registrar preflight snapshot became stale"
+    assert registrar._router.generate_json.await_count == 2
+
+
 def test_prose_cannot_type_a_departure():
     """A11 T8: «Илья вместе со Степаном выходит во двор» removed Степан from the scene while no
     step moved him; presence leaves only through typed steps (trips, a beat's leave, movement)."""

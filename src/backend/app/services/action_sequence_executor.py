@@ -9,8 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Entity, Item, Scene
+from app.db.tables import Campaign, Character, Entity, Item, ItemContentDisclosure, ItemCreationEffect, ItemPropertyEffect, Scene
+from app.db.scene_location_table import SceneLocationLink
+from app.services.item_content_authority import revealed_item_contents
+from app.services.action_item_creation import create_step_items, undo_step_items
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
+from app.models.item_state import ItemPropertyChange
+from app.services.initial_world_state import InitialWorldStateService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.scene_transition_executor import (
@@ -23,6 +28,30 @@ from app.services.turn_planner import ActionSequencePlan
 
 class InventoryExecutionError(RuntimeError):
     """A deterministic typed inventory operation could not be applied safely."""
+
+    REASONS = {
+        "Inventory step is missing its typed item operation": "Не указан предмет или действие с ним.",
+        "Inventory step references an item outside the campaign": "Предмет не относится к этой кампании.",
+        "Inventory step has no player character": "Не определён персонаж игрока.",
+        "Player character already holds this item": "Этот предмет уже находится у героя.",
+        "Item is held by a character; taking it requires a handoff": "Предмет находится у другого персонажа; нужна передача.",
+        "Item is not physically present in the current scene": "Предмет находится в другом месте и сейчас недоступен.",
+        "Reposition requires exact new placement": "Нужно уточнить новое положение предмета.",
+        "Cannot reposition item outside current location": "Нельзя переложить предмет, недоступный в текущем месте.",
+        "Cannot place an item the player does not hold": "Герой не держит этот предмет и не может его выложить.",
+        "Cannot place an item in a scene without a location": "Не определено место, куда можно положить предмет.",
+        "Inventory giver must be a character in the campaign": "Передающий персонаж не определён в кампании.",
+        "Inventory giver must be another character physically present": "Для передачи другой персонаж должен находиться рядом.",
+        "Item is not owned by the claimed inventory giver": "Указанный передающий персонаж не владеет предметом.",
+        "Cannot give an item the player does not hold": "Герой не владеет предметом и не может его передать.",
+        "Inventory recipient must be a character in the campaign": "Получатель предмета не определён в кампании.",
+        "Recipient must be physically present in the current location": "Получателя нет рядом; передача невозможна.",
+        "Inventory actor must be physically present in the campaign": "Исполнителя нет рядом; действие с предметом не состоялось.",
+    }
+
+    @property
+    def public_reason(self) -> str:
+        return self.REASONS.get(str(self), "Предмет сейчас недоступен для выбранного действия.")
 
 
 class ActionSequenceExecutor:
@@ -73,6 +102,15 @@ class ActionSequenceExecutor:
         if not plan.steps:
             raise ValueError("Action sequence has no steps")
 
+        # A replay baseline must predate *all* structured physical mutations.
+        # In particular it cannot first be captured by an asynchronous Scribe
+        # after a successful hand-off, or undo would erase the recipient.
+        if any(
+            step.action_type == "inventory" and step.resolution == "auto_success"
+            for step in plan.steps
+        ):
+            await InitialWorldStateService(self._session).ensure_snapshot(campaign_id)
+
         sequence = ActionSequence(
             campaign_id=str(campaign_id),
             trigger_turn_id=str(trigger_turn_id),
@@ -92,6 +130,7 @@ class ActionSequenceExecutor:
             db_step = ActionStep(
                 sequence_id=sequence.id,
                 step_index=index,
+                source_action_index=step.source_action_index,
                 action_type=step.action_type,
                 intent=step.intent,
                 resolution=step.resolution,
@@ -105,6 +144,18 @@ class ActionSequenceExecutor:
                 ),
             )
             self._session.add(db_step)
+            if step.action_type == "inventory" and step.item_id is not None:
+                # Capture intent before the resolver's blocked/requires-choice branch,
+                # not only when an operation reaches the physical executor.
+                entity = await self._session.get(Entity, str(step.item_id))
+                item = await self._session.get(Item, str(step.item_id))
+                db_step.item_operation = step.inventory_operation
+                if entity and item and entity.campaign_id == str(campaign_id):
+                    db_step.item_id = str(step.item_id)
+                    db_step.item_name = entity.canonical_name
+                    db_step.item_previous_owner_id = item.current_owner_id
+                    db_step.item_previous_location_id = item.current_location_id
+                    db_step.item_previous_placement_detail = item.placement_detail
 
             if blocked:
                 db_step.status = "skipped"
@@ -121,13 +172,32 @@ class ActionSequenceExecutor:
                 )
                 db_step.blocking_reason = (
                     step.blocking_reason
-                    or "The step requires a check, a choice, or new player input."
+                    or "Нужно уточнение, выбор или новое действие игрока."
                 )
                 db_step.target_scene_id = (
                     str(current_scene_id) if current_scene_id else None
                 )
                 sequence.blocked_step_index = index
                 blocked = True
+                continue
+
+            for change in [*step.item_property_changes, *step.item_revelations]:
+                item = await self._session.get(Item, str(change.item_id))
+                entity = await self._session.get(Entity, str(change.item_id))
+                location = await self._scenes.get_location_id(current_scene_id) if current_scene_id else None
+                holder = await self._session.get(Character, item.current_owner_id) if item and item.current_owner_id else None
+                if (not item or not entity or entity.campaign_id != str(campaign_id) or not location
+                        or (item.current_location_id != str(location)
+                            and (not holder or holder.current_location_id != str(location)))):
+                    # The source did not happen: never retain its prose or property results.
+                    db_step.status = "blocked"
+                    db_step.observable_outcome = None
+                    db_step.blocking_reason = db_step.public_blocking_reason = "Предмет недоступен в текущем месте."
+                    db_step.target_scene_id = str(current_scene_id) if current_scene_id else None
+                    sequence.blocked_step_index = index
+                    blocked = True
+                    break
+            if blocked:
                 continue
 
             if step.transition.required:
@@ -194,9 +264,9 @@ class ActionSequenceExecutor:
                     # step, stop the ordered tail, and let narration describe the concrete
                     # result. Never turn a safe no-op into a failed turn or partial mutation.
                     db_step.status = "blocked"
-                    db_step.blocking_reason = str(exc)
+                    db_step.blocking_reason = exc.public_reason
                     db_step.observable_outcome = None
-                    db_step.public_blocking_reason = "Этот предмет сейчас недоступен для выбранного действия."
+                    db_step.public_blocking_reason = exc.public_reason
                     db_step.target_scene_id = (
                         str(current_scene_id) if current_scene_id else None
                     )
@@ -205,6 +275,34 @@ class ActionSequenceExecutor:
                     continue
 
             db_step.status = "completed"
+            if step.item_creations:
+                await self._session.flush()
+                campaign = await self._session.get(Campaign, str(campaign_id))
+                creation_location = await self._scenes.get_location_id(current_scene_id) if current_scene_id else None
+                if not campaign or not campaign.player_character_id or not creation_location:
+                    raise ValueError("An item creation requires an authoritative actor and location")
+                await create_step_items(self._session, campaign_id, campaign.player_character_id,
+                                        creation_location, trigger_turn_id, db_step.id, step.item_creations)
+            if step.item_property_changes:
+                await self._session.flush()
+            for change in step.item_property_changes:
+                self._session.add(ItemPropertyEffect(
+                    source_step_id=db_step.id, item_id=str(change.item_id),
+                    property_name=change.property_name, value=change.value,
+                ))
+            if step.item_revelations:
+                # Persist the discovery in the same transaction as its source act.
+                # A repeated read refers to the first active disclosure and cannot
+                # overwrite it. Sequence rollback/undo retires the source.
+                await self._session.flush()
+                known = await revealed_item_contents(self._session, campaign_id)
+                for revelation in step.item_revelations:
+                    if str(revelation.item_id) not in known:
+                        self._session.add(ItemContentDisclosure(
+                            source_step_id=db_step.id, item_id=str(revelation.item_id),
+                            content=revelation.content,
+                        ))
+                        known[str(revelation.item_id)] = (revelation.content, db_step.id)
             sequence.completed_steps += 1
 
         sequence.final_scene_id = (
@@ -232,22 +330,81 @@ class ActionSequenceExecutor:
         if not campaign or not campaign.player_character_id:
             raise InventoryExecutionError("Inventory step has no player character")
 
+        # Keep the actual attempted identity and preconditions even on a blocked
+        # step, so audit cannot misattribute a failure to a similar named item.
+        db_step.item_id = str(step.item_id)
+        db_step.item_name = entity.canonical_name
+        db_step.item_operation = step.inventory_operation
+        db_step.item_previous_owner_id = item.current_owner_id
+        db_step.item_previous_location_id = item.current_location_id
+        db_step.item_previous_placement_detail = item.placement_detail
+
         location_id = (
             await self._scenes.get_location_id(scene_id) if scene_id else None
         )
+        requested_actor_id = getattr(step, "inventory_actor_id", None)
+        actor_id = str(requested_actor_id or campaign.player_character_id)
+        if requested_actor_id:
+            actor_entity = await self._session.get(Entity, actor_id)
+            actor = await self._session.get(Character, actor_id)
+            if (not actor_entity or actor_entity.campaign_id != str(campaign_id)
+                    or not actor or not location_id or actor.current_location_id != str(location_id)):
+                raise InventoryExecutionError("Inventory actor must be physically present in the campaign")
         operation = step.inventory_operation
-        if operation == "take":
-            if item.current_location_id != (str(location_id) if location_id else None):
+        if operation in {"take", "store"}:
+            if item.current_owner_id == actor_id and operation == "take":
+                raise InventoryExecutionError("Player character already holds this item")
+            if item.current_owner_id is not None and item.current_owner_id != actor_id:
+                raise InventoryExecutionError(
+                    "Item is held by a character; taking it requires a handoff"
+                )
+            if not location_id or (item.current_owner_id is None and item.current_location_id != str(location_id)):
                 raise InventoryExecutionError("Item is not physically present in the current scene")
-            result_owner, result_location = str(campaign.player_character_id), None
-        elif operation == "drop" or operation == "place":
+            result_owner, result_location = actor_id, None
+        elif operation == "reposition":
+            detail = (getattr(step, "item_placement_detail", None) or "").strip()
+            if not detail:
+                raise InventoryExecutionError("Reposition requires exact new placement")
+            # Reposition changes placement, never custody. Holding an item up,
+            # turning it over or tucking it away is not limited to named containers.
+            # Releasing it to the room is a separate place/drop operation.
+            if item.current_owner_id == actor_id:
+                result_owner, result_location = actor_id, None
+            elif location_id and item.current_owner_id is None and item.current_location_id == str(location_id):
+                result_owner, result_location = None, str(location_id)
+            else:
+                raise InventoryExecutionError("Cannot reposition item outside current location")
+        elif operation in {"drop", "place"}:
+            # F26: a "place" or "drop" plan cannot move an object merely because
+            # the planner can refer to its ID. Only the current holder can release it.
+            if item.current_owner_id != actor_id:
+                raise InventoryExecutionError("Cannot place an item the player does not hold")
             if not location_id:
                 raise InventoryExecutionError("Cannot place an item in a scene without a location")
             result_owner, result_location = None, str(location_id)
+        elif operation == "receive":
+            # A willing NPC handoff is an authoritative custody transfer, not
+            # an asynchronous Scribe guess. The giver must physically own the
+            # object and be present with the player in the target scene.
+            giver_id = str(step.inventory_target_id or "")
+            giver_entity = await self._session.get(Entity, giver_id)
+            giver = await self._session.get(Character, giver_id)
+            if not giver or not giver_entity or giver_entity.campaign_id != str(campaign_id):
+                raise InventoryExecutionError("Inventory giver must be a character in the campaign")
+            if giver_id == actor_id or not location_id or giver.current_location_id != str(location_id):
+                raise InventoryExecutionError("Inventory giver must be another character physically present")
+            if item.current_owner_id != giver_id or item.current_location_id is not None:
+                raise InventoryExecutionError("Item is not owned by the claimed inventory giver")
+            result_owner, result_location = actor_id, None
         else:  # give
+            if item.current_owner_id != actor_id:
+                raise InventoryExecutionError("Cannot give an item the player does not hold")
             target = await self._session.get(Entity, str(step.inventory_target_id))
-            if not target or target.campaign_id != str(campaign_id):
-                raise InventoryExecutionError("Inventory transfer target is outside the campaign")
+            if not target or target.campaign_id != str(campaign_id) or target.entity_type != "character":
+                raise InventoryExecutionError("Inventory recipient must be a character in the campaign")
+            recipient = await self._session.get(Character, str(step.inventory_target_id))
+            if not location_id or not recipient or recipient.current_location_id != str(location_id):
+                raise InventoryExecutionError("Recipient must be physically present in the current location")
             result_owner, result_location = str(step.inventory_target_id), None
 
         db_step.item_id = str(step.item_id)
@@ -255,10 +412,15 @@ class ActionSequenceExecutor:
         db_step.item_operation = operation
         db_step.item_previous_owner_id = item.current_owner_id
         db_step.item_previous_location_id = item.current_location_id
+        db_step.item_previous_placement_detail = item.placement_detail
         db_step.item_result_owner_id = result_owner
         db_step.item_result_location_id = result_location
+        db_step.item_result_placement_detail = (
+            step.item_placement_detail.strip() if getattr(step, "item_placement_detail", None) else None
+        )
         item.current_owner_id = result_owner
         item.current_location_id = result_location
+        item.placement_detail = db_step.item_result_placement_detail
         await self._session.flush()
 
     async def get(self, sequence_id: UUID) -> ActionSequenceExecution:
@@ -272,6 +434,25 @@ class ActionSequenceExecutor:
                 .order_by(ActionStep.step_index)
             )
         ).scalars().all()
+        property_rows = (await self._session.execute(
+            select(ItemPropertyEffect).where(ItemPropertyEffect.source_step_id.in_([step.id for step in steps]))
+        )).scalars().all()
+        property_effects = {}
+        for effect in property_rows:
+            property_effects.setdefault(effect.source_step_id, []).append(effect)
+        creation_rows = (await self._session.execute(select(ItemCreationEffect, Entity.canonical_name)
+            .join(Entity, Entity.id == ItemCreationEffect.item_id)
+            .where(ItemCreationEffect.source_step_id.in_([step.id for step in steps])))).all()
+        creation_effects = {}
+        for effect, name in creation_rows:
+            creation_effects.setdefault(effect.source_step_id, []).append({
+                "item_id": effect.item_id, "item_name": name, "item_operation": "create",
+                "item_result_owner_id": effect.owner_id, "item_result_location_id": effect.location_id,
+                "item_result_placement_detail": effect.placement_detail,
+            })
+        scenes = {scene for step in steps for scene in (step.source_scene_id, step.target_scene_id) if scene}
+        locations = dict((await self._session.execute(select(SceneLocationLink.scene_id, SceneLocationLink.location_id)
+            .where(SceneLocationLink.scene_id.in_(scenes)))).all())
         return ActionSequenceExecution(
             sequence_id=UUID(sequence.id),
             campaign_id=UUID(sequence.campaign_id),
@@ -291,7 +472,8 @@ class ActionSequenceExecutor:
             planned_steps=sequence.planned_steps,
             completed_steps=sequence.completed_steps,
             blocked_step_index=sequence.blocked_step_index,
-            steps=[self._step_read(step) for step in steps],
+            steps=[self._step_read(step, property_effects.get(step.id, ()),
+                                   creation_effects.get(step.id, ()), locations) for step in steps],
         )
 
     async def mark_applied(self, sequence_id: UUID) -> bool:
@@ -371,6 +553,14 @@ class ActionSequenceExecutor:
             campaign_id,
             final_scene_id,
         )
+        # The player may not be listed as a SceneParticipant. Keep physical
+        # location consistent with the authoritative scene on sequence apply.
+        location_id = await self._scenes.get_location_id(final_scene_id)
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        if location_id and campaign and campaign.player_character_id:
+            player = await self._session.get(Character, campaign.player_character_id)
+            if player:
+                player.current_location_id = str(location_id)
 
     async def _compensate(
         self,
@@ -395,13 +585,20 @@ class ActionSequenceExecutor:
                         transition,
                         final_status,
                     )
+            # Only completed steps changed inventory. Blocked and skipped steps
+            # have no physical effects and must not restore stale snapshots.
+            completed = step.status == "completed"
+            applied_inventory = completed and bool(step.item_id)
             if step.status in {"completed", "blocked", "skipped"}:
                 step.status = final_status
-            if step.item_id and step.status == final_status:
+            if applied_inventory:
                 item = await self._session.get(Item, step.item_id)
                 if item:
                     item.current_owner_id = step.item_previous_owner_id
                     item.current_location_id = step.item_previous_location_id
+                    item.placement_detail = step.item_previous_placement_detail
+            if completed:
+                await undo_step_items(self._session, step.id)
 
         sequence.status = final_status
         sequence.undone_at = datetime.utcnow()
@@ -420,6 +617,14 @@ class ActionSequenceExecutor:
                 campaign_id,
                 source_scene_id,
             )
+            # F-39: scene participants do not necessarily include the player.
+            # Restore the playable character explicitly on sequence undo.
+            source_location_id = await self._scenes.get_location_id(source_scene_id)
+            campaign = await self._session.get(Campaign, transition.campaign_id)
+            if source_location_id and campaign and campaign.player_character_id:
+                player = await self._session.get(Character, campaign.player_character_id)
+                if player:
+                    player.current_location_id = str(source_location_id)
         else:
             campaign = await self._session.get(Campaign, transition.campaign_id)
             if campaign:
@@ -495,9 +700,17 @@ class ActionSequenceExecutor:
         return "\n".join(lines) + "\n"
 
     @staticmethod
-    def _step_read(step: ActionStep) -> ExecutedActionStep:
+    def _step_read(step: ActionStep, property_effects=(), creation_effects=(), locations=None) -> ExecutedActionStep:
         return ExecutedActionStep(
             step_index=step.step_index,
+            source_action_index=step.source_action_index,
+            source_location_id=(locations or {}).get(step.source_scene_id),
+            target_location_id=(locations or {}).get(step.target_scene_id),
+            created_items=list(creation_effects),
+            item_property_changes=[ItemPropertyChange(
+                item_id=effect.item_id, property_name=effect.property_name, value=effect.value,
+                action_index=step.source_action_index if step.source_action_index is not None else step.step_index,
+            ) for effect in property_effects],
             action_type=step.action_type,
             intent=step.intent,
             resolution=step.resolution,
@@ -516,6 +729,8 @@ class ActionSequenceExecutor:
             item_id=UUID(step.item_id) if step.item_id else None,
             item_name=step.item_name,
             item_operation=step.item_operation,
+            item_previous_placement_detail=step.item_previous_placement_detail,
+            item_result_placement_detail=step.item_result_placement_detail,
             item_previous_owner_id=(
                 UUID(step.item_previous_owner_id) if step.item_previous_owner_id else None
             ),

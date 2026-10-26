@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import literal_column, select, update
+from sqlalchemy import and_, literal_column, or_, select, update
 
 from app.db.repositories.base import BaseRepository
 from app.db.tables import GenerationRun, PostTurnJob
@@ -113,6 +113,7 @@ class GenerationRunRepository(BaseRepository):
 
 class PostTurnJobRepository(BaseRepository):
     JOB_TYPES = ("thesis_curator", "memory_scribe")
+    MAX_AUTO_ATTEMPTS = 4
 
     async def enqueue_for_turn(
         self,
@@ -168,7 +169,9 @@ class PostTurnJobRepository(BaseRepository):
         row = result.scalar_one_or_none()
         if not row:
             return None
-        if row.status == "completed":
+        # A running job may still own the current write lease. Never reset it
+        # to pending from the manual retry endpoint: that could execute it twice.
+        if row.status in {"completed", "running"}:
             return PostTurnJobRead.model_validate(row)
         row.status = "pending"
         row.error = None
@@ -178,18 +181,63 @@ class PostTurnJobRepository(BaseRepository):
 
     async def recover_stale(self, stale_after_seconds: int = 300) -> int:
         threshold = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
+        # An SQLite UPDATE takes the single-writer lock even if it updates zero rows.
+        # Recovery sweeps run every 15 seconds: avoid competing with foreground
+        # publication when there is no stale work to reclaim.
+        stale_condition = and_(
+            PostTurnJob.status == "running",
+            or_(
+                PostTurnJob.locked_at < threshold,
+                and_(
+                    PostTurnJob.locked_at.is_(None),
+                    PostTurnJob.updated_at < threshold,
+                ),
+            ),
+        )
+        candidate = await self._session.execute(
+            select(PostTurnJob.id).where(stale_condition).limit(1)
+        )
+        if candidate.scalar_one_or_none() is None:
+            return 0
+
+        # Re-check the predicate atomically: another worker may have claimed
+        # or finished the row after the inexpensive read.
         result = await self._session.execute(
             update(PostTurnJob)
-            .where(
-                PostTurnJob.status == "running",
-                # Older workers could leave a running row without a lock timestamp. Treat that
-                # state as stale too; otherwise the desktop restart can never reclaim the job.
-                (PostTurnJob.locked_at.is_(None) | (PostTurnJob.locked_at < threshold)),
-            )
+            .where(stale_condition)
             .values(status="pending", locked_at=None, error="Recovered after worker restart")
         )
         await self._session.flush()
         return int(result.rowcount or 0)
+
+    async def requeue_failed(self, *, base_delay_seconds: int = 10) -> int:
+        """Automatically retry bounded failures without spinning on permanent errors.
+
+        The durable attempts counter is incremented at claim time. Retry delays grow
+        exponentially; after MAX_AUTO_ATTEMPTS the failed row stays visible to debug.
+        """
+        now = datetime.utcnow()
+        candidates = (
+            await self._session.execute(
+                select(PostTurnJob).where(
+                    PostTurnJob.status == "failed",
+                    PostTurnJob.attempts < self.MAX_AUTO_ATTEMPTS,
+                )
+            )
+        ).scalars().all()
+        retried = 0
+        for row in candidates:
+            delay = min(120, max(1, base_delay_seconds) * (2 ** max(0, row.attempts - 1)))
+            if row.updated_at and row.updated_at > now - timedelta(seconds=delay):
+                continue
+            result = await self._session.execute(
+                update(PostTurnJob)
+                .where(PostTurnJob.id == row.id, PostTurnJob.status == "failed")
+                .values(status="pending", locked_at=None)
+            )
+            retried += int(result.rowcount or 0)
+        await self._session.flush()
+        return retried
 
     async def claim_next(self) -> PostTurnJobRead | None:
         result = await self._session.execute(

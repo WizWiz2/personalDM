@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
+from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
+from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
-from app.db.tables import Campaign, Character, Entity, Turn
+from app.db.tables import Campaign, Character, Entity, Item, Turn
+from app.models.turn import ChatMessage
+from app.models.turn_authority import PlannedWorldMove
+from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
+from app.services.world_momentum_service import WorldMomentumService
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -22,9 +30,39 @@ from app.services.turn_outcome_resolver import (
     seeks_contact_or_presence,
     solo_physical_presence,
 )
-from app.services.turn_planner import ActionSequencePlan, TurnPlanningError
+from app.services.turn_planner import ActionSequencePlan, PlanContractError, TurnPlanningError
 
 _INSTALLED = False
+
+
+def apply_due_deadline(
+    decision: TurnOutcomeDecision,
+    contract: PlayerIntentContract,
+    momentum: dict,
+) -> TurnOutcomeDecision:
+    """A mutually established deadline expires deterministically at its phase.
+
+    The outcome was frozen in session zero, so no model is authorized to revise
+    the consequence. Never erase another successful user outcome to make room.
+    """
+    due = momentum.get("automatic_deadline")
+    if not isinstance(due, dict) or contract.pending_player_choice:
+        return decision
+    if decision.resolution in {"failure", "uncertain"}:
+        return decision
+    existing = list(decision.observable_consequences)
+    consequence = due["outcome"]
+    if consequence not in existing and len(existing) >= 4:
+        return decision
+    if consequence not in existing:
+        existing.append(consequence)
+    move = PlannedWorldMove.model_validate(due)
+    return decision.model_copy(update={
+        "world_move": move,
+        "observable_consequences": existing,
+        "allow_new_complication": True,
+        "complication_source": due["source"],
+    })
 
 
 class TurnIntentPlanningPipeline:
@@ -79,6 +117,11 @@ class TurnIntentPlanningPipeline:
             here = str((await self._compiler._world(campaign_id))[1].location_id)
         except TurnPlanningError:
             here = None
+        exit_labels: dict[str, list[str]] = {}
+        if here and here != "None":
+            for route in await self._compiler._state.list_exits(campaign_id, UUID(here)):
+                if route.active and route.discovered:
+                    exit_labels.setdefault(str(route.to_location_id), []).append(route.label)
         return names, {
             key: {
                 "name": location.canonical_name,
@@ -86,6 +129,7 @@ class TurnIntentPlanningPipeline:
                 "description": (location.description or "")[:240],
                 "scene_opening": (openings.get(key) or "")[:240],
                 "current": key == here,
+                "exit_labels_from_current": exit_labels.get(key, []),
             }
             for location in locations
             for key in [str(location.id)]
@@ -119,13 +163,91 @@ class TurnIntentPlanningPipeline:
             persist_rhythm=False,
         )
 
+        # A deterministic pacing signal and verified actor goals are fed into
+        # the *outcome* resolver. Narrator prose alone cannot move the world.
+        momentum = {"sources": [], "pressure_due": False, "quiet_turns": 0}
+        if isinstance(self._session, AsyncSession):
+            campaign = await self._session.get(Campaign, str(campaign_id))
+            scene_id = (
+                UUID(campaign.current_scene_id)
+                if campaign and campaign.current_scene_id else None
+            )
+            momentum = await WorldMomentumService(self._session).snapshot(
+                campaign_id, scene_id,
+            )
+        world_context = context_messages
+        if isinstance(self._session, AsyncSession) and world_context:
+            setup = await CampaignSetupRepository(self._session).get(campaign_id)
+            if setup and setup.status == "completed":
+                agreements = json.dumps({"starting_situation": setup.starting_situation,
+                                         "world_summary": setup.world_summary}, ensure_ascii=False)
+                first = world_context[0]
+                world_context = [ChatMessage(role=first.role, content=first.content
+                    + "\n[SESSION AGREEMENTS — standing conditions, not current positions]\n"
+                    + agreements
+                    + "\nEvaluate promised conditions using current knowledge/input. A refusal on an "
+                      "earlier request does not erase these terms. Actual inventory and later "
+                      "grounded changes remain authoritative; never reset physical state to the opening."),
+                    *world_context[1:]]
+        # Outcome resolution must know existing NPC-held item identities, or
+        # a legitimate handoff cannot produce a verified giver/item receipt.
+        # Only physically co-located characters are eligible to give objects.
+        if isinstance(self._session, AsyncSession) and scene_id and context_messages:
+            location_id = await SceneRepository(self._session).get_location_id(scene_id)
+            if location_id:
+                held = (await self._session.execute(
+                    select(Entity.id, Entity.canonical_name, Item.current_owner_id)
+                    .join(Item, Item.entity_id == Entity.id)
+                    .join(Character, Character.entity_id == Item.current_owner_id)
+                    .where(
+                        Entity.campaign_id == str(campaign_id),
+                        Character.current_location_id == str(location_id),
+                        Item.current_owner_id != str(campaign.player_character_id or ""),
+                    )
+                )).all()
+                if held:
+                    giver_ids = {owner_id for _, _, owner_id in held}
+                    giver_names = dict((await self._session.execute(
+                        select(Entity.id, Entity.canonical_name).where(Entity.id.in_(giver_ids))
+                    )).all())
+                    evidence = "\n".join(
+                        f"- {name} [id={item_id}]; NPC holder: "
+                        f"{giver_names.get(owner_id, 'unknown')} [id={owner_id}]"
+                        for item_id, name, owner_id in held
+                    )
+                    first = world_context[0]
+                    world_context = [
+                        ChatMessage(role=first.role, content=first.content
+                            + "\n[NPC-HELD REGISTERED ITEMS — confirmed physical inventory]\n"
+                            + evidence
+                            + "\nUse these exact ids only after the actual NPC agrees to a handoff."),
+                        *world_context[1:],
+                    ]
+        if momentum["sources"] and world_context:
+            first = world_context[0]
+            source_context = (
+                "\n[ENGINE-VERIFIED ACTIVE WORLD THREADS]\n"
+                + json.dumps(momentum, ensure_ascii=False)
+                + "\npressure_due is pacing guidance, NOT permission to invent new "
+                  "actors or physical results. Choose a verified thread and its "
+                  "exact source and actor_id. An absent NPC acts only at their "
+                  "real location; never bring them into this scene without a "
+                  "typed transition. When due_phase is specified, compare it "
+                  "with the authoritative world_time_label. A quiet beat may "
+                  "still be appropriate where the world has no lawful move."
+            )
+            world_context = [
+                ChatMessage(role=first.role, content=first.content + source_context),
+                *world_context[1:],
+            ]
+
         resident_slots = await self._compiler.resident_slots(campaign_id)
         decision = await self._compiler.resolve_known_travel(campaign_id, contract)
         outcome_owner = "route_graph" if decision is not None else "external_resolver"
         if decision is None:
             decision = await self._outcomes.resolve(
                 selection,
-                context_messages,
+                world_context,
                 user_input,
                 contract,
                 force_introduce_contact=director.forced_introduce_contact,
@@ -137,7 +259,7 @@ class TurnIntentPlanningPipeline:
             # forced contact-seeking gets its (optional) chance at a typed introduction.
             decision = await self._outcomes.resolve(
                 selection,
-                context_messages,
+                world_context,
                 user_input,
                 contract,
                 force_introduce_contact=True,
@@ -167,11 +289,40 @@ class TurnIntentPlanningPipeline:
             substance_active=committed_travel,
         )
         decision = decision.model_copy(update={"narration_guidance": guidance})
+        decision = apply_due_deadline(decision, contract, momentum)
 
-        plan = await self._compiler.compile(campaign_id, contract, decision)
+        for attempt in range(2):
+            try:
+                plan = await self._compiler.compile(campaign_id, contract, decision, player_input=user_input)
+                break
+            except PlanContractError as exc:
+                if attempt:
+                    raise
+                # No execution has started. Repair the model's decision, keeping
+                # the human's frozen acts and the authoritative world unchanged.
+                decision = await self._outcomes.resolve(
+                    selection, world_context, user_input, contract,
+                    resident_slots=resident_slots,
+                    destination_cast=await self._destination_cast(campaign_id, contract, names),
+                    repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
+                )
+                decision = apply_due_deadline(apply_moves_to_outcome_decision(decision, director), contract, momentum)
+                missing = await self._compiler.missing_destination_profiles(campaign_id, contract, decision)
+                if missing:
+                    decision = await self._outcomes.enrich_destination_profiles(selection, user_input, decision, missing)
         return plan, {
             "architecture": "frozen_player_intent_v1",
             "outcome_owner": outcome_owner,
+            "world_momentum": momentum,
+            # Step-coverage telemetry: the compiler is 1:1 with the frozen contract, so any
+            # gap between what the player committed and what is planned was created upstream
+            # (ownership speech filter, information-request wipe, extraction cap). Surfacing
+            # it per turn separates "planner dropped it" from "intent never had it"
+            # (playtest 2026-10-12: silent multi-action truncation).
+            "action_coverage": {
+                "requested_actions": len(contract.actions),
+                "planned_steps": len(plan.action_sequence.steps),
+            },
             "intent_contract": contract.model_dump(mode="json"),
             "outcome_decision": decision.model_dump(mode="json"),
             "intent_audit": list(self._intent.audit),

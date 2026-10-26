@@ -372,6 +372,44 @@ class Entity(Base):
     )
 
 
+class ItemCustodyCommand(Base):
+    """Independent GM physical item transfer, replayed after a canon rebuild."""
+
+    __tablename__ = "item_custody_commands"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_turn_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "NOT (owner_id IS NOT NULL AND location_id IS NOT NULL)",
+            name="ck_custody_command_single_position",
+        ),
+    )
+
+
+class NpcIdentityAnchor(Base):
+    """Identity alias to stable NPC ID; retained after undo of the introducing turn."""
+
+    __tablename__ = "npc_identity_anchors"
+
+    campaign_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("campaigns.id", ondelete="CASCADE"), primary_key=True
+    )
+    identity_key: Mapped[str] = mapped_column(String(250), primary_key=True)
+    entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+
+
 class Character(Base):
     __tablename__ = "characters"
 
@@ -424,6 +462,40 @@ class Location(Base):
     )
 
 
+class ItemCreationEffect(Base):
+    __tablename__ = "item_creation_effects"
+    source_step_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("action_steps.id", ondelete="CASCADE"), primary_key=True)
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("items.entity_id", ondelete="CASCADE"), primary_key=True, index=True)
+    owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ItemPropertyEffect(Base):
+    """An append-only physical property receipt retired with its source action."""
+    __tablename__ = "item_property_effects"
+    source_step_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("action_steps.id", ondelete="CASCADE"), primary_key=True)
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("items.entity_id", ondelete="CASCADE"), primary_key=True, index=True)
+    property_name: Mapped[str] = mapped_column(String(120), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ItemContentDisclosure(Base):
+    __tablename__ = "item_content_disclosures"
+
+    source_step_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("action_steps.id", ondelete="CASCADE"), primary_key=True,
+    )
+    item_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("items.entity_id", ondelete="CASCADE"), primary_key=True, index=True,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class Item(Base):
     __tablename__ = "items"
 
@@ -441,6 +513,7 @@ class Item(Base):
         String(36), ForeignKey("entities.id", ondelete="SET NULL"), nullable=True
     )
     is_unique: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     lore: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     base_entity = relationship(

@@ -21,8 +21,9 @@ from app.providers.llm_provider import (
 )
 from app.services.actor_turn_authority_guard import _word_key, segment_actor_response
 from app.services.narration_publication_guard import NarrationPublicationGuard
+from app.services.narration_meta_guard import leaked_meta_lines
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
-from app.services.script_consistency import consistent_script
+from app.services.script_consistency import consistent_script, foreign_script_intrusions
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.llm_usage_tracker import record_decision, record_provider_telemetry
 from app.services.turn_authority_validator import TurnAuthorityValidator
@@ -277,10 +278,20 @@ class AuthorityNarrationPipeline:
         repair_attempts: int,
         telemetry: dict,
         publication: dict,
+        validation_result: NarrationValidationResult | None = None,
         reason: str | None = None,
         beat: GrantedBeat | None = None,
     ) -> AuthorityNarrationResult:
+        if leaked_meta_lines(text):
+            raise NarrationValidationError("Narrator output contains internal model notes")
+        if publication.get("mode") == "validated_candidate":
+            text, publication = NarrationPublicationGuard.publish(
+                authority, text, validation_result or NarrationValidationResult(verdict="pass"),
+            )
+            if publication["mode"] == "authority_projection":
+                status = "safe_fallback"
         text = consistent_script(text, authority.present_character_names)
+        text = NarrationPublicationGuard.include_critical_world_outcome(authority, text)
         gate = await audit.finalize(
             run,
             status="repaired" if status == "safe_fallback" else status,
@@ -319,6 +330,9 @@ class AuthorityNarrationPipeline:
         """Publish the typed step outcome as plain text; raises only if there is none."""
         record_decision("publish", "authority_projection", {"reason": reason[:500]})
         text, publication = NarrationPublicationGuard.publish(authority, "", None)
+        if authority.item_states:
+            text = NarrationPublicationGuard.render_item_states(authority)
+            publication = {**publication, "mode": "item_state_projection"}
         return await self._finish(
             audit=audit,
             run=run,
@@ -371,7 +385,8 @@ class AuthorityNarrationPipeline:
         validator_model = validation_selection.config.model_name if validation_selection else None
         run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, draft, validator_model)
 
-        def accepted(text: str, status: str, attempts: int, reason: str | None = None, beat=None):
+        def accepted(text: str, status: str, attempts: int, reason: str | None = None,
+                     beat=None, validation=None):
             record_decision("publish", "validated_candidate", {"status": status})
             return self._finish(
                 audit=audit,
@@ -382,6 +397,7 @@ class AuthorityNarrationPipeline:
                 repair_attempts=attempts,
                 telemetry=telemetry,
                 publication={"mode": "validated_candidate", "validated_surface": True},
+                validation_result=validation,
                 reason=reason,
                 beat=beat,
             )
@@ -389,7 +405,11 @@ class AuthorityNarrationPipeline:
         async def validator_down(reason: str):
             # An unchecked draft stays off the surface while a typed outcome exists.
             # Fail-open publishes the draft only when there is nothing typed to show.
-            if settings.NARRATION_VALIDATOR_FAIL_OPEN and not NarrationPublicationGuard.has_typed_outcome(authority):
+            if (
+                settings.NARRATION_VALIDATOR_FAIL_OPEN
+                and not NarrationPublicationGuard.has_typed_outcome(authority)
+                and not leaked_meta_lines(draft)
+            ):
                 return await accepted(draft, "failed_open", 0, reason)
             return await self._fallback(
                 audit=audit,
@@ -415,11 +435,26 @@ class AuthorityNarrationPipeline:
         try:
             beat_failure = self._beat_failure(authority, draft, beat)
             repeats = await self._repeats(campaign_id, draft)
-            result = None if beat_failure or repeats else await self._check(
-                **check, candidate=draft, attempt_index=0
-            )
-            if result and result.verdict == "pass":
-                return await accepted(draft, "passed", 0, beat=beat)
+            # Foreign-script garbage words are decoder noise, not prose: like a verbatim
+            # repeat they disqualify the candidate from the surface, and the repair call
+            # is told exactly which words to replace (playtest 2026-10-12: CJK tokens
+            # reached published text because consistent_script only fixes mixed words).
+            intrusions = [*foreign_script_intrusions(draft), *leaked_meta_lines(draft)]
+            # A missed beat grant is an unhonored initiative decoration, not a forbidden
+            # fact. When only the beat failed, the four-ban validator still guards the
+            # authority surface: validated prose must reach the player instead of the
+            # deterministic projection (playtest 2026-10-12: most safe_fallbacks were
+            # otherwise-clean candidates lost to a grammatical-subject miss).
+            if repeats or intrusions:
+                result = None
+            else:
+                result = await self._check(**check, candidate=draft, attempt_index=0)
+                if result.verdict == "pass":
+                    if beat_failure:
+                        return await accepted(
+                            draft, "passed", 0, reason=f"beat_unhonored: {beat_failure}", validation=result,
+                        )
+                    return await accepted(draft, "passed", 0, beat=beat, validation=result)
 
             record_decision(
                 "repair", "requested", {"strategy": "single_model_repair"},
@@ -429,7 +464,10 @@ class AuthorityNarrationPipeline:
                 *narrator_messages,
                 ChatMessage(
                     role="user",
-                    content=validator.repair_prompt(authority, draft, result, beat_failure, repeats),
+                    content=validator.repair_prompt(
+                        authority, draft, result, beat_failure, repeats,
+                        script_intrusions=intrusions,
+                    ),
                 ),
             ]
             try:
@@ -451,20 +489,40 @@ class AuthorityNarrationPipeline:
             telemetry = {**telemetry, "repair_generation": repair_telemetry}
             repaired_failure = self._beat_failure(authority, repaired, repaired_beat)
             repeats = await self._repeats(campaign_id, repaired)
-            repaired_result = None if repaired_failure or repeats else await self._check(
-                **check, candidate=repaired, attempt_index=1
-            )
-            if repaired_result and repaired_result.verdict == "pass":
-                return await accepted(repaired, "repaired", 1, beat=repaired_beat)
+            repaired_intrusions = [
+                *foreign_script_intrusions(repaired), *leaked_meta_lines(repaired)
+            ]
+            if repeats or repaired_intrusions:
+                repaired_result = None
+            else:
+                repaired_result = await self._check(
+                    **check, candidate=repaired, attempt_index=1
+                )
+                if repaired_result.verdict == "pass":
+                    if repaired_failure:
+                        return await accepted(
+                            repaired, "repaired", 1,
+                            reason=f"beat_unhonored: {repaired_failure}",
+                            validation=repaired_result,
+                        )
+                    return await accepted(repaired, "repaired", 1, beat=repaired_beat, validation=repaired_result)
             return await self._fallback(
                 audit=audit,
                 run=run,
                 authority=authority,
                 reason=(
-                    f"beat grant not honored after one repair: {repaired_failure}"
+                    # The four-ban validator is authoritative: a failed NPC beat
+                    # must not mask a real canon/player-agency violation in the
+                    # published audit reason.
+                    (repaired_result.summary or "narration still breaks a ban after one repair")
+                    if repaired_result is not None and repaired_result.verdict != "pass"
+                    else f"verbatim repeat after one repair: {repeats[0]}"
+                    if repeats
+                    else "foreign-script intrusions after one repair: " + ", ".join(repaired_intrusions)
+                    if repaired_intrusions
+                    else f"beat grant not honored after one repair: {repaired_failure}"
                     if repaired_failure
-                    else f"verbatim repeat after one repair: {repeats[0]}" if repeats
-                    else repaired_result.summary or "narration still breaks a ban after one repair"
+                    else "narration still breaks a ban after one repair"
                 ),
                 repair_attempts=1,
                 telemetry=telemetry,

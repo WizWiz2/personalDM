@@ -293,6 +293,14 @@ class RuntimeProviderService:
                 return self._status(True, "ready", "ChatGPT plan подключён")
             except ChatGPTAuthError as exc:
                 return self._status(False, "chatgpt_auth_error", str(exc))
+            except (httpx.HTTPError, OSError, ValueError, RuntimeError):
+                # Expired OAuth/refresh endpoints sometimes surface a raw transport
+                # exception instead of ChatGPTAuthError. Provider health checks
+                # must return an actionable UI state, not an opaque HTTP 500.
+                return self._status(
+                    False, "chatgpt_auth_error",
+                    "Не удалось проверить ChatGPT. Переподключите аккаунт и повторите проверку.",
+                )
 
         ollama = self.find_ollama()
         if not ollama:

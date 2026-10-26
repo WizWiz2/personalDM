@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+
+from sqlalchemy.exc import OperationalError
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -82,14 +85,25 @@ async def close_usage_context(token: Token) -> None:
 async def _flush(factory, label: str, context: LLMUsageContext, rows: list, write) -> None:
     if not rows:
         return
-    try:
-        async with factory() as session:
-            repository = LLMUsageRepository(session)
-            for row in rows:
-                await write(repository, context, row)
-            await session.commit()
-    except Exception as exc:  # telemetry must never break gameplay
-        logger.warning("%s write failed: %s", label, exc, exc_info=True)
+    # F-38: small independent telemetry transactions contend with the
+    # SQLite campaign writer. Retry only transient lock errors; every attempt
+    # gets a fresh session so no failed SQLAlchemy transaction is reused.
+    for attempt in range(4):
+        try:
+            async with factory() as session:
+                repository = LLMUsageRepository(session)
+                for row in rows:
+                    await write(repository, context, row)
+                await session.commit()
+            return
+        except OperationalError as exc:
+            if "database is locked" not in str(exc).casefold() or attempt == 3:
+                logger.warning("%s write failed: %s", label, exc, exc_info=True)
+                return
+            await asyncio.sleep(0.15 * (2 ** attempt))
+        except Exception as exc:  # telemetry must never break gameplay
+            logger.warning("%s write failed: %s", label, exc, exc_info=True)
+            return
 
 
 def record_decision(

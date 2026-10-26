@@ -188,3 +188,31 @@ async def test_curator_records_scene_closure_when_lifecycle_storage_is_available
     await curator.close_scene(scene_id)
 
     assert calls == [scene_id]
+
+
+@pytest.mark.asyncio
+async def test_curator_semantic_read_cannot_create_profile_before_llm(db_session):
+    """A first Curator pass must not take SQLite's writer lock on a missing profile."""
+    from app.db.repositories.campaign_repo import CampaignRepository
+    from app.db.repositories.scene_repo import SceneRepository
+    from app.db.thesis_lifecycle_table import ThesisLifecycleProfile
+    from app.models.campaign import CampaignCreate
+    from app.models.scene import SceneCreate
+    from app.models.scene_thesis import SceneThesisCreate, ThesisType
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(
+        campaign_id, CampaignCreate(name="Read-only Curator"),
+    )
+    scenes = SceneRepository(db_session)
+    scene = await scenes.create(campaign_id, SceneCreate(title="Тихая комната"))
+    item = await scenes.create_thesis(scene.id, SceneThesisCreate(
+        thesis_type=ThesisType.TENSION,
+        text="Станция может потерять питание.",
+        priority=6,
+        visibility="dm",
+    ))
+
+    key = await ThesisCurator(db_session)._existing_semantic_key(item)
+    assert key
+    assert await db_session.get(ThesisLifecycleProfile, str(item.id)) is None

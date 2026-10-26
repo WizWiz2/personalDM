@@ -1,3 +1,4 @@
+import logging
 import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -17,6 +18,9 @@ from app.providers.llm_provider import (
 )
 from app.services.context_compiler import ContextCompiler
 from app.services.role_model_router import ModelRole, RoleModelRouter
+
+
+logger = logging.getLogger(__name__)
 
 
 _META_PATTERN = re.compile(r"^\s*/(?P<name>DM|OOC)(?:\s+|$)(?P<query>.*)$", re.IGNORECASE | re.DOTALL)
@@ -180,7 +184,7 @@ class MetaCommandRunner:
             )
         except Exception:
             # Persona decoration must never block the read-only meta channel.
-            pass
+            logger.debug("Optional persona decoration unavailable", exc_info=True)
         messages = [
             ChatMessage(
                 role="system",
@@ -376,4 +380,4 @@ class MetaCommandRunner:
         yield published_answer
 
 
-__all__ = ["MetaCommand", "MetaCommandRunner", "parse_meta_command", "sanitize_meta_output", "looks_like_scene_narration"]
+__all__ = ["MetaCommand", "MetaCommandRunner", "looks_like_scene_narration", "parse_meta_command", "sanitize_meta_output"]

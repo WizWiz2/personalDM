@@ -4,6 +4,7 @@ import json
 from functools import reduce
 from operator import or_
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import (
     BaseModel,
@@ -16,17 +17,21 @@ from pydantic import (
 )
 
 from app.models.addressed_response import AddressedResponse
+from app.models.item_state import ItemContentRevelation, ItemPropertyChange, ItemStateSnapshot
 from app.models.player_intent import (
     ActionOutcomeDecision,
     ActionResolution,
     DestinationProfilePatch,
     DestinationProfilePatchSet,
     DramaticMode,
+    NpcItemHandoff,
+    PlayerItemHandoff,
     PlayerIntentContract,
     TurnOutcomeDecision,
     TurnResolution,
 )
 from app.models.turn import ChatMessage
+from app.models.turn_authority import PlannedItemIntroduction, PlannedWorldMove
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
 from app.services.entity_identity import identity_key
@@ -35,7 +40,7 @@ from app.services.name_identity_contract import (
     is_usable_short_designation,
     repair_introduction_identity,
 )
-from app.services.planning_context import outcome_reference_context
+from app.services.planning_context import action_reference_catalog, item_reference_states, outcome_reference_context
 from app.services.player_intent_contract import contains_cjk
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
@@ -51,11 +56,26 @@ with concise Russian strings. No dice, checks, protagonist emotions, extra acts 
 action_outcomes is required: exactly one result per frozen index, [] when actions=[]. Never add,
 merge, reorder or reinterpret acts. auto_success executes now and needs a concrete observable_outcome;
 safe_mundane only with auto_success; requires_choice only while the player must still choose.
+Resolve independent requested results separately. Lack of an observer may limit a report
+about visitors, but cannot prevent an otherwise possible rest or passage of time. A failed
+dependent result does not retroactively cancel earlier successful acts.
 blocked needs a concrete blocking_reason AND blocking_evidence_ref: select the E-number of the context
 line establishing that obstacle or NPC refusal motive. Do not copy/paraphrase a quote or invent one.
 An observation may newly find evidence absent/inaccessible; describe that finding without a source ID.
 Ordinary inspection succeeds as inspection even when it discovers nothing. Lack of information is
 not inability to ask a question. What characters say belongs to the narrator, not to acts.
+Undefined is not established absence: when an accessible, already registered document is opened
+or read, resolve its previously unspecified content NOW as a concrete discovery in that action's
+observable_outcome. Preserve all established text, author, addressee and other constraints. A blank,
+illegible or inaccessible document needs a grounded reason; missing database text is not that reason.
+You may supply a brief meaningful message consistent with the agreed premise, without inventing
+an accomplished trip, transfer, new physical object or a decision for the hero. Do not ask the player
+to author the clue they just earned. Already revealed content is canon: reuse it on rereading.
+For EACH act exposing or rereading an existing item's contents, emit item_revelations with its
+registered item_id, source action_index and complete content (including signature/instructions).
+This is structured discovery authority, not a prose hint. revealed_content in item_states wins
+over history and summaries, even when another similar document says something different. Do not
+rediscover a different message. A known blank sheet has its own established content too.
 Never infer a moral/consent boundary from an explicit request alone; established campaign/NPC boundaries
 still apply. Consensual adult material is ordinary content in Mature/18+ campaigns.
 
@@ -71,6 +91,10 @@ Only physically present people may respond. Existing identities must never be re
 or moved from another scene. A question about a present person's name creates no NPC. A genuinely new
 encounter needs a typed npc_introductions entry before anyone speaks/appears: short grounded role,
 concrete description/appearance, temporary_name=true; stable names require personal_name_evidence.
+When introducing a genuine NPC whose immediate objective is known from the
+world situation, set current_goal to a concrete, independently actionable aim
+grounded in established circumstances (not a generic job title). Do not
+fabricate hidden motives for a stranger when none are established.
 Travel/inventory/wait without contact normally introduce nobody. For contact-seeking with a
 player-only cast you may introduce a grounded local person (never an absent known character); finding
 nobody is also a valid result. Anyone who appears must be typed in npc_introductions.
@@ -88,7 +112,103 @@ response_speaker_name as the CURRENT designation so identity binds to the same e
 reveal or change an already established personal name. Otherwise both revelation fields null.
 For world_state_question state the existing state in observable_consequences without performing it.
 No complication without a grounded complication_source.
-"""
+SESSION AGREEMENTS AND DECISIONS: Agreed conditional promises are standing rules. Evaluate their
+conditions against the current input AND established knowledge. An earlier refusal describes an
+earlier request, not an eternal ban. Do not grant a conditional promise before its condition is fulfilled;
+evaluate that same condition consistently on the first and later requests. State concrete grounds
+in the outcome when accepting or refusing. Missing evidence of fulfillment is not fulfillment.
+When its condition is now satisfied, honor the agreed promise
+unless a specific new established circumstance legitimately superseded it. Never cite the earlier
+"no" itself as that circumstance. A genuine changed motive needs its own current source and an
+understandable in-world reason. Keep character autonomy; do not invent obstacles to repeat a refusal.
+OPEN WORLD: Unspecified ordinary facilities, supplies, prices, schedules and local facts may be
+established consistently with the setting. Missing database entries are not evidence of absence,
+unavailability, refusal or incapacity. Resolve a requested ordinary service concretely; register
+any persistent item it produces and profile a destination when travel is requested. Do not force
+success against established scarcity or an NPC's grounded motive. A manipulable object's current
+configuration is not an obstacle to the very manipulation requested of it. A negotiated condition
+must state the actual scope of the offered benefit, not conceal a necessary unmet prerequisite.
+
+DURABLE ITEMS (item_introductions): A NEW significant physical item confirmed
+by the exact approved observable_consequences/auto_success action result (a
+found journal, uniquely named key, received note) must have a typed
+item_introductions entry with canonical_name, evidence (verbatim substring
+containing the name), owned_by_player only when that same outcome confirms
+possession. If an item already exists with its ID in authoritative world state,
+DO NOT recreate it. Unconfirmed player claims and casual background scenery
+are not item introductions.
+Every persistent physical artifact created by an action also needs item_introductions, regardless
+of how ordinary its material is. An object the player can keep, place or use later is state-bearing,
+not backdrop. Distinguish mentioning an object from actually producing one; never promise an
+unregistered physical result. Do not recreate an already registered artifact on subsequent turns.
+Set after_action_index to the act that actually creates/finds it. A newly produced distinct artifact
+needs a designation distinct from already registered items, even when their contents are the same.
+For a faithful reproduction, copy_of_item_id is the existing original's ID; do not invent its content.
+An introduction describes the object's state immediately AFTER ITS SOURCE action, not the final
+state after later moves or inventory actions. Subsequent frozen produced_item_action_index
+references operate on that same object in sequence. Never create it again for its later placement.
+expected_effect=item_creation requires a complete item_introductions entry at that successful
+source index. expected_effect=item_change requires item_property_changes for the existing subject.
+Use stable property_name keys (reuse the keys in item_states.properties) and the resulting value.
+Component conditions are properties of their registered parent; do not create a separate entity
+for every part. Properties cannot establish custody, identity, location or rewrite revealed_content.
+These effects execute before narration. Do not describe an unrecorded physical transformation.
+
+NPC-TO-PLAYER HANDOFFS (npc_item_handoffs): For an EXISTING significant item
+owned by a physically present NPC who voluntarily hands it to the player in
+this turn, provide the registered item_id, registered giver_id and a verbatim
+substring of the confirmed successful observable_outcome as evidence. Set
+after_action_index to the successful prerequisite index (or null for a purely
+NPC-initiated conversational outcome). A player request is NOT consent. Never
+claim transfer from an absent NPC, or invent UUIDs. These are not new items.
+No prose-only handoffs: any approved transfer of an existing owned item must
+be covered by this typed receipt, otherwise resolve without claiming delivery.
+Set each action's npc_response=accepted when the NPC agrees, refused when they
+decline, not_applicable otherwise. A refusal and an accepted handoff cannot
+refer to the same act. Handoff evidence describes its public result; it need
+not duplicate a substring of another outcome field.
+Direction comes from current custody, not the grammatical subject of an imperative.
+"Марта, возьмите моё письмо на хранение" is player -> NPC (give), NEVER NPC -> player
+(receive). npc_item_handoffs selects only items actually held by its giver now.
+"Марта, отдай пока письмо — хочу перенести его" and "верни мне письмо" request
+NPC -> player, not a player give. Resolve the present keeper's response, then emit receive only
+if the handoff actually happens. A previously established offer/condition, fulfilled by this input,
+is valid consent evidence; do not demand a particular imperative or repeat a fulfilled condition.
+
+PLAYER-TO-NPC HANDOFFS (player_item_handoffs): If the human voluntarily offers an existing
+player-owned item to a present NPC, and you resolve that NPC actually accepting it NOW,
+return item_id, recipient_id, offer_evidence (verbatim latest human input authorizing the
+offer), evidence (verbatim confirmed successful outcome), and after_action_index.
+This includes "возьмите письмо на хранение" misclassified as service. NPC consent alone,
+a hypothetical question, or past prose never authorizes the player's new act. Without
+both an authorized offer and actual acceptance, do not claim possession changed. A generic
+service result is not physical evidence: every confirmed handoff requires an inventory receipt.
+
+INDEPENDENT STORY (world_move): During normal play, including turns with
+player actions, an established active_conflict, unresolved_beat, tension, or
+already-known NPC CharacterGoal may develop without player instruction.
+ENGINE-VERIFIED ACTIVE WORLD THREADS lists the precise sources and actor IDs.
+Use kind=pressure|information|deadline|npc_action|npc_move; source must EXACTLY equal
+one listed source; outcome must EXACTLY equal one of observable_consequences.
+For npc_action and npc_move, actor_id must match an existing goal's actor_id.
+npc_move MUST include destination_location_id from that actor's listed
+available_destinations: ONE previously established, active graph edge. Do not
+move an NPC to the hero's current place or invent a location/route. The
+NPC's observed arrival into the hero's scene requires a separate authorized
+presence transition. For npc_action, that actor can
+act at their own current place, but cannot teleport to the player's location
+or speak there when physically absent. An offscreen development can only be
+reported indirectly where existing world communication makes that possible.
+For deadline, specify due_phase=the structured clock phase from context;
+do not claim a deadline expired in any other phase. Deadlines are one-shot.
+If pressure_due=true and a legitimate story source exists, strongly prefer a
+specific, consequential world_move rather than another passive observation.
+Never invent a random threat just to hit a pressure quota.
+World moves must not introduce strangers, create items, change custody, or
+decide a PC action. Only npc_move authorizes a single existing NPC's movement
+along one typed known exit; no other world_move may move characters.
+Do not use them if there is an unresolved pending_player_choice.
+""";
 
 _PROFILE_PROMPT = """[NEW DESTINATION PROFILE ENRICHMENT]
 Return exactly DestinationProfilePatchSet, one patch per requested action index. Each request is a
@@ -210,6 +330,7 @@ class ActionOutcomeDraft(BaseModel):
     action_index: int = Field(ge=0, le=7)
     resolution: ActionResolution
     safe_mundane: bool = False
+    npc_response: Literal["accepted", "refused", "not_applicable"] = "not_applicable"
     # Decided before the result is written (strict decoding emits fields in order, null explicit);
     # an invalid arrival goes to schema repair instead of silently vanishing (B9 T10 «речник»).
     arriving: OutcomeNpcIntroductionDraft | None = Field(
@@ -227,6 +348,7 @@ class OutcomeNpcIntroductionDraft(BaseModel):
 
     canonical_name: str = Field(min_length=2, max_length=120)
     role: str = Field(min_length=2, max_length=120)
+    current_goal: str | None = Field(default=None, max_length=500)
     description: str = Field(min_length=32, max_length=800)
     appearance: str = Field(min_length=32, max_length=800)
     voice: str | None = None
@@ -275,6 +397,12 @@ class TurnOutcomeDecisionDraft(BaseModel):
 
     action_outcomes: list[ActionOutcomeDraft] = Field(max_length=8)
     npc_introductions: list[OutcomeNpcIntroductionDraft] = Field(default_factory=list, max_length=4)
+    item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
+    npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
+    player_item_handoffs: list[PlayerItemHandoff] = Field(default_factory=list, max_length=4)
+    item_revelations: list[ItemContentRevelation] = Field(default_factory=list, max_length=4)
+    item_property_changes: list[ItemPropertyChange] = Field(default_factory=list, max_length=8)
+    world_move: PlannedWorldMove | None = None
     resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     response_speaker_name: str | None = Field(default=None, max_length=120)
@@ -319,6 +447,11 @@ def _outcome_wire_model(
     bound_response_speaker: str | None = None,
     resident_slots: list[str] | None = None,
     required_slot: str | None = None,
+    handoff_states=None,
+    controlled_id: str | None = None,
+    present_ids: set[str] | None = None,
+    discovery_targets: dict[int, str] | None = None,
+    required_effects: dict[int, str] | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -336,10 +469,60 @@ def _outcome_wire_model(
 
     slot_type = Literal[tuple(resident_slots)] | None if resident_slots else type(None)
     arrival_type = OutcomeNpcIntroductionDraft | None if allow_introductions else type(None)
+    npc_handoff_model = NpcItemHandoff
+    player_handoff_model = PlayerItemHandoff
+    npc_handoffs_allowed = player_handoffs_allowed = True
+    revelation_model = ItemContentRevelation
+    property_model = ItemPropertyChange
+    copy_reference_type = UUID | None
+    revelations_allowed = action_count > 0
+    if handoff_states is not None:
+        item_ids = tuple(str(item.item_id) for item in handoff_states)
+        copy_reference_type = Literal[item_ids] | None if item_ids else type(None)
+        revelation_model = create_model(
+            "ReferencedItemRevelation", __base__=ItemContentRevelation,
+            item_id=(Literal[item_ids] if item_ids else type(None), ...),
+            action_index=(Literal[tuple(range(action_count))] if action_count else type(None), ...),
+        )
+        property_model = create_model(
+            "ReferencedItemPropertyChange", __base__=ItemPropertyChange,
+            item_id=(Literal[item_ids] if item_ids else type(None), ...),
+            action_index=(Literal[tuple(range(action_count))] if action_count else type(None), ...),
+        )
+        revelations_allowed = bool(item_ids and action_count)
+        recipients = tuple(sorted((present_ids or set()) - {controlled_id}))
+        npc_items = {str(item.item_id): str(item.owner_id) for item in handoff_states
+                     if str(item.owner_id) in recipients}
+        player_items = tuple(str(item.item_id) for item in handoff_states
+                             if str(item.owner_id) == controlled_id)
+        npc_handoffs_allowed = bool(npc_items)
+        player_handoffs_allowed = bool(player_items and recipients)
+
+        class ReferencedNpcHandoff(NpcItemHandoff):
+            item_id: Literal[tuple(npc_items)] if npc_items else type(None)
+            giver_id: Literal[tuple(sorted(set(npc_items.values())))] if npc_items else type(None)
+
+            @model_validator(mode="after")
+            def correct_giver(self):
+                if npc_items.get(str(self.item_id)) != str(self.giver_id):
+                    raise ValueError("NPC handoff giver must be the actual current holder")
+                return self
+
+        class ReferencedPlayerHandoff(PlayerItemHandoff):
+            item_id: Literal[player_items] if player_items else type(None)
+            recipient_id: Literal[recipients] if recipients else type(None)
+
+        npc_handoff_model = ReferencedNpcHandoff
+        player_handoff_model = ReferencedPlayerHandoff
 
     class IndexedNpcIntroductionDraft(OutcomeNpcIntroductionDraft):
         after_action_index: prerequisite_type = None
         resident_slot: slot_type = None
+
+    class IndexedItemIntroduction(PlannedItemIntroduction):
+        after_action_index: prerequisite_type = None
+        copy_of_item_id: copy_reference_type = None
+        reserved_item_id: None = None
 
     if bound_response_speaker and action_count:
         # The addressee is already here: a newcomer is only someone a frozen action brings in.
@@ -419,7 +602,15 @@ def _outcome_wire_model(
         action_model = reduce(or_, variants)
 
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
+        model_config = ConfigDict(extra="ignore", json_schema_extra={
+            "required": ["action_outcomes", "npc_introductions", "npc_item_handoffs", "player_item_handoffs", "item_revelations", "item_introductions", "item_property_changes"],
+        })
         response_speaker_name: speaker_type = None
+        npc_item_handoffs: list[npc_handoff_model] = Field(default_factory=list, max_length=4 if npc_handoffs_allowed else 0)
+        player_item_handoffs: list[player_handoff_model] = Field(default_factory=list, max_length=4 if player_handoffs_allowed else 0)
+        item_revelations: list[revelation_model] = Field(default_factory=list, max_length=4 if revelations_allowed else 0)
+        item_property_changes: list[property_model] = Field(default_factory=list, max_length=8 if revelations_allowed else 0)
+        item_introductions: list[IndexedItemIntroduction] = Field(default_factory=list, max_length=4)
         response_after_action_index: prerequisite_type = None
         response_revealed_name: revealed_name_type = None
         response_name_evidence: revealed_name_type = None
@@ -479,6 +670,33 @@ def _outcome_wire_model(
 
         @model_validator(mode="after")
         def validate_action_indices(self):
+            outcomes = {outcome.action_index: outcome for outcome in self.action_outcomes}
+            for index, effect in (required_effects or {}).items():
+                if outcomes.get(index) is None or outcomes[index].resolution != "auto_success":
+                    continue
+                if effect == "item_creation" and not any(item.after_action_index == index for item in self.item_introductions):
+                    raise ValueError("Successful artifact creation requires a typed introduction at its source index")
+                if effect == "item_change" and not any(item.action_index == index for item in self.item_property_changes):
+                    raise ValueError("Successful physical change requires a typed property effect at its source index")
+            for change in self.item_property_changes:
+                source = outcomes.get(change.action_index)
+                target = (discovery_targets or {}).get(change.action_index)
+                if not source or source.resolution != "auto_success" or (target and str(change.item_id) != target):
+                    raise ValueError("Property effect requires a successful source and the frozen subject identity")
+                if change.property_name in ItemStateSnapshot.model_fields:
+                    raise ValueError("Property effects cannot replace another authoritative item state slot")
+            for handoff in self.npc_item_handoffs:
+                prerequisite = outcomes.get(handoff.after_action_index)
+                if prerequisite and (prerequisite.resolution != "auto_success" or prerequisite.npc_response == "refused"):
+                    raise ValueError("A handoff cannot contradict the source action's typed refusal or failure")
+            for handoff in self.player_item_handoffs:
+                prerequisite = outcomes.get(handoff.after_action_index)
+                if prerequisite and (prerequisite.resolution != "auto_success" or prerequisite.npc_response == "refused"):
+                    raise ValueError("A player offer cannot be accepted against the source action's refusal or failure")
+            for revelation in self.item_revelations:
+                target = (discovery_targets or {}).get(revelation.action_index)
+                if target is not None and str(revelation.item_id) != target:
+                    raise ValueError("A revelation must concern the frozen subject item, not another document")
             if self.response_revealed_name:
                 AddressedResponse(
                     revealed_name=self.response_revealed_name,
@@ -617,6 +835,7 @@ def normalize_outcome_draft(
                 "action_index": item.action_index,
                 "resolution": resolution,
                 "safe_mundane": bool(item.safe_mundane) if resolution == "auto_success" else False,
+                "npc_response": item.npc_response,
                 "observable_outcome": _compact(item.observable_outcome) or None,
                 "reaction": _compact(item.reaction) or None,
                 "blocking_reason": blocking_reason if resolution == "blocked" else None,
@@ -665,6 +884,7 @@ def normalize_outcome_draft(
                 "description": description,
                 "appearance": appearance,
                 "voice": _compact(npc.voice) or None,
+                "current_goal": _compact(npc.current_goal) or None,
                 "temporary_name": temporary_name,
                 "personal_name_evidence": evidence if not temporary_name else None,
                 "reason": reason,
@@ -685,6 +905,20 @@ def normalize_outcome_draft(
         {
             "action_outcomes": public_outcomes,
             "npc_introductions": introductions,
+            "item_introductions": [
+                item.model_dump(mode="json") for item in draft.item_introductions
+            ],
+            "npc_item_handoffs": [
+                item.model_dump(mode="json") for item in draft.npc_item_handoffs
+            ],
+            "player_item_handoffs": [
+                item.model_dump(mode="json") for item in draft.player_item_handoffs
+            ],
+            "item_revelations": [item.model_dump(mode="json") for item in draft.item_revelations],
+            "item_property_changes": [item.model_dump(mode="json") for item in draft.item_property_changes],
+            "world_move": (
+                draft.world_move.model_dump(mode="json") if draft.world_move else None
+            ),
             "resolution": draft.resolution,
             "addressed_response": AddressedResponse(
                 speaker_name=response_speaker,
@@ -822,6 +1056,7 @@ class TurnOutcomeResolver:
         force_introduce_contact: bool = False,
         resident_slots: list[tuple[str, str, bool]] | None = None,
         destination_cast: dict[str, list[str]] | None = None,
+        repair_feedback: str | None = None,
     ) -> TurnOutcomeDecision:
         try:
             solo_cast = solo_physical_presence(context_messages)
@@ -854,6 +1089,15 @@ class TurnOutcomeResolver:
             ) if seeks_contact_or_presence(contract) and not existing_addressee else None
             response_model = _outcome_wire_model(
                 len(contract.actions),
+                handoff_states=item_reference_states(context_messages),
+                controlled_id=next((line.removeprefix("Controlled character:").strip()
+                                    for message in context_messages for line in message.content.splitlines()
+                                    if line.startswith("Controlled character:")), None),
+                present_ids=set(action_reference_catalog(context_messages, "Physically present characters:")),
+                discovery_targets={index: str(action.subject_item_id) for index, action in enumerate(contract.actions)
+                                   if action.subject_item_id is not None},
+                required_effects={index: action.expected_effect for index, action in enumerate(contract.actions)
+                                  if action.expected_effect != "ordinary"},
                 allow_choice=bool(contract.pending_player_choice),
                 evidence=authoritative_context,
                 ordinary_movement_destinations={
@@ -873,7 +1117,9 @@ class TurnOutcomeResolver:
                 bound_response_speaker=(
                     contract.addressed_character_name if existing_addressee else None
                 ),
-                present_names=present_character_names(context_messages),
+                present_names=sorted(present_character_names(context_messages).union(
+                    *(destination_cast or {}).values()
+                )),
                 resident_slots=[slot_id for slot_id, _role, _filled in slots],
                 required_slot=required_slot,
                 movement_indices={
@@ -935,6 +1181,10 @@ class TurnOutcomeResolver:
                                 for place, cast in (destination_cast or {}).items()
                             )
                             + "\nResolve the external result now."
+                            + ("\n[REPAIR UNEXECUTED DECISION]\n" + repair_feedback
+                               + "\nKeep the same frozen actions and player boundaries. Correct the "
+                                 "structured effects, not the human input. Nothing has executed yet."
+                               if repair_feedback else "")
                         ),
                     ),
                 ],

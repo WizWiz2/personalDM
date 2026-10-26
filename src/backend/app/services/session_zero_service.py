@@ -131,6 +131,16 @@ class SessionZeroService:
         if "narrative_style" in values:
             campaign.narrative_style = values.pop("narrative_style")
 
+        if "starting_day_part" in values:
+            day_part = values.pop("starting_day_part")
+            custom = self._setups.decode_dict(row.custom_fields)
+            custom.update(values.pop("custom_fields", {}) or {})
+            if day_part:
+                custom["starting_day_part"] = day_part
+            else:
+                custom.pop("starting_day_part", None)
+            values["custom_fields"] = custom
+
         if "starting_location_id" in values and values["starting_location_id"]:
             location = await self._entities.get_by_id(
                 values["starting_location_id"]
@@ -264,6 +274,17 @@ class SessionZeroService:
             tone=row.tone,
         )
 
+        # Bootstrap intentionally provides a generic clock for legacy setups.
+        # Apply the explicit session-zero phase AFTER bootstrap or it is overwritten.
+        day_part = self._setups.decode_dict(row.custom_fields).get("starting_day_part")
+        if day_part in {"dawn", "morning", "day", "evening", "night"}:
+            from app.services.scene_state_service import SceneStateService
+
+            runtime = await SceneStateService(self._session).ensure_runtime_state(scene.id)
+            if not runtime.world_time_label or runtime.world_time_label == "Начало приключения":
+                runtime.world_time_label = day_part
+            await self._session.flush()
+
         campaign.description = (
             campaign.description
             or row.world_summary
@@ -357,6 +378,7 @@ class SessionZeroService:
             rules_system=row.rules_system,
             world_summary=row.world_summary,
             starting_situation=row.starting_situation,
+            starting_day_part=custom.get("starting_day_part"),
             starting_location_id=(
                 UUID(row.starting_location_id)
                 if row.starting_location_id

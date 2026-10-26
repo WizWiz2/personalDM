@@ -2,16 +2,21 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
+from app.db.repositories.scene_repo import SceneRepository
 from app.models.turn_authority import TurnAuthority
+from app.db.tables import Entity, Item
 from app.services.entity_identity import identity_key
+from app.services.item_state_authority import load_item_states
 from app.services.scene_state_service import SceneStateService
 from app.services.outcome_fact_authority import established_state_lines, established_subjects
 from app.services.turn_authority_planner import CoordinatedTurnPlan
+from app.services.world_momentum_service import WorldMomentumService
 from app.services.turn_authority_resolvers import (
     ActorResolver,
     AuthorityResolutionError,
@@ -80,11 +85,89 @@ class TurnAuthorityService:
             else None
         )
 
+        plot_source = getattr(target_state, "active_conflict", None)
+        if (
+            not plot_source and effective_scene_id and plan
+            and callable(getattr(getattr(self, "_session", None), "execute", None))
+        ):
+            theses = await SceneRepository(self._session).list_theses_by_scene(
+                effective_scene_id, active_only=True,
+            )
+            threads = [
+                thesis for thesis in theses
+                if thesis.thesis_type in {"unresolved_beat", "tension"}
+                and thesis.priority >= 0
+            ]
+            if threads:
+                plot_source = max(threads, key=lambda thesis: thesis.priority).text
+
+        world_move = None
+        if plan and plan.world_move and effective_scene_id:
+            candidate = plan.world_move
+            momentum = WorldMomentumService(self._session)
+            authorized = await momentum.threads(campaign_id, effective_scene_id)
+            matches = [
+                source for source in authorized
+                if source["source"].casefold().strip() == candidate.source.casefold().strip()
+                and str(source["actor_id"] or "") == str(candidate.actor_id or "")
+            ]
+            actor_ok = (
+                (
+                    candidate.kind in {"npc_action", "npc_move"}
+                    and candidate.actor_id is not None
+                )
+                or (
+                    candidate.kind not in {"npc_action", "npc_move"}
+                    and candidate.actor_id is None
+                    and candidate.destination_location_id is None
+                )
+            )
+            route_ok = candidate.kind != "npc_move"
+            if candidate.kind == "npc_move" and candidate.destination_location_id:
+                route_ok = any(
+                    str(candidate.destination_location_id) == edge["destination_location_id"]
+                    for match in matches
+                    for edge in match.get("available_destinations", [])
+                ) and (
+                    target_state is not None
+                    and candidate.destination_location_id != target_state.location_id
+                )
+            clock_ok = (
+                candidate.kind != "deadline" or (
+                    candidate.due_phase is not None
+                    and target_state is not None
+                    and SceneStateService.normalize_day_part(
+                        target_state.world_time_label
+                    ) == candidate.due_phase
+                )
+            )
+            previously_fired = (
+                await momentum.deadline_already_triggered(
+                    campaign_id, candidate.source,
+                )
+                if matches and candidate.kind == "deadline" and clock_ok
+                else False
+            )
+            if (
+                matches and actor_ok and route_ok and clock_ok and not previously_fired
+                and candidate.outcome in plan.observable_consequences
+                and plan.resolution not in {"failure", "uncertain"}
+                and not plan.narration_policy.pending_player_choice
+            ):
+                world_move = candidate
+
         present_names = list(target_state.participant_names) if target_state else []
         present_keys = {identity_key(value) for value in present_names}
 
         actor = selected_actor
         effective_actor_id = selected_actor_id
+        # The protagonist is controlled by the human. A routed /talk target or
+        # stale actor provenance must never grant the protagonist an NPC beat:
+        # beat validation expects third-person NPC prose, while the protagonist
+        # is narrated in second person and cannot take autonomous actions.
+        if actor and actor.id == campaign.player_character_id:
+            actor = None
+            effective_actor_id = None
         if actor and target_state and identity_key(actor.canonical_name) not in present_keys:
             actor = None
             effective_actor_id = None
@@ -92,11 +175,13 @@ class TurnAuthorityService:
         executed_steps = (
             (plan.scene_transition.execution_report or {}).get("steps", []) if plan else []
         )
-        completed_indices = {
-            step.get("step_index", index)
-            for index, step in enumerate(executed_steps)
-            if step.get("status") == "completed"
-        }
+        source_groups = {}
+        for index, step in enumerate(executed_steps):
+            source = step.get("source_action_index")
+            source = step.get("step_index", index) if source is None else source
+            source_groups.setdefault(source, []).append(step.get("status"))
+        completed_indices = {source for source, statuses in source_groups.items()
+                             if all(status == "completed" for status in statuses)}
 
         def prerequisite_completed(effect) -> bool:
             return effect.after_action_index is None or effect.after_action_index in completed_indices
@@ -155,6 +240,22 @@ class TurnAuthorityService:
                 "planned": plan.action_sequence.model_dump(mode="json"),
             }
 
+        # Only read typed DB custody; never infer ownership from storyteller prose.
+        # Thin authority contract tests inject repository doubles without a DB
+        # session. Their typed cast behavior must remain independently testable.
+        item_rows = []
+        if callable(getattr(self._session, "execute", None)):
+            item_rows = (await self._session.execute(
+                select(Entity.canonical_name, Item.current_owner_id, Item.current_location_id)
+                .join(Item, Item.entity_id == Entity.id)
+                .where(Entity.campaign_id == str(campaign_id), Entity.entity_type == "item")
+            )).all()
+        current_location_id = str(target_state.location_id) if target_state and target_state.location_id else None
+        unavailable_items = [
+            name for name, owner_id, item_location_id in item_rows
+            if owner_id != str(campaign.player_character_id or "")
+            and (owner_id is not None or item_location_id != current_location_id)
+        ]
         authority = TurnAuthority(
             campaign_id=campaign_id,
             trigger_turn_id=trigger_turn_id,
@@ -174,14 +275,34 @@ class TurnAuthorityService:
             present_character_names=present_names,
             known_absent_character_names=absent_names,
             allowed_new_npcs=npc_resolution.new_introductions,
+            allowed_new_items=(
+                [
+                    item for item in plan.item_introductions
+                    if item.after_action_index in completed_indices
+                    or (item.after_action_index is None and not (
+                        plan.resolution in {"failure", "uncertain"}
+                        or (executed_steps and not completed_indices)
+                    ))
+                ] if plan else []
+            ),
             allowed_existing_npc_arrivals=npc_resolution.existing_arrivals,
             object_names=(list(target_state.object_names) if target_state else []),
+            item_states=(await load_item_states(self._session, campaign_id)
+                         if isinstance(self._session, AsyncSession) else []),
+            item_states_loaded=isinstance(self._session, AsyncSession),
+            unavailable_item_names=unavailable_items,
+            world_move=world_move,
             resolution=(plan.resolution if plan else "conversation"),
             identity_reveal_requested=(
                 bool(plan and (plan.personal_name_revealed or plan.identity_reveal_requested))
             ),
             dramatic_mode=(plan.narration_policy.dramatic_mode if plan else "calm"),
-            observable_consequences=(list(plan.observable_consequences) if plan else []),
+            observable_consequences=(
+                [
+                    value for value in plan.observable_consequences
+                    if not (plan.world_move and world_move is None and value == plan.world_move.outcome)
+                ] if plan else []
+            ),
             character_beats=(list(plan.character_beats) if plan else []),
             addressed_response=(
                 planned_response.model_copy(deep=True)
@@ -193,10 +314,28 @@ class TurnAuthorityService:
                 list(plan.narration_policy.protected_player_decisions) if plan else []
             ),
             pending_player_choice=(plan.narration_policy.pending_player_choice if plan else None),
-            allow_new_complication=(
-                plan.narration_policy.allow_new_complication if plan else False
+            # Independent developments are permitted ONLY from an established
+            # conflict. The narrator still cannot materialize a new NPC/item.
+            allow_new_complication=bool(
+                plan and (
+                    world_move is not None
+                    or plan.narration_policy.allow_new_complication
+                    or (
+                        plot_source
+                        and plan.resolution not in {"failure", "uncertain"}
+                        and not plan.narration_policy.pending_player_choice
+                    )
+                )
             ),
-            complication_source=(plan.narration_policy.complication_source if plan else None),
+            complication_source=(
+                world_move.source
+                if world_move else plan.narration_policy.complication_source
+                if plan and plan.narration_policy.allow_new_complication
+                else plot_source
+                if plan and plot_source and plan.resolution not in {"failure", "uncertain"}
+                and not plan.narration_policy.pending_player_choice
+                else None
+            ),
             action_sequence=executed_sequence,
         )
 

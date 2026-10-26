@@ -34,10 +34,11 @@ jobs:
           PDM_SIM_DATA_DIR: "./data/ci-resume"
           PDM_SIM_RESET: "1"
           PDM_SIM_STOP_ON_PROVIDER_FAILURE: "1"
-          # TurnSaga deliberately fails fast on transport errors instead of spending
-          # a minute repeating the same request. One injected failure is enough to
-          # prove that the logical turn is resumable and idempotent.
-          PDM_MOCK_FAIL_DM_ATTEMPTS: "1"
+          # Deterministically checkpoint the first user input as an orphan.
+          # Narrator transport failure now correctly publishes a safe typed fallback,
+          # so it must not be used to simulate a crash before publication.
+          PDM_SIM_INJECT_ORPHAN_ONCE: "1"
+          PDM_MOCK_FAIL_DM_ATTEMPTS: "0"
         run: python tests/run_ci_mock_simulation_v3.py
 
       - name: Validate checkpoint before resume

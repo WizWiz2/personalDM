@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from time import perf_counter
 from collections.abc import AsyncIterator
 from uuid import UUID
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 from app.db.repositories.generation_lifecycle_repo import GenerationLifecycleRepository
 from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
@@ -16,6 +19,7 @@ from app.models.jobs import GenerationPhase
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProviderError
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services import campaign_write_barrier
 from app.services.initial_world_state import InitialWorldStateService
 from app.services.llm_usage_tracker import (
     close_usage_context,
@@ -132,7 +136,9 @@ class TurnSaga:
             "1. Do not put a person physically into the scene unless they are in present_characters, "
             "allowed_new_npcs, allowed_existing_npc_arrivals, or one person beat_owner brings in "
             "through executed_steps. Mentioning anyone else is fine.\n"
-            "2. Do not contradict established_state, scene_time or executed_steps.\n"
+            "2. Do not contradict established_state, scene_time, approved new_objects, "
+            "or executed_steps. A received item remains in the hero's inventory even "
+            "when it is no longer on the ground.\n"
             "3. Do not write the player character's speech, decisions, thoughts, feelings or "
             "voluntary actions beyond player_input.\n"
             "4. Do not move anyone to another place without a typed trip "
@@ -144,11 +150,27 @@ class TurnSaga:
             "subject is beat_owner, revealed_name: the personal name beat_owner gives for themself "
             "in that beat, nominative, else null, newcomer: the person beat_owner brought in, if they "
             "speak or act here, as {name as in the prose, kind: speech|act, evidence}, else null}. "
+            "The approved_world_move, if present, is an executed independent "
+            "story development tied to an existing conflict. Depict its specific "
+            "observable outcome, not a vague ominous hint. A typed npc_move may "
+            "move ONLY its authorized existing actor along its authorized hop "
+            "outside the player scene; keep absent actors offscreen and do not "
+            "pretend the player witnessed their arrival. All other unsanctioned "
+            "people, item custody changes and physical movements remain forbidden. "
             "Everything else in the facts "
             "is optional context.\n\n"
             "Render the immediate result as natural Russian literary prose in narrative_person, also "
+            "remembering that the item and location snapshots are AFTER execution. Narrate each "
+            "completed act from its receipt's before/after states; never use the resulting possession "
+            "or location as grounds to refuse that same completed act retroactively. "
             "where the facts name the protagonist in third person; usually 2-3 paragraphs, "
-            "and stop before the player's next choice."
+            "and stop before the player's next choice. Make established scenes feel alive: use "
+            "concrete sensory details, characterful dialogue, changing responses and meaningful "
+            "consequences of the known conflict. If complication_source is present, the already "
+            "established tension may develop on its own; do not invent unsanctioned people or "
+            "items. Unknown facts are not confirmed absences. Never describe the validation "
+            "process in-world (no 'не установлено', 'не подтверждено' as mechanical audit). "
+            "Respect the chosen campaign genre instead of defaulting to bureaucratic refusals."
         )
         return [
             ChatMessage(role=first.role, content=f"{first.content}\n\n{contract}"),
@@ -259,6 +281,111 @@ class TurnSaga:
                 "telemetry": planner.telemetry,
             }
 
+    async def _retry_authority_after_invalid_npc(
+        self,
+        *,
+        campaign_id: UUID,
+        trigger_turn_id: UUID,
+        source_scene_id: UUID | None,
+        turn_create: TurnCreate,
+        messages: list[ChatMessage],
+        role_router: RoleModelRouter,
+        primary_config,
+        first_error: str,
+    ):
+        """One bounded semantic replan after an out-of-place NPC authority conflict.
+
+        F-20 (QA-209): the planner occasionally tries to summon a known NPC
+        from a different location. Rejecting the plan is correct, but consuming
+        the user's only attempt is not. Roll back any *uncommitted* transition
+        and replan once with the precise structural explanation.
+        """
+        await self._session.rollback()
+        feedback = ChatMessage(
+            role="system",
+            content=(
+                "[CONTROL-PLAN REPAIR, NOT PLAYER INPUT]\n"
+                "The previous plan was rejected by physical authority. "
+                + first_error[:900]
+                + "\nKeep the original player's exact last input unchanged. "
+                  "A known person at another location cannot speak or appear here "
+                  "without a typed completed arrival/movement. Do NOT recreate them "
+                  "as a new NPC. Either encode a genuinely justified structural "
+                  "arrival, or leave them absent and resolve the player's action "
+                  "from the actual present scene. Do not imply arrival in narration "
+                  "unless the location transition is approved."
+            ),
+        )
+        plan, metadata = await self._plan(
+            campaign_id=campaign_id,
+            user_input=turn_create.content,
+            messages=(
+                [messages[0], feedback, *messages[1:]]
+                if messages else [feedback]
+            ),
+            role_router=role_router,
+            primary_config=primary_config,
+        )
+        metadata = {
+            **metadata,
+            "authority_repair": {"trigger": "known_absent_npc", "attempts": 1,
+                                 "first_error": first_error[:700]},
+        }
+        await self._set_phase(
+            (await self._generation_runs.start_or_resume(campaign_id, trigger_turn_id)).id,
+            GenerationPhase.PLANNED,
+        )
+        target_scene_id = source_scene_id
+        applied = None
+        transition_metadata = {
+            "status": "not_required",
+            "source_scene_id": str(source_scene_id) if source_scene_id else None,
+        }
+        if plan.scene_transition.required or any(
+            step.transition.transition_type == "location_transition"
+            for step in plan.action_sequence.steps
+        ):
+            await InitialWorldStateService(self._session).ensure_snapshot(
+                campaign_id, exclude_turn_id=trigger_turn_id,
+            )
+        executor = SceneTransitionExecutor(self._session)
+        if plan.scene_transition.required:
+            try:
+                applied = await executor.apply(
+                    campaign_id, source_scene_id, trigger_turn_id,
+                    plan.scene_transition,
+                )
+            except ValueError as exc:
+                raise TurnPlanningError(
+                    f"Authority repair planned an invalid transition: {exc}"
+                ) from exc
+            if applied:
+                target_scene_id = applied.target_scene_id
+                transition_metadata = {
+                    "status": "prepared",
+                    "transition_id": str(applied.transition_id),
+                    "source_scene_id": (
+                        str(applied.source_scene_id) if applied.source_scene_id else None
+                    ),
+                    "target_scene_id": str(applied.target_scene_id),
+                    "source_location_id": (
+                        str(applied.source_location_id) if applied.source_location_id else None
+                    ),
+                    "target_location_id": (
+                        str(applied.target_location_id) if applied.target_location_id else None
+                    ),
+                }
+        authority = await TurnAuthorityService(self._session).build(
+            campaign_id=campaign_id,
+            trigger_turn_id=trigger_turn_id,
+            player_input=turn_create.content,
+            source_scene_id=source_scene_id,
+            target_scene_id=target_scene_id,
+            plan=plan,
+            acting_character_id=turn_create.acting_character_id,
+        )
+        return plan, metadata, executor, applied, target_scene_id, transition_metadata, authority
+
     async def _rollback_materialization(
         self,
         materializer: TurnOutcomeMaterializer | None,
@@ -342,6 +469,7 @@ class TurnSaga:
         materializer: TurnOutcomeMaterializer | None = None
         materialized_outcome: MaterializedTurnOutcome | None = None
         prepared = False
+        barrier_held = False
         campaign_key = str(campaign_id)
         current_task = asyncio.current_task()
 
@@ -399,12 +527,14 @@ class TurnSaga:
             await self._set_phase(generation_run.id, GenerationPhase.PLANNED)
 
             if plan:
-                # Capture the pre-turn projection before scene transitions or action steps mutate
-                # character locations. Canon replay uses this checkpoint for a correct undo.
-                if plan and (
+                # Capture the pre-turn physical projection before *any* structured mutation.
+                # F-35: inventory-only turns must not establish a baseline AFTER changing
+                # custody; otherwise /undo can resurrect an obsolete item owner.
+                if (
                     plan.scene_transition.required
                     or any(
-                        step.transition.transition_type == "location_transition"
+                        step.action_type == "inventory"
+                        or step.transition.transition_type == "location_transition"
                         for step in plan.action_sequence.steps
                     )
                 ):
@@ -471,13 +601,47 @@ class TurnSaga:
                     acting_character_id=turn_create.acting_character_id,
                 )
             except TurnAuthorityError as exc:
-                raise TurnPlanningError(f"Turn authority rejected before narration: {exc}") from exc
+                # One controlled repair for the F-20 class only. A persisted
+                # existing transition is not ours to rewrite.
+                if (
+                    "Известный персонаж не может появиться без структурного перемещения" not in str(exc)
+                    or existing_transition is not None
+                ):
+                    raise TurnPlanningError(
+                        f"Turn authority rejected before narration: {exc}"
+                    ) from exc
+                try:
+                    (
+                        plan, planner_metadata, transition_executor, applied_transition,
+                        effective_scene_id, transition_metadata, authority,
+                    ) = await self._retry_authority_after_invalid_npc(
+                        campaign_id=campaign_id,
+                        trigger_turn_id=user_turn.id,
+                        source_scene_id=source_scene_id,
+                        turn_create=turn_create,
+                        messages=messages,
+                        role_router=role_router,
+                        primary_config=primary_config,
+                        first_error=str(exc),
+                    )
+                except (TurnAuthorityError, TurnPlanningError, ValueError) as repair_exc:
+                    raise TurnPlanningError(
+                        "Authority plan still invalid after one bounded repair: "
+                        f"{repair_exc}"
+                    ) from repair_exc
 
             materializer = TurnOutcomeMaterializer(self._session)
             materialized_outcome = await materializer.materialize(
                 authority,
                 source_turn_id=user_turn.id,
             )
+            # From the fingerprint capture until the publication commit the campaign is
+            # held exclusively against post-turn durable writes; otherwise a memory job
+            # auto-committing MOVEMENT/presence mid-narration would fail assert_unchanged
+            # and compensate a turn that was legitimately in flight.
+            campaign_barrier = campaign_write_barrier.for_campaign(campaign_id)
+            await campaign_barrier.acquire()
+            barrier_held = True
             world_frame = (
                 await TurnWorldFrame.capture(self._session, campaign_id, effective_scene_id)
                 if effective_scene_id else None
@@ -531,6 +695,9 @@ class TurnSaga:
                         "introduced_character_ids": [
                             str(value) for value in materialized_outcome.introduced_character_ids
                         ],
+                        "introduced_item_ids": [
+                            str(value) for value in materialized_outcome.introduced_item_ids
+                        ],
                         "arrived_existing_character_ids": [
                             str(value)
                             for value in materialized_outcome.arrived_existing_character_ids
@@ -583,6 +750,9 @@ class TurnSaga:
             context_metadata["turn_materialization"]["introduced_character_ids"] = [
                 str(value) for value in materialized_outcome.introduced_character_ids
             ]
+            context_metadata["turn_materialization"]["introduced_item_ids"] = [
+                str(value) for value in materialized_outcome.introduced_item_ids
+            ]
             context_metadata["turn_authority"] = authority.model_dump(mode="json")
             context_metadata["turn_materialization"]["identity_updates"] = [
                 update.snapshot() for update in materialized_outcome.identity_updates
@@ -600,6 +770,37 @@ class TurnSaga:
                     token_count=token_count,
                 ),
             )
+
+            if authority.world_move:
+                from app.services.world_initiative_ledger import WorldInitiativeLedger
+
+                # This is the compensating receipt for an autonomous *physical*
+                # NPC move. An event deletion alone cannot undo a change to
+                # characters.current_location_id (QA-209 regression).
+                if (
+                    authority.world_move.kind == "npc_move"
+                    and authority.world_move.actor_id
+                ):
+                    from app.db.tables import Character
+
+                    moved = await self._session.get(
+                        Character, str(authority.world_move.actor_id),
+                    )
+                    if moved is None or not moved.current_location_id:
+                        raise RuntimeError("Autonomous mover has no canonical origin")
+                    context_metadata["world_move_before"] = {
+                        "actor_id": str(authority.world_move.actor_id),
+                        "origin_location_id": moved.current_location_id,
+                        "destination_location_id": str(
+                            authority.world_move.destination_location_id
+                        ),
+                    }
+                await WorldInitiativeLedger(self._session).record(
+                    authority, saved_assistant.id,
+                )
+                context_metadata["approved_world_move"] = authority.world_move.model_dump(
+                    mode="json"
+                )
 
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(
@@ -637,6 +838,26 @@ class TurnSaga:
             )
             processor = PostTurnProcessor(self._session)
             await processor.enqueue(campaign_id, saved_assistant.id)
+            # The turn-based clock is reversible on /undo. Persist a pre-tick
+            # checkpoint with the same assistant pair that owns the tick.
+            if effective_scene_id and not (
+                applied_transition and applied_transition.status == "prepared"
+                and plan and plan.scene_transition.time_after
+            ):
+                from app.services.scene_state_service import SceneStateService
+
+                clock = SceneStateService(self._session)
+                before = await clock.ensure_runtime_state(effective_scene_id)
+                context_metadata["world_clock_before"] = {
+                    "scene_id": str(effective_scene_id),
+                    "world_time_order": before.world_time_order,
+                    "world_time_label": before.world_time_label,
+                }
+                await clock.advance_published_turn(effective_scene_id)
+                if assistant_row:
+                    assistant_row.context_snapshot = json.dumps(
+                        context_metadata, ensure_ascii=False,
+                    )
             # Advance Game Master rhythm only after a successful published turn.
             try:
                 from app.services.master_service import MasterService
@@ -677,6 +898,12 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             raise
         except Exception as exc:
+            # F-37: even if a streaming client disconnects before the final
+            # telemetry transaction, the production log must preserve this failure.
+            logger.exception(
+                "Narrative generation failed for campaign=%s user_turn=%s run=%s",
+                campaign_id, user_turn.id, generation_run.id,
+            )
             record_decision(
                 "final",
                 "failed",
@@ -711,6 +938,8 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
+            if barrier_held:
+                campaign_write_barrier.for_campaign(campaign_id).release()
             if campaign_key in active_tasks and active_tasks[campaign_key] == current_task:
                 del active_tasks[campaign_key]
             await close_usage_context(usage_context_token)

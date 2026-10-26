@@ -11,13 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.narration_validation_table import NarrationValidationRun
 from app.db.scene_bridge_table import SceneBridge
-from app.db.tables import Character, Entity, SceneParticipant
+from app.db.tables import Character, Entity, PostTurnJob, SceneParticipant
 from app.models.narration_validation import (
     NarrationValidationResult,
     NarrationViolation,
 )
-from app.models.turn_authority import PlannedNpcIntroduction
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
+from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.memory_scribe import MemoryScribe
 from app.services.thesis_curator import ThesisCurator
 from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
@@ -190,11 +190,13 @@ def _compound_plan() -> CoordinatedTurnPlan:
 
 
 def _passed() -> NarrationValidationResult:
-    return NarrationValidationResult(
+    checked = NarrationValidationResult(
         verdict="pass",
         summary="Текст соблюдает typed authority и agency игрока.",
         violations=[],
     )
+    checked._item_states_verified = True
+    return checked
 
 
 def _repair_required() -> NarrationValidationResult:
@@ -447,7 +449,13 @@ async def test_golden_playthrough_preserves_agency_space_and_memory(
     assert intro.text == INTRO_TEXT
 
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
-    assert snapshot["health"]["failed_jobs"] == 0
+    failed_jobs = (
+        await db_session.execute(
+            select(PostTurnJob.job_type, PostTurnJob.error)
+            .where(PostTurnJob.campaign_id == campaign_id, PostTurnJob.status == "failed")
+        )
+    ).all()
+    assert snapshot["health"]["failed_jobs"] == 0, failed_jobs
     assert set(snapshot["active_scene"]["participant_names"]) == {
         "Эйдан",
         BARTENDER_IDENTITY,

@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from uuid import UUID
 
@@ -9,13 +10,17 @@ from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Entity, SceneThesis, Turn
+from app.db.scene_state_table import SceneRuntimeState
+from app.db.tables import Campaign, Character, Entity, Event, EventParticipant, SceneThesis, Turn
 from app.services.scene_transition_executor import release_transition_target
 from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.truth_engine import CanonicalEventStore, WorldReducer
+
+
+logger = logging.getLogger(__name__)
 
 
 class TurnUndoService:
@@ -143,7 +148,7 @@ class TurnUndoService:
             else:
                 await service.rewind_pending_rhythm(campaign_id)
         except Exception:
-            pass
+            logger.exception("Unable to rewind game-master rhythm on undo for %s", campaign_id)
 
         if action_sequence:
             if not await sequence_executor.undo_applied(
@@ -227,6 +232,59 @@ class TurnUndoService:
         await ActiveCanonReplayService(self._session).replay(campaign_id)
         await WorldReducer(self._session).rebuild(campaign_id)
         await self._remove_turn_introductions(campaign_id, assistant_turn_id)
+        # These world developments are attached to the published assistant pair,
+        # never to an earlier plan. /undo must retract them without touching
+        # independent events created by the player or by the Scribe.
+        spawned_event_ids = select(Event.id).where(
+            Event.campaign_id == str(campaign_id),
+            Event.event_type.like("world_initiative:%"),
+            Event.source_turns == json.dumps([str(assistant_turn_id)]),
+        )
+        # Not every SQLite deployment enables FK ON DELETE CASCADE.
+        await self._session.execute(
+            delete(EventParticipant).where(
+                EventParticipant.event_id.in_(spawned_event_ids)
+            )
+        )
+        await self._session.execute(
+            delete(Event).where(Event.id.in_(spawned_event_ids))
+        )
+        # Remove the physical effect of an autonomous, published NPC move.
+        # Undo always operates on the last published pair, so the character must
+        # still occupy the exact recorded destination. Do not teleport an actor
+        # from an unexpected later position.
+        assistant_row = await self._session.get(Turn, str(assistant_turn_id))
+        try:
+            undo_metadata = (
+                json.loads(assistant_row.context_snapshot or "{}")
+                if assistant_row else {}
+            )
+        except (TypeError, ValueError):
+            undo_metadata = {}
+        move_before = undo_metadata.get("world_move_before") or {}
+        if move_before:
+            from app.services.presence_service import PresenceService
+
+            await PresenceService(self._session).move_to_location(
+                campaign_id,
+                UUID(move_before["actor_id"]),
+                UUID(move_before["origin_location_id"]),
+                expected_origin=UUID(move_before["destination_location_id"]),
+            )
+        # Undo latest completed turn also restores the preceding paced clock.
+        # A scene transition handles its own clock rollback separately; only
+        # snapshots actually advanced by publication carry world_clock_before.
+        row = await self._session.get(Turn, str(assistant_turn_id))
+        try:
+            payload = json.loads(row.context_snapshot or "{}") if row else {}
+            before = payload.get("world_clock_before") or {}
+        except (TypeError, ValueError):
+            before = {}
+        if before.get("scene_id"):
+            scene = await self._session.get(SceneRuntimeState, str(before["scene_id"]))
+            if scene is not None and isinstance(before.get("world_time_order"), int):
+                scene.world_time_order = before["world_time_order"]
+                scene.world_time_label = before.get("world_time_label")
         # Curator-created working-memory rows from the undone turn must not remain active.
         # Existing theses changed by a curator are not reconstructed here; unlike durable canon,
         # they are short-lived scene working memory and will be reconciled on the next active turn.
@@ -235,6 +293,16 @@ class TurnUndoService:
                 SceneThesis.source_turn_id == str(assistant_turn_id),
             )
         )
+        # Canon replay can overwrite a player location already restored by
+        # transition compensation. Reconcile after replay, as the player is not
+        # guaranteed to be listed among scene participants.
+        campaign = await self._session.get(Campaign, str(campaign_id))
+        if campaign and campaign.current_scene_id and campaign.player_character_id:
+            active_location_id = await self._scenes.get_location_id(UUID(campaign.current_scene_id))
+            if active_location_id:
+                player = await self._session.get(Character, campaign.player_character_id)
+                if player:
+                    player.current_location_id = str(active_location_id)
 
     async def _remove_turn_introductions(
         self,
@@ -246,7 +314,7 @@ class TurnUndoService:
             await self._session.execute(
                 select(Entity).where(
                     Entity.campaign_id == str(campaign_id),
-                    Entity.entity_type == "character",
+                    Entity.entity_type.in_(("character", "item")),
                 )
             )
         ).scalars().all()
@@ -275,11 +343,16 @@ class TurnUndoService:
                 and fields.get("source_turn_id") == turn_key
             )
             if planned or extracted:
-                from app.db.tables import SceneParticipant
+                from app.db.tables import Item, SceneParticipant
 
-                await self._session.execute(
-                    delete(SceneParticipant).where(SceneParticipant.entity_id == entity.id)
-                )
+                if entity.entity_type == "item":
+                    item = await self._session.get(Item, entity.id)
+                    if item is not None:
+                        await self._session.delete(item)
+                else:
+                    await self._session.execute(
+                        delete(SceneParticipant).where(SceneParticipant.entity_id == entity.id)
+                    )
                 await self._session.delete(entity)
         await self._session.flush()
 

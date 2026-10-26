@@ -30,7 +30,8 @@ async def enrich_new_location_profiles(
     campaign_id: UUID,
     trigger_turn_id: UUID,
     assistant_content: str,
-) -> None:
+    prepare_only: bool = False,
+) -> list[tuple[UUID, str, dict]] | None:
     """Fill empty profiles after publication using a bounded typed descriptive pass.
 
     This is deliberately post-publication and only targets locations created by this turn. It
@@ -58,6 +59,9 @@ async def enrich_new_location_profiles(
 
     from app.services.turn_authority_planner import LocationProfilePatchSet
 
+    # Collect every LLM decision before the first write. A later destination
+    # cannot leave the SQLite writer locked while its profile model thinks.
+    pending_updates: list[tuple[UUID, str, dict]] = []
     for transition in transitions:
         location = await locations.get_by_id(UUID(transition.target_location_id))
         if location is None or location.description:
@@ -99,9 +103,26 @@ async def enrich_new_location_profiles(
         if profile:
             custom = dict(location.custom_fields or {})
             custom["profile_source"] = "turn_planner_destination_profile"
+            pending_updates.append((UUID(str(location.id)), profile, custom))
+
+    if prepare_only:
+        return pending_updates
+    await apply_location_profile_updates(session, pending_updates)
+    return None
+
+
+async def apply_location_profile_updates(
+    session: AsyncSession,
+    pending_updates: list[tuple[UUID, str, dict]],
+) -> None:
+    """Apply precomputed profile patches without any model inference."""
+    locations = LocationRepository(session)
+    # Re-read after inference: another turn may have already filled the profile.
+    for location_id, profile, custom in pending_updates:
+        current = await locations.get_by_id(location_id)
+        if current is not None and not current.description:
             await locations.update(
-                UUID(location.id),
-                LocationUpdate(description=profile, custom_fields=custom),
+                location_id, LocationUpdate(description=profile, custom_fields=custom),
             )
     await session.flush()
 

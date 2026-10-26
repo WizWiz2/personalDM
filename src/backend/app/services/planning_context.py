@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 from app.models.turn import ChatMessage
@@ -6,19 +7,23 @@ from app.services.prompt_policy import CURRENT_PROMPT_POLICY
 NARRATOR_EXECUTION_BOUNDARY = (
     "\nYou are the omniscient narrator. Respect every character card, "
     "capability, limitation, owned item and current location. Resolve the "
-    "player's attempted action with a concrete consequence. Do not invent a "
-    "successful ability, item or movement absent from structured state.\n"
-    "Контракт прогрессии: прямо разреши текущую попытку; покажи хотя бы одно "
-    "наблюдаемое последствие, новую конкретную информацию или изменившееся "
-    "препятствие; закончи ситуацией, на которую игрок может осмысленно "
-    "ответить. Не пересказывай уже установленное и не управляй героем игрока."
+    "already resolved action with its concrete consequence from executed receipts. "
+    "The current snapshot is AFTER execution, not a reason to re-evaluate or refuse "
+    "an act that has already completed. Do not invent a "
+    "successful ability, item custody change or travel absent from structured state.\n"
+    "Прямо разреши текущую попытку через её наблюдаемое последствие и реакцию мира. "
+    "Дай игроку понятную ситуацию для следующего решения. Чередуй напряжение "
+    "и спокойные обмены; не добавляй угрозу, улику или препятствие ради обязательной "
+    "новизны. Не пересказывай уже установленное и не управляй героем игрока."
 )
 
 SCENE_RENDERER_RULES = (
     "Hard rules: characters absent from the physically-present list are not in "
-    "the scene. Do not move anyone, advance time, or use an unlisted exit unless "
-    "the approved structured transition already did so. Do not invent doors, "
-    "routes, objects, or off-screen arrivals as accomplished facts.\n"
+    "the scene unless an approved introduction or arrival places them here. "
+    "Travel between locations, time transitions, new usable routes, significant "
+    "plot objects and custody changes require their approved structured outcomes. "
+    "Ordinary background details, sensory atmosphere, dialogue, gestures and "
+    "movement within this location are allowed when consistent with established facts.\n"
     "Текущее место героя — только Location path. Не возвращай тело на более "
     "раннюю точку и не объявляй новое место, если structured transition этого "
     "не сделал. Если игрок спрашивает одно значение, назови ровно одно или "
@@ -64,6 +69,7 @@ def intent_reference_context(messages: list[ChatMessage]) -> str:
         "Physically present characters:",
         "Objects physically here:",
         "Player-owned items:",
+        "Registered items:",
         "Controlled character:",
     )
     lines = [line for line in context.splitlines() if line.startswith(prefixes)]
@@ -79,14 +85,36 @@ def action_reference_catalog(messages: list[ChatMessage], prefix: str) -> dict[s
                 continue
             for entry in line[len(prefix):].split(","):
                 name, marker, suffix = entry.strip().rpartition(" [id=")
-                if not marker or not suffix.endswith("]"):
+                reference_text, closing, _detail = suffix.partition("]")
+                if not marker or not closing:
                     continue
                 try:
-                    reference = str(UUID(suffix[:-1]))
+                    reference = str(UUID(reference_text))
                 except ValueError:
                     continue
                 references[reference] = name
     return references
+
+
+def item_reference_states(messages: list[ChatMessage]):
+    """Read engine-owned JSON snapshots; None distinguishes absent legacy catalogs."""
+    from app.models.item_state import ItemStateSnapshot
+
+    states = None
+    for message in messages:
+        if message.role != "system":
+            continue
+        reading = False
+        for line in message.content.splitlines():
+            if line == "[CURRENT ITEM POSITIONS — executor-owned, override old prose]":
+                states = []
+                reading = True
+            elif reading:
+                if not line.startswith("{"):
+                    reading = False
+                    continue
+                states.append(ItemStateSnapshot.model_validate(json.loads(line)))
+    return states
 
 
 def outcome_reference_context(messages: list[ChatMessage]) -> str:

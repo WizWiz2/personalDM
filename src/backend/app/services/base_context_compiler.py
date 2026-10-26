@@ -1,4 +1,5 @@
 import json
+import logging
 from uuid import UUID
 
 from sqlalchemy import select
@@ -29,6 +30,9 @@ except ImportError:
 
     def count_tokens(text: str) -> int:
         return max(1, len(text) // 3)
+
+
+logger = logging.getLogger(__name__)
 
 
 class ContextCompiler:
@@ -333,8 +337,7 @@ class ContextCompiler:
                         content=f"{system_msg.content}{persona_suffix}",
                     )
             except Exception:
-                # Master selection must never block narration compilation.
-                pass
+                logger.exception("Unable to compile optional master persona for %s", campaign_id)
         current_budget_used = count_tokens(system_msg.content)
         reserved_user_tokens = (
             count_tokens(current_user_content)
@@ -526,7 +529,7 @@ class ContextCompiler:
             witnessed = await witnesses_of(self._session, [memory.id for memory in memories])
             player_id = campaign.player_character_id if campaign else None
             for belief in (belief for beliefs in held.values() for belief in beliefs):
-                if belief.source_character_id in held:
+                if belief.source_character_id in held and belief.source_character_id != player_id:
                     said.setdefault(belief.source_character_id, {})[
                         self._belief_repo.normalize(belief.proposition)
                     ] = belief
@@ -556,7 +559,8 @@ class ContextCompiler:
                     ]
                     for header, group in (
                         ("Private knowledge", [
-                            b for b in held[character.id] if b.source_character_id not in held
+                            b for b in held[character.id]
+                            if b.source_character_id not in held or b.source_character_id == player_id
                         ]),
                         (("Already said by this character (established: stay consistent with it, "
                           "never repeat it word for word)"), list(said.get(character.id, {}).values())),

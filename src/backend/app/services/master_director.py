@@ -290,6 +290,7 @@ def apply_moves_to_outcome_decision(
     dramatic = decision.dramatic_mode
     allow_complication = decision.allow_new_complication
     complication_source = decision.complication_source
+    world_move = decision.world_move
 
     pressureish = moves & {
         "advance_conflict",
@@ -308,6 +309,7 @@ def apply_moves_to_outcome_decision(
         dramatic = _cap_dramatic(dramatic, "calm" if "quiet" in moves else "routine")
         allow_complication = False
         complication_source = None
+        world_move = None
     elif "soften_blow" in moves and "harden_consequence" not in moves:
         # Softener loses to harden when both somehow appear; otherwise dampen escalation.
         dramatic = _cap_dramatic(dramatic, "routine")
@@ -317,6 +319,7 @@ def apply_moves_to_outcome_decision(
             "dramatic_mode": dramatic,
             "allow_new_complication": allow_complication,
             "complication_source": complication_source if allow_complication else None,
+            "world_move": world_move,
         }
     )
 

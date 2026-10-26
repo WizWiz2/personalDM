@@ -73,6 +73,7 @@ class InitialWorldStateService:
                 row.entity_id: {
                     "current_owner_id": row.current_owner_id,
                     "current_location_id": row.current_location_id,
+                    "placement_detail": row.placement_detail,
                 }
                 for row in items
             },
@@ -139,13 +140,18 @@ class InitialWorldStateService:
             )
         ).scalars().all()
         for row in items:
-            state = item_state.get(row.entity_id, {})
+            # Introductions created after the baseline have no saved starting
+            # position. Do not erase their currently committed custody on replay.
+            if row.entity_id not in item_state:
+                continue
+            state = item_state[row.entity_id]
             owner_id = state.get("current_owner_id")
             location_id = state.get("current_location_id")
             if owner_id and location_id:
                 raise ValueError(f"Initial item state is invalid for {row.entity_id}")
             row.current_owner_id = owner_id
             row.current_location_id = location_id
+            row.placement_detail = state.get("placement_detail")
 
         await self._session.flush()
         return snapshot

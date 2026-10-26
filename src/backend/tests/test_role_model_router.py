@@ -1,4 +1,5 @@
 from datetime import datetime
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -199,3 +200,61 @@ async def test_control_timeout_cancels_generation_and_keeps_attempt_diagnostics(
     assert provider.last_telemetry["response_model"] == "PlayerIntentContractDraft"
     assert provider.last_telemetry["attempts"] == [{"attempt": 1, "status": "error"}]
     assert provider.last_telemetry["duration_ms"] >= 900
+
+
+@pytest.mark.asyncio
+async def test_dns_failure_is_retried_once_with_same_frozen_control_model(monkeypatch):
+    from app.models.turn import ChatMessage
+    from app.providers.llm_provider import LLMProviderError
+
+    primary = primary_config()
+    router = RoleModelRouter(FakeConfigRepo(primary))
+    selection = await router.resolve(primary.campaign_id, ModelRole.PLANNER)
+    monkeypatch.setattr("app.services.role_model_router.asyncio.sleep", AsyncMock())
+
+    class FlakyProvider:
+        last_telemetry = {}
+
+        def __init__(self):
+            self.calls = 0
+
+        async def generate_json(self, *_args, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMProviderError("Failed to reach ChatGPT plan endpoint: getaddrinfo failed")
+            self.last_telemetry = {"status": "completed"}
+            return {"ok": True}
+
+    provider = FlakyProvider()
+    result = await router.generate_json(
+        provider, selection, [ChatMessage(role="user", content="Привет")]
+    )
+    assert result == {"ok": True}
+    assert provider.calls == 2
+    assert provider.last_telemetry["network_retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_auth_error_does_not_retry_control_role(monkeypatch):
+    from app.models.turn import ChatMessage
+    from app.providers.llm_provider import LLMProviderError
+
+    primary = primary_config()
+    router = RoleModelRouter(FakeConfigRepo(primary))
+    selection = await router.resolve(primary.campaign_id, ModelRole.PLANNER)
+    monkeypatch.setattr("app.services.role_model_router.asyncio.sleep", AsyncMock())
+
+    class FailingProvider:
+        last_telemetry = {}
+        calls = 0
+
+        async def generate_json(self, *_args, **_kwargs):
+            self.calls += 1
+            raise LLMProviderError("401 invalid token")
+
+    provider = FailingProvider()
+    with pytest.raises(LLMProviderError, match="401 invalid token"):
+        await router.generate_json(
+            provider, selection, [ChatMessage(role="user", content="Привет")]
+        )
+    assert provider.calls == 1

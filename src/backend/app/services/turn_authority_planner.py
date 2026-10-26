@@ -8,9 +8,13 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, computed_field, model_validator
 
 from app.config import settings
-from app.models.turn import ChatMessage
 from app.models.addressed_response import AddressedResponse
-from app.models.turn_authority import PlannedNpcIntroduction
+from app.models.turn import ChatMessage
+from app.models.turn_authority import (
+    PlannedItemIntroduction,
+    PlannedNpcIntroduction,
+    PlannedWorldMove,
+)
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.entity_identity import identity_key
 from app.services.player_intent_contract import expects_russian
@@ -42,6 +46,7 @@ ReviewDefectKind = Literal[
     "missing_travel",
     "redundant_travel",
     "missing_contact",
+    "missing_item",
     "identity",
     "missing_committed_action",
     "other",
@@ -120,6 +125,10 @@ class CoordinatedTurnPlan(TurnPlan):
         default_factory=list,
         max_length=4,
     )
+    item_introductions: list[PlannedItemIntroduction] = Field(
+        default_factory=list, max_length=4,
+    )
+    world_move: PlannedWorldMove | None = None
     addressed_response_requested: bool = False
     addressed_response: AddressedResponse | None = None
     personal_name_revealed: bool = False
@@ -207,6 +216,26 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   temporary_name and reason. When temporary_name=false, also provide personal_name_evidence: the
   exact current-turn or campaign statement that establishes the person's personal name. Leave it
   null for role/title-only identities.
+- world_move: an optional INDEPENDENT, GROUNDED change in the current story.
+  Use only for an already established active_conflict or active unresolved_beat/tension
+  quoted VERBATIM in source. kind is pressure|information|deadline.
+  Set outcome to a concrete, specific observable consequence, copied EXACTLY into
+  observable_consequences. It must not duplicate an existing recorded world event.
+  Do NOT use a world_move alongside an action_sequence, an unresolved pending_player_choice,
+  or for new people, objects, custody changes, physical movement, an extra PC action,
+  an arbitrary attack, or a generic ominous sound. Those require independent typed
+  structural authority. If there is no established source, leave world_move=null.
+  An NPC can react to a prior promise, threat, deadline or clue without being puppeted by
+  the player, but only with such a grounded, resolvable outcome.
+- item_introductions: significant NEW physical objects explicitly confirmed in this turn's
+  approved observable_consequences or successful structured step outcomes (e.g. a found journal,
+  a received key, a written note). Use exact canonical_name and a verbatim evidence substring
+  from the approved result, NOT from an unsupported player claim. Include owned_by_player=true
+  only when the approved outcome explicitly gives/takes it to the player. Add placement_detail
+  only for an exact physical sublocation established by the approved result, never guess.
+  Do not create mundane
+  ambient clutter, speculative props, or an item already present in structured inventory.
+  Stable custody and identity matter more than extracting every sensory detail.
 - addressed_response_requested: true when the latest human input addresses, asks, tells, or
   otherwise expects a reply from a present cast member (canonical/display name or unique short
   role) or the selected addressed character. False is not a ban on other present-person behavior.
@@ -225,6 +254,9 @@ consequence of this turn. Each item contains canonical_name, role, description, 
   Keep the existing participant's designation and ID in this plan. A name question is NOT a
   new physical participant: do not put the answer's future name in npc_introductions.
   The published response and its verified self-identification own the later name binding.
+  A name suggested by the player is a proposal, not NPC identity until a present
+  person confirms it. A different confirmed name for an established NPC is an
+  alias on their existing ID, never a second character.
 - response_ownership_reason: one concise semantic reason for addressed_response_requested.
 
 SYSTEMLESS RESOLUTION IS ABSOLUTE:
@@ -281,11 +313,26 @@ STRUCTURED WORLD BOUNDARIES:
   transition. The committed attempted movement still remains as a `blocked` action_sequence step
   with a concrete blocking_reason; do not silently omit the blocked attempt. Later actions that
   depend on it remain unexecuted.
-- Distinguish inventory operations by intended result: `drop` means releasing a held item onto the
+- Distinguish inventory operations by intended result: `receive` transfers a registered
+  NPC-owned item to the player ONLY if the NPC elects to hand it over and is physically
+  present; put the existing item_id and giver inventory_target_id in a typed inventory
+  auto_success step. A request alone does not prove willingness; a refusal is blocked.
+  No item may teleport from an absent NPC and no prose-only handoff is a success.
+  `drop` means releasing a held item onto the
   floor/ground or nearby without deliberately putting it into a named receptacle, slot, or carefully
   selected surface; `place` means deliberately putting it on/in a named surface, container, or
   position. "Кладу ... на пол рядом с собой" is a drop.
 - Time transitions are structured too; atmosphere alone never advances time.
+- QA-215 F-44/F-47: if a player takes, places, stows, drops or gives a registered item,
+  the actual item_id and custody operation MUST be in an executed inventory step.
+  A generic interaction plus fluent observable_outcome is NOT a physical receipt.
+- Showing, displaying or inspecting an item does not transfer custody, but is allowed
+  only when the item is already held by the actor or physically reachable here.
+  Otherwise explicitly block it; never narrate an off-location or NPC-owned object
+  appearing in the protagonist's hand as a side effect of conversation.
+- An NPC handing over an existing owned item uses an executed inventory receive
+  receipt with the actual giver and item UUID. Never narrate a completed handoff
+  using an untyped interaction, even when NPC dialogue agrees.
 
 NPC / ENTITY AUTHORITY:
 - Decide from meaning and campaign context whether a PERSON physically appears. Do not infer person
@@ -375,6 +422,14 @@ Return repair_required only when the proposed typed plan semantically violates o
   Если план уже описывает непрерывное прибытие в конечную локацию, не раскладывай это прибытие на
   отдельный шаг «подойти к человеку у стойки»: typed location_transition покрывает весь заявленный
   путь до конечной локации.
+- DURABLE ITEMS: if a completed approved outcome explicitly creates, acquires or discovers
+  a significant, individually identifiable physical object that must persist (a key, ledger,
+  named letter, unique clue) and the object is not in the authoritative inventory or in
+  item_introductions, require missing_item repair. Its exact textual evidence must come
+  from approved observable_consequences/structured completed steps, not solely from a
+  player's unverified claim. Do NOT demand canonical item rows for background cups,
+  ordinary dust, scenery, or ambiguous metaphor. Do not authorize an object solely
+  to make the story interesting.
 - CONTACT/IDENTITY: when contact with an unspecified person is resolved positively, a previously
   unknown physical responder must be typed in npc_introductions. When the human actively seeks or
   addresses local people and the physical allowlist is player-only, empty no-contact is a defect:
@@ -666,7 +721,6 @@ short sentence. Return exactly the NpcContactDecision schema.
     ) -> None:
         """Keep local approach/body motion out of the physical location graph."""
         del context_messages, player_input
-        return
 
     @property
     def telemetry(self) -> dict:
@@ -951,7 +1005,7 @@ short sentence. Return exactly the NpcContactDecision schema.
                         "blocking_reason and no location_transition; do not demand a successful "
                         "transition there. When verdict is repair_required, defect_kinds must classify "
                         "the issues (missing_travel, redundant_travel, missing_contact, identity, "
-                        "missing_committed_action, other).\n\n"
+                        "missing_committed_action, missing_item, other).\n\n"
                         "[AUTHORITATIVE PHYSICAL PRESENCE ALLOWLIST]\n"
                         "Only these characters are currently present: "
                         + ", ".join(present_names or [])

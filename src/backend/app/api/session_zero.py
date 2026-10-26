@@ -14,7 +14,7 @@ from app.models.session_zero import (
     SessionZeroRead,
     SessionZeroUpdate,
 )
-from app.providers.llm_provider import LLMProviderError
+from app.providers.llm_provider import LLMProviderAuthenticationError, LLMProviderError
 from app.services.character_card_service import CharacterCardService
 from app.services.session_zero_interview import (
     SessionZeroInterviewIncompleteError,
@@ -183,6 +183,7 @@ async def _run_interview_turn(
     except LLMProviderError as exc:
         # Exactly like CLI: the player's answer is already persisted and can be retried.
         rate_limited = interview.is_rate_limited_error(exc)
+        auth_required = isinstance(exc, LLMProviderAuthenticationError)
         public_message = (
             "Провайдер временно отклонил запрос из-за лимита. Твой ответ сохранён. "
             "Подожди немного и повтори запрос."
@@ -192,14 +193,16 @@ async def _run_interview_turn(
                 "Можно повторить его без потери разговора."
             )
         )
+        if auth_required:
+            public_message = str(exc)
         raise HTTPException(
             status_code=502,
             detail={
-                "code": "session_zero_provider_error",
+                "code": "provider_auth_required" if auth_required else "session_zero_provider_error",
                 "message": public_message,
                 "technical_detail": " ".join(str(exc).split())[:2000],
                 "rate_limited": rate_limited,
-                "retryable": True,
+                "retryable": not auth_required,
             },
         ) from exc
     except HTTPException:

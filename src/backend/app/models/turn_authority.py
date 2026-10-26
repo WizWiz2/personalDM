@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.addressed_response import AddressedResponse
+from app.models.item_state import ItemStateSnapshot
 from app.models.session_zero import NARRATIVE_PERSON, NarrativePerson
 
 
@@ -18,6 +19,7 @@ class PlannedNpcIntroduction(BaseModel):
     # Preserve a proposed existing name before temporary-role normalization.
     identity_reference: str | None = Field(default=None, max_length=120)
     role: str | None = Field(default=None, max_length=200)
+    current_goal: str | None = Field(default=None, max_length=500)
     description: str | None = Field(default=None, max_length=800)
     appearance: str | None = Field(default=None, max_length=800)
     voice: str | None = Field(default=None, max_length=400)
@@ -29,6 +31,40 @@ class PlannedNpcIntroduction(BaseModel):
     resident_slot: str | None = Field(default=None, max_length=64)
     # Brought here by a step's result, not found at the place: never a resident keeper.
     arrives: bool = False
+
+
+class PlannedItemIntroduction(BaseModel):
+    """A significant physical object, justified by an approved current-turn outcome."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    canonical_name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=800)
+    evidence: str = Field(min_length=5, max_length=500)
+    owned_by_player: bool = False
+    placement_detail: str | None = Field(default=None, max_length=300)
+    after_action_index: int | None = Field(default=None, ge=0, le=7)
+    copy_of_item_id: UUID | None = None
+    reserved_item_id: UUID | None = None  # allocated by compiler, never by a model
+
+
+class PlannedWorldMove(BaseModel):
+    """A sourced, nonphysical independent development of an existing story thread.
+
+    Physical moves, NPC introductions and item custody remain owned by their
+    respective structured executors; a story beat alone cannot mutate them.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    kind: Literal["pressure", "information", "deadline", "npc_action", "npc_move"]
+    source: str = Field(min_length=8, max_length=1000)
+    outcome: str = Field(min_length=12, max_length=1000)
+    # NPC autonomous action must be grounded in one persisted CharacterGoal.
+    actor_id: UUID | None = None
+    destination_location_id: UUID | None = None  # NPC movement: exactly one known graph hop
+    # Explicit clock phase for a scheduled deadline. Non-deadline beats leave it null.
+    due_phase: Literal["dawn", "morning", "day", "evening", "night"] | None = None
 
 
 class ExistingNpcArrival(BaseModel):
@@ -74,8 +110,15 @@ class TurnAuthority(BaseModel):
     present_character_names: list[str] = Field(default_factory=list)
     known_absent_character_names: list[str] = Field(default_factory=list)
     allowed_new_npcs: list[PlannedNpcIntroduction] = Field(default_factory=list)
+    allowed_new_items: list[PlannedItemIntroduction] = Field(default_factory=list)
+    world_move: PlannedWorldMove | None = None
     allowed_existing_npc_arrivals: list[ExistingNpcArrival] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
+    item_states: list[ItemStateSnapshot] = Field(default_factory=list)
+    # Empty authoritative inventory differs from an older/incomplete frame.
+    item_states_loaded: bool = False
+    # Registered objects not physically available to the player.
+    unavailable_item_names: list[str] = Field(default_factory=list)
 
     resolution: str = "conversation"
     identity_reveal_requested: bool = False
@@ -193,9 +236,33 @@ class TurnAuthority(BaseModel):
                     "action_type": step.get("action_type"),
                     "status": step.get("status"),
                     "outcome": outcome or None,
+                    "item_property_changes": step.get("item_property_changes") or [],
+                    "step_index": step.get("step_index"),
+                    "source_location_id": step.get("source_location_id"),
+                    "target_location_id": step.get("target_location_id"),
                 }
             )
         return result
+
+    def inventory_receipts(self) -> list[dict]:
+        """Executed physical transitions, including their actual before/after states."""
+        steps = (self.action_sequence or {}).get("steps") or []
+        keys = (
+            "item_id", "item_name", "item_operation", "item_previous_owner_id",
+            "item_previous_location_id", "item_previous_placement_detail",
+            "item_result_owner_id", "item_result_location_id", "item_result_placement_detail",
+        )
+        receipts = []
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict) or step.get("status") != "completed":
+                continue
+            frame = {"step_index": step.get("step_index", index),
+                     "source_location_id": step.get("source_location_id"),
+                     "target_location_id": step.get("target_location_id")}
+            if step.get("action_type") == "inventory":
+                receipts.append({**frame, **{key: step.get(key) for key in keys}})
+            receipts.extend({**frame, **created} for created in step.get("created_items", []))
+        return receipts
 
     def validator_payload(self) -> dict:
         """Typed facts the four bans are judged against, and nothing else."""
@@ -211,6 +278,14 @@ class TurnAuthority(BaseModel):
             "known_absent_characters": self.known_absent_character_names,
             "established_state": self.established_state,
             "scene_time": self.scene_time,
+            "allowed_new_items": [item.canonical_name for item in self.allowed_new_items],
+            "objects_here": self.object_names,
+            "item_states": [state.model_dump(mode="json") for state in self.item_states],
+            "inventory_receipts": self.inventory_receipts(),
+            "unavailable_items": self.unavailable_item_names,
+            "approved_world_move": (
+                self.world_move.model_dump(mode="json") if self.world_move else None
+            ),
             "executed_steps": self.executed_steps(),
             "scene_disposition": self.scene_disposition,
             "transition_type": self.transition_type,
@@ -243,6 +318,10 @@ class TurnAuthority(BaseModel):
                 else None
             ),
             "objects_here": self.object_names,
+            "new_objects": [item.model_dump(mode="json") for item in self.allowed_new_items],
+            "approved_world_move": (
+                self.world_move.model_dump(mode="json") if self.world_move else None
+            ),
             "resolution": self.resolution,
             "observable_consequences": self.observable_consequences,
             "character_beats": self.character_beats,
@@ -251,8 +330,9 @@ class TurnAuthority(BaseModel):
             "dramatic_mode": self.dramatic_mode,
             "pending_player_choice": self.pending_player_choice,
             "allow_new_complication": self.allow_new_complication,
+            "complication_source": self.complication_source,
         }
         return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
 
 
-__all__ = ["ExistingNpcArrival", "PlannedNpcIntroduction", "TurnAuthority"]
+__all__ = ["ExistingNpcArrival", "PlannedItemIntroduction", "PlannedNpcIntroduction", "PlannedWorldMove", "TurnAuthority"]

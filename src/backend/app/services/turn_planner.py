@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.config import settings
 from app.models.action_sequence import ActionSequenceExecution
+from app.models.item_state import ItemContentRevelation, ItemPropertyChange
 from app.models.player_intent import ActionResolution, DayPart, DramaticMode, TurnResolution
+from app.models.turn_authority import PlannedItemIntroduction
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
@@ -18,6 +20,10 @@ class TurnPlanningError(RuntimeError):
     """Raised when the advisory turn plan cannot be produced or validated."""
 
     telemetry: dict | None = None
+
+
+class PlanContractError(TurnPlanningError):
+    """An unexecuted model decision needs repair against the frozen intent."""
 
 
 class SceneTransitionPlan(BaseModel):
@@ -64,6 +70,7 @@ class ActionStepPlan(BaseModel):
     """One ordered part of a compound player intention in a systemless game."""
 
     model_config = ConfigDict(extra="ignore")
+    source_action_index: int | None = Field(default=None, ge=0, le=7)
 
     action_type: Literal[
         "service",
@@ -78,14 +85,21 @@ class ActionStepPlan(BaseModel):
     intent: str = Field(min_length=1, max_length=500)
     resolution: ActionResolution
     safe_mundane: bool = False
-    observable_outcome: str | None = Field(default=None, max_length=1000)
+    observable_outcome: str | None = Field(default=None, max_length=11000)
     blocking_reason: str | None = Field(default=None, max_length=1000)
     public_blocking_reason: str | None = Field(default=None, max_length=1000)
     # Inventory mutations are resolved by entity id, never by a runtime word/substring match.
-    # The planner receives ids for objects physically present in the scene.
+    # Give targets the recipient; receive targets the NPC who currently owns the item.
+    # The executor validates location and actual ownership, never prose alone.
     item_id: UUID | None = None
-    inventory_operation: Literal["take", "drop", "give", "place"] | None = None
+    inventory_operation: Literal["take", "drop", "give", "receive", "place", "reposition", "store"] | None = None
     inventory_target_id: UUID | None = None
+    inventory_actor_id: UUID | None = None
+    item_placement_detail: str | None = Field(default=None, max_length=300)
+    # Discoveries are not custody operations; they retain their source action.
+    item_revelations: list[ItemContentRevelation] = Field(default_factory=list, max_length=4)
+    item_property_changes: list[ItemPropertyChange] = Field(default_factory=list, max_length=8)
+    item_creations: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
     transition: SceneTransitionPlan = Field(default_factory=SceneTransitionPlan)
 
     @model_validator(mode="before")
@@ -103,6 +117,7 @@ class ActionStepPlan(BaseModel):
             data.get("item_id"),
             data.get("inventory_operation"),
             data.get("inventory_target_id"),
+            data.get("item_placement_detail"),
         )
         if not any(value is not None for value in inventory_fields):
             return data
@@ -140,8 +155,12 @@ class ActionStepPlan(BaseModel):
                 raise ValueError(
                     "completed inventory steps require item_id and inventory_operation"
                 )
-        if self.inventory_operation == "give" and self.inventory_target_id is None:
-            raise ValueError("give inventory steps require inventory_target_id")
+        if self.item_placement_detail and self.inventory_operation is None:
+            raise ValueError("placement detail requires an inventory operation")
+        if self.inventory_operation == "reposition" and self.resolution == "auto_success" and not self.item_placement_detail:
+            raise ValueError("reposition requires exact placement detail")
+        if self.inventory_operation in {"give", "receive"} and self.inventory_target_id is None:
+            raise ValueError("give/receive inventory steps require inventory_target_id")
         return self
 
 
@@ -151,7 +170,7 @@ class ActionSequencePlan(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     summary: str | None = Field(default=None, max_length=1000)
-    steps: list[ActionStepPlan] = Field(default_factory=list, max_length=8)
+    steps: list[ActionStepPlan] = Field(default_factory=list, max_length=16)
 
 
 class NarrationPolicy(BaseModel):
@@ -259,9 +278,14 @@ Authoritative scene state:
 - [AUTHORITATIVE SCENE STATE] is exhaustive for physical presence and structured locations.
 - Only present characters may physically act/speak here unless coordinated Planner explicitly types
   a new/arriving character.
-- Only structured objects may be treated as already significant physical objects. Neutral literary
-  texture may later be added by Narrator without becoming canon.
+- Only structured objects may be treated as already significant physical objects.
+  Objects carried by the player stay available without being on the ground. Newly
+  approved critical objects must be represented in item_introductions, never lost
+  as a prose-only acquisition. Neutral literary texture remains non-canonical.
 - A completed change of room/building/district/journey endpoint requires structured transition.
+  If a committed trip lacks an approved transition, do not stage the story at
+  that destination or let its NPCs interact from there: keep the scene at the
+  authoritative source location and describe the actual obstacle/attempt.
 - Explicit player-selected plausible movement may create/discover a destination/route only through
   the transition executor; never hide travel in prose fields.
 - A sentence that explicitly names departure and destination (including return language such as
@@ -362,7 +386,14 @@ Player agency is a hard boundary:
 Dramatic escalation is evidence-bound:
 - Calm and routine scenes may remain calm and end without a threat or forced hook.
 - If allow_new_complication=false, introduce no new complication.
-- If true, use only the named complication_source and approved consequences.
+- If true, develop only the named existing complication_source: ongoing debts,
+  deadlines, opposition and NPC motives may react to earlier choices. Never invent
+  a new physical stranger, key item or untyped outcome just to force drama.
+  The world can be proactive while maintaining player agency.
+- Do not use bureaucratic audit language ("не установлено", "нет подтверждения")
+  as player-facing narration. Unknown is not the same as confirmed absence.
+  Be atmospheric, specific and responsive to the campaign's genre; distinguish
+  each present NPC's voice. A quiet scene may still be vivid.
 
 When [EXECUTED ACTION SEQUENCE] is present:
 - every COMPLETED step already happened in order;

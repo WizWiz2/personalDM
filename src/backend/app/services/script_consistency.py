@@ -32,3 +32,23 @@ def consistent_script(text: str, names: Iterable[str] = ()) -> str:
 
     return "".join(fixed(part) if part.isalpha() else part
                    for _, chars in groupby(text or "", key=str.isalpha) for part in ["".join(chars)])
+
+
+_INTRUDER_SCRIPTS = frozenset({
+    "CJK", "HIRAGANA", "KATAKANA", "HANGUL", "THAI", "ARABIC", "HEBREW",
+    # QA-209 F-15: standalone Kannada syllables leaked into Russian prose.
+    "KANNADA",
+})
+
+
+def foreign_script_intrusions(text: str) -> list[str]:
+    """Words carrying letters of scripts that cannot belong to the novel's alphabet.
+
+    Decoder noise leaks whole CJK/Hangul/Thai garbage words into European-language prose;
+    consistent_script deliberately leaves them alone because each word is single-script,
+    so they would reach the published surface untouched (playtest 2026-10-12). They are
+    reported for repair, never silently rewritten.
+    """
+    return sorted({
+        word for word in _words(text or "") if _INTRUDER_SCRIPTS & set(_scripts(word))
+    })

@@ -5,6 +5,7 @@ from app.db.engine import get_session
 from app.models.campaign import CampaignCreate, CampaignRead, CampaignUpdate
 from app.models.provider_config import ProviderConfigCreate, ProviderConfigRead
 from app.services.campaign_service import CampaignService
+from app.services.chatgpt_auth_service import ChatGPTAuthError
 
 router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
 
@@ -65,5 +66,13 @@ async def get_provider_config(campaign_id: UUID, session: AsyncSession = Depends
 @router.post("/{campaign_id}/provider/check")
 async def check_provider_connection(campaign_id: UUID, session: AsyncSession = Depends(get_session)):
     service = CampaignService(session)
-    connected = await service.check_provider_connection(campaign_id)
+    try:
+        connected = await service.check_provider_connection(campaign_id)
+    except ChatGPTAuthError as exc:
+        return {
+            "connected": False,
+            "code": "provider_auth_required",
+            "message": str(exc),
+            "retryable": False,
+        }
     return {"connected": connected}

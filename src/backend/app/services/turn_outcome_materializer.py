@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Entity, SceneParticipant, Turn
+from app.db.tables import Entity, Item, ItemContentDisclosure, ItemCreationEffect, NpcIdentityAnchor, SceneParticipant, Turn
+from app.db.action_sequence_table import ActionSequence, ActionStep
+from app.services.item_content_authority import revealed_item_contents
 from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
+from app.models.entity import EntityCreate, EntityType
 from app.models.narration_validation import GrantedBeat
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
 from app.services.entity_identity import identity_key
@@ -37,6 +40,7 @@ class IdentityUpdate:
 @dataclass(frozen=True)
 class MaterializedTurnOutcome:
     introduced_character_ids: tuple[UUID, ...] = ()
+    introduced_item_ids: tuple[UUID, ...] = ()
     arrived_existing_participants: tuple[tuple[UUID, UUID], ...] = ()
     identity_updates: tuple[IdentityUpdate, ...] = ()
 
@@ -47,7 +51,8 @@ class MaterializedTurnOutcome:
     @property
     def has_changes(self) -> bool:
         return bool(
-            self.introduced_character_ids or self.arrived_existing_participants or self.identity_updates
+            self.introduced_character_ids or self.introduced_item_ids
+            or self.arrived_existing_participants or self.identity_updates
         )
 
 
@@ -71,7 +76,10 @@ class TurnOutcomeMaterializer:
         source_turn_id: UUID,
     ) -> MaterializedTurnOutcome:
         reveal_requested = bool(authority.addressed_response and authority.addressed_response.revealed_name)
-        if not authority.allowed_new_npcs and not authority.allowed_existing_npc_arrivals and not reveal_requested:
+        if not (
+            authority.allowed_new_npcs or authority.allowed_new_items
+            or authority.allowed_existing_npc_arrivals or reveal_requested
+        ):
             return MaterializedTurnOutcome()
         if not authority.target_scene_id:
             raise ValueError("Planned NPC materialization has no authoritative target scene")
@@ -118,15 +126,118 @@ class TurnOutcomeMaterializer:
                     authority.addressed_response.speaker_id = character.id
             known_names.add(key)
 
+        item_ids: list[UUID] = []
+        disclosed_contents = (await revealed_item_contents(self._session, authority.campaign_id)
+                              if any(item.copy_of_item_id for item in authority.allowed_new_items) else {})
+        known_items = await self._entities.list_by_campaign(
+            authority.campaign_id, entity_type="item",
+        )
+        occupied = {
+            identity_key(name)
+            for entity in known_items
+            for name in (entity.canonical_name, *entity.aliases)
+        }
+        from app.db.repositories.scene_repo import SceneRepository
+        location_id = await SceneRepository(self._session).get_location_id(
+            authority.target_scene_id
+        )
+        for introduction in authority.allowed_new_items:
+            if introduction.reserved_item_id is not None:
+                executed = (await self._session.execute(
+                    select(ItemCreationEffect.item_id)
+                    .join(ActionStep, ActionStep.id == ItemCreationEffect.source_step_id)
+                    .join(ActionSequence, ActionSequence.id == ActionStep.sequence_id)
+                    .where(ItemCreationEffect.item_id == str(introduction.reserved_item_id),
+                           ActionSequence.campaign_id == str(authority.campaign_id),
+                           ActionSequence.trigger_turn_id == str(source_turn_id),
+                           ActionSequence.status.in_(("prepared", "applied")), ActionStep.status == "completed")
+                )).scalar_one_or_none()
+                if executed:
+                    item_ids.append(UUID(executed))
+                    continue
+                raise ValueError("Reserved item introduction has no completed creation receipt")
+            source_step = None
+            item_location_id = location_id
+            if introduction.after_action_index is not None:
+                source_step = (await self._session.execute(
+                    select(ActionStep).join(ActionSequence, ActionSequence.id == ActionStep.sequence_id)
+                    .where(ActionSequence.campaign_id == str(authority.campaign_id),
+                           ActionSequence.trigger_turn_id == str(source_turn_id),
+                           ActionSequence.status.in_(("prepared", "applied")),
+                           ActionStep.status == "completed",
+                           func.coalesce(ActionStep.source_action_index, ActionStep.step_index) == introduction.after_action_index)
+                    .order_by(ActionStep.step_index).limit(1)
+                )).scalar_one_or_none()
+                if source_step and source_step.target_scene_id:
+                    item_location_id = await self._scenes.get_location_id(UUID(source_step.target_scene_id))
+            key = identity_key(introduction.canonical_name)
+            if key in occupied:
+                continue  # Repeated evidence refers to the same object, never a new clone.
+            if introduction.owned_by_player and not authority.player_character_id:
+                continue
+            item = await self._entities.create(
+                authority.campaign_id,
+                EntityCreate(
+                    entity_type=EntityType.ITEM,
+                    canonical_name=introduction.canonical_name,
+                    description=introduction.description,
+                    custom_fields={
+                        "introduced_by": "turn_authority",
+                        "introduction_turn_id": str(source_turn_id),
+                        "introduction_evidence": introduction.evidence,
+                    },
+                ),
+            )
+            self._session.add(
+                Item(
+                    entity_id=str(item.id),
+                    current_owner_id=(
+                        str(authority.player_character_id)
+                        if introduction.owned_by_player else None
+                    ),
+                    current_location_id=(
+                        None if introduction.owned_by_player
+                        else str(item_location_id) if item_location_id else None
+                    ),
+                    is_unique=True,
+                    placement_detail=(
+                        getattr(introduction, "placement_detail", None)
+                        if not introduction.owned_by_player else None
+                    ),
+                )
+            )
+            if introduction.copy_of_item_id and str(introduction.copy_of_item_id) in disclosed_contents:
+                if source_step:
+                    await self._session.flush()
+                    self._session.add(ItemContentDisclosure(source_step_id=source_step.id, item_id=str(item.id),
+                        content=disclosed_contents[str(introduction.copy_of_item_id)][0]))
+            item_ids.append(item.id)
+            occupied.add(key)
         await self._session.flush()
         identity_update = await self._reveal_identity(authority, source_turn_id)
         return MaterializedTurnOutcome(
             introduced_character_ids=tuple(created_ids),
+            introduced_item_ids=tuple(item_ids),
             arrived_existing_participants=tuple(arrived_existing),
             identity_updates=(identity_update,) if identity_update else (),
         )
 
     async def _create(self, authority: TurnAuthority, introduction, source_turn_id: UUID):
+        # An undone NPC introduction can be re-published in a new turn.
+        # Reserve its ID by campaign + normalized identity, not by the new
+        # random turn ID: external GM links and client caches then remain valid.
+        alias_key = identity_key(introduction.canonical_name)
+        anchor = await self._session.get(
+            NpcIdentityAnchor, (str(authority.campaign_id), alias_key),
+        )
+        stable_id = (
+            UUID(anchor.entity_id) if anchor
+            else uuid5(authority.campaign_id, f"personaldm:npc:{alias_key}")
+        )
+        # An alias of a still-present person must resolve to that person,
+        # never silently collide with or spawn another physical NPC.
+        if await self._session.get(Entity, str(stable_id)):
+            raise ValueError("NPC stable identity already belongs to an existing entity")
         character = await self._entities.create_character(
             authority.campaign_id,
             CharacterCreate(
@@ -134,6 +245,10 @@ class TurnOutcomeMaterializer:
                 description=introduction.description or introduction.role,
                 appearance=introduction.appearance,
                 voice=introduction.voice,
+                current_intentions=(
+                    [introduction.current_goal]
+                    if introduction.current_goal else []
+                ),
                 custom_fields={
                     "introduced_by": "turn_authority",
                     "introduction_turn_id": str(source_turn_id),
@@ -144,7 +259,16 @@ class TurnOutcomeMaterializer:
                     **({"slot_id": introduction.resident_slot} if introduction.resident_slot else {}),
                 },
             ),
+            stable_entity_id=stable_id,
         )
+        if anchor is None:
+            self._session.add(
+                NpcIdentityAnchor(
+                    campaign_id=str(authority.campaign_id),
+                    identity_key=alias_key,
+                    entity_id=str(character.id),
+                )
+            )
         await self._scenes.add_participant(
             authority.target_scene_id,
             character.id,
@@ -190,12 +314,16 @@ class TurnOutcomeMaterializer:
             update={"speaker_id": authority.beat_owner_id, "speaker_name": authority.beat_owner_name,
                     "revealed_name": beat.revealed_name, "name_evidence": beat.evidence})
         try:
-            update = await self._reveal_identity(authority, source_turn_id)
+            update = await self._reveal_identity(
+                authority, source_turn_id, confirmed_by_published_beat=True,
+            )
         except ValueError:
             return outcome  # An established personal name is never overwritten.
         return replace(outcome, identity_updates=(*outcome.identity_updates, update)) if update else outcome
 
-    async def _reveal_identity(self, authority, source_turn_id) -> IdentityUpdate | None:
+    async def _reveal_identity(
+        self, authority, source_turn_id, *, confirmed_by_published_beat=False,
+    ) -> IdentityUpdate | None:
         response = authority.addressed_response
         if not response or not response.revealed_name:
             return None
@@ -208,8 +336,8 @@ class TurnOutcomeMaterializer:
         if identity_key(row.canonical_name) == identity_key(response.revealed_name):
             return None
         fields = json.loads(row.custom_fields or "{}")
-        if not fields.get("temporary_name"):
-            raise ValueError("Name revelation cannot overwrite an established personal identity")
+        if not fields.get("temporary_name") and not confirmed_by_published_beat:
+            return None  # Planner intent is not confirmation.
         known = await self._entities.list_by_campaign(authority.campaign_id)
         taken = {
             identity_key(name) for entity in known if entity.id != response.speaker_id
@@ -222,6 +350,33 @@ class TurnOutcomeMaterializer:
         )
         old_name = row.canonical_name
         aliases = json.loads(row.aliases or "[]")
+        # Persist both established identities beyond an undo of the name reveal.
+        # This is an identity anchor, not a new character or a canon fact.
+        for value in (old_name, response.revealed_name):
+            alias_key = identity_key(value)
+            anchor = await self._session.get(
+                NpcIdentityAnchor, (str(authority.campaign_id), alias_key),
+            )
+            if anchor is not None and anchor.entity_id != row.id:
+                raise ValueError("The confirmed NPC alias belongs to another identity")
+            if anchor is None:
+                self._session.add(
+                    NpcIdentityAnchor(
+                        campaign_id=str(authority.campaign_id),
+                        identity_key=alias_key,
+                        entity_id=row.id,
+                    )
+                )
+        if not fields.get("temporary_name"):
+            if identity_key(response.revealed_name) in {
+                identity_key(name) for name in aliases
+            }:
+                return None
+            # Alternate confirmed name of the same physical NPC; no duplicate entity.
+            aliases.append(response.revealed_name)
+            row.aliases = json.dumps(aliases, ensure_ascii=False)
+            await self._session.flush()
+            return update
         # A designation becomes an alias only if the player read it; a planner's role label
         # («Хозяин или служащий трактира») never shown in prose is no name.
         shown = " ".join([response.name_evidence or "", *(await self._session.execute(
@@ -260,7 +415,7 @@ class TurnOutcomeMaterializer:
         assistant_turn_id: UUID,
     ) -> None:
         """Replace prepared user-turn provenance with the durable assistant source turn."""
-        for entity_id in outcome.introduced_character_ids:
+        for entity_id in (*outcome.introduced_character_ids, *outcome.introduced_item_ids):
             row = await self._session.get(Entity, str(entity_id))
             if not row:
                 continue
@@ -292,6 +447,11 @@ class TurnOutcomeMaterializer:
             # Existing characters must never be deleted. Remove only the participant relation
             # inserted by this turn; historical participation in older scenes stays intact.
             await self._scenes.remove_participant(scene_id, entity_id)
+        for entity_id in outcome.introduced_item_ids:
+            item = await self._session.get(Item, str(entity_id))
+            if item:
+                await self._session.delete(item)
+            await self._entities.delete(entity_id)
         for entity_id in outcome.introduced_character_ids:
             # SQLite deployments may not enable FK cascades. Remove the introduced relation
             # explicitly so compensation cannot leave a ghost participant pointing at no entity.

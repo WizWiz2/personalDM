@@ -103,6 +103,62 @@ async def _world(db_session: AsyncSession):
     return campaign_id, player, known_absent, scene
 
 
+@pytest.mark.asyncio
+async def test_routed_protagonist_never_receives_an_autonomous_beat(
+    db_session: AsyncSession,
+):
+    """PC turns use second-person prose; third-person NPC beat checks cannot apply."""
+    campaign_id, player, _absent, scene = await _world(db_session)
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=campaign_id,
+        trigger_turn_id=uuid4(),
+        player_input="Я осматриваю дверь.",
+        source_scene_id=scene.id,
+        target_scene_id=scene.id,
+        plan=CoordinatedTurnPlan(
+            player_intent="Осмотреть дверь.",
+            resolution="conversation",
+        ),
+        acting_character_id=player.id,
+    )
+    assert authority.player_character_id == player.id
+    assert authority.beat_owner_id is None
+    assert authority.beat_owner_name is None
+    assert authority.acting_character_id is None
+    assert authority.scene_disposition != "actor_turn"
+
+
+@pytest.mark.asyncio
+async def test_explicit_npc_actor_keeps_its_beat(
+    db_session: AsyncSession,
+):
+    """Filtering the protagonist must not disable an actual present NPC's beat."""
+    campaign_id, _player, _absent, scene = await _world(db_session)
+    place = await SceneRepository(db_session).get_location_id(scene.id)
+    npc = await EntityRepository(db_session).create_character(
+        campaign_id,
+        CharacterCreate(canonical_name="Грета", current_location_id=place),
+    )
+    await SceneRepository(db_session).add_participant(
+        scene.id, npc.id, allow_movement=True,
+    )
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=campaign_id,
+        trigger_turn_id=uuid4(),
+        player_input="Спрашиваю Грету.",
+        source_scene_id=scene.id,
+        target_scene_id=scene.id,
+        plan=CoordinatedTurnPlan(
+            player_intent="Поговорить с Гретой.",
+            resolution="conversation",
+        ),
+        acting_character_id=npc.id,
+    )
+    assert authority.beat_owner_id == npc.id
+    assert authority.beat_owner_name == "Грета"
+    assert authority.acting_character_id == npc.id
+
+
 def _planned_doorman() -> CoordinatedTurnPlan:
     return CoordinatedTurnPlan(
         player_intent="Постучать в дверь и поговорить с тем, кто откроет.",

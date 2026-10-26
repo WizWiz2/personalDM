@@ -726,23 +726,21 @@ class SceneTransitionExecutor:
         return None
 
     async def _scene_at(self, campaign_id, source_scene_id, source_location_id, target_location_id):
-        """The live scene of the target place: the source itself, or the latest earlier visit."""
+        """Keep the *current* scene for in-place time/focus transitions only.
+
+        The physical Location is persistent, but every departure-and-return must
+        have a fresh Scene: an old scene's participants, working-memory theses,
+        title and world-time are a historical snapshot, NOT current reality.
+        Reusing an old scene led to F-16 (QA-209): a book and an NPC both
+        reappeared in a place they had left, without any event.
+        """
         if target_location_id is None:
             return None
-        if source_scene_id and source_location_id == target_location_id:
-            return source_scene_id
-        found = await self._session.scalar(
-            select(Scene.id)
-            .join(SceneLocationLink, SceneLocationLink.scene_id == Scene.id)
-            .where(
-                Scene.campaign_id == str(campaign_id),
-                Scene.status != "abandoned",
-                SceneLocationLink.location_id == str(target_location_id),
-            )
-            .order_by(Scene.created_at.desc())
-            .limit(1)
+        return (
+            source_scene_id
+            if source_scene_id is not None and source_location_id == target_location_id
+            else None
         )
-        return UUID(found) if found else None
 
     async def _participants_to_carry(
         self,

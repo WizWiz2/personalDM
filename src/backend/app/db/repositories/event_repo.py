@@ -1,10 +1,11 @@
 import json
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.db.repositories.base import BaseRepository
 from app.db.tables import Event, EventParticipant
+from app.db.truth_engine_table import TruthEventRecord
 from app.models.event import EventCreate, EventRead
 
 
@@ -45,6 +46,7 @@ class EventRepository(BaseRepository):
         db_event = result.scalar_one_or_none()
         if not db_event:
             return None
+        truth_record = await self._session.get(TruthEventRecord, str(event_id))
 
         participants_result = await self._session.execute(
             select(EventParticipant.entity_id).where(
@@ -69,7 +71,10 @@ class EventRepository(BaseRepository):
         return EventRead(
             id=UUID(db_event.id),
             campaign_id=UUID(db_event.campaign_id),
-            event_type=db_event.event_type,
+            # Public API keeps the legacy movement type; provenance remains
+            # explicit in the persisted event for safe independent GM undo.
+            event_type="movement" if db_event.event_type == "gm_movement" else db_event.event_type,
+            status=truth_record.status if truth_record else "active",
             description=db_event.description,
             world_time=db_event.world_time,
             location_id=(UUID(db_event.location_id) if db_event.location_id else None),
@@ -84,7 +89,12 @@ class EventRepository(BaseRepository):
         campaign_id: UUID,
         importance: str | None = None,
     ) -> list[EventRead]:
-        query = select(Event).where(Event.campaign_id == str(campaign_id))
+        query = select(Event).outerjoin(
+            TruthEventRecord, TruthEventRecord.event_id == Event.id,
+        ).where(
+            Event.campaign_id == str(campaign_id),
+            or_(TruthEventRecord.event_id.is_(None), TruthEventRecord.status == "active"),
+        )
         if importance:
             query = query.where(Event.importance == importance)
         query = query.order_by(Event.created_at.desc())

@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     TE2_SEMANTIC_MODE: Literal["legacy", "shadow", "writer"] = "legacy"
 
     # Expensive maintenance agents do not need to run after every narrative turn.
+    # Hard wall-clock limit for a durable post-turn job, including sequential LLM
+    # passes. Timeout is recorded as failed, never left stuck in 'running'.
+    POST_TURN_JOB_TIMEOUT_SECONDS: float = 600.0
     CURATOR_INTERVAL_TURNS: int = 3
     SIM_EVALUATOR_INTERVAL_TURNS: int = 2
     # Real benchmarks use an actor-scoped LLM player. Deterministic mode remains an

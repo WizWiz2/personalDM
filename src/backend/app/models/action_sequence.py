@@ -2,6 +2,7 @@ from contextvars import ContextVar
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+from app.models.item_state import ItemPropertyChange
 
 
 _current_execution: ContextVar["ActionSequenceExecution | None"] = ContextVar(
@@ -12,6 +13,11 @@ _current_execution: ContextVar["ActionSequenceExecution | None"] = ContextVar(
 
 class ExecutedActionStep(BaseModel):
     step_index: int = Field(ge=0)
+    source_action_index: int | None = None
+    source_location_id: UUID | None = None
+    target_location_id: UUID | None = None
+    created_items: list[dict] = Field(default_factory=list)
+    item_property_changes: list[ItemPropertyChange] = Field(default_factory=list)
     action_type: str
     intent: str
     resolution: str
@@ -28,6 +34,8 @@ class ExecutedActionStep(BaseModel):
     item_operation: str | None = None
     item_previous_owner_id: UUID | None = None
     item_previous_location_id: UUID | None = None
+    item_previous_placement_detail: str | None = None
+    item_result_placement_detail: str | None = None
     item_result_owner_id: UUID | None = None
     item_result_location_id: UUID | None = None
 

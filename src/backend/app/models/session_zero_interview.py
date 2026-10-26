@@ -20,6 +20,7 @@ class SessionZeroStarterNPC(BaseModel):
     )
     description: str | None = Field(default=None, max_length=600)
     reason: str | None = Field(default=None, max_length=400)
+    current_goal: str | None = Field(default=None, max_length=500)
     present_at_start: bool = True
 
     @model_validator(mode="after")
@@ -27,6 +28,40 @@ class SessionZeroStarterNPC(BaseModel):
         # Name binding belongs to the semantic control model, never prose patterns.
         if self.name_kind == "provisional":
             self.name = None
+        return self
+
+
+class SessionZeroDeadline(BaseModel):
+    """Publicly agreed story deadline with an explicit consequence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=8, max_length=1000)
+    due_phase: Literal["dawn", "morning", "day", "evening", "night"]
+    consequence: str = Field(min_length=12, max_length=1000)
+
+
+class SessionZeroStarterItem(BaseModel):
+    """Unique, physically present opening prop explicitly established in Session Zero.
+
+    A future clue, a rumour, or an item merely desired by the player is not here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    canonical_name: str = Field(min_length=2, max_length=120)
+    description: str | None = Field(default=None, max_length=800)
+    initial_placement: str | None = Field(default=None, max_length=300)
+    held_by_player: bool = False
+    held_by_npc: str | None = Field(
+        default=None, min_length=1, max_length=160,
+        description="Exact starter NPC name holding or controlling this item, otherwise null.",
+    )
+    present_at_start: bool = True
+
+    @model_validator(mode="after")
+    def single_holder(self):
+        if self.held_by_player and self.held_by_npc:
+            raise ValueError("A starter item cannot have two holders")
         return self
 
 
@@ -45,6 +80,8 @@ class SessionZeroWorldDraft(BaseModel):
     content_rating: str | None = None
     starting_location_name: str | None = None
     starting_situation: str | None = None
+    starting_day_part: Literal["dawn", "morning", "day", "evening", "night"] | None = None
+    scheduled_deadlines: list[SessionZeroDeadline] = Field(default_factory=list, max_length=4)
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] = Field(
         default_factory=list,
@@ -55,6 +92,7 @@ class SessionZeroWorldDraft(BaseModel):
         ),
     )
     starter_presence_confirmed: bool = False
+    starter_items: list[SessionZeroStarterItem] = Field(default_factory=list, max_length=6)
     starting_exit_allowed: bool = Field(
         default=False,
         description="The agreed opening establishes an ordinary accessible route outside. False for sealed, trapped or unknown starts.",
@@ -99,9 +137,12 @@ class SessionZeroWorldPatch(BaseModel):
     content_rating: str | None = None
     starting_location_name: str | None = None
     starting_situation: str | None = None
+    starting_day_part: Literal["dawn", "morning", "day", "evening", "night"] | None = None
+    scheduled_deadlines: list[SessionZeroDeadline] | None = None
     starting_scene_title: str | None = None
     starter_npcs: list[SessionZeroStarterNPC] | None = None
     starter_presence_confirmed: bool | None = None
+    starter_items: list[SessionZeroStarterItem] | None = None
     starting_exit_allowed: bool | None = None
 
 

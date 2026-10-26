@@ -27,12 +27,13 @@ from app.models.session_zero_interview import (
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import ModelRole, RoleModelRouter
-from app.services.session_zero_service import SessionZeroService
 from app.services.session_zero_reply_quality import assistant_message_incomplete
+from app.services.session_zero_service import SessionZeroService
 from app.services.starter_identity import (
     apply_established_starter_names,
     reconcile_starter_npcs,
 )
+from app.services.starter_item_custody import reconcile_starter_item_custody
 
 
 class SessionZeroInterviewIncompleteError(ValueError):
@@ -101,10 +102,21 @@ class SessionZeroAgent:
 - Ценности, страхи и желания можно аккуратно предложить как интерпретацию, но итоговая
   сводка будет показана игроку для подтверждения.
 - Не стирай и не переписывай подтверждённые данные без явной поправки игрока.
+- У мира могут быть объективные сроки. Если участники согласовали конкретный
+  дедлайн, запиши world.scheduled_deadlines: точное условие/источник (source),
+  фазу суток (due_phase) и последствия неисполнения (consequence). Покажи это
+  в итоговой сводке до подтверждения. Не добавляй срок без установленной фазы
+  и не выдумывай уже наступившее наказание.
+- Если время начала явно оговорено, запиши world.starting_day_part:
+  dawn (рассвет), morning (утро), day (день), evening (вечер), night (ночь).
+  Если точного времени нет — оставь null, не выводи фазу из дедлайна
+  «до рассвета» и не выдумывай ночь из атмосферы.
 
 СТАРТОВОЕ ПРИСУТСТВИЕ NPC
 - Когда стартовая ситуация становится понятной, ОБЯЗАТЕЛЬНО запиши в
   world.starter_npcs полный список NPC, которые физически присутствуют в первой сцене,
+  current_goal укажи только если из согласованной начальной ситуации понятно,
+  чего этот NPC хочет добиться в ближайшее время; роль/профессию не выдавай за цель.
   name_kind=personal только для установленного личного имени; для неизвестного посетителя,
   условного обозначения или роли — name_kind=provisional и name=null. Не заполняй имя заглушкой.
   и одновременно поставь world.starter_presence_confirmed=true.
@@ -122,6 +134,20 @@ class SessionZeroAgent:
   Description не заменяет name. Не придумывай имя, которого игрок не давал.
 - Не используй профессию или отдельное слово как доказательство физического присутствия:
   решай присутствие по смыслу всей стартовой ситуации.
+
+СТАРТОВЫЕ СЮЖЕТНЫЕ ПРЕДМЕТЫ
+- world.starter_items — до шести уникальных физических предметов, чьё существование
+  и место прямо согласованы в начальной сцене: жетон на теле, письмо на столе,
+  ключ в руке героя. Для каждого сохрани canonical_name, description и
+  initial_placement (где именно находится в пределах сцены).
+- held_by_player=true ставь ТОЛЬКО если герой уже держит предмет на старте.
+- held_by_npc — точное имя из starter_npcs, если NPC держит предмет или распоряжается им
+  (включая почту у хозяйки на конторке). Не заменяй владельца текстом initial_placement.
+  Для предмета без владельца held_by_npc=null; не назначай героя и NPC одновременно.
+- Не записывай слухи о вещах, будущее возможное сокровище, обычный декор,
+  предположения, ненайденные предметы или объекты лишь из целей персонажа.
+- При отсутствии подтверждённых предметов ставь starter_items=[]; не создавай
+  сюжетные предметы, чтобы искусственно оживить старт.
 
 ИНСТРУМЕНТЫ
 1. update_session_zero — скрыто обновляет только новые данные текущего хода.
@@ -349,6 +375,9 @@ class SessionZeroInterviewService:
 
         if finalize_requested:
             merged = await self._bind_established_names(selection, merged, state)
+            merged = await reconcile_starter_item_custody(
+                self._router, self._provider, selection, merged, state.messages,
+            )
 
         missing = self.missing_fields(merged)
         ready = finalize_requested and not missing
@@ -627,7 +656,15 @@ class SessionZeroInterviewService:
                 f"Первая цель: {character.first_goal or '—'}",
                 f"Старт: {world.starting_location_name or '—'} — "
                 f"{world.starting_situation or '—'}",
+                "Сроки: " + ("; ".join(
+                    f"{deadline.source} — {deadline.due_phase}: {deadline.consequence}"
+                    for deadline in world.scheduled_deadlines
+                ) or "не установлены"),
                 f"Кто уже в стартовой сцене: {'; '.join(starter_people) or 'никого кроме героя'}",
+                "Сюжетные предметы в стартовой сцене: " + ("; ".join(
+                    f"{item.canonical_name} ({item.initial_placement or 'расположение не уточнено'})"
+                    for item in world.starter_items if item.present_at_start
+                ) or "не установлены"),
             ]
         )
 
@@ -680,6 +717,13 @@ class SessionZeroInterviewService:
             setup = await self._session_zero.get(campaign_id)
             custom = dict(setup.custom_fields)
             custom[self.STATE_KEY] = state.model_dump(mode="json")
+            custom["scheduled_deadlines"] = [
+                deadline.model_dump(mode="json") for deadline in world.scheduled_deadlines
+            ]
+            custom["starter_items"] = [
+                item.model_dump(mode="json")
+                for item in world.starter_items if item.present_at_start
+            ]
             await self._session_zero.update(
                 campaign_id,
                 SessionZeroUpdate(
@@ -693,6 +737,7 @@ class SessionZeroInterviewService:
                     rules_system=world.rules_system,
                     world_summary=world.world_summary,
                     starting_situation=world.starting_situation,
+                    starting_day_part=world.starting_day_part,
                     starting_location_id=location.id,
                     starting_scene_title=(
                         world.starting_scene_title

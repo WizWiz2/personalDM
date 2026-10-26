@@ -15,8 +15,9 @@ from app.models.character import CharacterCreate
 from app.models.entity import EntityCreate, EntityType
 from app.models.location import LocationCreate
 from app.models.scene_state import LocationExitCreate, SceneStateRead, SceneStateUpdate
-from app.models.session_zero_interview import SessionZeroStarterNPC
+from app.models.session_zero_interview import SessionZeroStarterNPC, SessionZeroStarterItem
 from app.services.scene_state_service import SceneStateService
+from app.services.entity_identity import identity_key
 
 
 @dataclass(frozen=True)
@@ -100,8 +101,19 @@ class PlayableBootstrapService:
                 claimed_starter_ids.add(character.id)
                 if created and created_npc_id is None:
                     created_npc_id = character.id
+        # Typed plot props are seeded before the generic fallback detail.
+        # Their identity/position is established in Session Zero, not inferred
+        # by the narrator from the opening prose or the player's later wishes.
+        starter_items = await self._structured_starter_items(campaign_id)
+        for spec in starter_items:
+            new_id = await self._ensure_structured_item(
+                campaign_id, starting_location_id, player_character_id, spec,
+            )
+            if new_id is not None and created_object_id is None:
+                created_object_id = new_id
+
         state = await self._state.require_valid(campaign_id, scene_id)
-        if not state.object_ids:
+        if not state.object_ids and not starter_items:
             created_object_id = await self._create_starter_object(
                 campaign_id,
                 starting_location_id,
@@ -139,7 +151,7 @@ class PlayableBootstrapService:
         has_other_character = any(
             value != player_character_id for value in final.participant_ids
         )
-        if not (has_other_character or final.object_ids or final.available_exits):
+        if not (has_other_character or final.object_ids or starter_items or final.available_exits):
             raise ValueError("Session Zero produced no actionable starting affordance")
         if not final.scene_goal:
             raise ValueError("Session Zero produced no structured starting hook")
@@ -178,6 +190,80 @@ class PlayableBootstrapService:
             if spec.present_at_start:
                 parsed.append(spec)
         return True, parsed
+
+    async def _structured_starter_items(
+        self, campaign_id: UUID,
+    ) -> list[SessionZeroStarterItem]:
+        row = await self._setups.get(campaign_id)
+        if row is None:
+            return []
+        custom = self._setups.decode_dict(row.custom_fields)
+        raw = custom.get("starter_items", [])
+        if not isinstance(raw, list):
+            raise ValueError("Structured starter item contract is malformed")
+        try:
+            return [
+                SessionZeroStarterItem.model_validate(item)
+                for item in raw[:6]
+                if isinstance(item, dict)
+                and item.get("present_at_start", True)
+            ]
+        except ValueError as exc:
+            raise ValueError("Structured starter item contract is malformed") from exc
+
+    async def _ensure_structured_item(
+        self,
+        campaign_id: UUID,
+        location_id: UUID,
+        player_character_id: UUID,
+        spec: SessionZeroStarterItem,
+    ) -> UUID | None:
+        # Do not steal or respawn an existing item when bootstrapping is retried.
+        existing = await self._entities.list_by_campaign(
+            campaign_id, entity_type="item",
+        )
+        if any(identity_key(item.canonical_name) == identity_key(spec.canonical_name)
+               for item in existing):
+            return None
+        owner_id = player_character_id if spec.held_by_player else None
+        if spec.held_by_npc:
+            holders = [
+                person for person in await self._entities.list_by_campaign(
+                    campaign_id, entity_type="character",
+                )
+                if identity_key(person.canonical_name) == identity_key(spec.held_by_npc)
+            ]
+            if len(holders) != 1:
+                raise ValueError("Starter item holder must identify exactly one starter NPC")
+            holder = await self._entities.get_character(holders[0].id)
+            if holder is None or holder.current_location_id != location_id:
+                raise ValueError("Starter item holder must be physically present")
+            owner_id = holder.id
+        entity = await self._entities.create(
+            campaign_id,
+            EntityCreate(
+                entity_type=EntityType.ITEM,
+                canonical_name=spec.canonical_name,
+                description=spec.description,
+                custom_fields={
+                    "source": "session_zero_structured_items",
+                    "initial_placement": spec.initial_placement,
+                },
+            ),
+        )
+        self._session.add(
+            Item(
+                entity_id=str(entity.id),
+                item_type="plot_clue",
+                physical_properties=spec.description,
+                current_owner_id=str(owner_id) if owner_id else None,
+                current_location_id=None if owner_id else str(location_id),
+                placement_detail=spec.initial_placement if not spec.held_by_player else None,
+                is_unique=True,
+            )
+        )
+        await self._session.flush()
+        return entity.id
 
     async def _ensure_structured_contact(
         self,
@@ -259,7 +345,7 @@ class PlayableBootstrapService:
                 biography=f"На старте кампании выступает как {role}.",
                 backstory_public=f"{role}; физически присутствует в первой сцене.",
                 current_location_id=location_id,
-                current_intentions=[reason],
+                current_intentions=[self._clean(spec.current_goal) or reason],
                 custom_fields={
                     "source": self.STRUCTURED_SOURCE,
                     "temporary_name": not bool(self._clean(spec.name)),

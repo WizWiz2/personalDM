@@ -11,9 +11,9 @@ from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
-from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.providers.llm_provider import LLMProvider, LLMProviderAuthenticationError, LLMProviderError
 from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
-from app.services.chatgpt_auth_service import ChatGPTAuthService
+from app.services.chatgpt_auth_service import ChatGPTAuthError, ChatGPTAuthService
 from app.services.llm_usage_tracker import record_provider_telemetry
 
 
@@ -140,7 +140,10 @@ class RoleModelRouter:
         if primary is None:
             return None
         if primary.provider_kind == "chatgpt":
-            primary_key = await asyncio.to_thread(ChatGPTAuthService().get_access_token)
+            try:
+                primary_key = await asyncio.to_thread(ChatGPTAuthService().get_access_token)
+            except ChatGPTAuthError as exc:
+                raise LLMProviderAuthenticationError(str(exc)) from exc
         else:
             primary_key = await self._config_repo.get_decrypted_key(campaign_id)
 
@@ -224,9 +227,45 @@ class RoleModelRouter:
                 },
             ) as queue_wait_ms:
                 try:
-                    return await self._generate_json_with_budget(
-                        provider, selection, config, api_key, messages, **kwargs,
-                    )
+                    try:
+                        return await self._generate_json_with_budget(
+                            provider, selection, config, api_key, messages, **kwargs,
+                        )
+                    except LLMProviderError as exc:
+                        # F-21: DNS resolution / TCP reset is transient. The
+                        # provider already retries malformed schemas; only
+                        # transport failures get one additional bounded retry.
+                        # Never retry auth, rate limits, validation or a control
+                        # timeout, and never swallow cancellation.
+                        problem = str(exc).casefold()
+                        transient = any(marker in problem for marker in (
+                            "getaddrinfo", "name resolution", "dns lookup",
+                            "connection reset", "connecterror",
+                            "connect timeout", "network is unreachable",
+                            "failed to reach chatgpt plan endpoint",
+                        ))
+                        if not transient or "429" in problem or "rate_limit" in problem:
+                            raise
+                        first = dict(provider.last_telemetry or {})
+                        await asyncio.sleep(0.75)
+                        try:
+                            result = await self._generate_json_with_budget(
+                                provider, selection, config, api_key, messages, **kwargs,
+                            )
+                        except LLMProviderError:
+                            provider.last_telemetry = {
+                                **dict(provider.last_telemetry or {}),
+                                "network_retry_count": 1,
+                                "initial_network_error": problem[:350],
+                            }
+                            raise
+                        provider.last_telemetry = {
+                            **dict(provider.last_telemetry or {}),
+                            "network_retry_count": 1,
+                            "initial_network_error": problem[:350],
+                            "initial_network_telemetry": first,
+                        }
+                        return result
                 finally:
                     provider.last_telemetry = {
                         **dict(provider.last_telemetry or {}), "queue_wait_ms": queue_wait_ms,
