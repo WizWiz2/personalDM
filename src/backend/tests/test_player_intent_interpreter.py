@@ -14,7 +14,6 @@ from app.services.player_intent_interpreter import (
     _IntentWire,
     normalize_intent_draft,
 )
-from app.services.turn_planner import TurnPlanningError
 
 
 @pytest.mark.asyncio

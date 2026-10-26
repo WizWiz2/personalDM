@@ -20,7 +20,6 @@ from app.services.turn_outcome_resolver import (
     _profile_wire_model,
 )
 
-
 _TYPED = {"evidence_quote": "q", "contribution_kind": "world_action", "actor_id": "x"}
 
 
