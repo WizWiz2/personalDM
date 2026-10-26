@@ -91,3 +91,20 @@ def test_outcome_call_sees_whose_world_it_is():
     blocks = {p.id: outcome_master_block(p, ["npc_initiative"]) for p in list_presets()}
     assert all(p.brief.strip() in blocks[p.id] and "npc_initiative" in blocks[p.id] for p in list_presets())
     assert len(set(blocks.values())) == len(blocks)
+
+
+def test_a_strangers_arrival_carries_the_stranger_as_an_arriving_newcomer():
+    from app.models.player_intent import PlayerIntentContract
+    from app.services.turn_outcome_resolver import normalize_outcome_draft
+    stranger = {"canonical_name": "Поздний посетитель", "role": "путник", "reason": "Входит с дороги.",
+                "description": "Незнакомый мужчина средних лет, промокший после долгой дороги.",
+                "appearance": "Тёмный дорожный кафтан, мокрая шапка, сапоги в грязи по колено."}
+    move = {"thread_id": "thread_0", "kind": "arrival", "outcome": "В трактир входит поздний посетитель."}
+    wire = _wire(world_kinds=("arrival",))
+    with pytest.raises(ValidationError):  # a person in npc_introductions is not the arrival's newcomer
+        wire.model_validate({**BASE, "npc_introductions": [stranger], "world_move": move})
+    draft = wire.model_validate({**BASE, "world_move": {**move, "newcomer": stranger}})
+    [npc] = normalize_outcome_draft(draft.model_copy(update={"world_move": None}),
+                                    PlayerIntentContract(summary="Жду.", actions=[]),
+                                    draft.world_move.newcomer).npc_introductions
+    assert npc.arrives and not npc.sent_for  # arriving: never folded into the place's keeper slot

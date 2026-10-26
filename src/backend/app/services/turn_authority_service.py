@@ -203,6 +203,10 @@ class TurnAuthorityService:
             raise TurnAuthorityError(str(exc)) from exc
 
         present_names = list(npc_resolution.present_names)
+        if world_move and world_move.kind == "arrival" and not world_move.actor_id and not any(
+            npc.arrives for npc in npc_resolution.new_introductions
+        ):
+            world_move = None  # A stranger walks in only as a typed newcomer, never as prose alone.
         if world_move and world_move.kind == "arrival" and world_move.actor_id:
             # The thread's own person (e.g. the one sent for) is who the world brings here.
             arriving = await self._session.get(Entity, str(world_move.actor_id))
