@@ -304,6 +304,8 @@ class TurnOutcomeMaterializer:
         """A person a present beat owner brings in through an executed step, who then speaks or acts
         in the published prose, joins the scene by the planned-introduction path (7b T7 «речник»)."""
         newcomer = beat.newcomer if beat else None
+        if outcome.introduced_character_ids:
+            return outcome  # This turn's typed newcomer is the one the prose shows (replay15 r6 «Путник 2»).
         if not (newcomer and authority.beat_owner_id and authority.target_scene_id) or not any(
             step["status"] == "completed" for step in authority.executed_steps()
         ):
