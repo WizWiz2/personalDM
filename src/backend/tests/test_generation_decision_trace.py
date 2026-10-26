@@ -94,7 +94,7 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
         await record_provider_telemetry(
             {"model": "test", "model_role": selection.role.value, "status": "completed"}
         )
-        if kwargs.get("response_model") is NarrationValidationResult:
+        if issubclass(kwargs.get("response_model") or object, NarrationValidationResult):
             return {
                 "verdict": "repair_required",
                 "summary": "Решение за игрока.",
