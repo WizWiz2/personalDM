@@ -65,8 +65,18 @@ def test_arrival_of_a_threads_own_person_needs_no_new_introduction():
 
 
 def test_sent_for_person_is_typed_offscreen_not_present():
-    from app.services.turn_outcome_resolver import OutcomeNpcIntroductionDraft
-    assert "sent_for" in OutcomeNpcIntroductionDraft.model_json_schema()["properties"]
+    from app.models.player_intent import PlayerIntentContract
+    from app.services.turn_outcome_resolver import normalize_outcome_draft
+    person = {"canonical_name": "Речник", "role": "речник", "reason": "Хозяин послал за ним.",
+              "description": "Речник, недавно вернувшийся с Ладоги на своей лодке.",
+              "appearance": "Обветренный мужчина в смолёной куртке и высоких сапогах."}
+    wire = _outcome_wire_model(1)
+    draft = wire.model_validate({"action_outcomes": [{"action_index": 0, "resolution": "auto_success",
+        "observable_outcome": "Хозяин посылает за речником.", "sends_for": person}], "npc_introductions": []})
+    contract = PlayerIntentContract(summary="Пошлите за речником.", actions=[
+        {"action_type": "interaction", "intent": "Попросить послать за речником."}])
+    [npc] = normalize_outcome_draft(draft, contract).npc_introductions
+    assert npc.sent_for and not npc.arrives
 
 
 def test_world_does_not_repeat_its_last_kind_while_another_is_allowed():

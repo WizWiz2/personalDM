@@ -196,8 +196,7 @@ thread's actor acts at their own place, or here if present), npc_move (the threa
 takes ONE listed available_destinations edge, never into the hero's place), arrival (a
 person arrives here: the thread's actor when it has one, such as someone sent for; otherwise
 a newcomer typed in npc_introductions). When an NPC here agrees to send for a person who is
-not in the cast, type that person in npc_introductions with sent_for=true: they exist from
-then on, offscreen, and their current_goal is why they would come.
+not in the cast, type that person in that action's sends_for.
 master_harshness sets how hard independent moves and failures land: gentle = the world
 offers, helps and informs, costs stay soft; fair = proportionate costs; harsh = costs land
 now, threats press, NPCs pursue their own interest even against the hero.
@@ -331,6 +330,10 @@ class ActionOutcomeDraft(BaseModel):
     # an invalid arrival goes to schema repair instead of silently vanishing (B9 T10 «речник»).
     arriving: OutcomeNpcIntroductionDraft | None = Field(
         default=None, description="A person not yet present whom this result brings here.")
+    sends_for: OutcomeNpcIntroductionDraft | None = Field(
+        default=None, description=(
+            "A person not in the cast whom an NPC agrees in this result to fetch, find or send for: "
+            "they exist from now on, offscreen; current_goal says why they would come."))
     observable_outcome: str | None = None
     reaction: str | None = None
     blocking_reason: str | None = None
@@ -353,9 +356,6 @@ class OutcomeNpcIntroductionDraft(BaseModel):
     reason: str = Field(min_length=2, max_length=500)
     after_action_index: int | None = Field(default=None, ge=0, le=7)
     resident_slot: str | None = Field(default=None, description="ID of the place this person keeps.")
-    sent_for: bool = Field(default=False, description=(
-        "Someone here is sent to fetch this person: they exist from now on but stay offscreen "
-        "until a world_move of kind arrival brings them."))
 
     @model_validator(mode="after")
     def validate_identity(self):
@@ -555,6 +555,7 @@ def _outcome_wire_model(
         blocking_evidence_ref: reference_type = None
         carry_participants: list[participant_type] = Field(default_factory=list, max_length=8)
         arriving: arrival_type = None
+        sends_for: arrival_type = None
 
     class SuccessfulActionOutcomeDraft(IndexedActionOutcomeDraft):
         resolution: Literal["auto_success"]
@@ -890,7 +891,13 @@ def normalize_outcome_draft(
         item.arriving.model_copy(update={"after_action_index": item.action_index, "resident_slot": None})
         for item in draft.action_outcomes if getattr(item, "arriving", None)
     ]
-    for arrives, npc in [*((True, item) for item in arrivals), *((False, item) for item in draft.npc_introductions)]:
+    # A person an NPC agreed to fetch is that step's offscreen errand target (REPORT13 «речник»).
+    errands = [
+        item.sends_for.model_copy(update={"after_action_index": item.action_index, "resident_slot": None})
+        for item in draft.action_outcomes if getattr(item, "sends_for", None)
+    ]
+    for arrives, npc in [*((True, item) for item in arrivals), *((False, item) for item in draft.npc_introductions),
+                         *((None, item) for item in errands)]:
         if any(identity_key(npc.canonical_name) == identity_key(known["identity_reference"])
                for known in introductions):
             continue
@@ -930,8 +937,8 @@ def normalize_outcome_draft(
                 "reason": reason,
                 "after_action_index": npc.after_action_index,
                 "resident_slot": npc.resident_slot,
-                "arrives": arrives,
-                "sent_for": bool(getattr(npc, "sent_for", False)) and not arrives,
+                "arrives": bool(arrives),
+                "sent_for": arrives is None,
             }
         )
 
