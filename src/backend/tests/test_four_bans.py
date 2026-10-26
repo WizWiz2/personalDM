@@ -326,3 +326,11 @@ def test_an_untyped_individual_walking_in_is_a_movement_error_but_a_crowd_is_not
     staged = judged(("вошедший пожилой речник направился к стойке", "untyped_person"))
     assert staged.verdict == "repair_required"
     assert staged.violations[0].violation_type == "invalid_movement"
+
+
+def test_narrator_gets_the_typed_place_frame():
+    """replay15 r10/p11: «гладь Ладоги» from a pier on the Molога; the frame comes from typed places."""
+    frame = {"here_inside_out": [{"name": "Весьегонск", "profile": "Город на Мологе."},
+                                 {"name": "Пристань", "profile": "Причал."}],
+             "reachable_from_here": ["Трактир"]}
+    assert _authority(place_frame=frame).narrator_payload()["place_frame"] == frame
