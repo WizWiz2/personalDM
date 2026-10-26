@@ -74,6 +74,9 @@ catalogued ID. This identifies the subject without changing custody; do not mix 
 Classify expected_effect by the committed act: item_creation produces a distinct persistent
 artifact; item_change physically alters an existing item's properties or a component; ordinary
 otherwise. Bind subject_item_id for item_change. Reading alone is not a property change.
+fetch_person: the human asks someone here to fetch, find or send for a person who is not here.
+named_absent_people: the nominative personal name of each person the input speaks of by name
+who is not among the physically present characters; [] when none.
 Retain every committed return journey, including one expressed by the final placement of an
 object back in the original room. It is a separate travel action, not permission for remote placement.
 For a later inventory action on an artifact created earlier in THIS input, use
@@ -121,7 +124,7 @@ class PlayerActionIntentDraft(BaseModel):
     action_type: IntentActionType = "other"
     actor_role: Literal["speaker", "addressee"] = "speaker"
     requested_actor_id: str | None = None
-    expected_effect: Literal["ordinary", "item_creation", "item_change"] = "ordinary"
+    expected_effect: Literal["ordinary", "item_creation", "item_change", "fetch_person"] = "ordinary"
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     place: str | None = None
@@ -162,6 +165,7 @@ class PlayerIntentContractDraft(BaseModel):
     time_advance: DayPart | None = Field(
         default=None, description="The later part of day the player skips to before acting, else null.",
     )
+    named_absent_people: list[str] = Field(default_factory=list, max_length=2)
 
 
 class _ActionWire(BaseModel):
@@ -230,7 +234,7 @@ class _LocalActionWire(_ActionWire):
     action_type: Literal["service", "interaction", "observation", "other"]
     spatial_effect: Literal["local", "none"]
     subject_item_id: UUID | None = None
-    expected_effect: Literal["ordinary", "item_creation", "item_change"]
+    expected_effect: Literal["ordinary", "item_creation", "item_change", "fetch_person"]
 
     @model_validator(mode="after")
     def require_property_subject(self):
@@ -242,6 +246,7 @@ class _LocalActionWire(_ActionWire):
 class _SpeechWire(_ActionWire):
     contribution_kind: Literal["speech"]
     intent: str = Field(min_length=2, max_length=500, description="What is said, paraphrased.")
+    expected_effect: Literal["ordinary", "fetch_person"]
 
 
 class _IntentWire(PlayerIntentContractDraft):
@@ -254,7 +259,7 @@ class _IntentWire(PlayerIntentContractDraft):
                 "addressed_response_requested", "addressed_character_name",
                 "identity_reveal_requested", "information_request_only", "world_state_question",
                 "time_advance",
-                "spoken_identity_evidence",
+                "spoken_identity_evidence", "named_absent_people",
             ],
         },
     )
@@ -500,6 +505,7 @@ def normalize_intent_draft(
             "world_state_question": bool(draft.world_state_question),
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
             "time_advance": _compact(draft.time_advance) or None,
+            "named_absent_people": [value for raw in draft.named_absent_people if (value := _compact(raw))],
             "protected_player_decisions": [
                 value for raw in draft.protected_player_decisions if (value := _compact(raw))
             ],

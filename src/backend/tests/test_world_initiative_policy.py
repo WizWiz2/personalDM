@@ -138,3 +138,32 @@ def test_a_master_can_reveal_a_new_place_inside_a_known_one():
     assert _outcome_wire_model(0).model_json_schema()["properties"]["place_introductions"]["maxItems"] == 0
     travel = _outcome_wire_model(1, known_places=(town,), movement_indices={0}).model_json_schema()
     assert travel["properties"]["place_introductions"]["maxItems"] == 0  # travel profiles its own endpoint
+
+
+def test_an_accepted_fetch_errand_must_type_whom_it_sends_for():
+    """replay15 k4: the Keeper's innkeeper «пошлёт кого-нибудь», but sends_for stayed empty."""
+    person = {"canonical_name": "Речник", "role": "речник", "reason": "Хозяин послал за ним.",
+              "description": "Речник, недавно вернувшийся с Ладоги на своей лодке.",
+              "appearance": "Обветренный мужчина в смолёной куртке и высоких сапогах."}
+    wire = _outcome_wire_model(1, required_effects={0: "fetch_person"})
+    accepted = {"action_index": 0, "resolution": "auto_success", "npc_response": "accepted",
+                "observable_outcome": "Хозяин посылает мальчишку за речником."}
+    with pytest.raises(ValidationError):
+        wire.model_validate({"action_outcomes": [accepted], "npc_introductions": []})
+    wire.model_validate({"action_outcomes": [{**accepted, "sends_for": person}], "npc_introductions": []})
+    wire.model_validate({"action_outcomes": [{**accepted, "npc_response": "refused"}], "npc_introductions": []})
+
+
+def test_a_named_absent_person_without_a_cast_id_is_typed_offscreen():
+    """replay15 Keeper: «Белов» was asked about three times and absent_people stayed []."""
+    belov = {"canonical_name": "Прохор Белов", "role": "речник", "reason": "Его ищет герой.",
+             "description": "Речник, которого знают у складов; сейчас его нет на пристани.",
+             "appearance": "Никто здесь его не описал; известно только имя и ремесло.",
+             "temporary_name": False, "personal_name_evidence": "Белова"}
+    wire = _outcome_wire_model(1, required_absent=("Прохор Белов",))
+    base = {"action_outcomes": [{"action_index": 0, "resolution": "auto_success",
+                                 "observable_outcome": "Рыбак отвечает."}], "npc_introductions": []}
+    with pytest.raises(ValidationError):
+        wire.model_validate({**base, "absent_people": []})
+    wire.model_validate({**base, "absent_people": [belov]})
+    assert "absent_people" in wire.model_json_schema()["required"]
