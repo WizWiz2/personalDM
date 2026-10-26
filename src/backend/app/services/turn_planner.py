@@ -220,12 +220,12 @@ class TurnPlan(BaseModel):
                 reason="Execute the ordered player action sequence.",
                 sequence_payload=self.action_sequence.model_dump(),
             )
-        elif self.resolution == "sequence":
-            raise ValueError("sequence resolution requires action_sequence.steps")
-        elif self.resolution == "transition" and not self.scene_transition.required:
-            raise ValueError(
-                "transition resolution requires a structured scene_transition"
-            )
+        elif self.scene_transition.required:
+            self.resolution = "transition"
+        elif self.resolution in {"sequence", "transition"}:
+            # Structure, not the label, decides movement: no typed transition means nobody moved
+            # (sim300: five turns hard-failed on this label/structure mismatch).
+            self.resolution = "uncertain"
         return self
 
     def narrator_payload(self) -> str:

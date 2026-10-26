@@ -4,9 +4,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
 
-from app.db.narration_validation_table import NarrationValidationRun
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.models.campaign import CampaignCreate

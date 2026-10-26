@@ -27,3 +27,4 @@ def test_narrator_fact_window_does_not_grow_with_campaign_length():
     window = ContextCompiler._scene_window([*old, local, person], scene_id, {str(here_id)})
     assert local in window and person in window
     assert len(window) == 2 + ContextCompiler.SCENE_WINDOW_OTHER_FACTS
+
