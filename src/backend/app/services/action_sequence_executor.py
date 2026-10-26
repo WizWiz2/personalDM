@@ -126,6 +126,7 @@ class ActionSequenceExecutor:
 
         current_scene_id = source_scene_id
         blocked = False
+        failed_items: set[str] = set()
         for index, step in enumerate(plan.steps):
             db_step = ActionStep(
                 sequence_id=sequence.id,
@@ -157,7 +158,7 @@ class ActionSequenceExecutor:
                     db_step.item_previous_location_id = item.current_location_id
                     db_step.item_previous_placement_detail = item.placement_detail
 
-            if blocked:
+            if blocked or (step.item_id is not None and str(step.item_id) in failed_items):
                 db_step.status = "skipped"
                 db_step.target_scene_id = (
                     str(current_scene_id) if current_scene_id else None
@@ -258,11 +259,9 @@ class ActionSequenceExecutor:
                         db_step,
                     )
                 except InventoryExecutionError as exc:
-                    # Inventory is a typed world mutation, but the model can still race with
-                    # state materialization between planning and execution. Treat the failed
-                    # precondition like any other deterministic obstacle: persist a blocked
-                    # step, stop the ordered tail, and let narration describe the concrete
-                    # result. Never turn a safe no-op into a failed turn or partial mutation.
+                    # A failed item precondition is local to that item: persist a blocked
+                    # step and skip only later steps on the same item. Independent steps
+                    # (e.g. leaving after a payment that cannot happen) still resolve.
                     db_step.status = "blocked"
                     db_step.blocking_reason = exc.public_reason
                     db_step.observable_outcome = None
@@ -270,8 +269,9 @@ class ActionSequenceExecutor:
                     db_step.target_scene_id = (
                         str(current_scene_id) if current_scene_id else None
                     )
-                    sequence.blocked_step_index = index
-                    blocked = True
+                    if sequence.blocked_step_index is None:
+                        sequence.blocked_step_index = index
+                    failed_items.add(str(step.item_id))
                     continue
 
             db_step.status = "completed"

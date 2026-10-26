@@ -334,3 +334,26 @@ async def test_production_pipeline_repairs_an_unexecuted_decision_without_rewrit
     assert metadata["intent_contract"]["summary"] == contract.summary
     assert len(await load_item_states(db_session, cid)) == 1  # planning made no physical mutations
     assert (await db_session.get(Item, str(letter))).current_owner_id is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_payment_does_not_swallow_independent_travel(db_session):
+    # Replay12 T14: a drop of an item the hero does not hold blocked the whole
+    # tail, so the independent walk to another place silently vanished.
+    cid, room, elsewhere, _, npc, letter, scene = await _world(db_session)
+    await SceneStateService(db_session).create_exit(cid, room, LocationExitCreate(
+        to_location_id=elsewhere, label="в лавку", bidirectional=True))
+    item = await db_session.get(Item, str(letter))
+    item.current_owner_id, item.current_location_id = str(npc), None
+    await db_session.flush()
+    contract = PlayerIntentContract(summary="Оставляю письмо на стойке и иду в лавку.", actions=[
+        PlayerActionIntent(action_type="inventory", intent="Оставить письмо на стойке.", item_id=letter,
+                           inventory_operation="drop"),
+        PlayerActionIntent(action_type="movement", intent="Уйти в лавку.", destination_location="Лавка",
+                           destination_location_id=elsewhere),
+    ])
+    decision = TurnOutcomeDecision(action_outcomes=[_success(),
+        ActionOutcomeDecision(action_index=1, resolution="auto_success", observable_outcome="Герой пришёл в лавку.")])
+    execution = await _execute(db_session, cid, scene, contract, decision)
+    assert [s.status for s in execution.steps] == ["blocked", "completed"]
+    assert execution.blocked_step_index == 0
