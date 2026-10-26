@@ -71,7 +71,7 @@ class FakeControlRouter:
                 "designation_evidence": self.plan.observable_consequences[0],
                 "reason": "The role designation refers to the person opening the door.",
             }
-        if response_model is NarrationValidationResult:
+        if isinstance(response_model, type) and issubclass(response_model, NarrationValidationResult):
             self.narration_validation_calls += 1
             return {"verdict": "pass", "summary": "Дежурный введён типизированно.", "violations": []}
         raise AssertionError(response_model)
