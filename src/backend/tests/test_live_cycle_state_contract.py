@@ -284,6 +284,9 @@ async def test_a_person_the_owner_brings_in_who_speaks_in_prose_joins_the_scene(
     [new_id] = outcome.introduced_character_ids
     assert new_id in await SceneRepository(db_session).get_participants(scene.id)
     assert "Речник" in authority.present_character_names
+    # replay15 r6: a turn that already typed its newcomer gets no prose twin («Путник 2»).
+    again = await materializer.introduce_published_newcomer(authority, beat, prose, outcome, user.id)
+    assert again.introduced_character_ids == outcome.introduced_character_ids
 
 
 @pytest.mark.asyncio
