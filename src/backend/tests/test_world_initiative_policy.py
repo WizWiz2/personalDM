@@ -136,3 +136,5 @@ def test_a_master_can_reveal_a_new_place_inside_a_known_one():
     [new] = normalize_outcome_draft(draft, PlayerIntentContract(summary="Жду.", actions=[])).place_introductions
     assert new.parent_location_id == UUID(town) and new.canonical_name == "Лабаз Ефима"
     assert _outcome_wire_model(0).model_json_schema()["properties"]["place_introductions"]["maxItems"] == 0
+    travel = _outcome_wire_model(1, known_places=(town,), movement_indices={0}).model_json_schema()
+    assert travel["properties"]["place_introductions"]["maxItems"] == 0  # travel profiles its own endpoint
