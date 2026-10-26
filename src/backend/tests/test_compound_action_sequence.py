@@ -464,3 +464,15 @@ def test_full_turn_and_undo_keep_sequence_atomic(
     snapshot = client.get(f"/api/campaigns/{campaign_id}/debugger").json()
     assert snapshot["active_scene"]["id"] == source["id"]
     assert snapshot["campaign"]["player_location_id"] == hall["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_redo_reactivates_the_place_an_undo_retired(db_session: AsyncSession):
+    """Replay15 k3: the redone trip reached the undone (inactive) inn and left the hero there."""
+    from app.db.tables import Entity
+    world = await _world(db_session)
+    (await db_session.get(Entity, str(world["merchants"].id))).status = "inactive"
+    applied = await SceneTransitionExecutor(db_session).apply(
+        world["campaign_id"], world["source"].id, world["turn"].id, _compound_plan().scene_transition)
+    assert applied.scene.location_id == world["merchants"].id
+    assert (await db_session.get(Entity, str(world["merchants"].id))).status == "active"

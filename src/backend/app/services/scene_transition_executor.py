@@ -223,6 +223,9 @@ class SceneTransitionExecutor:
                         resident_role=plan.destination_resident_role,
                     )
                 )
+            target_row = await self._session.get(Entity, str(target_location_id))
+            if target_row is not None and target_row.status == "inactive":
+                target_row.status = "active"  # a redo of an undone trip re-catalogs the same place
             if allow_route_discovery is None:
                 allow_route_discovery = bool(
                     _destination_profile(plan.bridge_summary)
@@ -689,8 +692,6 @@ class SceneTransitionExecutor:
         locations = await self._locations.list_by_campaign(campaign_id)
         match = self._match_location(locations, clean_destination)
         if match:
-            if match.status == "inactive":  # a redo of an undone trip re-catalogs the same place
-                (await self._session.get(Entity, str(match.id))).status = "active"
             return match.id, False
 
         parent_id = None
