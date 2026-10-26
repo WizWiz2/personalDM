@@ -12,7 +12,6 @@ from app.services.player_intent_interpreter import (
     PlayerIntentContractDraft,
     PlayerIntentInterpreter,
     _IntentWire,
-    _intent_semantic_review_wire,
     normalize_intent_draft,
 )
 from app.services.turn_planner import TurnPlanningError
@@ -36,7 +35,6 @@ async def test_locking_workshop_is_local_even_when_extraction_calls_it_movement(
     result = await _interpreter(router).interpret(SimpleNamespace(), [], "Запираю мастерскую.")
     assert result.actions[0].action_type == "interaction"
     assert result.actions[0].destination_location is None
-    assert "DestinationIdentityBindings" not in router.calls
 
 
 @pytest.mark.asyncio
@@ -82,48 +80,29 @@ class _Router:
         self.review = review
         self.calls: list[str] = []
 
-    async def generate_json(
-        self,
-        provider,
-        selection,
-        messages,
-        *,
-        response_model,
-        **kwargs,
-    ):
-        del provider, selection, kwargs
+    async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+        """One intent call now carries ownership and place; fixtures fold them into it."""
+        del provider, selection, messages, kwargs
         self.calls.append(response_model.__name__)
-        if response_model.__name__ == "DestinationIdentityBindings":
-            return self.bindings
-        if response_model.__name__ == "IntentSemanticOwnershipReview":
-            human_input = (
-                messages[-1]
-                .content.split("[LATEST HUMAN INPUT]\n", 1)[1]
-                .split("\n\n[EXTRACTED ACTIONS", 1)[0]
-            )
-            default_review = {
-                "action_ownership": [
-                    {
-                        "action_index": index,
-                        "actor_role": action.get("actor_role", "speaker"),
-                        "evidence_quote": human_input,
-                    }
-                    for index, action in enumerate(self.payload.get("actions", []))
-                ],
-                "information_request_only": self.payload.get("information_request_only", False),
-                "information_recipient": (
-                    "narrator"
-                    if self.payload.get("world_state_question", False)
-                    else "character"
-                    if self.payload.get("addressed_response_requested", False)
-                    and self.payload.get("information_request_only", False)
-                    else "none"
-                ),
-                "addressed_character_name": self.payload.get("addressed_character_name"),
-            }
-            return self.review or default_review
         assert issubclass(response_model, PlayerIntentContractDraft)
-        return self.payload
+        payload = {**self.payload, "actions": [dict(a) for a in self.payload.get("actions", [])]}
+        for item in (self.review or {}).get("action_ownership", []):
+            action = payload["actions"][item["action_index"]]
+            action.update({k: v for k, v in item.items() if k != "action_index" and v is not None})
+            if item.get("spatial_effect") in {"local", "none"} and action["action_type"] == "movement":
+                action["action_type"] = item.get("action_type") or "interaction"
+        if self.review and self.review.get("information_recipient") == "narrator":
+            payload["world_state_question"] = True
+        if self.review:
+            payload["information_request_only"] = self.review["information_request_only"]
+        if self.review and self.review["information_request_only"] and self.review.get(
+            "information_recipient"
+        ) == "character":
+            payload["addressed_response_requested"] = True
+            payload["addressed_character_name"] = self.review.get("addressed_character_name")
+        for key, place in (self.bindings or {}).items():
+            payload["actions"][int(key.removeprefix("action_"))]["place"] = place
+        return payload
 
 
 class _LinguisticAnalyzer:
@@ -137,39 +116,6 @@ class _LinguisticAnalyzer:
     ) -> LinguisticIntentAnalysis:
         del player_input, action_evidence
         return self.analysis
-
-
-@pytest.mark.asyncio
-async def test_disputed_inventory_act_is_reconsidered_before_being_erased():
-    item_id, npc_id = str(uuid4()), str(uuid4())
-    payload = {"summary": "Передаю ключ.", "actions": [{
-        "action_type": "inventory", "intent": "Передаю ключ.", "actor_role": "speaker",
-        "item_id": item_id, "inventory_operation": "give", "inventory_target_id": npc_id,
-    }]}
-    mistaken = {
-        "action_ownership": [{"action_index": 0, "actor_role": "speaker",
-                              "contribution_kind": "speech", "evidence_quote": "Передаю ключ."}],
-        "information_request_only": True, "information_recipient": "narrator",
-    }
-
-    class DisputingRouter(_Router):
-        async def generate_json(self, *args, response_model, **kwargs):
-            if response_model.__name__ == "IntentSemanticOwnershipReview":
-                if self.calls.count("IntentSemanticOwnershipReview"):
-                    self.review = {
-                        "action_ownership": [{"action_index": 0, "actor_role": "speaker",
-                                              "contribution_kind": "world_action",
-                                              "spatial_effect": "local",
-                                              "evidence_quote": "Передаю ключ."}],
-                        "information_request_only": False, "information_recipient": "none",
-                    }
-            return await super().generate_json(*args, response_model=response_model, **kwargs)
-
-    router = DisputingRouter(payload, review=mistaken)
-    result = await _interpreter(router).interpret(SimpleNamespace(), [], "Передаю ключ.")
-    assert result.actions[0].inventory_operation == "give"
-    assert str(result.actions[0].item_id) == item_id
-    assert router.calls.count("IntentSemanticOwnershipReview") == 2
 
 
 @pytest.mark.asyncio
@@ -290,20 +236,6 @@ def test_long_dialogue_preserves_contract_without_overflowing_summary():
     assert len(contract.summary) <= 500
 
 
-def test_information_summary_cannot_erase_typed_physical_action_in_mixed_turn():
-    review = _intent_semantic_review_wire(2, "Осматриваю дверь и прошу объяснений.").model_validate(
-        {
-            "action_ownership": [
-                {"action_index": 0, "actor_role": "speaker", "contribution_kind": "world_action"},
-                {"action_index": 1, "actor_role": "addressee", "contribution_kind": "speech"},
-            ],
-            "information_request_only": True,
-            "information_recipient": "character",
-        }
-    )
-    assert review.information_request_only is False
-
-
 @pytest.mark.asyncio
 async def test_known_destination_identity_overrides_inflected_model_label():
     location_id = str(uuid4())
@@ -327,11 +259,7 @@ async def test_known_destination_identity_overrides_inflected_model_label():
         location_references={location_id: "Комната Кая"},
     )
     assert result.actions[0].destination_location == "Комната Кая"
-    assert router.calls == [
-        "PlayerIntentContractDraft",
-        "IntentSemanticOwnershipReview",
-        "DestinationIdentityBindings",
-    ]
+    assert router.calls == ["PlayerIntentContractDraft"]
 
 
 @pytest.mark.asyncio
@@ -363,7 +291,7 @@ async def test_possessed_room_uses_unique_grammatical_head_not_surrounding_area(
     )
 
     assert result.actions[0].destination_location == "Комната Кая"
-    assert "DestinationIdentityBindings" in router.calls
+    assert router.calls == ["PlayerIntentContractDraft"]
 
 
 @pytest.mark.asyncio
@@ -389,7 +317,7 @@ async def test_inflected_destination_reaches_semantic_identity_binding():
         location_references={location_id: "стеллажам"},
     )
     assert result.actions[0].destination_location == "стеллажам"
-    assert "DestinationIdentityBindings" in router.calls
+    assert router.calls == ["PlayerIntentContractDraft"]
 
 
 @pytest.mark.asyncio
@@ -407,13 +335,12 @@ async def test_unknown_location_identity_cannot_authorize_a_destination():
         },
         bindings={"action_0": str(uuid4())},
     )
-    with pytest.raises(TurnPlanningError, match="player intent interpretation failed"):
-        await _interpreter(router).interpret(
-            SimpleNamespace(),
-            [],
-            "Иду в комнату.",
-            location_references={str(uuid4()): "Комната"},
-        )
+    result = await _interpreter(router).interpret(
+        SimpleNamespace(), [], "Иду в комнату.", location_references={str(uuid4()): "Комната"},
+    )
+    # The deterministic binder rejects an uncatalogued ID: no topology, no trip.
+    assert result.actions[0].action_type == "interaction"
+    assert result.actions[0].destination_location is None
 
 
 @pytest.mark.asyncio
@@ -440,9 +367,7 @@ async def test_new_destination_binding_preserves_selected_endpoint_and_action():
     assert len(result.actions) == 1
     assert result.actions[0].destination_location == "Прачечная соседнего дома"
     assert result.actions[0].intent == "Иду в прачечную."
-    assert router.calls == [
-        "PlayerIntentContractDraft", "IntentSemanticOwnershipReview", "DestinationIdentityBindings",
-    ]
+    assert router.calls == ["PlayerIntentContractDraft"]
 
 
 @pytest.mark.asyncio
@@ -472,9 +397,7 @@ async def test_healthy_intent_path_binds_identity_by_id() -> None:
 
     assert result.actions[0].destination_location == "Коридор"
     assert str(result.actions[0].destination_location_id) == corridor_id
-    assert router.calls == [
-        "PlayerIntentContractDraft", "IntentSemanticOwnershipReview", "DestinationIdentityBindings",
-    ]
+    assert router.calls == ["PlayerIntentContractDraft"]
     assert interpreter.audit[-1]["phase"] == "single_pass"
     assert interpreter.audit[-1]["normalization"] == "deterministic"
 
@@ -725,37 +648,14 @@ def test_addressee_act_is_service_and_keeps_the_speaker() -> None:
     assert contract.addressed_character_name == "Анна"
 
 
-def test_actor_role_is_required_on_the_model_schema() -> None:
+def test_quote_and_kind_precede_actor_on_the_model_schema() -> None:
     schema = _IntentWire.model_json_schema()
     action_refs = [item["$ref"] for item in schema["properties"]["actions"]["items"]["anyOf"]]
     for ref in action_refs:
         name = ref.rsplit("/", 1)[-1]
         definition = schema["$defs"][name]
-        assert "actor_role" in definition["properties"]
-        assert "actor_role" in definition["required"]
-
-
-def test_semantic_ownership_review_keeps_coverage_but_tolerates_paraphrased_evidence() -> None:
-    wire = _intent_semantic_review_wire(1, "Мария, закрой дверь.")
-    payload = {
-        "action_ownership": [
-            {
-                "action_index": 0,
-                "actor_role": "addressee",
-                "evidence_quote": "Мария, закрой дверь",
-            }
-        ],
-        "information_request_only": False,
-        "information_recipient": "none",
-        "addressed_character_name": "Мария",
-    }
-
-    assert wire.model_validate(payload).action_ownership[0].actor_role == "addressee"
-    payload["action_ownership"][0]["evidence_quote"] = "придуманная цитата"
-    assert wire.model_validate(payload).action_ownership[0].evidence_quote == "придуманная цитата"
-    payload["action_ownership"].append(dict(payload["action_ownership"][0]))
-    with pytest.raises(ValueError):
-        wire.model_validate(payload)
+        assert list(definition["properties"])[:2] == ["evidence_quote", "contribution_kind"]
+        assert "actor_id" in definition["required"]
 
 
 @pytest.mark.asyncio
@@ -859,7 +759,7 @@ async def test_numbered_destination_is_bound_by_semantic_id(number):
         location_references={location_id: persisted},
     )
     assert result.actions[0].destination_location == persisted
-    assert "DestinationIdentityBindings" in router.calls
+    assert router.calls == ["PlayerIntentContractDraft"]
 
 
 @pytest.mark.asyncio
