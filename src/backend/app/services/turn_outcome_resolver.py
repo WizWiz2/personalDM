@@ -1239,7 +1239,8 @@ class TurnOutcomeResolver:
                 move = PlannedWorldMove(
                     kind=draft.world_move.kind, source=thread["source"], outcome=draft.world_move.outcome,
                     actor_id=thread.get("actor_id"), due_phase=draft.world_move.due_phase,
-                    destination_location_id=draft.world_move.destination_location_id,
+                    destination_location_id=(draft.world_move.destination_location_id
+                                             if draft.world_move.kind == "npc_move" else None),
                 )
                 consequences = [item for item in draft.observable_consequences if item != move.outcome]
                 draft = draft.model_copy(update={
