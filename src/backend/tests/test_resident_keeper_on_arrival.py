@@ -114,3 +114,24 @@ async def test_a_person_sent_for_is_neither_the_keeper_nor_present(db_session):
 
     assert ("Речник", None) in [(i.canonical_name, i.resident_slot) for i in resolved.new_introductions]
     assert "Речник" not in resolved.present_names
+
+
+@pytest.mark.asyncio
+async def test_a_named_absent_person_is_never_resolved_to_someone_here(db_session):
+    """Replay15 k1: absent «Прохор Белов» was matched to the temporary fisherman at the pier."""
+    from app.db.repositories.entity_repo import EntityRepository
+    from app.models.character import CharacterCreate
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Pier"))
+    pier = await LocationRepository(db_session).create(campaign_id, LocationCreate(canonical_name="Пристань"))
+    await EntityRepository(db_session).create_character(campaign_id, CharacterCreate(
+        canonical_name="Рыбак у пристани", description="Знает, где искать Прохора Белова.",
+        current_location_id=pier.id, custom_fields={"temporary_name": True}))
+    sought = PlannedNpcIntroduction(canonical_name="Прохор Белов", role="местный житель", temporary_name=False,
+                                    personal_name_evidence="Прохора Белова", reason="Его ищут.", sent_for=True)
+
+    resolved = await NpcIntroductionResolver(db_session).resolve(
+        campaign_id=campaign_id, introductions=[sought], present_names=["Рыбак у пристани"],
+        target_location_id=pier.id)
+
+    assert [i.canonical_name for i in resolved.new_introductions] == ["Прохор Белов"]

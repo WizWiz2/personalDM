@@ -301,7 +301,9 @@ class NpcIntroductionResolver:
                     and character_locations.get(entity.id) == target_location_id
                 )
             ]
-            if not matches and holder is None:
+            offscreen = getattr(introduction, "sent_for", False)
+            if not matches and holder is None and not offscreen:
+                # An offscreen person is nobody here: only an exact identity can be them (replay15 k1).
                 matches = resolve_character_candidates(
                     all_characters,
                     proposed_name=introduction.canonical_name,
@@ -315,7 +317,7 @@ class NpcIntroductionResolver:
             # "Кузнец" merely because the player entered its child room.
             # Do not resolve distant NPCs, promoted names, or generic roles
             # shared by more than one candidate.
-            if not matches and introduction.temporary_name and target_location_id:
+            if not matches and introduction.temporary_name and target_location_id and not offscreen:
                 proposal_key = identity_key(introduction.canonical_name)
                 role_key = identity_key(introduction.role)
                 if role_key and proposal_key == role_key:
