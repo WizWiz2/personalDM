@@ -224,7 +224,8 @@ class NpcIntroductionResolver:
             # Someone found at a keeper's place (not brought by a step) is its keeper: they fill an
             # empty slot or are the keeper already there (B8 T6: «Хозяин…» beside «Трактирщик»).
             found = [item for item in introductions
-                     if not getattr(item, "resident_slot", None) and not getattr(item, "arrives", False)]
+                     if not getattr(item, "resident_slot", None) and not getattr(item, "arrives", False)
+                     and not getattr(item, "sent_for", False)]  # sent for: elsewhere, not the keeper
             keepers = found if filled else found[:1]
             introductions = [item.model_copy(update={"resident_slot": slot})
                              if any(item is keeper for keeper in keepers) else item for item in introductions]
