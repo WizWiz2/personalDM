@@ -17,6 +17,7 @@ from app.services.linguistic_intent_analyzer import (
     LinguisticIntentAnalyzer,
     LinguisticParserUnavailable,
 )
+from app.services.entity_identity import identity_key
 from app.services.planning_context import action_reference_catalog, intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
@@ -516,7 +517,9 @@ def normalize_intent_draft(
             "world_state_question": bool(draft.world_state_question),
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
             "time_advance": _compact(draft.time_advance) or None,
-            "named_absent_people": [value for raw in draft.named_absent_people if (value := _compact(raw))],
+            # Whoever the input addresses is here, whatever name they go by (replay16 k2 «Степан»).
+            "named_absent_people": [value for raw in draft.named_absent_people if (value := _compact(raw))
+                                    and identity_key(value) != identity_key(draft.addressed_character_name or "")],
             "protected_player_decisions": [
                 value for raw in draft.protected_player_decisions if (value := _compact(raw))
             ],

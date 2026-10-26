@@ -404,3 +404,13 @@ def test_going_back_binds_a_place_that_already_had_a_scene():
         wire.model_validate({"summary": "Иду.", "actions": [{**back, "place": f"new_in:{town}"}]})
     assert wire.model_validate({"summary": "Иду.", "actions": [
         {**move, "returns_to_earlier_scene": False, "place": f"new_in:{town}"}]})
+
+
+def test_the_addressed_person_is_never_a_named_absentee():
+    """replay16 k2: the fisher addressed as «Степан» became an offscreen twin named Степан."""
+    from app.services.player_intent_interpreter import PlayerIntentContractDraft, normalize_intent_draft
+    text = "«Степан, позовёшь ли Белова?»"
+    draft = PlayerIntentContractDraft.model_validate({
+        "summary": "Просьба к Степану.", "actions": [], "addressed_response_requested": True,
+        "addressed_character_name": "Степан", "named_absent_people": ["Степан", "Белов"]})
+    assert normalize_intent_draft(draft, text).named_absent_people == ["Белов"]
