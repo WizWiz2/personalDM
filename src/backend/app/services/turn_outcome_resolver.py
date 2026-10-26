@@ -454,6 +454,7 @@ def _outcome_wire_model(
     world_threads: dict[str, bool] | None = None,
     world_kinds: tuple[str, ...] = (),
     world_required: bool = False,
+    last_world_kind: str | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -613,6 +614,8 @@ def _outcome_wire_model(
         if (kind not in {"npc_action", "npc_move"} or any((world_threads or {}).values()))
         and (kind != "arrival" or introduction_cap or any((world_threads or {}).values()))
     )
+    # Variety: the world does not repeat its last kind while the master allows another.
+    kinds = tuple(kind for kind in kinds if kind != last_world_kind) or kinds
     world_move_type = type(None)
     if world_threads and kinds:
         class ThreadWorldMove(BaseModel):
@@ -1172,6 +1175,7 @@ class TurnOutcomeResolver:
                 world_threads={key: bool(thread.get("actor_id")) for key, thread in threads.items()},
                 world_kinds=tuple(policy.world_moves),
                 world_required=bool(momentum.get("pressure_due")) and not contract.pending_player_choice,
+                last_world_kind=momentum.get("last_world_move_kind"),
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,

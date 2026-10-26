@@ -181,12 +181,12 @@ class WorldMomentumService:
                     "world_time_label": None, "automatic_deadline": None}
         for index, thread in enumerate(threads):
             thread["thread_id"] = f"thread_{index}"
-        last_independent = await self._session.scalar(
-            select(Event.created_at).where(
+        last_independent, last_kind = (await self._session.execute(
+            select(Event.created_at, Event.event_type).where(
                 Event.campaign_id == str(campaign_id),
                 Event.event_type.like("world_initiative:%"),
             ).order_by(Event.created_at.desc()).limit(1)
-        )
+        )).first() or (None, None)
         published = select(Turn.created_at).where(
             Turn.campaign_id == str(campaign_id),
             Turn.role == "assistant",
@@ -223,6 +223,7 @@ class WorldMomentumService:
             "sources": threads,
             "pressure_due": quiet_turns >= patience,
             "quiet_turns": quiet_turns,
+            "last_world_move_kind": last_kind.removeprefix("world_initiative:") if last_kind else None,
             "world_time_label": phase,
             "automatic_deadline": due,
         }

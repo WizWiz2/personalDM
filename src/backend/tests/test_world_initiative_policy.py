@@ -67,3 +67,10 @@ def test_arrival_of_a_threads_own_person_needs_no_new_introduction():
 def test_sent_for_person_is_typed_offscreen_not_present():
     from app.services.turn_outcome_resolver import OutcomeNpcIntroductionDraft
     assert "sent_for" in OutcomeNpcIntroductionDraft.model_json_schema()["properties"]
+
+
+def test_world_does_not_repeat_its_last_kind_while_another_is_allowed():
+    schema = _wire(world_kinds=("pressure", "information"), last_world_kind="pressure").model_json_schema()
+    assert "pressure" not in str(schema["$defs"]["ThreadWorldMove"]["properties"]["kind"])
+    only = _wire(world_kinds=("pressure",), last_world_kind="pressure").model_json_schema()
+    assert "pressure" in str(only["$defs"]["ThreadWorldMove"]["properties"]["kind"])
