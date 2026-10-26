@@ -168,24 +168,50 @@ class MemoryOperationsService:
             profile.closure_reason = thesis.status
         await self._session.flush()
 
-    async def record_closed_scene(self, scene_id: UUID) -> None:
+    async def close_theses(self, scene_id: UUID, reason: str, *, only_ids: set[str] | None = None) -> int:
+        """Resolve active theses of a scene. Only the typed scene bridge carries anything over."""
+        rows = (
+            await self._session.execute(
+                select(SceneThesis).where(
+                    SceneThesis.scene_id == str(scene_id),
+                    SceneThesis.status == "active",
+                )
+            )
+        ).scalars().all()
+        closed = 0
+        for thesis in rows:
+            if only_ids is not None and thesis.id not in only_ids:
+                continue
+            thesis.status = "resolved"
+            profile = await self.ensure_thesis_profile(thesis)
+            profile.closure_reason = reason
+            closed += 1
+        await self._session.flush()
+        return closed
+
+    async def expire_scene_theses(self, campaign_id: UUID, scene_id: UUID) -> int:
+        """Turn-count TTL: an unreinforced, unpinned thesis closes after ttl_turns scene turns."""
+        positions, latest = await self._turn_positions(campaign_id)
+        scene_positions = positions.get(str(scene_id), {})
         rows = (
             await self._session.execute(
                 select(SceneThesis, ThesisLifecycleProfile)
-                .join(
-                    ThesisLifecycleProfile,
-                    ThesisLifecycleProfile.thesis_id == SceneThesis.id,
-                    isouter=True,
-                )
-                .where(SceneThesis.scene_id == str(scene_id))
+                .join(ThesisLifecycleProfile, ThesisLifecycleProfile.thesis_id == SceneThesis.id, isouter=True)
+                .where(SceneThesis.scene_id == str(scene_id), SceneThesis.status == "active")
             )
         ).all()
+        expired: set[str] = set()
         for thesis, profile in rows:
-            if profile is None:
-                profile = await self.ensure_thesis_profile(thesis)
-            if thesis.status != "active":
-                profile.closure_reason = profile.closure_reason or "scene_closed"
-        await self._session.flush()
+            if thesis.pinned:
+                continue
+            anchor = (profile.last_reinforced_turn_id if profile else None) or thesis.source_turn_id
+            index = scene_positions.get(anchor) if anchor else None
+            ttl = profile.ttl_turns if profile else self.default_ttl(thesis.thesis_type)
+            if index is not None and latest.get(str(scene_id), index) - index >= ttl:
+                expired.add(thesis.id)
+        if not expired:
+            return 0
+        return await self.close_theses(scene_id, "ttl_elapsed", only_ids=expired)
 
     async def _turn_positions(
         self,
