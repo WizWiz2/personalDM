@@ -455,7 +455,11 @@ class PostTurnProcessor:
                 campaign = await self._campaigns.get_by_id(campaign_id)
                 # Authority turns: facts, people and places come from the typed outcome only.
                 # Anything the prose adds is decoration: not recorded, no ID, not a fact.
-                managed = self._authority_managed(assistant) and assistant.acting_character_id is None
+                # acting_character_id is the answering NPC on ordinary turns too; only an explicit
+                # actor turn (/talk) publishes that NPC's own words as the prose itself.
+                managed = self._authority_managed(assistant) and (
+                    self._snapshot_dict(assistant).get("turn_authority") or {}
+                ).get("scene_disposition") != "actor_turn"
                 record = self._typed_record(assistant) if managed else assistant.content
                 if assistant.parent_turn_id:
                     from app.services.location_profile_guard import (
@@ -524,7 +528,6 @@ class PostTurnProcessor:
                             scene_id=assistant.scene_id,
                             user_content=user_turn.content,
                             assistant_content=record,
-                            acting_character_id=assistant.acting_character_id,
                             player_character_id=campaign.player_character_id if campaign else None,
                         )
                     elif (
