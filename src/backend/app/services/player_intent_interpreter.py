@@ -574,7 +574,11 @@ class PlayerIntentInterpreter:
             draft.world_state_question = False
             draft.addressed_response_requested = True
         self.audit.append({"phase": "semantic_ownership", "syntax": syntax.__dict__})
-        # Speech entries are not executable; local result references must follow the shift.
+        # Speech entries are not executable, except a spoken errand: someone here is asked to fetch
+        # a person, and its outcome must type whom (replay16 k3). Local references follow the shift.
+        for action in draft.actions:
+            if action.contribution_kind == "speech" and action.expected_effect == "fetch_person":
+                action.contribution_kind, action.action_type = "world_action", "service"
         kept = [index for index, a in enumerate(draft.actions) if a.contribution_kind == "world_action"]
         remap = {old: new for new, old in enumerate(kept)}
         draft.actions = [draft.actions[index] for index in kept]
