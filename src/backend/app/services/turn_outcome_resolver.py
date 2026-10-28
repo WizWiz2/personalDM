@@ -26,8 +26,8 @@ from app.models.player_intent import (
     DestinationProfilePatchSet,
     DramaticMode,
     NpcItemHandoff,
-    PlayerItemHandoff,
     PlayerIntentContract,
+    PlayerItemHandoff,
     TurnOutcomeDecision,
     TurnResolution,
 )
@@ -41,7 +41,11 @@ from app.services.name_identity_contract import (
     is_usable_short_designation,
     repair_introduction_identity,
 )
-from app.services.planning_context import action_reference_catalog, item_reference_states, outcome_reference_context
+from app.services.planning_context import (
+    action_reference_catalog,
+    item_reference_states,
+    outcome_reference_context,
+)
 from app.services.player_intent_contract import contains_cjk
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
@@ -145,6 +149,8 @@ unregistered physical result. Do not recreate an already registered artifact on 
 Set after_action_index to the act that actually creates/finds it. A newly produced distinct artifact
 needs a designation distinct from already registered items, even when their contents are the same.
 For a faithful reproduction, copy_of_item_id is the existing original's ID; do not invent its content.
+When one action creates multiple artifacts, list them in creation order. Later frozen
+produced_item_ordinal values select the corresponding zero-based artifact within that action.
 An introduction describes the object's state immediately AFTER ITS SOURCE action, not the final
 state after later moves or inventory actions. Subsequent frozen produced_item_action_index
 references operate on that same object in sequence. Never create it again for its later placement.
@@ -353,6 +359,7 @@ class OutcomeNpcIntroductionDraft(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     canonical_name: str = Field(min_length=2, max_length=120)
+    cast_id: str | None = None
     role: str = Field(min_length=2, max_length=120)
     current_goal: str | None = Field(default=None, max_length=500)
     description: str = Field(min_length=32, max_length=800)
@@ -467,12 +474,14 @@ def _outcome_wire_model(
     present_ids: set[str] | None = None,
     discovery_targets: dict[int, str] | None = None,
     required_effects: dict[int, str] | None = None,
+    required_artifact_counts: dict[int, int] | None = None,
     world_threads: dict[str, bool] | None = None,
     world_kinds: tuple[str, ...] = (),
     world_required: bool = False,
     last_world_kind: str | None = None,
     known_places: tuple[str, ...] = (),
     required_absent: tuple[str, ...] = (),
+    known_cast: dict[str, str] | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -489,7 +498,21 @@ def _outcome_wire_model(
     speaker_type = Literal[bound_response_speaker] | None if bound_response_speaker else str | None
 
     slot_type = Literal[tuple(resident_slots)] | None if resident_slots else type(None)
-    arrival_type = OutcomeNpcIntroductionDraft | None if allow_introductions else type(None)
+    npc_model = OutcomeNpcIntroductionDraft
+    if known_cast is not None:
+        choice = Literal[(*known_cast, "newcomer")]
+
+        class BoundNpc(OutcomeNpcIntroductionDraft):
+            cast_id: choice = Field(description="Existing cast ID even for an inflected name or title; newcomer only for a different person.")
+
+            @model_validator(mode="after")
+            def bind_cast(self):
+                if self.cast_id in known_cast:
+                    self.canonical_name = known_cast[self.cast_id]
+                return self
+
+        npc_model = BoundNpc
+    arrival_type = npc_model | None if allow_introductions else type(None)
     npc_handoff_model = NpcItemHandoff
     player_handoff_model = PlayerItemHandoff
     npc_handoffs_allowed = player_handoffs_allowed = True
@@ -536,7 +559,7 @@ def _outcome_wire_model(
         npc_handoff_model = ReferencedNpcHandoff
         player_handoff_model = ReferencedPlayerHandoff
 
-    class IndexedNpcIntroductionDraft(OutcomeNpcIntroductionDraft):
+    class IndexedNpcIntroductionDraft(npc_model):
         after_action_index: prerequisite_type = None
         resident_slot: slot_type = None
 
@@ -678,7 +701,7 @@ def _outcome_wire_model(
             max_length=action_count,
         )
         # A person the human named who has no cast ID is typed offscreen this turn (replay15 Keeper).
-        absent_people: list[OutcomeNpcIntroductionDraft] = Field(
+        absent_people: list[npc_model] = Field(
             default_factory=list, min_length=len(required_absent), max_length=max(2, len(required_absent)))
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
             min_length=1 if required_slot and allow_introductions else 0,
@@ -757,6 +780,11 @@ def _outcome_wire_model(
                     raise ValueError("Successful artifact creation requires a typed introduction at its source index")
                 if effect == "item_change" and not any(item.action_index == index for item in self.item_property_changes):
                     raise ValueError("Successful physical change requires a typed property effect at its source index")
+            for source, count in (required_artifact_counts or {}).items():
+                if source in outcomes and outcomes[source].resolution == "auto_success" and sum(
+                    item.after_action_index == source for item in self.item_introductions
+                ) < count:
+                    raise ValueError("Successful creation must introduce each referenced artifact in creation order")
             for change in self.item_property_changes:
                 source = outcomes.get(change.action_index)
                 target = (discovery_targets or {}).get(change.action_index)
@@ -969,6 +997,7 @@ def normalize_outcome_draft(
             {
                 "canonical_name": canonical_name,
                 "identity_reference": npc.canonical_name,
+                  "existing_entity_id": npc.cast_id if npc.cast_id not in {None, "newcomer"} else None,
                 "role": role,
                 "description": description,
                 "appearance": appearance,
@@ -1156,6 +1185,7 @@ class TurnOutcomeResolver:
         master_block: str = "",
         known_places: dict[str, str] | None = None,
         required_absent: tuple[str, ...] = (),
+        known_cast: dict[str, str] | None = None,
     ) -> TurnOutcomeDecision:
         policy, momentum = initiative or (InitiativePolicy(), {})
         threads = {thread["thread_id"]: thread for thread in momentum.get("sources", [])
@@ -1192,6 +1222,7 @@ class TurnOutcomeResolver:
             ) if seeks_contact_or_presence(contract) and not existing_addressee else None
             response_model = _outcome_wire_model(
                 len(contract.actions),
+                known_cast=known_cast,
                 handoff_states=item_reference_states(context_messages),
                 controlled_id=next((line.removeprefix("Controlled character:").strip()
                                     for message in context_messages for line in message.content.splitlines()
@@ -1201,6 +1232,7 @@ class TurnOutcomeResolver:
                                    if action.subject_item_id is not None},
                 required_effects={index: action.expected_effect for index, action in enumerate(contract.actions)
                                   if action.expected_effect != "ordinary"},
+                required_artifact_counts=contract.required_artifact_counts(),
                 allow_choice=bool(contract.pending_player_choice),
                 evidence=authoritative_context,
                 ordinary_movement_destinations={
@@ -1288,6 +1320,11 @@ class TurnOutcomeResolver:
                             + master_block
                             + ("\n[KNOWN PLACES]\n" + json.dumps(known_places, ensure_ascii=False)
                                if known_places else "")
+                            + ("\n[KNOWN CAST — identity only, not proof of presence]\n"
+                               + json.dumps(known_cast, ensure_ascii=False)
+                               + "\nUse the existing cast_id for titles and grammatical forms of these people. "
+                                 "Only a different person uses newcomer. Location/arrival still needs authorization."
+                               if known_cast is not None else "")
                             + "".join(
                                 f"\n[DESTINATION CAST — typed] Physically at «{place}» when the "
                                 f"human arrives: {', '.join(cast)}. They are there; never resolve "
@@ -1412,12 +1449,12 @@ class TurnOutcomeResolver:
 
 
 __all__ = [
-    "solo_physical_presence",
-    "is_pure_ordinary_travel",
-    "seeks_contact_or_presence",
     "ActionOutcomeDraft",
     "OutcomeNpcIntroductionDraft",
     "TurnOutcomeDecisionDraft",
     "TurnOutcomeResolver",
+    "is_pure_ordinary_travel",
     "normalize_outcome_draft",
+    "seeks_contact_or_presence",
+    "solo_physical_presence",
 ]

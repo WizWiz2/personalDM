@@ -13,11 +13,11 @@ from app.models.item_state import RequestedInventoryAction
 from app.models.player_intent import DayPart, IntentActionType, PlayerIntentContract
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.entity_identity import identity_key
 from app.services.linguistic_intent_analyzer import (
     LinguisticIntentAnalyzer,
     LinguisticParserUnavailable,
 )
-from app.services.entity_identity import identity_key
 from app.services.planning_context import action_reference_catalog, intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_planner import TurnPlanningError
@@ -81,7 +81,10 @@ who is not among the physically present characters; [] when none.
 Retain every committed return journey, including one expressed by the final placement of an
 object back in the original room. It is a separate travel action, not permission for remote placement.
 For a later inventory action on an artifact created earlier in THIS input, use
-produced_item_action_index of its creation action, with item_id=null. Never substitute the
+produced_item_action_index of its creation action, with item_id=null. Select produced_item_ordinal
+(zero-based) to distinguish the first/second/etc. artifact of that action, in creation order.
+An item made on an earlier turn is an existing registered item: use its item_id, never produced_*.
+Never substitute the
 materials or an older similar artifact. This local reference is bound by the compiler after
 the creation is resolved; it does not claim the artifact already exists.
 drop releases the item into the place; place deliberately positions it on/in a named surface/container.
@@ -135,6 +138,7 @@ class PlayerActionIntentDraft(BaseModel):
     ] = "ordinary"
     item_id: str | None = None
     produced_item_action_index: int | None = Field(default=None, ge=0, le=7)
+    produced_item_ordinal: int | None = Field(default=None, ge=0, le=3)
     inventory_operation: str | None = None
     inventory_target_id: str | None = None
     item_placement_detail: str | None = None
@@ -223,6 +227,7 @@ class _ProducedInventoryWire(_ActionWire):
     action_type: Literal["inventory"]
     item_id: None = None
     produced_item_action_index: int = Field(ge=0, le=7)
+    produced_item_ordinal: int = Field(ge=0, le=3)
     inventory_operation: Literal["take", "drop", "give", "place", "reposition", "store"]
     inventory_target_id: UUID | None = None
     item_placement_detail: str | None = Field(default=None, max_length=300)
@@ -273,6 +278,17 @@ class _IntentWire(PlayerIntentContractDraft):
                   | _SpeechWire] = (
         Field(max_length=8)
     )
+
+    @model_validator(mode="after")
+    def validate_produced_sources(self):
+        for index, action in enumerate(self.actions):
+            source = getattr(action, "produced_item_action_index", None)
+            if source is not None and (
+                source >= index or getattr(self.actions[source], "expected_effect", None) != "item_creation"
+            ):
+                raise ValueError("A produced item needs an earlier creation action in THIS input; "
+                                 "use the registered item_id for artifacts from previous turns")
+        return self
 
 
 _IntentWire.__name__ = "PlayerIntentContractDraft"
@@ -440,6 +456,7 @@ def _normalized_action(
             {
                 "item_id": item_id,
                 "produced_item_action_index": produced_index,
+                "produced_item_ordinal": action.produced_item_ordinal,
                 "inventory_operation": operation,
                 "inventory_target_id": inventory_target_id if operation == "give" else None,
                 "item_placement_detail": (
@@ -482,12 +499,14 @@ def normalize_intent_draft(
                 requests[index] = RequestedInventoryAction(
                     actor_id=action.requested_actor_id, item_id=action.item_id,
                     produced_item_action_index=action.produced_item_action_index,
+                    produced_item_ordinal=action.produced_item_ordinal,
                     operation=action.inventory_operation, target_id=action.inventory_target_id,
                     placement_detail=action.item_placement_detail,
                 )
             action.action_type = "service"
             action.item_id = None
             action.produced_item_action_index = None
+            action.produced_item_ordinal = None
             action.inventory_operation = None
             action.inventory_target_id = None
             action.item_placement_detail = None

@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.generation_lifecycle_table import GenerationLifecycle
+from app.db.narration_validation_table import NarrationValidationRun
 from app.db.tables import GenerationRun, Turn
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,16 @@ async def recover_interrupted_generations(session: AsyncSession) -> int:
         if user is not None and user.role in {"user", "meta_user"} and user.status == "active":
             user.status = "failed"
         recovered += 1
-    if recovered:
+    await session.flush()
+    audits = await session.execute(update(NarrationValidationRun).where(
+        NarrationValidationRun.status == "validating",
+        NarrationValidationRun.trigger_turn_id.in_(select(GenerationRun.user_turn_id).where(
+            GenerationRun.status.in_(("failed", "cancelled")),
+        )),
+    ).values(status="failed", failure_reason="Generation ended before validation completed"))
+    if recovered or audits.rowcount:
         await session.commit()
+    if recovered:
         logger.warning("Recovered %s interrupted generation runs", recovered)
     return recovered
 

@@ -5,8 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.game_master import WorldMoveKind
 from app.models.addressed_response import AddressedResponse
+from app.models.game_master import WorldMoveKind
 from app.models.item_state import ItemStateSnapshot
 from app.models.session_zero import NARRATIVE_PERSON, NarrativePerson
 
@@ -19,6 +19,7 @@ class PlannedNpcIntroduction(BaseModel):
     canonical_name: str = Field(min_length=2, max_length=120)
     # Preserve a proposed existing name before temporary-role normalization.
     identity_reference: str | None = Field(default=None, max_length=120)
+    existing_entity_id: UUID | None = None
     role: str | None = Field(default=None, max_length=200)
     current_goal: str | None = Field(default=None, max_length=500)
     description: str | None = Field(default=None, max_length=800)

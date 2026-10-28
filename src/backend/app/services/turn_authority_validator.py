@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from typing import Literal
 from uuid import UUID
@@ -37,15 +38,27 @@ class InventoryNarrationValidation(BaseModel):
     violations: list[NarrationViolation] = Field(default_factory=list, max_length=12)
 
 
-def inventory_validation_model(authority: TurnAuthority) -> type[BaseModel]:
+def inventory_validation_model(authority: TurnAuthority, candidate_text: str | None = None) -> type[BaseModel]:
     """Make completeness a schema property, rather than a model's counting task.
 
     Each registered identity is a required object key. Nothing is inferred absent
     from an omitted review; native decoding and provider repair require that review.
     """
+    claim_model = ItemPositionClaim
+    if candidate_text is not None:
+        fragments = tuple(dict.fromkeys(
+            chunk.strip()
+            for match in re.finditer(r"[^.!?\n]+(?:[.!?]|$)", candidate_text)
+            for start in range(0, len(match.group()), 1000)
+            if (chunk := match.group()[start:start + 1000]).strip()
+        )) or (candidate_text,)
+        claim_model = create_model("ExtractiveItemPositionClaim", __base__=ItemPositionClaim,
+            evidence=(Literal[fragments], Field(description="Select an exact candidate sentence containing this position claim.")))
+    review_model = create_model("ExtractiveItemReview", __base__=ItemNarrationReview,
+                                claims=(list[claim_model], Field(max_length=16)))
     reviews = create_model(
         "ItemReviewsByIdentity", __config__=ConfigDict(extra="forbid"),
-        **{str(state.item_id): (ItemNarrationReview, ...) for state in authority.item_states},
+        **{str(state.item_id): (review_model, ...) for state in authority.item_states},
     )
     return create_model(
         "CompleteInventoryValidation", __base__=InventoryNarrationValidation,
@@ -315,7 +328,7 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS,
                                    max(1600, 450 * len(authority.item_states)) if authority.item_states else 700),
                     temperature=0.0,
-                    response_model=entrance_model(authority, inventory_validation_model(authority)
+                    response_model=entrance_model(authority, inventory_validation_model(authority, candidate_text)
                                                   if authority.item_states else NarrationValidationResult),
                 )
             except (LLMProviderError, ValueError, TypeError) as exc:

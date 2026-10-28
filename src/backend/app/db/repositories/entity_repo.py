@@ -7,7 +7,7 @@ from app.db.repositories.base import BaseRepository
 from app.db.tables import Character, Entity, SceneParticipant
 from app.models.belief import BeliefRead
 from app.models.character import CharacterCreate, CharacterRead, CharacterUpdate
-from app.models.entity import EntityCreate, EntityRead, EntityStatus, EntityType, EntityUpdate
+from app.models.entity import EntityCreate, EntityRead, EntityType, EntityUpdate
 from app.models.goal import GoalRead
 from app.models.relationship import RelationshipRead
 
@@ -243,12 +243,20 @@ class EntityRepository(BaseRepository):
         self,
         scene_id: UUID,
     ) -> list[CharacterRead]:
-        result = await self._session.execute(
+        from app.db.repositories.scene_repo import SceneRepository
+
+        scenes = SceneRepository(self._session)
+        scene = await scenes.get_by_id(scene_id)
+        location_id = await scenes.get_location_id(scene_id) if scene else None
+        query = (
             select(Entity, Character)
             .join(Character, Entity.id == Character.entity_id)
             .join(SceneParticipant, Entity.id == SceneParticipant.entity_id)
             .where(SceneParticipant.scene_id == str(scene_id))
         )
+        if scene and scene.status == "active" and location_id:
+            query = query.where(Character.current_location_id == str(location_id))
+        result = await self._session.execute(query)
         return [self._to_character_read(row[0], row[1]) for row in result.all()]
 
     async def get_character_with_knowledge(

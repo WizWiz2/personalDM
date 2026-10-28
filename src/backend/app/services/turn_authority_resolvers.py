@@ -301,6 +301,11 @@ class NpcIntroductionResolver:
                     and character_locations.get(entity.id) == target_location_id
                 )
             ]
+            existing_id = getattr(introduction, "existing_entity_id", None)
+            if existing_id is not None:
+                matches = [entity for entity in all_characters if UUID(str(entity.id)) == existing_id]
+                if not matches:
+                    raise AuthorityResolutionError("NPC cast identity does not belong to this campaign")
             offscreen = getattr(introduction, "sent_for", False)
             if not matches and holder is None and not offscreen:
                 # An offscreen person is nobody here: only an exact identity can be them (replay15 k1).
