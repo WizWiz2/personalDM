@@ -5,7 +5,7 @@ import re
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, create_model, model_validator
 
 from app.models.fact_types import FactTypeId
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
@@ -50,12 +50,33 @@ class ProposalAtom(BaseModel):
     operation: CanonOperation = CanonOperation.ASSERT
     # Required for change_type=fact: the predicate is a catalog ID, not free text.
     fact_type: FactTypeId | None = None
+    subject_entity_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class CanonEnvelope(BaseModel):
     outcomes: list[OutcomeAtom] = Field(default_factory=list, max_length=10)
     proposals: list[ProposalAtom] = Field(default_factory=list, max_length=12)
+
+
+def canon_envelope_for_entities(entity_ids: set[str]):
+    """Bind facts to an engine-owned identity before prose can become durable canon."""
+    identity = Literal[tuple(sorted(entity_ids))] | None if entity_ids else type(None)
+    bound = create_model("BoundProposalAtom", __base__=ProposalAtom,
+                         subject_entity_id=(identity, None))
+
+    class BoundProposal(bound):
+        @model_validator(mode="after")
+        def require_fact_identity(self):
+            if self.change_type == ChangeType.FACT:
+                if self.subject_entity_id is None:
+                    raise ValueError("A fact requires an existing subject_entity_id; groups need their own registered identity")
+                if self.fact_type in {"holder", "location"}:
+                    raise ValueError("Physical position belongs to structured state, not a parallel fact")
+            return self
+
+    return create_model("BoundCanonEnvelope", __base__=CanonEnvelope,
+                        proposals=(list[BoundProposal], Field(default_factory=list, max_length=12)))
 
 
 class CanonAudit(BaseModel):
@@ -213,6 +234,8 @@ def proposals_from_envelope(
                 audit.rejected_schema_count += 1
                 continue
             payload["predicate"] = proposal.fact_type
+            if proposal.subject_entity_id is not None:
+                payload["subject_entity_id"] = proposal.subject_entity_id
             payload.setdefault("operation", proposal.operation.value)
 
         signature = json.dumps(

@@ -13,7 +13,11 @@ from app.models.fact_types import catalog_prompt
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
-from app.services.canon_semantics import CanonAudit, CanonEnvelope, proposals_from_envelope
+from app.services.canon_semantics import (
+    CanonAudit,
+    canon_envelope_for_entities,
+    proposals_from_envelope,
+)
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.semantic_receipt_context import memory_evidence
 
@@ -81,7 +85,7 @@ class MemoryScribe:
         actor_name = display_by_id.get(str(acting_character_id), "narrator")
         player_name = display_by_id.get(str(player_character_id), "player")
         entity_lines = [
-            f"- {display_by_id[entity_id]} [{type_by_id[entity_id]}]"
+            f"- {display_by_id[entity_id]} [{type_by_id[entity_id]} id={entity_id}]"
             for entity_id in sorted(
                 display_by_id, key=lambda value: display_by_id[value].casefold()
             )
@@ -110,6 +114,10 @@ class MemoryScribe:
 Верни только один JSON-объект. Все тексты пиши на русском.
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
+- Для каждого fact выбери subject_entity_id из известных ID на уровне proposal.
+  Свободное имя, склонение или группа предметов не создаёт новую идентичность.
+  holder/location принадлежат исполнителю: не записывай их параллельными facts.
+  Сохраняй факты об отдельных зарегистрированных сущностях, а не об их временной группе.
 - EXECUTED WORLD RESULTS — подтверждённые исполнителем результаты, а не намерения игрока.
   В первую очередь сохрани каждое явное устойчивое изменение состояния из этого блока.
   Декоративные свойства из narration не заменяют изменённое состояние. Если результат
@@ -247,7 +255,7 @@ FACT SEMANTICS:
                 ],
                 max_tokens=1400,
                 temperature=0.0,
-                response_model=CanonEnvelope,
+                response_model=canon_envelope_for_entities(set(display_by_id)),
             )
         except LLMProviderError as exc:
             self.last_audit = CanonAudit(
@@ -574,6 +582,12 @@ FACT SEMANTICS:
                 return None
             resolved.setdefault("participant_ids", [])
         elif change_type == ChangeType.FACT:
+            subject_id = self._resolve_reference(
+                resolved.get("subject_entity_id") or resolved.get("subject"),
+                known_entities, known_ids, acting_character_id, player_character_id,
+            )
+            if subject_id:
+                resolved["subject_entity_id"] = subject_id
             if not resolved.get("subject") or not resolved.get("predicate"):
                 return None
             operation = str(resolved.get("operation") or canon_meta.get("operation") or "assert")

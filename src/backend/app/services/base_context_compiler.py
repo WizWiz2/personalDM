@@ -5,7 +5,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.fact_types import predicate_label
 from app.config import settings
 from app.db.memory_witness import witnesses_of
 from app.db.repositories.belief_repo import BeliefRepository
@@ -17,6 +16,7 @@ from app.db.repositories.relationship_repo import RelationshipRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import CharacterGoal, Entity, Item, ProposedChange, Turn
+from app.models.fact_types import predicate_label
 from app.models.turn import ChatMessage, TurnRead
 
 try:
@@ -287,6 +287,12 @@ class ContextCompiler:
         return own_dialogue[-self.ACTOR_HISTORY_LIMIT :]
 
     SCENE_WINDOW_OTHER_FACTS = 12
+    SCENE_WINDOW_LOCAL_FACTS = 24
+    CHARACTER_BELIEF_WINDOW = 8
+
+    @classmethod
+    def _belief_window(cls, beliefs):
+        return sorted(beliefs, key=lambda belief: (belief.updated_at, str(belief.id)))[-cls.CHARACTER_BELIEF_WINDOW:]
 
     @classmethod
     def _scene_window(cls, facts, scene_id: UUID | None, scene_entity_ids: set[str]):
@@ -295,12 +301,13 @@ class ContextCompiler:
         Context must not grow with campaign length: everything else is reachable through
         the bridge and the player memory query, not replayed into every prompt.
         """
-        here = [
+        here = sorted([
             fact for fact in facts
             if (scene_id is not None and fact.scene_id == scene_id)
             or str(fact.subject_entity_id) in scene_entity_ids
-        ]
+        ], key=lambda fact: fact.updated_at)
         here_ids = {fact.id for fact in here}
+        here = here[-cls.SCENE_WINDOW_LOCAL_FACTS:]
         others = sorted(
             (fact for fact in facts if fact.id not in here_ids), key=lambda fact: fact.updated_at
         )[-cls.SCENE_WINDOW_OTHER_FACTS :]
@@ -472,10 +479,10 @@ class ContextCompiler:
                     for goal in goals:
                         actor_package += f"- {goal.description} (Priority {goal.priority})\n"
 
-                beliefs = await self._belief_repo.get_for_character(
+                beliefs = self._belief_window(await self._belief_repo.get_for_character(
                     acting_character_id,
                     active_only=True,
-                )
+                ))
                 if beliefs:
                     actor_package += "Beliefs & Private Knowledge:\n"
                     for belief in beliefs:
@@ -546,7 +553,7 @@ class ContextCompiler:
             participant_belief_ids: list[str] = []
             participant_item_ids: list[str] = []
             held = {} if actor_mode else {
-                character.id: await self._belief_repo.get_for_character(character.id, active_only=True)
+                character.id: self._belief_window(await self._belief_repo.get_for_character(character.id, active_only=True))
                 for character in scene_characters
             }
             # A present NPC's own published lines (scribe beliefs sourced from it) are its record.

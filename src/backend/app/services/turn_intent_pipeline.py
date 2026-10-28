@@ -6,33 +6,32 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
+from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import Campaign, Character, Entity, Item, Turn
-from app.services.entity_identity import identity_key
+from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedWorldMove
-from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
-from app.services.world_momentum_service import WorldMomentumService
 from app.services.action_plan_compiler import ActionPlanCompiler
-from app.services.player_intent_interpreter import PlayerIntentInterpreter
-from app.services.role_model_router import ModelRole, RoleModelRouter
-from app.services.turn_authority_planner import CoordinatedTurnPlan
-from app.services.turn_outcome_resolver import TurnOutcomeResolver
-from app.services.master_service import MasterService
 from app.services.master_director import (
     apply_moves_to_narration_guidance,
     apply_moves_to_outcome_decision,
     outcome_master_block,
 )
+from app.services.master_service import MasterService
+from app.services.player_intent_interpreter import PlayerIntentInterpreter
+from app.services.role_model_router import ModelRole, RoleModelRouter
+from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_outcome_resolver import (
+    TurnOutcomeResolver,
     is_pure_ordinary_travel,
     seeks_contact_or_presence,
     solo_physical_presence,
 )
 from app.services.turn_planner import ActionSequencePlan, PlanContractError, TurnPlanningError
+from app.services.world_momentum_service import WorldMomentumService
 
 _INSTALLED = False
 
@@ -177,6 +176,11 @@ class TurnIntentPlanningPipeline:
         selection,
     ) -> tuple[CoordinatedTurnPlan, dict]:
         names, catalog = await self._location_catalog(campaign_id)
+        known_cast = dict((await self._session.execute(
+            select(Entity.id, Entity.canonical_name).where(
+                Entity.campaign_id == str(campaign_id), Entity.entity_type == "character",
+            )
+        )).all()) if isinstance(self._session, AsyncSession) else None
         contract = await self._intent.interpret(
             selection,
             context_messages,
@@ -291,6 +295,7 @@ class TurnIntentPlanningPipeline:
                 master_block=outcome_master_block(persona, list(director.moves)),
                 destination_cast=await self._destination_cast(campaign_id, contract, names),
                 known_places=names,
+                known_cast=known_cast,
                 required_absent=await self._uncast(campaign_id, contract.named_absent_people),
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
@@ -302,6 +307,7 @@ class TurnIntentPlanningPipeline:
                 user_input,
                 contract,
                 force_introduce_contact=True,
+                known_cast=known_cast,
             )
             outcome_owner = "external_resolver_forced_intro"
         missing = await self._compiler.missing_destination_profiles(
@@ -347,6 +353,7 @@ class TurnIntentPlanningPipeline:
                     master_block=outcome_master_block(persona, list(director.moves)),
                     destination_cast=await self._destination_cast(campaign_id, contract, names),
                     known_places=names,
+                    known_cast=known_cast,
                     required_absent=await self._uncast(campaign_id, contract.named_absent_people),
                     repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
                 )

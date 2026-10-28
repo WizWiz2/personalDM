@@ -34,12 +34,15 @@ class RequestedInventoryAction(BaseModel):
     actor_id: UUID
     item_id: UUID | None = None
     produced_item_action_index: int | None = Field(default=None, ge=0, le=7)
+    produced_item_ordinal: int | None = Field(default=None, ge=0, le=3)
     operation: Literal["take", "drop", "give", "place", "reposition", "store"]
     target_id: UUID | None = None
     placement_detail: str | None = Field(default=None, max_length=300)
 
     @model_validator(mode="after")
     def validate_operation(self):
+        if self.produced_item_ordinal is not None and self.produced_item_action_index is None:
+            raise ValueError("a produced ordinal requires its creation action")
         if (self.item_id is None) == (self.produced_item_action_index is None):
             raise ValueError("requested inventory must select one existing or produced identity")
         if self.operation == "give" and self.target_id is None:

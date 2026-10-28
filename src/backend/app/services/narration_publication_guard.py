@@ -103,12 +103,13 @@ class NarrationPublicationGuard:
         # Even degradation should retain the player's earned results. These are
         # executed structured results, never salvaged fragments of rejected prose.
         for step in authority.executed_steps():
-            if step["status"] == "completed" and (step["action_type"] in {"movement", "inventory", "wait", "rest"}
-                                                   or step.get("item_property_changes")):
-                cls._append_unique(parts, step["outcome"])
-            elif step["status"] == "completed" and step["outcome"] and any(
-                state.revealed_content and state.revealed_content in step["outcome"]
-                for state in authority.item_states
+            if step["status"] == "completed" and (
+                step["action_type"] in {"movement", "inventory", "wait", "rest"}
+                or step.get("item_property_changes")
+                or step["outcome"] and any(
+                    state.revealed_content and state.revealed_content in step["outcome"]
+                    for state in authority.item_states
+                )
             ):
                 cls._append_unique(parts, step["outcome"])
         if authority.target_location_path:

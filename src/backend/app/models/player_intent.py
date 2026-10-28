@@ -6,9 +6,16 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.addressed_response import AddressedResponse
-from app.models.item_state import ItemContentRevelation, ItemPropertyChange, RequestedInventoryAction
-from app.models.turn_authority import PlannedItemIntroduction, PlannedPlaceIntroduction, PlannedWorldMove
-
+from app.models.item_state import (
+    ItemContentRevelation,
+    ItemPropertyChange,
+    RequestedInventoryAction,
+)
+from app.models.turn_authority import (
+    PlannedItemIntroduction,
+    PlannedPlaceIntroduction,
+    PlannedWorldMove,
+)
 
 # Scene clock authority: a typed part of day, never a phrase copied from the player.
 DayPart = Literal["dawn", "morning", "day", "evening", "night"]
@@ -52,6 +59,7 @@ class PlayerActionIntent(BaseModel):
     # Inventory authority is identity based. IDs must come from authoritative context.
     item_id: UUID | None = None
     produced_item_action_index: int | None = Field(default=None, ge=0, le=7)
+    produced_item_ordinal: int | None = Field(default=None, ge=0, le=3)
     inventory_operation: Literal["take", "drop", "give", "place", "reposition", "store"] | None = None
     inventory_target_id: UUID | None = None
     item_placement_detail: str | None = Field(default=None, max_length=300)
@@ -80,11 +88,14 @@ class PlayerActionIntent(BaseModel):
         inventory_values = (
             self.item_id,
             self.produced_item_action_index,
+            self.produced_item_ordinal,
             self.inventory_operation,
             self.inventory_target_id,
             self.item_placement_detail,
         )
         if self.action_type == "inventory":
+            if self.produced_item_ordinal is not None and self.produced_item_action_index is None:
+                raise ValueError("a produced ordinal requires its creation action")
             if (self.item_id is None and self.produced_item_action_index is None) or self.inventory_operation is None:
                 raise ValueError("inventory intent requires item_id and inventory_operation")
             if self.item_id is not None and self.produced_item_action_index is not None:
@@ -127,6 +138,15 @@ class PlayerIntentContract(BaseModel):
     time_advance: DayPart | None = None
     # People the human names who are not here: each becomes typed offscreen canon this turn.
     named_absent_people: list[str] = Field(default_factory=list, max_length=2)
+
+    def required_artifact_counts(self) -> dict[int, int]:
+        counts = {}
+        for action in self.actions:
+            reference = action.requested_inventory or action
+            source = reference.produced_item_action_index
+            if source is not None:
+                counts[source] = max(counts.get(source, 0), (reference.produced_item_ordinal or 0) + 1)
+        return counts
 
     @model_validator(mode="after")
     def validate_response_target(self):
@@ -210,6 +230,7 @@ class OutcomeNpcIntroduction(BaseModel):
 
     canonical_name: str = Field(min_length=2, max_length=120)
     identity_reference: str | None = Field(default=None, max_length=120)
+    existing_entity_id: UUID | None = None
     role: str = Field(min_length=2, max_length=200)
     current_goal: str | None = Field(default=None, max_length=500)
     description: str = Field(min_length=32, max_length=800)
@@ -295,8 +316,8 @@ __all__ = [
     "ActionOutcomeDecision",
     "DestinationProfilePatch",
     "DestinationProfilePatchSet",
-    "OutcomeNpcIntroduction",
     "NpcItemHandoff",
+    "OutcomeNpcIntroduction",
     "PlayerActionIntent",
     "PlayerIntentContract",
     "PlayerIntentReview",

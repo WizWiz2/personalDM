@@ -9,16 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.location_repo import LocationRepository
 from app.db.tables import Campaign, Entity
+from app.models.item_state import ItemStateSnapshot
 from app.models.player_intent import (
     ActionOutcomeDecision,
     PlayerActionIntent,
     PlayerIntentContract,
     TurnOutcomeDecision,
 )
-from app.models.item_state import ItemStateSnapshot
 from app.models.turn_authority import PlannedNpcIntroduction
-from app.services.item_state_authority import load_item_states
 from app.services.entity_identity import identity_key
+from app.services.item_state_authority import load_item_states
 from app.services.scene_state_service import SceneStateService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_planner import (
@@ -414,11 +414,14 @@ class ActionPlanCompiler:
                 introduction.reserved_item_id = uuid4()
                 created_by_source.setdefault(source, []).append(introduction)
 
-        def produced_identity(reference, current_index):
+        def produced_identity(reference, current_index, ordinal=None):
             artifacts = created_by_source.get(reference, ())
-            if reference >= current_index or len(artifacts) != 1:
+            if reference >= current_index or not artifacts or (ordinal is None and len(artifacts) != 1):
                 raise PlanContractError("A produced item reference needs one distinct successful earlier creation")
-            return artifacts[0].reserved_item_id
+            ordinal = 0 if ordinal is None else ordinal
+            if ordinal >= len(artifacts):
+                raise PlanContractError("A produced item ordinal has no corresponding artifact introduction")
+            return artifacts[ordinal].reserved_item_id
 
         for index, action in enumerate(contract.actions):
             effective_action = action
@@ -434,14 +437,16 @@ class ActionPlanCompiler:
                 continue
             if action.produced_item_action_index is not None:
                 effective_action = action.model_copy(update={
-                    "item_id": produced_identity(action.produced_item_action_index, index),
+                    "item_id": produced_identity(action.produced_item_action_index, index, action.produced_item_ordinal),
                     "produced_item_action_index": None,
+                    "produced_item_ordinal": None,
                 })
             if action.requested_inventory and action.requested_inventory.produced_item_action_index is not None:
                 request = action.requested_inventory
                 effective_action = action.model_copy(update={"requested_inventory": request.model_copy(update={
-                    "item_id": produced_identity(request.produced_item_action_index, index),
+                    "item_id": produced_identity(request.produced_item_action_index, index, request.produced_item_ordinal),
                     "produced_item_action_index": None,
+                    "produced_item_ordinal": None,
                 })})
             outcome = outcome_by_index[index]
             if outcome.resolution == "auto_success":

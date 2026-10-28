@@ -308,6 +308,11 @@ def _scribe(prompt: str) -> str:
                 "object_value": f"наблюдение номер {number}",
             },
         }
+        subject = re.search(rf"^- {re.escape(player)} \[character id=([^\]]+)\]", prompt, re.MULTILINE)
+        if subject is None:
+            raise AssertionError("Mock scribe requires the player's registered identity")
+        proposal["subject_entity_id"] = subject.group(1)
+        proposal["payload"]["subject"] = player
     return json.dumps({"outcomes": [outcome], "proposals": [proposal]}, ensure_ascii=False)
 
 
@@ -367,10 +372,23 @@ def _semantic_plan_review() -> str:
     )
 
 
-def _authority_verdict() -> str:
+def _authority_verdict(prompt: str) -> str:
     CALLS["authority_validator"] += 1
+    payload = {}
+    if "[TURN FACTS]\n" in prompt and "[CANDIDATE NARRATION]\n" in prompt:
+        encoded, candidate = prompt.split("[TURN FACTS]\n", 1)[1].split("\n\n[CANDIDATE NARRATION]\n", 1)
+        facts = json.loads(encoded)
+        states = facts.get("item_states", [])
+        # This controlled mock prose contains no item positions. Refuse to
+        # certify different prose by silently labelling a mentioned item absent.
+        if any(state["name"].casefold() in candidate.casefold() for state in states):
+            raise AssertionError("Mock inventory auditor does not support positional prose")
+        payload = {"item_reviews": {state["item_id"]: {
+            "item_id": state["item_id"], "reference": "absent", "claims": []
+        } for state in states}, "entrances": [], "names_given": []}
     return json.dumps(
         {
+            **payload,
             "verdict": "pass",
             "summary": "Candidate follows typed turn authority.",
             "violations": [],
@@ -388,7 +406,7 @@ def _dispatch_json(prompt: str) -> str:
     ):
         return _turn_authority_plan(prompt)
     if "[TURN AUTHORITY VALIDATOR]" in prompt or "[FOUR BANS NARRATION CHECK]" in prompt:
-        return _authority_verdict()
+        return _authority_verdict(prompt)
     if "[ACTOR CLAIM SEGMENT SELECTOR]" in prompt:
         return _actor_segment_selector(prompt)
     if "Ты проектируешь новый акт автономной кампании" in prompt:
@@ -433,8 +451,8 @@ async def deterministic_generate_json(self, messages, config, api_key=None, **kw
         owner_id = get_args(beat_model.model_fields["cast_id"].annotation)[0]
         CALLS["granted_npc_beat"] += 1
         evidence = (
-            "Я лично видел свежую отметку на стене. "
-            "Никто из караула не объяснил, откуда она взялась"
+            f"Я лично видел отметку {CALLS['granted_npc_beat']} на стене. "
+            f"Никто из караула не объяснил происхождение следа {CALLS['granted_npc_beat']}"
         )
         output = json.dumps({
             "prose": f"— {evidence}, — говорит проводник.",

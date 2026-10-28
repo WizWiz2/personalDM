@@ -3,10 +3,11 @@ from uuid import UUID
 
 from sqlalchemy import and_, literal_column, or_, select, update
 
+from app.db.generation_lifecycle_table import GenerationLifecycle
+from app.db.narration_validation_table import NarrationValidationRun
 from app.db.repositories.base import BaseRepository
 from app.db.tables import GenerationRun, PostTurnJob
 from app.models.jobs import GenerationRunRead, PostTurnJobRead
-from app.db.generation_lifecycle_table import GenerationLifecycle
 
 
 class GenerationRunRepository(BaseRepository):
@@ -87,6 +88,15 @@ class GenerationRunRepository(BaseRepository):
         await self._session.execute(
             update(GenerationRun).where(GenerationRun.id == str(run_id)).values(**values)
         )
+        if status in {"failed", "cancelled"}:
+            await self._session.execute(
+                update(NarrationValidationRun).where(
+                    NarrationValidationRun.trigger_turn_id.in_(
+                        select(GenerationRun.user_turn_id).where(GenerationRun.id == str(run_id))
+                    ),
+                    NarrationValidationRun.status == "validating",
+                ).values(status=status, failure_reason=(error or "Generation ended before validation completed")[:4000])
+            )
         await self._session.flush()
 
     async def delete(self, run_id: UUID) -> bool:
