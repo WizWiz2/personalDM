@@ -107,9 +107,10 @@ class SceneStateContextProvider:
         ) or "none recorded"
         registered = ""
         if request.acting_character_id is None and isinstance(self._session, AsyncSession):
-            from app.services.item_state_authority import load_item_states
-            from app.services.item_prompt_scope import prompt_item_states
             import json
+
+            from app.services.item_prompt_scope import prompt_item_states
+            from app.services.item_state_authority import load_item_states
 
             items = await load_item_states(self._session, request.campaign_id)
             snapshots = prompt_item_states(items, location_id=state.location_id,
