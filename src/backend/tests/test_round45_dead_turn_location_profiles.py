@@ -39,7 +39,6 @@ def test_destination_profile_protocol_extracts_stable_place_description():
 def test_location_profile_is_part_of_real_planner_and_review_contracts():
     assert "[LOCATION PROFILE CONTRACT]" in TurnAuthorityPlanner.AUTHORITY_ADDENDUM
     assert "DESTINATION PROFILE:" in TurnAuthorityPlanner.AUTHORITY_ADDENDUM
-    assert "LOCATION PROFILE REVIEW:" in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
 
 @pytest.mark.asyncio

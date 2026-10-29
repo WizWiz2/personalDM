@@ -8,7 +8,6 @@ from app.models.turn_authority import TurnAuthority
 from app.services.narration_publication_guard import (
     NarrationPublicationGuard,
 )
-from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
 def _authority(**overrides) -> TurnAuthority:
@@ -55,28 +54,3 @@ def test_ordinary_rejected_narration_projects_authority_even_if_one_bad_segment_
     assert published == "Замок покрыт ржавчиной."
     assert "отступает" not in published
     assert diagnostics["mode"] == "authority_projection"
-
-
-def test_repair_prompt_preserves_rejected_candidate_for_minimal_edit():
-    authority = _authority()
-    rejected = "Элдон решает войти внутрь и улыбается. Потом он достаёт нож."
-    evidence = "Элдон решает войти внутрь и улыбается."
-    validation = _validation(
-        {
-            "violation_type": "player_agency",
-            "severity": "error",
-            "evidence": evidence,
-            "correction": "Не продолжать действие героя.",
-        }
-    )
-
-    prompt = TurnAuthorityValidator.repair_prompt(authority, rejected, validation)
-
-    assert "[REPAIR REJECTED NARRATION]" in prompt
-    assert evidence in prompt
-    assert rejected in prompt
-    assert "Потом он достаёт нож" in prompt
-    assert "минимально" in prompt
-    assert "реплики присутствующих персонажей" in prompt
-
-

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import urllib.error
-from unittest.mock import Mock
 
-import pytest
 
 from live_model_contracts import transport
 
@@ -62,30 +60,26 @@ def test_loopback_transport_preserves_original_error_when_restart_fails(monkeypa
         raise AssertionError("connection failure must remain visible when Ollama cannot restart")
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://127.0.0.1:11434/api/tags",
-        "http://[::1]:11434/api/tags",
-        "http://localhost:11434/api/tags",
-    ],
-)
-def test_loopback_probe_does_not_use_environment_proxy(monkeypatch, url):
-    opener = Mock()
-    build = Mock(return_value=opener)
-    monkeypatch.setattr(transport.urllib.request, "build_opener", build)
-    monkeypatch.setattr(
-        transport.urllib.request,
-        "urlopen",
-        Mock(side_effect=AssertionError("environment proxy used")),
-    )
-    transport.open_endpoint(url, timeout=2)
-    assert build.call_args.args[0].proxies == {}
-    opener.open.assert_called_once_with(url, timeout=2)
+def test_loopback_endpoint_is_reached_directly_even_with_a_dead_environment_proxy(monkeypatch):
+    import http.server
+    import threading
 
+    class _Ok(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
 
-def test_remote_probe_preserves_configured_transport(monkeypatch):
-    request = Mock()
-    monkeypatch.setattr(transport.urllib.request, "urlopen", request)
-    transport.open_endpoint("https://model.example/api/tags", timeout=3)
-    request.assert_called_once_with("https://model.example/api/tags", timeout=3)
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Ok)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"):
+            monkeypatch.setenv(name, "http://127.0.0.1:9")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        with transport.open_endpoint(f"http://127.0.0.1:{server.server_port}/api/tags", timeout=2) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()

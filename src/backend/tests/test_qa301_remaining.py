@@ -130,7 +130,7 @@ async def test_undo_retracts_a_planned_place_introduction(db_session):
     outcome = await materializer.materialize(authority, source_turn_id=user.id)
     assistant = await turns.create(cid, TurnCreate(role="assistant", content="Контора на площади.",
         scene_id=scene, parent_turn_id=user.id))
-    await materializer.bind_to_assistant(outcome, assistant.id)
+    await materializer.bind_to_assistant(user.id, assistant.id)
     destination = str(outcome.introduced_place_ids[0])
     assert (await db_session.get(Entity, destination)).status == "active"
     await db_session.commit()

@@ -134,7 +134,8 @@ async def test_known_npc_at_target_location_becomes_arrival_without_duplicate(
         entity_type="character",
     )
     materializer = TurnOutcomeMaterializer(db_session)
-    outcome = await materializer.materialize(authority, source_turn_id=uuid4())
+    source_turn_id = uuid4()
+    outcome = await materializer.materialize(authority, source_turn_id=source_turn_id)
     await db_session.commit()
     after = await EntityRepository(db_session).list_by_campaign(
         campaign_id,
@@ -148,7 +149,7 @@ async def test_known_npc_at_target_location_becomes_arrival_without_duplicate(
 
     # Compensation removes only the relation prepared by this turn. Historical scene membership
     # remains intact and the durable character entity is never deleted.
-    await materializer.rollback(outcome)
+    await materializer.rollback(source_turn_id)
     assert owner.id not in await SceneRepository(db_session).get_participants(target_scene.id)
     assert owner.id in await SceneRepository(db_session).get_participants(old_scene.id)
     assert await EntityRepository(db_session).get_by_id(owner.id) is not None

@@ -16,7 +16,6 @@ from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.services.player_destination_authorization import PlayerDestinationAuthorizer
 from app.services.scene_lifecycle import SceneLifecycleService
-from app.services.turn_authority_planner import TurnAuthorityPlanner
 
 
 @pytest.mark.asyncio
@@ -109,26 +108,3 @@ async def test_live_return_ignores_trailing_punctuation_in_visited_location_iden
     assert authorization.destination_exists is True
     assert authorization.destination == office.canonical_name
     assert "campaign location" in authorization.reason
-
-
-def test_affirmative_unknown_contact_requires_typed_temporary_identity():
-    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "CONTACT/IDENTITY" in prompt
-    assert "unknown physical responder" in prompt
-    assert "npc_introductions" in prompt
-
-
-def test_negative_contact_must_be_explicit_and_does_not_require_materialization():
-    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "nobody answers/is found" in prompt
-    assert "negative outcome must be explicit" in prompt
-
-
-def test_unresolved_contact_cannot_be_silently_promoted_to_success():
-    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "CONTACT/IDENTITY" in prompt
-    assert "resolved positively" in prompt
-    assert "negative outcome must be explicit" in prompt

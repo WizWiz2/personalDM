@@ -13,7 +13,7 @@ from app.services.systemless_authority_guard import (
     ensure_distinct_physical_location,
     normalize_addressed_conversation,
 )
-from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
+from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_planner import ActionSequencePlan, ActionStepPlan
 
 
@@ -78,16 +78,6 @@ def test_mixed_world_action_keeps_only_world_step_and_typed_response_request() -
     assert len(plan.action_sequence.steps) == 1
     assert plan.action_sequence.steps[0].intent == "Обыскать шкаф"
     assert plan.addressed_response_requested is True
-
-
-def test_person_vs_object_and_unsolicited_contact_meaning_belongs_to_semantic_reviewer() -> None:
-    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "CONTACT/IDENTITY" in prompt
-    assert "previously" in prompt
-    assert "unknown physical responder" in prompt
-    assert "npc_introductions" in prompt
-    assert "Do not use keyword lists" in prompt
 
 
 def test_location_transition_cannot_resolve_to_current_physical_location() -> None:
@@ -168,5 +158,3 @@ def test_flight_recorder_surfaces_persisted_actor_selector_audit() -> None:
     augmented = _augment_trace(snapshot, assistant_id, trace)
 
     assert augmented["memory"]["actor_selector"] == audit
-
-

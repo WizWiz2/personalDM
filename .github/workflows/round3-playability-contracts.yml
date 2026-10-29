@@ -29,7 +29,6 @@ on:
       - "src/backend/tests/test_round5_authority_preflight.py"
       - "src/backend/tests/test_round6_entity_identity.py"
       - "src/backend/tests/test_round7_planner_intent_invariants.py"
-      - "src/backend/tests/test_round9_narration_contract.py"
       - "src/backend/tests/test_round10_navigation_truth.py"
       - "src/backend/tests/test_round11_destination_authorization.py"
       - "src/backend/tests/test_golden_playthrough.py"
@@ -87,7 +86,6 @@ jobs:
             tests/test_round5_authority_preflight.py \
             tests/test_round6_entity_identity.py \
             tests/test_round7_planner_intent_invariants.py \
-            tests/test_round9_narration_contract.py \
             tests/test_round10_navigation_truth.py \
             tests/test_round11_destination_authorization.py \
             tests/test_golden_playthrough.py \

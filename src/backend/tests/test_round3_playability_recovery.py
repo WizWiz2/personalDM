@@ -368,7 +368,7 @@ async def test_planned_npc_is_structurally_visible_before_narration_context(
     assert prepared.introduced_character_ids[0] in await scenes.get_participants(scene.id)
 
     assistant_id = uuid4()
-    await materializer.bind_to_assistant(prepared, assistant_id)
+    await materializer.bind_to_assistant(authority.trigger_turn_id, assistant_id)
     row = await db_session.get(
         __import__("app.db.tables", fromlist=["Entity"]).Entity,
         str(prepared.introduced_character_ids[0]),
@@ -377,5 +377,5 @@ async def test_planned_npc_is_structurally_visible_before_narration_context(
     assert fields["introduction_turn_id"] == str(assistant_id)
     assert fields["introduction_trigger_turn_id"] == str(authority.trigger_turn_id)
 
-    await materializer.rollback(prepared)
-    assert await entities.get_by_id(prepared.introduced_character_ids[0]) is None
+    await materializer.rollback(authority.trigger_turn_id)  # confirmed on publication: nothing to undo
+    assert await entities.get_by_id(prepared.introduced_character_ids[0]) is not None

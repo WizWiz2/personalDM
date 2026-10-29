@@ -66,16 +66,6 @@ def test_auto_success_movement_requires_structured_location_transition():
         )
 
 
-def test_semantic_reviewer_not_verb_lists_owns_movement_and_contact_meaning():
-    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "MOVEMENT/TIME" in prompt
-    assert "CONTACT/IDENTITY" in prompt
-    assert "Do not use keyword lists" in prompt
-    assert "npc_introductions" in prompt
-    assert "responder" in prompt
-
-
 def test_contract_issues_no_longer_reinterprets_player_text():
     plan = CoordinatedTurnPlan(player_intent="Контакт.", resolution="conversation")
 

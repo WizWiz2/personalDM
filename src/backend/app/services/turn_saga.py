@@ -38,6 +38,7 @@ from app.services.turn_authority_planner import (
     TurnAuthorityPlanner,
 )
 from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
+from app.services.prepared_turn_compensation import compensate_prepared_turn
 from app.services.turn_outcome_materializer import (
     MaterializedTurnOutcome,
     TurnOutcomeMaterializer,
@@ -72,18 +73,6 @@ class TurnSaga:
         if owned:
             await self._turn_repo.mark_failed(user_turn_id)
         await self._session.commit()
-
-    async def _rollback_prepared_transition(
-        self,
-        executor: SceneTransitionExecutor | None,
-        transition: AppliedSceneTransition | None,
-    ) -> bool:
-        if not executor or not transition or transition.status != "prepared":
-            return False
-        await self._session.rollback()
-        rolled_back = await executor.rollback_transition(transition.transition_id)
-        await self._session.commit()
-        return rolled_back
 
     @staticmethod
     def _reserve_current_user(
@@ -387,53 +376,24 @@ class TurnSaga:
         )
         return plan, metadata, executor, applied, target_scene_id, transition_metadata, authority
 
-    async def _rollback_materialization(
-        self,
-        materializer: TurnOutcomeMaterializer | None,
-        outcome: MaterializedTurnOutcome | None,
-    ) -> None:
-        if not materializer or not outcome or not outcome.has_changes:
-            return
-        await self._session.rollback()
-        await materializer.rollback(outcome)
-        await self._session.commit()
-
     async def _compensate(
-        self,
-        run_id: UUID,
-        transition_executor: SceneTransitionExecutor | None,
-        applied_transition: AppliedSceneTransition | None,
-        materializer: TurnOutcomeMaterializer | None,
-        materialized_outcome: MaterializedTurnOutcome | None,
-        prepared: bool,
-        campaign_id: UUID | None = None,
+        self, run_id: UUID, user_turn_id: UUID, prepared: bool, campaign_id: UUID,
     ) -> None:
-        if not prepared:
-            # Before PREPARED, structural mutations roll back — but PLANNED may already have
-            # committed a pending director selection. Clear it so failed plans do not advance
-            # rhythm later via a stale pending commit.
-            await self._session.rollback()
-            if campaign_id is not None:
-                try:
-                    from app.services.master_service import MasterService
-
-                    await MasterService(self._session).rewind_pending_rhythm(campaign_id)
-                except Exception:
-                    pass
+        if prepared:
+            # Same durable path as startup recovery: journaled materializations, prepared transitions,
+            # pending rhythm, then COMPENSATED.
+            await compensate_prepared_turn(self._session, run_id, user_turn_id, campaign_id)
             return
-        # Publication and its event receipts are atomic even when prepare made no mutations.
-        # The specialized compensators below may otherwise be no-ops and commit a partial answer.
+        # Before PREPARED, structural mutations roll back — but PLANNED may already have
+        # committed a pending director selection. Clear it so failed plans do not advance
+        # rhythm later via a stale pending commit.
         await self._session.rollback()
-        await self._rollback_materialization(materializer, materialized_outcome)
-        await self._rollback_prepared_transition(transition_executor, applied_transition)
-        if campaign_id is not None:
-            try:
-                from app.services.master_service import MasterService
+        try:
+            from app.services.master_service import MasterService
 
-                await MasterService(self._session).rewind_pending_rhythm(campaign_id)
-            except Exception:
-                pass
-        await self._set_phase(run_id, GenerationPhase.COMPENSATED)
+            await MasterService(self._session).rewind_pending_rhythm(campaign_id)
+        except Exception:
+            pass
 
     async def run_turn_stream(
         self,
@@ -833,10 +793,7 @@ class TurnSaga:
                     raise RuntimeError("Prepared scene transition could not be finalized")
 
             if materializer and materialized_outcome.has_changes:
-                await materializer.bind_to_assistant(
-                    materialized_outcome,
-                    saved_assistant.id,
-                )
+                await materializer.bind_to_assistant(user_turn.id, saved_assistant.id)
             if materializer and materialized_outcome.has_changes:
                 context_metadata["turn_materialization"]["status"] = "applied"
                 context_metadata["turn_materialization"]["source_turn_id"] = str(saved_assistant.id)
@@ -907,15 +864,7 @@ class TurnSaga:
             error = (f"Turn exceeded {settings.TURN_TIMEOUT_SECONDS:g}s wall-clock budget"
                      if timed_out else "Cancellation requested")
             record_decision("final", "failed" if timed_out else "cancelled", {"reason": error})
-            await self._compensate(
-                generation_run.id,
-                transition_executor,
-                applied_transition,
-                materializer,
-                materialized_outcome,
-                prepared,
-                campaign_id=campaign_id,
-            )
+            await self._compensate(generation_run.id, user_turn.id, prepared, campaign_id)
             await self._generation_runs.set_status(
                 generation_run.id,
                 "failed" if timed_out else "cancelled",
@@ -937,15 +886,7 @@ class TurnSaga:
                 "failed",
                 {"error_type": type(exc).__name__, "reason": str(exc)[:2000]},
             )
-            await self._compensate(
-                generation_run.id,
-                transition_executor,
-                applied_transition,
-                materializer,
-                materialized_outcome,
-                prepared,
-                campaign_id=campaign_id,
-            )
+            await self._compensate(generation_run.id, user_turn.id, prepared, campaign_id)
             await self._generation_runs.set_status(
                 generation_run.id,
                 "failed",

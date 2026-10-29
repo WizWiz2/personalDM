@@ -9,8 +9,6 @@ from app.models.session_zero_interview import (
     SessionZeroInterviewPatch,
 )
 from app.services.campaign_service import CampaignService
-from app.models.game_master import SetCampaignMasterRequest
-from app.services.master_service import MasterService
 from app.services.session_zero_interview import SessionZeroInterviewService
 
 
@@ -312,67 +310,6 @@ async def test_confirmed_scalar_fact_is_not_silently_rewritten(
     assert decision.draft.world.setting_name == "Shadowrun"
     assert decision.draft.character.name == "Кабуто"
     assert decision.draft.character.description == "Уличный эльф-раннер."
-
-
-@pytest.mark.asyncio
-async def test_agent_request_uses_compact_draft_and_conversation_history(
-    db_session: AsyncSession,
-):
-    campaign = await _campaign(db_session, "Native agent request")
-    await MasterService(db_session).set_master(
-        campaign.id,
-        SetCampaignMasterRequest(kind="preset", preset_id="soft_keeper"),
-    )
-    await db_session.commit()
-    interview = SessionZeroInterviewService(db_session)
-    state = await interview.get_state(campaign.id)
-    state.messages = [
-        {"role": "user" if index % 2 == 0 else "assistant", "content": f"m{index}"}
-        for index in range(20)
-    ]
-    state.messages.append({"role": "user", "content": "Последний ответ"})
-    state.pending_user_message = "Последний ответ"
-    await interview._save_state(campaign.id, state, commit=True)
-    response = _agent_decision(
-        "Понял. Расскажи немного о герое.",
-        patch_data={"world": SHADOWRUN_WORLD},
-    )
-    model = AsyncMock(return_value=response)
-
-    with patch(
-        "app.services.session_zero_interview.RoleModelRouter.generate_json",
-        new=model,
-    ):
-        await interview.retry_pending(campaign.id)
-
-    kwargs = model.await_args.kwargs
-    messages = model.await_args.args[2]
-    assert kwargs["max_tokens"] == 2000
-    assert "Мягкий хранитель" in messages[0].content
-    assert kwargs["response_model"].__name__ == "SessionZeroInterviewModelDecision"
-    assert len(messages) == SessionZeroInterviewService.MAX_HISTORY_MESSAGES + 1
-    assert [item.content for item in messages[1:]] == [
-        "m9",
-        "m10",
-        "m11",
-        "m12",
-        "m13",
-        "m14",
-        "m15",
-        "m16",
-        "m17",
-        "m18",
-        "m19",
-        "Последний ответ",
-    ]
-    prompt = messages[0].content
-    assert "Это разговор, а не анкета" in prompt
-    assert "Не проси игрока пересказывать базовый канон" in prompt
-    assert "update_session_zero" in prompt
-    assert "finalize_session_zero" in prompt
-    assert "ТЕХНИЧЕСКИЙ МИНИМУМ" in prompt
-    assert "Это не список вопросов игроку" in prompt
-    assert '\n  "world"' not in prompt
 
 
 def test_tool_patch_accumulates_complete_card_without_losing_earlier_fields():

@@ -363,7 +363,7 @@ authorized voluntary contribution from the protagonist. Every world consequence 
 to that contribution, never an invented next player choice.
 """
 
-    SEMANTIC_REVIEW_PROMPT = """[TURN PLAN SEMANTIC REVIEWER]
+    SEMANTIC_REVIEW_BASE = """[TURN PLAN SEMANTIC REVIEWER]
 You are an independent control agent. Do not write fiction and do not replace the plan. Compare the
 latest human input, full campaign context and PROPOSED PLAN by meaning. Do not use keyword lists,
 regular expressions, capitalization tricks or vocabulary heuristics.
@@ -991,7 +991,7 @@ short sentence. Return exactly the NpcContactDecision schema.
             self._provider,
             selection,
             [
-                ChatMessage(role="system", content=self.SEMANTIC_REVIEW_PROMPT),
+                ChatMessage(role="system", content=semantic_review_prompt()),
                 ChatMessage(
                     role="user",
                     content=(
@@ -1816,3 +1816,31 @@ short sentence. Return exactly the NpcContactDecision schema.
 
 
 __all__ = ["CoordinatedTurnPlan", "SemanticPlanReview", "TurnAuthorityPlanner"]
+
+
+def semantic_review_prompt() -> str:
+    """Assemble the semantic reviewer prompt explicitly, in a fixed order.
+
+    Contracts live next to the guard that enforces them; the order here is the single source of
+    truth, so the prompt no longer depends on which guard was installed first.
+    """
+    from app.services.control_language_guard import (
+        CONTROL_LANGUAGE_CONTRACT,
+        MOVEMENT_SCOPE_CONTRACT,
+    )
+    from app.services.live_contract_stabilization_guard import _SEMANTIC_BOUNDARY_CONTRACT
+    from app.services.location_profile_guard import _LOCATION_REVIEW_CONTRACT
+    from app.services.planner_compound_guard import _COMPOUND_REVIEW
+    from app.services.planner_semantic_scope_guard import _SEMANTIC_SCOPE_CONTRACT
+    from app.services.semantic_authority_guard import _NPC_PROFILE_REVIEW_CONTRACT
+
+    return (
+        TurnAuthorityPlanner.SEMANTIC_REVIEW_BASE
+        + _COMPOUND_REVIEW
+        + CONTROL_LANGUAGE_CONTRACT
+        + MOVEMENT_SCOPE_CONTRACT
+        + _SEMANTIC_BOUNDARY_CONTRACT
+        + _LOCATION_REVIEW_CONTRACT
+        + _NPC_PROFILE_REVIEW_CONTRACT
+        + _SEMANTIC_SCOPE_CONTRACT
+    )

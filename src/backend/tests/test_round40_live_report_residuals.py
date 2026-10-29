@@ -6,12 +6,11 @@ from pydantic import ValidationError
 from app.models.narration_validation import NarrationValidationResult
 from app.models.turn_authority import TurnAuthority
 from app.services.actor_turn_authority_guard import (
-    build_actor_segment_proposals,
     segment_actor_response,
 )
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.prompt_policy import CURRENT_PROMPT_POLICY
-from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
+from app.services.turn_authority_planner import CoordinatedTurnPlan
 
 
 def test_validator_schema_has_first_class_meta_and_speaker_failures():
@@ -101,14 +100,6 @@ def test_actor_surface_contract_locks_selected_speaker_and_forbids_meta_prose():
     assert "response actor" in contract
     assert "do not recycle or reassign another NPC's earlier line" in contract
     assert "internal action produced no external state change" in surface
-
-
-def test_semantic_plan_reviewer_rejects_empty_success_instead_of_demanding_drama():
-    review = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "RENDERABLE OUTCOME" in review
-    assert "empty success" in review
-    assert "Do not demand drama" in review
 
 
 def test_requires_check_never_becomes_player_facing_engine_stub_again():

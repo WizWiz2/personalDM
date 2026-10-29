@@ -265,8 +265,6 @@ def install() -> None:
 
     if _LOCATION_PLANNING_CONTRACT not in TurnAuthorityPlanner.AUTHORITY_ADDENDUM:
         TurnAuthorityPlanner.AUTHORITY_ADDENDUM += _LOCATION_PLANNING_CONTRACT
-    if _LOCATION_REVIEW_CONTRACT not in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT:
-        TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT += _LOCATION_REVIEW_CONTRACT
 
     # Product-level completeness belongs at the gameplay planning boundary, not inside the generic
     # low-level transition executor. Direct/admin/replay executor callers therefore keep their

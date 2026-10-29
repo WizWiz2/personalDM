@@ -104,7 +104,8 @@ def test_resume_parser_preserves_target_and_intent():
 
 
 def test_health_snapshot_is_json_serializable():
-    json.dumps(quality.health_snapshot(), ensure_ascii=False)
+    snapshot = quality.health_snapshot()
+    assert json.loads(json.dumps(snapshot, ensure_ascii=False)) == snapshot
 
 
 def test_evaluator_history_drops_duplicate_current_assistant_result():
