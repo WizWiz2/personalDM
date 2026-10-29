@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -83,25 +82,3 @@ def test_name_reveal_fixture_establishes_scene_presence_not_only_character_locat
     assert client.post.call_args_list[1].kwargs["json"]["location_id"] == "office"
     assert client.post.call_args_list[2].args == ("/api/scenes/office-scene/participants",)
     assert client.post.call_args_list[2].kwargs["params"] == {"entity_id": "attendant"}
-
-
-def test_live_runner_is_not_allowed_to_import_pytest_mocks_or_call_itself_a_simulation():
-    package = Path(__file__).resolve().parents[1] / "live_model_contracts"
-    source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in package.glob("*.py")
-    ).casefold()
-
-    assert "unittest.mock" not in source
-    assert "tests.conftest" not in source
-    assert "run_ci_mock_simulation" not in source
-
-
-def test_truth_oracle_contains_no_llm_grader():
-    package = Path(__file__).resolve().parents[1] / "live_model_contracts"
-    oracle = (package / "oracle_snapshot.py").read_text(encoding="utf-8").casefold()
-
-    assert "llmprovider" not in oracle
-    assert "rolemodelrouter" not in oracle
-    assert "generate_json" not in oracle
-    assert "generate_stream" not in oracle

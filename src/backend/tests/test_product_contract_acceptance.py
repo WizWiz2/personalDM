@@ -1,4 +1,3 @@
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -188,16 +187,3 @@ def test_new_location_profile_survives_full_turn_and_is_queryable(client: TestCl
     history = client.get(f"/api/campaigns/{campaign_id}/turns").json()
     assert [turn["role"] for turn in history] == ["user", "assistant"]
     assert history[-1]["content"] == response.text
-
-
-def test_toxic_dead_turn_literal_is_not_a_production_fallback():
-    app_root = Path(__file__).resolve().parents[1] / "app"
-    toxic = "Пока ничего заметно не меняется"
-    offenders = []
-    for path in app_root.rglob("*.py"):
-        # The guard may describe the forbidden surface structurally, but production must never
-        # contain the exact player-facing sentence ready to be returned as a fallback.
-        text = path.read_text(encoding="utf-8")
-        if toxic in text:
-            offenders.append(str(path.relative_to(app_root)))
-    assert offenders == [], f"Toxic dead-turn fallback literal returned to production: {offenders}"

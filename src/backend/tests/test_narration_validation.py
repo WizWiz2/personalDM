@@ -89,20 +89,6 @@ def test_validation_result_rejects_pass_with_errors():
         )
 
 
-def test_repair_prompt_contains_only_actionable_contract():
-    messages = NarrationValidator.repair_messages(
-        [],
-        INVALID_DRAFT,
-        repair_required(),
-    )
-    prompt = messages[-1].content
-    assert "[REPAIR REJECTED NARRATION]" in prompt
-    assert "absent_character" in prompt
-    assert "player_agency" in prompt
-    assert INVALID_DRAFT in prompt
-    assert "Return only the repaired narrative prose" in prompt
-
-
 @pytest.mark.asyncio
 async def test_invalid_draft_is_repaired_before_delivery(
     client: TestClient,

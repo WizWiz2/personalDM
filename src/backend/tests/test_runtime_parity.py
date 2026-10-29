@@ -18,6 +18,7 @@ from app.models.jobs import GenerationPhase
 from app.models.turn import TurnCreate
 from app.providers.llm_provider import LLMProvider
 from app.runtime import install_runtime
+from app.runtime_paths import backend_dir
 from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services.base_context_compiler import ContextCompiler as BaseContextCompiler
 from app.services.base_turn_runner import TurnRunner as BaseTurnRunner
@@ -29,7 +30,7 @@ from app.services.turn_authority_planner import TurnAuthorityPlanner
 from app.services.turn_runner import TurnRunner
 from app.services.turn_saga import TurnSaga
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = backend_dir()
 
 
 def _cold_manifest(import_target: str) -> dict:

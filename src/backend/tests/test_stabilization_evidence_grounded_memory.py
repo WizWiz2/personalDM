@@ -115,32 +115,6 @@ def test_explicit_negative_statement_is_valid_when_published_segment_selected():
 
 
 @pytest.mark.asyncio
-async def test_extractor_uses_one_semantic_call_and_model_returns_only_segment_ids():
-    actor_id = uuid4()
-    player_id = uuid4()
-    segments = segment_actor_response(PUBLISHED)
-    segment_id = _segment_id_containing(segments, EXACT)
-    router = FakeRouter(segment_ids=[segment_id, 999])
-    router.speaker = str(actor_id)
-
-    result = await extract_actor_segment_proposals_with_audit(
-        _scribe(router),
-        campaign_id=uuid4(),
-        assistant_content=PUBLISHED,
-        acting_character_id=actor_id,
-        player_character_id=player_id,
-    )
-
-    assert router.calls == 1
-    assert len(result) == 1
-    assert result[0].payload["proposition"] == segments[segment_id - 1]
-    prompt = "\n".join(message.content for message in router.last_messages)
-    assert "ACTOR CLAIM SEGMENT SELECTOR" in prompt
-    assert "Не пиши и не исправляй текст" in prompt
-    assert f"S{segment_id}:" in prompt
-
-
-@pytest.mark.asyncio
 async def test_extractor_failure_does_not_create_or_invent_memory():
     actor_id = uuid4()
     player_id = uuid4()

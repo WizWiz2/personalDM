@@ -224,8 +224,6 @@ def install() -> None:
 
     from app.services.turn_authority_planner import SemanticPlanReview, TurnAuthorityPlanner
 
-    if _SEMANTIC_SCOPE_CONTRACT not in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT:
-        TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT += _SEMANTIC_SCOPE_CONTRACT
 
     # Preserve the public TurnAuthorityPlanner.plan boundary owned by systemless_authority_guard.
     # Presence suspicion is expressed as a semantic review failure so the existing repair/recovery

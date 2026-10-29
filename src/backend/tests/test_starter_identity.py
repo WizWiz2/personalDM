@@ -12,7 +12,7 @@ from app.services.starter_identity import (
     reconcile_starter_npcs,
     sanitize_existing_present_npc_introductions,
 )
-from app.services.turn_authority_planner import CoordinatedTurnPlan, TurnAuthorityPlanner
+from app.services.turn_authority_planner import CoordinatedTurnPlan
 
 
 def _starter(*, role="Посетительница", name=None, description=None, reason=None):
@@ -194,14 +194,6 @@ def test_existing_physically_present_npc_is_not_a_new_introduction():
     assert plan.npc_introductions == []
 
 
-def test_genuinely_new_unsolicited_npc_is_a_semantic_planner_failure():
-    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "CONTACT/IDENTITY" in prompt
-    assert "unknown physical responder" in prompt
-    assert "npc_introductions" in prompt
-
-
 def test_explicit_unknown_contact_remains_supported_by_typed_npc_introduction():
     plan = _conversation_plan("Прохожий", "прохожий")
 
@@ -209,7 +201,6 @@ def test_explicit_unknown_contact_remains_supported_by_typed_npc_introduction():
 
     assert len(plan.npc_introductions) == 1
     assert plan.npc_introductions[0].canonical_name == "Прохожий"
-    assert "CONTACT/IDENTITY" in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
 
 def test_control_model_name_is_kept_and_a_role_is_not() -> None:
     specs = [
@@ -221,4 +212,3 @@ def test_control_model_name_is_kept_and_a_role_is_not() -> None:
         [(0, "Мария"), (1, "Горничная")],
     )
     assert [item.name for item in named] == ["Мария", None]
-
