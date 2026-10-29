@@ -11,7 +11,6 @@ adding another model call to the interactive pipeline.
 | F-116: repairs alternately require opposite item positions | Each required item review and each claim are bound to one exact item ID. Position denials have an explicit polarity. Custody/placement corrections come from comparison with receipts, while semantic content/property/agency checks remain model-owned. |
 | F-118: an invisible operator appears in a newly profiled room | `resident_role` alone no longer manufactures a keeper at the authority boundary. A concrete typed encounter is required. Offscreen introductions in production are limited to personal identities frozen from the input. |
 | F-119: memory jobs fail during extraction/apply | Fact proposals require a registered subject in the native schema, not just a post-generation validator. Memory apply discards its old SQLite read snapshot after acquiring the campaign barrier. |
-| F-120: a provider stall leaves a run running for nine hours | Structured narrator requests have their own wall-clock budget. The whole narrative saga has a deadline and uses its existing compensation path, marking timeout as failed rather than user cancellation. |
 | F-121: a confirmation and promise disappear from usable memory | Exact frozen player speech and the certified response beat are committed with publication as sourced knowledge, using accepted proposals for undo/replay. Relevance recall retrieves a speaker's old lines independently of the listener's recent window. |
 | Stale initiatives repeat fulfilled conditions | The existing outcome call reviews every candidate agenda against current evidence. Resolved/superseded agendas receive source-bound closures. Only active reviewed threads can drive independent moves; undoing a closure's source reopens it. |
 | M-2: legacy descriptions disagree with return observations | `presence_check` observations use current structured occupant locations at the relevant hop, instead of accepting an obsolete scene description as physical evidence. |
@@ -27,9 +26,11 @@ adding another model call to the interactive pipeline.
   typed speech timestamp.
 - Default budgets are `NARRATOR_LLM_TIMEOUT_SECONDS=180` and `TURN_TIMEOUT_SECONDS=600`.
   Explicit cancellation remains cancellation. Provider failure and timeout publish no partial turn.
+  These are general safeguards, not a fix for the reported nine-hour interval: the user confirmed
+  that the laptop was shut down. That interval and the missing server process are excluded from
+  the defect list; no watchdog or automatic restart is needed for this incident.
 - QA-301 contained five failed memory jobs: one SQLite lock error and four missing-subject schema
-  failures. Those are separate failure modes. The cause of the server process's disappearance was
-  not established and is not claimed to be fixed here.
+  failures. Those are separate failure modes.
 
 ## Acceptance rerun
 
