@@ -1,3 +1,6 @@
+import math
+import re
+from collections import Counter
 from uuid import UUID
 
 from sqlalchemy import select
@@ -51,6 +54,29 @@ class BeliefRepository(BaseRepository):
             query = query.where(Belief.is_current == True)
         result = await self._session.execute(query)
         return [BeliefRead.model_validate(item) for item in result.scalars().all()]
+
+    async def recall_spoken(self, speaker_id: UUID, query: str, *, limit: int = 12) -> list[BeliefRead]:
+        """Bounded lexical recall of a speaker's own sourced words, regardless of listener age.
+
+        This retrieves evidence; it does not promote a claim into objective truth. Old promises
+        quoted in the current question must compete by relevance rather than lose to recent chatter.
+        """
+        rows = (await self._session.execute(select(Belief).where(
+            Belief.source_character_id == str(speaker_id), Belief.is_current.is_(True),
+        ).order_by(Belief.updated_at.desc(), Belief.id))).scalars().all()
+        unique = list({self.normalize(row.proposition): row for row in reversed(rows)}.values())
+        terms = lambda text: set(re.findall(r"[\w]+", text.casefold().replace("ё", "е")))
+        query_terms = terms(query)
+        documents = {row.id: terms(row.proposition) for row in unique}
+        frequencies = Counter(word for words in documents.values() for word in words)
+        score = lambda row: sum(math.log(1 + len(unique) / frequencies[word])
+                                for word in query_terms & documents[row.id])
+        relevant = sorted(unique, key=lambda row: (score(row), row.updated_at, row.id), reverse=True)
+        selected = [row for row in relevant if score(row) > 0][:limit // 2]
+        selected_ids = {row.id for row in selected}
+        recent = sorted(unique, key=lambda row: (row.updated_at, row.id), reverse=True)
+        selected += [row for row in recent if row.id not in selected_ids][:limit - len(selected)]
+        return [BeliefRead.model_validate(row) for row in selected]
 
     async def update(
         self,

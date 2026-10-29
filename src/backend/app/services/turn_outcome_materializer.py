@@ -460,6 +460,7 @@ class TurnOutcomeMaterializer:
         for effect in await self._provisional(trigger_turn_id):
             row = await self._session.get(Entity, effect.entity_id)
             field = {"character": "introduction_turn_id", "item": "introduction_turn_id",
+                     "place": "introduction_turn_id",
                      "identity": "identity_promoted_turn_id"}.get(effect.kind)
             if row and field:
                 fields = json.loads(row.custom_fields or "{}")

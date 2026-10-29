@@ -4,14 +4,14 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from pydantic import create_model
+from pydantic import Field, create_model
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db.tables import Belief, Entity
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
-from app.models.narration_validation import GrantedBeat, GrantedNarration, NarrationValidationResult
+from app.models.narration_validation import GrantedBeat, GrantedNarration, NarrationValidationResult, RouteDisclosure
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import (
@@ -226,9 +226,31 @@ class AuthorityNarrationPipeline:
             text, telemetry = await self._generate_text(messages, selection, temperature=temperature)
             return text, None, telemetry
         # The schema admits only the owner's ID: strict decoding cannot mistype it (live B5 T4).
+        from app.services.published_routes import route_catalog
+
+        catalog = await route_catalog(self._session, authority.campaign_id)
+        destinations = tuple(f"{kind}:{place['id']}" for place in catalog for kind in ("known", "new_in"))
+        route = create_model("RegisteredRouteDisclosure", __base__=RouteDisclosure,
+                             destination=(Literal[destinations] if destinations else str, ...))
         owner = create_model("GrantedBeat", __base__=GrantedBeat,
-                             cast_id=(Literal[str(authority.beat_owner_id)], ...))
+                             cast_id=(Literal[str(authority.beat_owner_id)], ...),
+                             route_disclosures=(list[route], Field(default_factory=list, max_length=2)))
         wire = create_model("GrantedNarration", __base__=GrantedNarration, beat=(owner, ...))
+        if catalog:
+            import json
+
+            messages = [*messages, ChatMessage(role="system", content=(
+                "[ROUTE DISCLOSURES]\nRegistered places: " + json.dumps(catalog, ensure_ascii=False)
+                + "\nWhen the beat owner gives definite directions from the CURRENT scene place to "
+                  "a public destination, include route_disclosures in the beat. Select known:<ID> "
+                  "for an existing destination; new_in:<parent ID> for a genuinely new place inside "
+                  "a registered area, with its nominative name and physical profile. Reuse names/aliases. "
+                  "evidence must be an exact fragment of beat.evidence containing those directions. "
+                  "Include the full directions in beat.evidence. bidirectional=false for a one-way route. "
+                  "Use [] for rumours, lies, speculation, mere mentions, inaccessible destinations, "
+                  "or routes starting elsewhere. This records knowledge, never movement or permission "
+                  "to open a blocked passage."
+            ))]
         try:
             narration = wire.model_validate(await self._router.generate_json(
                 self._provider, selection, messages,

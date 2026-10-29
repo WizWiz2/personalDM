@@ -57,6 +57,8 @@ class PlannedItemIntroduction(BaseModel):
     placement_detail: str | None = Field(default=None, max_length=300)
     after_action_index: int | None = Field(default=None, ge=0, le=7)
     copy_of_item_id: UUID | None = None
+    written_content: str | None = Field(default=None, min_length=1, max_length=2500,
+        description="Complete literal text of a newly written artifact, never a description of writing; null for non-documents.")
     reserved_item_id: UUID | None = None  # allocated by compiler, never by a model
 
 
@@ -77,6 +79,14 @@ class PlannedWorldMove(BaseModel):
     destination_location_id: UUID | None = None  # NPC movement: exactly one known graph hop
     # Explicit clock phase for a scheduled deadline. Non-deadline beats leave it null.
     due_phase: Literal["dawn", "morning", "day", "evening", "night"] | None = None
+
+
+class WorldThreadClosure(BaseModel):
+    """A resolved/superseded agenda, bound to its original text and actor by the engine."""
+    source: str
+    actor_id: UUID | None = None
+    status: Literal["resolved", "superseded"]
+    evidence: str = Field(min_length=1, max_length=1000)
 
 
 class ExistingNpcArrival(BaseModel):
@@ -127,6 +137,7 @@ class TurnAuthority(BaseModel):
     allowed_new_items: list[PlannedItemIntroduction] = Field(default_factory=list)
     allowed_new_places: list[PlannedPlaceIntroduction] = Field(default_factory=list)
     world_move: PlannedWorldMove | None = None
+    world_thread_closures: list[WorldThreadClosure] = Field(default_factory=list, max_length=12)
     allowed_existing_npc_arrivals: list[ExistingNpcArrival] = Field(default_factory=list)
     object_names: list[str] = Field(default_factory=list)
     item_states: list[ItemStateSnapshot] = Field(default_factory=list)
@@ -310,8 +321,15 @@ class TurnAuthority(BaseModel):
 
     def narrator_payload(self) -> dict:
         """Four-bans facts plus optional rendering context. Nothing here is an obligation."""
+        from app.services.item_prompt_scope import prompt_item_states
+
         payload = {
             **self.validator_payload(),
+            "item_states": prompt_item_states(self.item_states,
+                location_id=self.place_frame.get("location_id"),
+                participant_ids=[self.player_character_id],
+                query=" ".join([self.player_input, *self.observable_consequences,
+                                 *[str(receipt) for receipt in self.inventory_receipts()]])),
             "allowed_new_npcs": [
                 {
                     key: value

@@ -566,6 +566,13 @@ class ContextCompiler:
                     said.setdefault(belief.source_character_id, {})[
                         self._belief_repo.normalize(belief.proposition)
                     ] = belief
+            if not actor_mode:
+                for character in scene_characters:
+                    if character.id != player_id:
+                        said[character.id] = {
+                            self._belief_repo.normalize(belief.proposition): belief
+                            for belief in await self._belief_repo.recall_spoken(character.id, current_user_content or "")
+                        }
             for character in scene_characters:
                 if actor_mode and character.id == acting_character_id:
                     continue

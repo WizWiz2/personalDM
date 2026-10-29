@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import ClassVar
 from uuid import UUID
 
 from sqlalchemy import select
@@ -29,7 +30,7 @@ from app.services.turn_planner import ActionSequencePlan
 class InventoryExecutionError(RuntimeError):
     """A deterministic typed inventory operation could not be applied safely."""
 
-    REASONS = {
+    REASONS: ClassVar[dict[str, str]] = {
         "Inventory step is missing its typed item operation": "Не указан предмет или действие с ним.",
         "Inventory step references an item outside the campaign": "Предмет не относится к этой кампании.",
         "Inventory step has no player character": "Не определён персонаж игрока.",

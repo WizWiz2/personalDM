@@ -93,9 +93,13 @@ def item_position_violations(
             or (not placement_only and claim.owner_id != (reference.owner_id if reference else None))
             or (claim.location_id != (reference.location_id if reference else None) and not compatible_room)
         )
+        if claim.polarity == "denied":
+            # A denial conflicts only when it denies the current typed position. It must
+            # not be turned into the positive claim that caused QA-301 repair oscillation.
+            position_conflict = not position_conflict and not claim.placement_conflicts
         conflict = (
             reference is None or claim.evidence not in text or invalid_transition or position_conflict
-            or claim.placement_conflicts
+            or (claim.placement_conflicts and claim.polarity == "asserted")
         )
         if conflict:
             if state and state.owner_id:

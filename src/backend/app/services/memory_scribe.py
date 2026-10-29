@@ -194,7 +194,8 @@ class MemoryScribe:
 
 PAYLOAD:
 Все ссылки на сущности — точное имя/alias из каталога или его UUID. Не возвращай SELF, player, all или другие местоименные заглушки; перечисли конкретные id участников.
-- fact: {{"subject":"устойчивый субъект","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public","scope":"scene|campaign"}}
+- fact proposal: subject_entity_id="UUID из каталога" ОБЯЗАТЕЛЕН рядом с change_type/fact_type, вне payload.
+- fact payload: {{"subject":"устойчивый субъект","object_value":"значение или null","truth_status":"true|false|disputed","visibility":"dm|public","scope":"scene|campaign"}}
 - scope=scene для следов, положения, состояния двери, локальной находки и любых наблюдений, истинных только здесь.
 - scope=campaign только для личности, происхождения, владения, глобального лора или устойчивого состояния, которое должно пережить смену сцены.
 - event: {{"event_type":"тип","description":"что произошло","location_id":"имя локации или null","participant_ids":["имена"]}}

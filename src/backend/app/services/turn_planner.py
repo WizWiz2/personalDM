@@ -10,7 +10,7 @@ from app.config import settings
 from app.models.action_sequence import ActionSequenceExecution
 from app.models.item_state import ItemContentRevelation, ItemPropertyChange
 from app.models.player_intent import ActionResolution, DayPart, DramaticMode, TurnResolution
-from app.models.turn_authority import PlannedItemIntroduction
+from app.models.turn_authority import PlannedItemIntroduction, WorldThreadClosure
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
@@ -208,6 +208,7 @@ class TurnPlan(BaseModel):
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     character_beats: list[str] = Field(default_factory=list, max_length=6)
     new_fact_candidates: list[str] = Field(default_factory=list, max_length=4)
+    world_thread_closures: list[WorldThreadClosure] = Field(default_factory=list, max_length=12)
     narration_guidance: list[str] = Field(default_factory=list, max_length=6)
 
     @model_validator(mode="after")

@@ -293,10 +293,10 @@ class RoleModelRouter:
             api_key,
             **kwargs,
         )
-        if selection.role not in CONTROL_ROLES:
-            return await request
-
-        timeout_seconds = max(1.0, float(settings.CONTROL_LLM_TIMEOUT_SECONDS))
+        timeout_seconds = max(0.01, float(
+            settings.CONTROL_LLM_TIMEOUT_SECONDS if selection.role in CONTROL_ROLES
+            else settings.NARRATOR_LLM_TIMEOUT_SECONDS
+        ))
         started = time.monotonic()
         try:
             return await asyncio.wait_for(request, timeout=timeout_seconds)
@@ -304,15 +304,15 @@ class RoleModelRouter:
             telemetry = dict(provider.last_telemetry or {})
             provider.last_telemetry = {
                 **telemetry,
-                "status": "control_timeout",
-                "control_plane": True,
+                "status": "control_timeout" if selection.role in CONTROL_ROLES else "narrator_timeout",
+                "control_plane": selection.role in CONTROL_ROLES,
                 "model": config.model_name,
                 "model_role": selection.role.value,
                 "timeout_seconds": timeout_seconds,
                 "duration_ms": round((time.monotonic() - started) * 1000),
             }
             raise LLMProviderError(
-                f"Control model role {selection.role.value} exceeded "
+                f"Model role {selection.role.value} exceeded "
                 f"{timeout_seconds:g}s request budget"
             ) from exc
 

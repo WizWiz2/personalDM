@@ -521,6 +521,8 @@ class SceneStateService:
             f"[order {state.world_time_order}]\n"
             f"Scene goal: {state.scene_goal or 'none'}\n"
             f"Active conflict: {state.active_conflict or 'none'}\n"
+            "Scene goal/conflict are stored agenda candidates, not proof of unfinished conditions. "
+            "Reconcile them with current positions, heard speech and completed acts.\n"
             f"Physically present characters: {participants}\n"
             f"Objects physically here: {objects}\n"
             f"Objects carried by the player: {inventory}\n"

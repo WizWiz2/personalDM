@@ -1824,20 +1824,23 @@ def semantic_review_prompt() -> str:
     Contracts live next to the guard that enforces them; the order here is the single source of
     truth, so the prompt no longer depends on which guard was installed first.
     """
-    from app.services.control_language_guard import CONTROL_LANGUAGE_CONTRACT, MOVEMENT_SCOPE_CONTRACT
+    from app.services.control_language_guard import (
+        CONTROL_LANGUAGE_CONTRACT,
+        MOVEMENT_SCOPE_CONTRACT,
+    )
     from app.services.live_contract_stabilization_guard import _SEMANTIC_BOUNDARY_CONTRACT
     from app.services.location_profile_guard import _LOCATION_REVIEW_CONTRACT
     from app.services.planner_compound_guard import _COMPOUND_REVIEW
     from app.services.planner_semantic_scope_guard import _SEMANTIC_SCOPE_CONTRACT
     from app.services.semantic_authority_guard import _NPC_PROFILE_REVIEW_CONTRACT
 
-    return "".join((
-        TurnAuthorityPlanner.SEMANTIC_REVIEW_BASE,
-        _COMPOUND_REVIEW,
-        CONTROL_LANGUAGE_CONTRACT,
-        MOVEMENT_SCOPE_CONTRACT,
-        _SEMANTIC_BOUNDARY_CONTRACT,
-        _LOCATION_REVIEW_CONTRACT,
-        _NPC_PROFILE_REVIEW_CONTRACT,
-        _SEMANTIC_SCOPE_CONTRACT,
-    ))
+    return (
+        TurnAuthorityPlanner.SEMANTIC_REVIEW_BASE
+        + _COMPOUND_REVIEW
+        + CONTROL_LANGUAGE_CONTRACT
+        + MOVEMENT_SCOPE_CONTRACT
+        + _SEMANTIC_BOUNDARY_CONTRACT
+        + _LOCATION_REVIEW_CONTRACT
+        + _NPC_PROFILE_REVIEW_CONTRACT
+        + _SEMANTIC_SCOPE_CONTRACT
+    )

@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     # Local 7B control often exceeds 60s under load; 180s keeps turns alive without unbounded hangs.
     # Timeout becomes a normal planner/validator error instead of a stuck generation.
     CONTROL_LLM_TIMEOUT_SECONDS: float = 180.0
+    NARRATOR_LLM_TIMEOUT_SECONDS: float = Field(default=180.0, gt=0)
+    TURN_TIMEOUT_SECONDS: float = Field(default=600.0, gt=0)
     # Waiting for another local model is measured separately from active inference.
     LOCAL_LLM_QUEUE_TIMEOUT_SECONDS: float = 120.0
     PLANNER_LLM_MODEL: str | None = None

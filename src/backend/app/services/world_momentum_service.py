@@ -149,6 +149,18 @@ class WorldMomentumService:
                     "actor_location_id": character.current_location_id,
                     "offscreen": character.current_location_id != current_place_id,
                 })
+        # Read active published authority, not derived Event projections which a replay may
+        # rebuild. Undo deactivates the source turn and therefore reopens its agendas.
+        closed = set()
+        for raw in (await self._session.execute(select(func.json_extract(
+            Turn.context_snapshot, "$.turn_authority.world_thread_closures",
+        )).where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant",
+                 Turn.status == "active", Turn.context_snapshot.is_not(None)))).scalars():
+            if not raw:
+                continue
+            for record in json.loads(raw):
+                closed.add((record["source"].casefold().strip(), record.get("actor_id")))
+        items = [item for item in items if (item["source"].casefold().strip(), item["actor_id"]) not in closed]
         # Deduplicate identical source+actor references without reordering.
         sources = list({
             (item["source"].casefold(), item["actor_id"]): item

@@ -261,6 +261,9 @@ class TurnUndoService:
             )
         except (TypeError, ValueError):
             undo_metadata = {}
+        from app.services.published_routes import undo_published_routes
+
+        await undo_published_routes(self._session, campaign_id, undo_metadata, assistant_turn_id)
         move_before = undo_metadata.get("world_move_before") or {}
         if move_before:
             from app.services.presence_service import PresenceService
@@ -314,7 +317,7 @@ class TurnUndoService:
             await self._session.execute(
                 select(Entity).where(
                     Entity.campaign_id == str(campaign_id),
-                    Entity.entity_type.in_(("character", "item")),
+                    Entity.entity_type.in_(("character", "item", "location")),
                 )
             )
         ).scalars().all()
@@ -345,6 +348,9 @@ class TurnUndoService:
             if planned or extracted:
                 from app.db.tables import Item, SceneParticipant
 
+                if entity.entity_type == "location":
+                    entity.status = "inactive"
+                    continue
                 if entity.entity_type == "item":
                     item = await self._session.get(Item, entity.id)
                     if item is not None:

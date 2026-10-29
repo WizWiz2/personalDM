@@ -107,15 +107,22 @@ class SceneStateContextProvider:
         ) or "none recorded"
         registered = ""
         if request.acting_character_id is None and isinstance(self._session, AsyncSession):
+            import json
+
+            from app.services.item_prompt_scope import prompt_item_states
             from app.services.item_state_authority import load_item_states
 
             items = await load_item_states(self._session, request.campaign_id)
+            snapshots = prompt_item_states(items, location_id=state.location_id,
+                participant_ids=[*state.participant_ids, campaign.player_character_id if campaign else None],
+                query=request.current_user_content or "")
             registered = (
                 "Registered items: " + ", ".join(f"{item.name} [id={item.item_id}]" for item in items)
                 + "\n[CURRENT ITEM POSITIONS — executor-owned, override old prose]\n"
-                + "\n".join(item.model_dump_json() for item in items)
+                + "\n".join(json.dumps(item, ensure_ascii=False, separators=(",", ":")) for item in snapshots)
                 + "\nThese identities include unreachable items. Selecting an ID does not authorize "
-                  "success; execution checks custody and actual physical presence.\n"
+                  "success; execution checks custody and actual physical presence. Archived remote "
+                  "content/properties may be omitted, which does not mean blank text or no properties.\n"
             )
         present = ", ".join(
             f"{name} [id={entity_id}]"
