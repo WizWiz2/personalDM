@@ -286,3 +286,35 @@ async def client(db_session) -> AsyncIterator[TestClient]:
         yield test_client
 
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def file_db(tmp_path):
+    """A real SQLite file with production pragmas; returns a session factory.
+
+    Use two sessions from it to observe what one of them actually committed, or two
+    factories (``file_db.second_engine()``) to contend for the single-writer lock.
+    """
+    from sqlalchemy import event
+
+    from app.db.engine import set_sqlite_pragma
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'campaign.db'}"
+    engines = []
+
+    def make_engine():
+        engine = create_async_engine(url)
+        event.listen(engine.sync_engine, "connect", set_sqlite_pragma)
+        engines.append(engine)
+        return engine
+
+    engine = make_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False, autoflush=False)
+    factory.second_engine = lambda: async_sessionmaker(
+        bind=make_engine(), class_=AsyncSession, expire_on_commit=False, autoflush=False
+    )
+    yield factory
+    for item in engines:
+        await item.dispose()
