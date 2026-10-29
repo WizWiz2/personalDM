@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
         # can touch the existing user library. Unknown legacy schemas fail safe.
         await migrate_database_on_startup()
         # N-13: SIGKILL can leave an active user input with a running generation.
-        # Recover only non-prepared attempts before accepting new player actions.
+        # Compensate/close every interrupted attempt before accepting new player actions.
         async with AsyncSessionLocal() as session:
             await recover_interrupted_generations(session)
         worker = PostTurnWorker()

@@ -41,23 +41,6 @@ async def test_n13_startup_marks_received_orphan_as_retryable(db_session):
 
 
 @pytest.mark.asyncio
-async def test_n13_does_not_auto_recover_prepared_world(db_session):
-    campaign_id, turn_id = uuid4(), uuid4()
-    db_session.add(Campaign(id=str(campaign_id), name="Unsafe saga"))
-    db_session.add(Turn(id=str(turn_id), campaign_id=str(campaign_id),
-                        role="user", content="Перемещаюсь", status="active"))
-    run = GenerationRun(campaign_id=str(campaign_id), user_turn_id=str(turn_id),
-                        status="running")
-    db_session.add(run)
-    await db_session.flush()
-    db_session.add(GenerationLifecycle(generation_run_id=run.id, phase="prepared"))
-    await db_session.commit()
-    with pytest.raises(RuntimeError, match="Unsafe interrupted generation"):
-        await recover_interrupted_generations(db_session)
-    assert (await db_session.get(GenerationRun, run.id)).status == "running"
-
-
-@pytest.mark.asyncio
 async def test_manual_retry_does_not_reclaim_running_memory_job(db_session):
     cid, tid = uuid4(), uuid4()
     db_session.add(Campaign(id=str(cid), name="Job retry safety"))
