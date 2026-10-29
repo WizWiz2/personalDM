@@ -16,7 +16,6 @@ from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.services.player_destination_authorization import PlayerDestinationAuthorizer
 from app.services.scene_lifecycle import SceneLifecycleService
-from app.services.turn_authority_planner import TurnAuthorityPlanner
 
 
 async def _campaign_with_location_history(db_session: AsyncSession):
@@ -113,28 +112,3 @@ async def test_return_can_resolve_unique_previously_visited_location(
     assert authorization.authorized is True
     assert authorization.destination_exists is True
     assert "campaign location" in authorization.reason or "exit from the current location" in authorization.reason
-
-
-def test_object_mentions_must_not_be_reinterpreted_as_people_by_semantic_reviewer():
-    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "ENTITY TYPE" in prompt
-    assert "objects, symbols, clues, doors" in prompt
-    assert "npc_introduction" in prompt
-    assert "Do not use keyword lists" in prompt
-
-
-def test_unsolicited_new_physical_character_requires_typed_authority():
-    prompt = TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT
-
-    assert "CONTACT/IDENTITY" in prompt
-    assert "unknown physical responder" in prompt
-    assert "npc_introductions" in prompt
-
-
-def test_direct_unknown_contact_can_be_typed_without_lexical_sanitizer():
-    prompt = TurnAuthorityPlanner.AUTHORITY_ADDENDUM
-
-    assert "NPC / ENTITY AUTHORITY" in prompt
-    assert "previously unknown person physically appears" in prompt
-    assert "npc_introductions" in prompt

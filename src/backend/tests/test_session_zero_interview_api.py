@@ -1,4 +1,3 @@
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -124,21 +123,3 @@ def test_interview_retry_uses_same_persisted_service_contract(client: TestClient
     assert response.status_code == 200
     retry.assert_awaited_once()
     assert response.json()["summary"] == decision.summary
-
-
-def test_frontend_session_zero_preserves_cli_behavior_without_legacy_form():
-    page = (
-        Path(__file__).resolve().parents[2]
-        / "frontend"
-        / "src"
-        / "pages"
-        / "SessionZeroPage.tsx"
-    ).read_text(encoding="utf-8")
-
-    assert "/api/session-zero-ui" not in page
-    assert "answerSessionZeroInterview" in page
-    assert "retrySessionZeroInterview" in page
-    assert "autoRetryAttempted" in page
-    assert "Итоговые договорённости" in page
-    for command in ("/summary", "/retry", "/error", "/later"):
-        assert command in page

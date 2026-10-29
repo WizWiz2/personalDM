@@ -64,8 +64,6 @@ def install() -> None:
 
     if _COMPOUND_AUTHORITY not in TurnAuthorityPlanner.AUTHORITY_ADDENDUM:
         TurnAuthorityPlanner.AUTHORITY_ADDENDUM += _COMPOUND_AUTHORITY
-    if _COMPOUND_REVIEW not in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT:
-        TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT += _COMPOUND_REVIEW
     install_control_language()
     install_planner_structural_repair()
     install_live_contract_stabilization()

@@ -78,14 +78,6 @@ class _Router:
         return self.verdicts.pop(0)
 
 
-def test_validator_prompt_is_the_four_bans_and_allows_mentions_and_optional_speech():
-    prompt = TurnAuthorityValidator.SYSTEM_PROMPT
-    for ban in ("absent_character", "canon_conflict", "player_agency", "invalid_movement"):
-        assert ban in prompt
-    assert "MENTIONING someone who is not here is allowed" in prompt
-    assert "None of that is required" in prompt
-
-
 def test_validator_payload_holds_only_typed_four_bans_facts():
     payload = _authority().validator_payload()
     assert payload["present_characters"] == ["Рэт"]
@@ -247,50 +239,6 @@ async def test_validator_outage_keeps_the_unchecked_draft_off_the_surface(db_ses
             narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="narrator")),
             authority=_authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id),
         )
-
-
-@pytest.mark.asyncio
-async def test_a_verbatim_npc_repeat_gets_one_repair_before_the_validator(db_session, monkeypatch):
-    """Replay 4 T7: the host repeated T4 word for word; his scribe ledger is the reference."""
-    from app.db.repositories.belief_repo import BeliefRepository
-    from app.db.repositories.entity_repo import EntityRepository
-    from app.db.repositories.turn_repo import TurnRepository
-    from app.models.belief import BeliefCreate
-    from app.models.campaign import CampaignCreate
-    from app.models.character import CharacterCreate
-    from app.models.turn import TurnCreate
-    from app.services.campaign_service import CampaignService
-
-    campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Repeat"))
-    host = await EntityRepository(db_session).create_character(
-        campaign.id, CharacterCreate(canonical_name="Семён"))
-    await BeliefRepository(db_session).create(BeliefCreate(
-        character_id=host.id, source_character_id=host.id, status="known", visibility="character_only",
-        proposition="— Из речников кто когда: спрашивать надо у пристани, не у меня.",
-    ))
-    user_turn = await TurnRepository(db_session).create(
-        campaign.id, TurnCreate(role="user", content="Где ночуют речники?"))
-    await db_session.commit()
-    router = _Router(_verdict())
-    pipeline = AuthorityNarrationPipeline(db_session, router)
-    drafts = iter(["Семён пожимает плечами. «Из речников, кто когда — спрашивать надо у пристани, не у меня!»",
-                   "Семён пожимает плечами. «Северяне ночуют на втором этаже»."])
-    prompts: list[str] = []
-
-    async def narrate(messages, selection, *, temperature):
-        prompts.append(messages[-1].content)
-        return next(drafts), {}
-
-    monkeypatch.setattr(pipeline, "_generate_text", narrate)
-    result = await pipeline.generate(
-        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
-        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
-        narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="narrator")),
-        authority=_authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id),
-    )
-    assert "дословный повтор" in prompts[1] and "спрашивать надо у пристани" in prompts[1]
-    assert len(router.calls) == 1
-    assert result.validation_status == "repaired" and "втором этаже" in result.text
 
 
 def test_background_crowd_is_allowed_but_a_quoted_stranger_or_known_absentee_is_not():

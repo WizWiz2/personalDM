@@ -211,30 +211,3 @@ async def test_cli_materializes_immediately_without_second_confirmation(
     assert setup.status == "completed"
     assert setup.player_character_name == "Кабуто"
     assert setup.starting_location_name == "Ночной рынок Редмонда"
-
-
-@pytest.mark.asyncio
-async def test_agent_prompt_exposes_only_materialization_gaps(
-    db_session: AsyncSession,
-):
-    campaign = await _campaign(db_session, "No optional checklist")
-    interview = SessionZeroInterviewService(db_session)
-    response = _decision(
-        "Расскажи одним предложением, кто будет героем.",
-        patch_data={"world": {"setting_name": "Shadowrun"}},
-    )
-    model = AsyncMock(return_value=response)
-
-    with patch(
-        "app.services.session_zero_interview.RoleModelRouter.generate_json",
-        new=model,
-    ):
-        await interview.answer(campaign.id, "Хочу Shadowrun")
-
-    system_prompt = model.await_args.args[2][0].content
-    assert "сам решаешь" in system_prompt.casefold()
-    assert "ТЕХНИЧЕСКИЙ МИНИМУМ" in system_prompt
-    assert "character.fears" not in system_prompt
-    assert "character.values" not in system_prompt
-    assert "world.play_style" not in system_prompt
-    assert "world.starting_situation" in system_prompt

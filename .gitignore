@@ -80,3 +80,4 @@ src/frontend/dist/
 tools/
 src/backend/local_launcher.py
 src/backend/.env.bak-*
+.mutation/

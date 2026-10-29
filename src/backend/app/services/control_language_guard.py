@@ -56,9 +56,6 @@ def install() -> None:
     # over-classify local hand/item motion as action_type=movement in live contracts.
     if CONTROL_LANGUAGE_CONTRACT not in TurnAuthorityPlanner.AUTHORITY_ADDENDUM:
         TurnAuthorityPlanner.AUTHORITY_ADDENDUM += CONTROL_LANGUAGE_CONTRACT
-    for contract in (CONTROL_LANGUAGE_CONTRACT, MOVEMENT_SCOPE_CONTRACT):
-        if contract not in TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT:
-            TurnAuthorityPlanner.SEMANTIC_REVIEW_PROMPT += contract
 
     if CONTROL_LANGUAGE_CONTRACT not in TurnAuthorityPlanner.NPC_CONTACT_RECOVERY_PROMPT:
         TurnAuthorityPlanner.NPC_CONTACT_RECOVERY_PROMPT += CONTROL_LANGUAGE_CONTRACT
