@@ -61,9 +61,10 @@ def inventory_validation_model(authority: TurnAuthority, candidate_text: str | N
                                    item_id=(Literal[item_id], ...))
         bound_reviews[item_id] = (create_model(
             f"ItemReview{index}", __base__=ItemNarrationReview,
+            __doc__=f"Review only {state.name}, registered ID {item_id}.",
             item_id=(Literal[item_id], ...),
             claims=(list[bound_claim], Field(max_length=16)),
-        ), Field(description=f"Review only {state.name}, registered ID {item_id}."))
+        ), ...)
     reviews = create_model("ItemReviewsByIdentity", __config__=ConfigDict(extra="forbid"),
                            **bound_reviews)
     violation = create_model(
