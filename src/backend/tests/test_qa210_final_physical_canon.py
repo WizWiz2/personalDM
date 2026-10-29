@@ -163,7 +163,8 @@ async def test_rename_and_undo_reuses_same_npc_id(db_session):
         )
 
     first = intro("Ночной сторож")
-    outcome = await materializer.materialize(first, source_turn_id=uuid4())
+    source_turn_id = uuid4()
+    outcome = await materializer.materialize(first, source_turn_id=source_turn_id)
     original_id = outcome.introduced_character_ids[0]
     first.addressed_response = AddressedResponse(
         speaker_id=original_id, speaker_name="Ночной сторож",
@@ -175,7 +176,7 @@ async def test_rename_and_undo_reuses_same_npc_id(db_session):
     assert await db_session.get(
         NpcIdentityAnchor, (str(cid), identity_key("Гус Фонарь")),
     ) is not None
-    await materializer.rollback(outcome)
+    await materializer.rollback(source_turn_id)
     assert await db_session.get(Entity, str(original_id)) is None
     regenerated = await materializer.materialize(
         intro("Гус Фонарь"), source_turn_id=uuid4(),

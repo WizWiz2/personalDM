@@ -38,3 +38,21 @@ class GenerationLifecycle(Base):
         onupdate=datetime.utcnow,
         nullable=False,
     )
+
+
+class ProvisionalTurnEffect(Base):
+    """A world change applied before publication, durable so compensation survives a crash.
+
+    ``status`` is ``provisional`` until the turn publishes (``confirmed``) or is compensated
+    (``rolled_back``). ``previous`` holds the prior identity of a renamed entity.
+    """
+
+    __tablename__ = "provisional_turn_effects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    trigger_turn_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    scene_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    previous: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="provisional")

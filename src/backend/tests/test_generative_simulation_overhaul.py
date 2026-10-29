@@ -240,7 +240,7 @@ def test_objective_contract_rejects_pretty_but_unsupported_resolution():
 def test_simulation_database_runs_real_alembic_chain(tmp_path):
     path = tmp_path / "simulation.db"
     revision = upgrade_simulation_database(path)
-    assert revision == "f4a5b6c7d8e9"
+    assert revision == "b9e1c2d3f4a5"
     assert current_revision(path) == revision
     with sqlite3.connect(path) as connection:
         columns = {

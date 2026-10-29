@@ -161,10 +161,10 @@ async def test_one_unrecoverable_run_does_not_stop_recovery_of_others(file_db, m
     bad = await _stuck_run(file_db, cid, GenerationPhase.PREPARED)
     good = await _stuck_run(file_db, cid, GenerationPhase.PLANNED)
 
-    async def broken(session, run):
+    async def broken(*_args):
         raise RuntimeError("corrupt prepared record")
 
-    monkeypatch.setattr(recovery, "_compensate_prepared", broken)
+    monkeypatch.setattr(recovery, "compensate_prepared_turn", broken)
     async with file_db() as session:
         assert await recover_interrupted_generations(session) == 1
     assert (await _states(file_db, *good))[:2] == ("failed", "failed")
