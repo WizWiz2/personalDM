@@ -439,7 +439,8 @@ class TurnOutcomeMaterializer:
         assistant_turn_id: UUID,
     ) -> None:
         """Replace prepared user-turn provenance with the durable assistant source turn."""
-        for entity_id in (*outcome.introduced_character_ids, *outcome.introduced_item_ids):
+        for entity_id in (*outcome.introduced_character_ids, *outcome.introduced_item_ids,
+                          *outcome.introduced_place_ids):
             row = await self._session.get(Entity, str(entity_id))
             if not row:
                 continue

@@ -321,8 +321,15 @@ class TurnAuthority(BaseModel):
 
     def narrator_payload(self) -> dict:
         """Four-bans facts plus optional rendering context. Nothing here is an obligation."""
+        from app.services.item_prompt_scope import prompt_item_states
+
         payload = {
             **self.validator_payload(),
+            "item_states": prompt_item_states(self.item_states,
+                location_id=self.place_frame.get("location_id"),
+                participant_ids=[self.player_character_id],
+                query=" ".join([self.player_input, *self.observable_consequences,
+                                 *[str(receipt) for receipt in self.inventory_receipts()]])),
             "allowed_new_npcs": [
                 {
                     key: value

@@ -784,6 +784,11 @@ class TurnSaga:
             )
 
             from app.services.published_speech_memory import remember_published_speech
+            from app.services.published_routes import publish_routes
+
+            context_metadata["published_routes"] = await publish_routes(
+                self._session, authority, narration.beat, narration.text, saved_assistant.id,
+            )
 
             await remember_published_speech(
                 self._session, authority, saved_assistant,

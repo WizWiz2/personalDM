@@ -58,7 +58,8 @@ class TurnAuthorityService:
             chain.insert(0, {"name": row[0], "profile": (row[2] or row[1] or "")[:300]})
             cursor = row[3]
         exits = await self._scene_state.list_exits(campaign_id, UUID(location_id))
-        return {"here_inside_out": chain, "reachable_from_here": sorted({e.to_location_name for e in exits})}
+        return {"location_id": location_id, "here_inside_out": chain,
+                "reachable_from_here": sorted({e.to_location_name for e in exits})}
 
     async def build(
         self,

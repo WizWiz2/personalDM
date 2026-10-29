@@ -522,6 +522,15 @@ def _outcome_wire_model(
                 return self
 
         npc_model = BoundNpc
+    absent_model = npc_model
+    if required_absent:
+        absent_model = create_model("FrozenMentionNpc", __base__=npc_model,
+            mentioned_name=(Literal[required_absent], Field(default=None, description=(
+                "Which exact frozen input mention this record resolves. Preserve its spelling here; "
+                "cast_id/canonical_name identify the person, correcting a typo only by selecting an "
+                "existing cast ID. Never create a twin for an inflection or misspelling."))))
+        absent_model.model_config["json_schema_extra"] = lambda schema: schema.setdefault(
+            "required", []).append("mentioned_name")
     arrival_type = npc_model | None if allow_introductions else type(None)
     npc_handoff_model = NpcItemHandoff
     player_handoff_model = PlayerItemHandoff
@@ -725,7 +734,7 @@ def _outcome_wire_model(
             max_length=action_count,
         )
         # A person the human named who has no cast ID is typed offscreen this turn (replay15 Keeper).
-        absent_people: list[npc_model] = Field(
+        absent_people: list[absent_model] = Field(
             default_factory=list, min_length=len(required_absent or ()),
             max_length=len(required_absent) if required_absent is not None else 2)
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
@@ -805,10 +814,14 @@ def _outcome_wire_model(
             if move is not None and move.kind == "arrival" and not world_threads[move.thread_id] \
                     and move.newcomer is None:
                 raise ValueError("an arrival world_move without the thread's actor requires world_move.newcomer")
-            typed = {identity_key(item.canonical_name) for item in self.absent_people
+            def mention(item):
+                return identity_key(getattr(item, "mentioned_name", None) or item.canonical_name)
+
+            typed = {mention(item) for item in self.absent_people
                      if not item.temporary_name and item.personal_name_evidence}
             if required_absent is not None and any(
-                identity_key(item.canonical_name) not in {identity_key(name) for name in required_absent}
+                mention(item) not in {identity_key(name) for name in required_absent}
+                or (item.cast_id not in (known_cast or {}) and identity_key(item.canonical_name) != mention(item))
                 for item in self.absent_people
             ):
                 raise ValueError("Offscreen people must be the personal identities frozen from player input, not roles in document text")
@@ -1372,7 +1385,9 @@ class TurnOutcomeResolver:
                                if known_places else "")
                             + ("\n[KNOWN CAST — identity only, not proof of presence]\n"
                                + json.dumps(known_cast, ensure_ascii=False)
-                               + "\nUse the existing cast_id for titles and grammatical forms of these people. "
+                               + "\nUse the existing cast_id for titles, grammatical forms and apparent typos "
+                                 "referring to these people. For absent_people, mentioned_name preserves the "
+                                 "frozen mention while canonical_name names the selected registered person. "
                                  "Only a different person uses newcomer. Location/arrival still needs authorization."
                                if known_cast is not None else "")
                             + "".join(

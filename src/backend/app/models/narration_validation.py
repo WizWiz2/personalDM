@@ -61,10 +61,29 @@ class NewcomerBeat(BaseModel):
     evidence: str = Field(min_length=1)
 
 
+class RouteDisclosure(BaseModel):
+    """A definite public route the speaker gives, with a registered endpoint or parent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    destination: str = Field(description="known:<location ID> or new_in:<registered parent ID>")
+    name: str = Field(min_length=2, max_length=80)
+    profile: str | None = Field(default=None, min_length=32, max_length=600)
+    evidence: str = Field(min_length=5, max_length=1000)
+    bidirectional: bool = True
+
+    @model_validator(mode="after")
+    def new_place_has_profile(self):
+        if self.destination.startswith("new_in:") and not self.profile:
+            raise ValueError("a new route destination requires a physical profile")
+        return self
+
+
 class GrantedBeat(BaseModel):
     """The narrator's typed claim of how the beat owner took the beat, with exact prose evidence."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", json_schema_extra=lambda schema: schema.setdefault(
+        "required", []).append("route_disclosures"))
 
     cast_id: str = Field(min_length=1, max_length=64)
     kind: Literal["speech", "refusal", "leave", "act"]
@@ -72,6 +91,7 @@ class GrantedBeat(BaseModel):
     # The personal name the owner gives for themself in this beat (nominative), else null.
     revealed_name: str | None = Field(default=None, max_length=120)
     newcomer: NewcomerBeat | None = None
+    route_disclosures: list[RouteDisclosure] = Field(default_factory=list, max_length=2)
 
     def failure(self, owner_id: object, owner_name: str, prose: str) -> str | None:
         """Structural check: owner ID, exact fragment; speech overlaps a dialogue line or quote span,
@@ -85,6 +105,11 @@ class GrantedBeat(BaseModel):
         start = prose.find(evidence)
         if not evidence or start < 0:
             return "beat evidence is not an exact fragment of the prose"
+        if self.route_disclosures and self.kind != "speech":
+            return "route disclosures require a spoken beat"
+        for route in self.route_disclosures:
+            if route.evidence not in evidence:
+                return "route evidence is not an exact fragment of the spoken beat"
         lines = prose[prose.rfind("\n", 0, start) + 1:start + len(evidence)].split("\n")
         before = prose[:start]
         spoken = (
