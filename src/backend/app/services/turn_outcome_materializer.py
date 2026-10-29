@@ -7,6 +7,8 @@ from uuid import UUID, uuid5
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, func, select
 
+from app.db.generation_lifecycle_table import ProvisionalTurnEffect
+
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
@@ -229,13 +231,30 @@ class TurnOutcomeMaterializer:
                 ))).id)
         await self._session.flush()
         identity_update = await self._reveal_identity(authority, source_turn_id)
-        return MaterializedTurnOutcome(
+        return await self._journal(source_turn_id, MaterializedTurnOutcome(
             introduced_character_ids=tuple(created_ids),
             introduced_item_ids=tuple(item_ids),
             introduced_place_ids=tuple(place_ids),
             arrived_existing_participants=tuple(arrived_existing),
             identity_updates=(identity_update,) if identity_update else (),
-        )
+        ))
+
+    async def _journal(self, trigger_turn_id: UUID, delta: MaterializedTurnOutcome) -> MaterializedTurnOutcome:
+        """Record each change durably in the same transaction, so compensation needs no memory."""
+        rows = [
+            *(("character", e, None, None) for e in delta.introduced_character_ids),
+            *(("item", e, None, None) for e in delta.introduced_item_ids),
+            *(("place", e, None, None) for e in delta.introduced_place_ids),
+            *(("arrival", e, scene, None) for scene, e in delta.arrived_existing_participants),
+            *(("identity", u.entity_id, None, json.dumps(u.snapshot(), ensure_ascii=False))
+              for u in delta.identity_updates),
+        ]
+        self._session.add_all(ProvisionalTurnEffect(
+            trigger_turn_id=str(trigger_turn_id), kind=kind, entity_id=str(entity_id),
+            scene_id=str(scene) if scene else None, previous=previous,
+        ) for kind, entity_id, scene, previous in rows)
+        await self._session.flush()
+        return delta
 
     async def _create(self, authority: TurnAuthority, introduction, source_turn_id: UUID):
         # An undone NPC introduction can be re-published in a new turn.
@@ -326,7 +345,7 @@ class TurnOutcomeMaterializer:
         if identity_key(introduction.canonical_name) in occupied:
             return outcome
         character = await self._create(authority, introduction, source_turn_id)
-        await self._session.flush()
+        await self._journal(source_turn_id, MaterializedTurnOutcome(introduced_character_ids=(character.id,)))
         return replace(outcome, introduced_character_ids=(*outcome.introduced_character_ids, character.id))
 
     async def reveal_published_name(self, authority: TurnAuthority, beat, outcome, source_turn_id):
@@ -343,7 +362,10 @@ class TurnOutcomeMaterializer:
             )
         except ValueError:
             return outcome  # An established personal name is never overwritten.
-        return replace(outcome, identity_updates=(*outcome.identity_updates, update)) if update else outcome
+        if not update:
+            return outcome
+        await self._journal(source_turn_id, MaterializedTurnOutcome(identity_updates=(update,)))
+        return replace(outcome, identity_updates=(*outcome.identity_updates, update))
 
     async def _reveal_identity(
         self, authority, source_turn_id, *, confirmed_by_published_beat=False,
@@ -433,58 +455,54 @@ class TurnOutcomeMaterializer:
         await self._session.flush()
         return update
 
-    async def bind_to_assistant(
-        self,
-        outcome: MaterializedTurnOutcome,
-        assistant_turn_id: UUID,
-    ) -> None:
-        """Replace prepared user-turn provenance with the durable assistant source turn."""
-        for entity_id in (*outcome.introduced_character_ids, *outcome.introduced_item_ids):
-            row = await self._session.get(Entity, str(entity_id))
-            if not row:
-                continue
-            try:
+    async def bind_to_assistant(self, trigger_turn_id: UUID, assistant_turn_id: UUID) -> None:
+        """Confirm this turn's provisional changes and bind them to the durable assistant turn."""
+        for effect in await self._provisional(trigger_turn_id):
+            row = await self._session.get(Entity, effect.entity_id)
+            field = {"character": "introduction_turn_id", "item": "introduction_turn_id",
+                     "identity": "identity_promoted_turn_id"}.get(effect.kind)
+            if row and field:
                 fields = json.loads(row.custom_fields or "{}")
-            except (json.JSONDecodeError, TypeError):
-                fields = {}
-            if not isinstance(fields, dict):
-                fields = {}
-            fields["introduction_turn_id"] = str(assistant_turn_id)
-            row.custom_fields = json.dumps(fields, ensure_ascii=False)
-        for update in outcome.identity_updates:
-            row = await self._session.get(Entity, str(update.entity_id))
-            if row:
-                fields = json.loads(row.custom_fields or "{}")
-                fields["identity_promoted_turn_id"] = str(assistant_turn_id)
+                fields[field] = str(assistant_turn_id)
                 row.custom_fields = json.dumps(fields, ensure_ascii=False)
+            effect.status = "confirmed"
         await self._session.flush()
 
-    async def rollback(self, outcome: MaterializedTurnOutcome) -> None:
-        """Compensate prepared entity changes when a real generation/state failure aborts."""
-        for update in outcome.identity_updates:
-            row = await self._session.get(Entity, str(update.entity_id))
-            if row:
-                row.canonical_name = update.previous_name
-                row.aliases = update.previous_aliases
-                row.custom_fields = update.previous_custom_fields
-        for scene_id, entity_id in outcome.arrived_existing_participants:
-            # Existing characters must never be deleted. Remove only the participant relation
-            # inserted by this turn; historical participation in older scenes stays intact.
-            await self._scenes.remove_participant(scene_id, entity_id)
-        for entity_id in outcome.introduced_place_ids:
-            (await self._session.get(Entity, str(entity_id))).status = "inactive"  # as undo does
-        for entity_id in outcome.introduced_item_ids:
-            item = await self._session.get(Item, str(entity_id))
-            if item:
-                await self._session.delete(item)
-            await self._entities.delete(entity_id)
-        for entity_id in outcome.introduced_character_ids:
-            # SQLite deployments may not enable FK cascades. Remove the introduced relation
-            # explicitly so compensation cannot leave a ghost participant pointing at no entity.
-            await self._session.execute(
-                delete(SceneParticipant).where(SceneParticipant.entity_id == str(entity_id))
-            )
-            await self._entities.delete(entity_id)
+    async def _provisional(self, trigger_turn_id: UUID) -> list[ProvisionalTurnEffect]:
+        return list((await self._session.execute(select(ProvisionalTurnEffect).where(
+            ProvisionalTurnEffect.trigger_turn_id == str(trigger_turn_id),
+            ProvisionalTurnEffect.status == "provisional",
+        ).order_by(ProvisionalTurnEffect.id.desc()))).scalars())
+
+    async def rollback(self, trigger_turn_id: UUID) -> None:
+        """Compensate this turn's provisional changes from the durable journal (idempotent)."""
+        for effect in await self._provisional(trigger_turn_id):
+            entity_id = UUID(effect.entity_id)
+            if effect.kind == "identity":
+                row = await self._session.get(Entity, effect.entity_id)
+                if row:
+                    previous = json.loads(effect.previous)
+                    row.canonical_name = previous["previous_name"]
+                    row.aliases = previous["previous_aliases"]
+                    row.custom_fields = previous["previous_custom_fields"]
+            elif effect.kind == "arrival":
+                # Existing characters are never deleted; remove only this turn's participation.
+                await self._scenes.remove_participant(UUID(effect.scene_id), entity_id)
+            elif effect.kind == "place":
+                row = await self._session.get(Entity, effect.entity_id)
+                if row:
+                    row.status = "inactive"  # as undo does
+            else:
+                # SQLite may not enforce FK cascades: remove dependents explicitly, no dangling refs.
+                await self._session.execute(delete(SceneParticipant).where(
+                    SceneParticipant.entity_id == effect.entity_id))
+                await self._session.execute(delete(ItemContentDisclosure).where(
+                    ItemContentDisclosure.item_id == effect.entity_id))
+                item = await self._session.get(Item, effect.entity_id)
+                if item:
+                    await self._session.delete(item)
+                await self._entities.delete(entity_id)
+            effect.status = "rolled_back"
         await self._session.flush()
 
 

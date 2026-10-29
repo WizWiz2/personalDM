@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from uuid import UUID
 
 from app.models.character import CharacterUpdate
@@ -11,7 +10,6 @@ from app.services.name_identity_contract import (
     is_usable_short_designation,
 )
 from app.services.starter_identity import present_character_names
-from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
 from app.services.turn_undo_service import TurnUndoService
 
 _INSTALLED = False
@@ -148,45 +146,6 @@ def _temporary_fields(entity) -> dict:
     return dict(fields) if isinstance(fields, dict) else {}
 
 
-@dataclass(frozen=True)
-class IdentityPromotionSnapshot:
-    entity_id: UUID
-    canonical_name: str
-    aliases: tuple[str, ...]
-    custom_fields: dict
-
-
-@dataclass(frozen=True)
-class GuardedMaterializedTurnOutcome:
-    introduced_character_ids: tuple[UUID, ...] = ()
-    arrived_existing_participants: tuple[tuple[UUID, UUID], ...] = ()
-    identity_promotions: tuple[IdentityPromotionSnapshot, ...] = ()
-
-    @property
-    def arrived_existing_character_ids(self) -> tuple[UUID, ...]:
-        return tuple(entity_id for _scene_id, entity_id in self.arrived_existing_participants)
-
-    @property
-    def has_changes(self) -> bool:
-        return bool(
-            self.introduced_character_ids
-            or self.arrived_existing_participants
-            or self.identity_promotions
-        )
-
-
-async def _restore_promotion_snapshots(materializer, snapshots) -> None:
-    for snapshot in snapshots:
-        await materializer._entities.update_character(
-            snapshot.entity_id,
-            CharacterUpdate(
-                canonical_name=snapshot.canonical_name,
-                aliases=list(snapshot.aliases),
-                custom_fields=dict(snapshot.custom_fields),
-            ),
-        )
-
-
 async def _restore_published_promotions(session, campaign_id: UUID, assistant_turn_id: UUID) -> None:
     from app.db.repositories.entity_repo import EntityRepository
 
@@ -283,39 +242,6 @@ def install() -> None:
 
     TurnAuthorityPlanner._semantic_review = presence_scoped_review
 
-    # Compatibility for undoing historical promotions; new name bindings are owned
-    # exclusively by the registrar after publication, never by role/location matches.
-    original_bind = TurnOutcomeMaterializer.bind_to_assistant
-    original_rollback = TurnOutcomeMaterializer.rollback
-
-    async def promotion_aware_bind(self, outcome, assistant_turn_id):
-        await original_bind(self, outcome, assistant_turn_id)
-        for snapshot in getattr(outcome, "identity_promotions", ()):
-            character = await self._entities.get_character(snapshot.entity_id)
-            if character is None:
-                continue
-            fields = _temporary_fields(character)
-            promotion = fields.get(_PROMOTION_KEY)
-            if not isinstance(promotion, dict):
-                continue
-            promotion = dict(promotion)
-            promotion["source_turn_id"] = str(assistant_turn_id)
-            fields[_PROMOTION_KEY] = promotion
-            await self._entities.update_character(
-                snapshot.entity_id,
-                CharacterUpdate(custom_fields=fields),
-            )
-
-    async def promotion_aware_rollback(self, outcome):
-        await original_rollback(self, outcome)
-        await _restore_promotion_snapshots(
-            self,
-            getattr(outcome, "identity_promotions", ()),
-        )
-
-    TurnOutcomeMaterializer.bind_to_assistant = promotion_aware_bind
-    TurnOutcomeMaterializer.rollback = promotion_aware_rollback
-
     original_reconcile = TurnUndoService._reconcile_derived_state
 
     async def promotion_aware_reconcile(self, campaign_id, assistant_turn_id):
@@ -331,8 +257,6 @@ def install() -> None:
 
 
 __all__ = [
-    "GuardedMaterializedTurnOutcome",
-    "IdentityPromotionSnapshot",
     "_SEMANTIC_SCOPE_CONTRACT",
     "_normalize_unproven_npc_introductions",
     "_unique_presence_keys",

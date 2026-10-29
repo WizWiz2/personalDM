@@ -77,13 +77,13 @@ async def test_new_npc_answers_and_is_talkable_in_same_published_scene(db_sessio
         npc_introductions=[introduction()],
     ))
     materializer = TurnOutcomeMaterializer(db_session)
-    outcome = await materializer.materialize(authority, source_turn_id=authority.trigger_turn_id)
+    await materializer.materialize(authority, source_turn_id=authority.trigger_turn_id)
     frame = await TurnWorldFrame.capture(db_session, campaign_id, scene.id)
     npc = await EntityRepository(db_session).get_character(authority.addressed_response.speaker_id)
     assert npc.id in frame.participant_ids
     assert npc.current_location_id == location.id
     assert authority.acting_character_id == npc.id
-    await materializer.rollback(outcome)
+    await materializer.rollback(authority.trigger_turn_id)
     assert await EntityRepository(db_session).get_by_id(npc.id) is None
     assert (await SceneRepository(db_session).get_participants(scene.id)) == [player.id]
 
@@ -187,7 +187,7 @@ async def test_name_revelation_keeps_id_and_old_designation_and_can_be_undone(db
             "identity_updates": [update.snapshot() for update in outcome.identity_updates],
         }},
     ))
-    await materializer.bind_to_assistant(outcome, assistant.id)
+    await materializer.bind_to_assistant(user.id, assistant.id)
     await db_session.commit()
     assert await TurnUndoService(db_session).undo_last_pair(campaign_id)
     restored = await entities.get_character(npc.id)

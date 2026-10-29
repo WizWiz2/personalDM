@@ -77,7 +77,7 @@ async def test_confirmed_item_survives_next_scene_context_and_rollback(db_sessio
     assert "ключ Олава" in state.object_names
 
     # Undo/regenerate must not duplicate this newly introduced physical entity.
-    await materializer.rollback(outcome)
+    await materializer.rollback(source_turn_id)
     await db_session.flush()
     assert await db_session.get(Item, str(item_id)) is None
     assert await db_session.get(Entity, str(item_id)) is None
@@ -111,7 +111,9 @@ async def test_confirmed_alternate_npc_name_is_alias_not_duplicate(db_session):
     ) is None
     npcs = await EntityRepository(db_session).list_by_campaign(cid, entity_type="character")
     assert len(npcs) == 2  # Player + one (aliased) gatekeeper.
-    await materializer.rollback(MaterializedTurnOutcome(identity_updates=(delta,)))
+    reveal_turn = uuid4()
+    await materializer._journal(reveal_turn, MaterializedTurnOutcome(identity_updates=(delta,)))
+    await materializer.rollback(reveal_turn)
     restored = await EntityRepository(db_session).get_by_id(keeper.id)
     assert "Настя Круг" not in restored.aliases
 
@@ -700,12 +702,13 @@ async def test_qa210_undo_and_reintroduction_preserve_npc_id(db_session):
             ],
         )
 
-    first = await materializer.materialize(authority("Гус Фонарь"), source_turn_id=uuid4())
+    first_turn = uuid4()
+    first = await materializer.materialize(authority("Гус Фонарь"), source_turn_id=first_turn)
     assert len(first.introduced_character_ids) == 1
     original_id = first.introduced_character_ids[0]
     assert await db_session.get(Entity, str(original_id)) is not None
 
-    await materializer.rollback(first)
+    await materializer.rollback(first_turn)
     assert await db_session.get(Entity, str(original_id)) is None
 
     regenerated = await materializer.materialize(

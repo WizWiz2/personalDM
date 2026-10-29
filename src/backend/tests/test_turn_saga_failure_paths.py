@@ -109,16 +109,6 @@ async def _prepared_world(session):
     return SimpleNamespace(cid=cid, hall=hall, pier=pier, hero=hero, scene=scene, turn=turn, run=run)
 
 
-class _FactMaterializer:
-    """Stands in for TurnOutcomeMaterializer: its rollback undoes one committed world fact."""
-
-    def __init__(self, session, fact_id):
-        self._session, self._fact_id = session, fact_id
-
-    async def rollback(self, outcome):
-        await self._session.delete(await self._session.get(Fact, self._fact_id))
-
-
 @pytest.mark.asyncio
 async def test_prepared_turn_compensation_restores_the_world_durably(file_db):
     async with file_db() as session:
@@ -127,17 +117,12 @@ async def test_prepared_turn_compensation_restores_the_world_durably(file_db):
         applied = await executor.apply(w.cid, w.scene.id, w.turn.id, SceneTransitionPlan(
             required=True, transition_type="location_transition", destination_location="Пристань"))
         assert applied.target_location_id == w.pier.id
-        fact = Fact(campaign_id=str(w.cid), subject="Ирма", predicate="activity", object_value="идёт")
-        session.add(fact)
         await _stash_pending_rhythm(session, w.cid)
         await GenerationLifecycleRepository(session).set_phase(w.run.id, GenerationPhase.PREPARED)
         await session.commit()  # the prepare transaction is durable
         session.add(Fact(campaign_id=str(w.cid), subject="Ирма", predicate="condition", object_value="устала"))
 
-        await TurnSaga(session)._compensate(
-            w.run.id, executor, applied, _FactMaterializer(session, fact.id),
-            SimpleNamespace(has_changes=True), True, campaign_id=w.cid,
-        )
+        await TurnSaga(session)._compensate(w.run.id, w.turn.id, True, w.cid)
 
     async with file_db() as other:
         hero = await other.get(Character, str(w.hero.id))
@@ -157,7 +142,7 @@ async def test_unprepared_compensation_discards_uncommitted_structure(file_db):
         w = await _prepared_world(session)
         await SceneTransitionExecutor(session).apply(w.cid, w.scene.id, w.turn.id, SceneTransitionPlan(
             required=True, transition_type="location_transition", destination_location="Пристань"))
-        await TurnSaga(session)._compensate(w.run.id, None, None, None, None, False, campaign_id=w.cid)
+        await TurnSaga(session)._compensate(w.run.id, w.turn.id, False, w.cid)
         await session.commit()
     async with file_db() as other:
         assert (await other.get(Character, str(w.hero.id))).current_location_id == str(w.hall.id)
