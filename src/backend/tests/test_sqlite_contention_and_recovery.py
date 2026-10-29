@@ -116,10 +116,6 @@ async def test_restart_with_nothing_stuck_changes_nothing(file_db):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(strict=True, reason=(
-    "Engine bug: a crash after PREPARED leaves a running run that startup recovery refuses with "
-    "RuntimeError, so the server cannot start until someone compensates it by hand. "
-    "Expected: startup compensates the prepared attempt and fails the turn."))
 async def test_restart_after_a_prepared_crash_compensates_instead_of_refusing_to_start(file_db):
     cid = await _campaign(file_db)
     user_id, run_id = await _stuck_run(file_db, cid, GenerationPhase.PREPARED, audit=True)
@@ -131,14 +127,48 @@ async def test_restart_after_a_prepared_crash_compensates_instead_of_refusing_to
 
 
 @pytest.mark.asyncio
-async def test_prepared_crash_is_refused_without_touching_other_stuck_runs(file_db):
+async def test_restart_recovers_every_stuck_item_and_is_idempotent(file_db):
     cid = await _campaign(file_db)
-    planned = await _stuck_run(file_db, cid, GenerationPhase.PLANNED)
-    await _stuck_run(file_db, cid, GenerationPhase.PREPARED)
+    planned = await _stuck_run(file_db, cid, GenerationPhase.PLANNED, audit=True)
+    prepared = await _stuck_run(file_db, cid, GenerationPhase.PREPARED, audit=True)
+    narrated = await _stuck_run(file_db, cid, GenerationPhase.NARRATED)
     async with file_db() as session:
-        with pytest.raises(RuntimeError):
-            await recover_interrupted_generations(session)
-    assert (await _states(file_db, *planned))[:2] == ("running", "active")
+        user = await TurnRepository(session).create(cid, TurnCreate(role="user", content="ход"))
+        assistant = await TurnRepository(session).create(
+            cid, TurnCreate(role="assistant", content="ответ", parent_turn_id=user.id))
+        session.add(PostTurnJob(campaign_id=str(cid), assistant_turn_id=str(assistant.id), job_type="memory",
+                                status="running", locked_at=datetime.utcnow() - timedelta(seconds=1)))
+        await session.commit()
+    async with file_db() as session:
+        assert await recover_interrupted_generations(session) == 3
+    async with file_db() as session:
+        assert await recover_interrupted_generations(session) == 0
+    assert await _states(file_db, *planned) == ("failed", "failed", ["failed"])
+    assert await _states(file_db, *prepared) == ("failed", "failed", ["failed"])
+    assert (await _states(file_db, *narrated))[:2] == ("failed", "failed")
+    async with file_db() as other:
+        phases = [(await other.get(GenerationLifecycle, str(run))).phase for _, run in (prepared, narrated)]
+        jobs = (await other.execute(select(PostTurnJob.status))).scalars().all()
+    assert phases == [GenerationPhase.COMPENSATED.value] * 2
+    assert jobs == ["pending"]
+
+
+@pytest.mark.asyncio
+async def test_one_unrecoverable_run_does_not_stop_recovery_of_others(file_db, monkeypatch):
+    from app.services import generation_startup_recovery as recovery
+
+    cid = await _campaign(file_db)
+    bad = await _stuck_run(file_db, cid, GenerationPhase.PREPARED)
+    good = await _stuck_run(file_db, cid, GenerationPhase.PLANNED)
+
+    async def broken(session, run):
+        raise RuntimeError("corrupt prepared record")
+
+    monkeypatch.setattr(recovery, "_compensate_prepared", broken)
+    async with file_db() as session:
+        assert await recover_interrupted_generations(session) == 1
+    assert (await _states(file_db, *good))[:2] == ("failed", "failed")
+    assert (await _states(file_db, *bad))[:2] == ("running", "active")
 
 
 @pytest.mark.asyncio
