@@ -15,6 +15,7 @@ from app.models.turn_authority import (
     PlannedItemIntroduction,
     PlannedPlaceIntroduction,
     PlannedWorldMove,
+    WorldThreadClosure,
 )
 
 # Scene clock authority: a typed part of day, never a phrase copied from the player.
@@ -45,7 +46,7 @@ class PlayerActionIntent(BaseModel):
     intent: str = Field(min_length=2, max_length=500)
     subject_item_id: UUID | None = None
     requested_inventory: RequestedInventoryAction | None = None
-    expected_effect: Literal["ordinary", "item_creation", "item_change", "fetch_person"] = "ordinary"
+    expected_effect: Literal["ordinary", "item_creation", "item_change", "item_read", "presence_check", "fetch_person"] = "ordinary"
 
     # Movement authority is only the human-selected endpoint, never a route/path policy.
     destination_location: str | None = Field(default=None, max_length=255)
@@ -71,7 +72,7 @@ class PlayerActionIntent(BaseModel):
 
     @model_validator(mode="after")
     def validate_domain_fields(self):
-        if self.expected_effect == "item_change" and self.subject_item_id is None and self.item_id is None:
+        if self.expected_effect in {"item_change", "item_read"} and self.subject_item_id is None and self.item_id is None:
             raise ValueError("a requested physical property change requires its registered subject")
         if self.requested_inventory is not None and self.action_type != "service":
             raise ValueError("an addressed inventory request belongs to a service action")
@@ -123,6 +124,7 @@ class PlayerIntentContract(BaseModel):
 
     summary: str = Field(min_length=2, max_length=500)
     spoken_identity_evidence: str | None = Field(default=None, max_length=500)
+    spoken_contributions: list[str] = Field(default_factory=list, max_length=8)
     actions: list[PlayerActionIntent] = Field(default_factory=list, max_length=8)
 
     # Speech/response ownership is separate from executable world actions.
@@ -286,6 +288,7 @@ class TurnOutcomeDecision(BaseModel):
     item_revelations: list[ItemContentRevelation] = Field(default_factory=list, max_length=4)
     item_property_changes: list[ItemPropertyChange] = Field(default_factory=list, max_length=8)
     world_move: PlannedWorldMove | None = None
+    world_thread_closures: list[WorldThreadClosure] = Field(default_factory=list, max_length=12)
 
     # These fields constrain narration/external consequences only; they cannot add player actions.
     resolution: TurnResolution = "success"

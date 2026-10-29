@@ -363,6 +363,10 @@ class TurnAuthorityService:
                 else None
             ),
             action_sequence=executed_sequence,
+            world_thread_closures=(list(plan.world_thread_closures) if plan and not any(
+                step.get("status") in {"blocked", "skipped"}
+                for step in (executed_sequence or {}).get("steps", [])
+            ) else []),
         )
 
         # The beat grant is the single source of NPC response: the /talk listener, else, when the

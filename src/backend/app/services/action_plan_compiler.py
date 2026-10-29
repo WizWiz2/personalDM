@@ -423,6 +423,21 @@ class ActionPlanCompiler:
                 raise PlanContractError("A produced item ordinal has no corresponding artifact introduction")
             return artifacts[ordinal].reserved_item_id
 
+        virtual_positions = {}
+        hero_name = None
+        if any(action.expected_effect == "presence_check" for action in contract.actions):
+            from app.db.tables import Character
+
+            virtual_positions = {name: (UUID(place), None) for name, place in (
+                await self._session.execute(select(Entity.canonical_name, Character.current_location_id)
+                    .join(Character, Character.entity_id == Entity.id)
+                    .where(Entity.campaign_id == str(campaign_id), Entity.status != "inactive",
+                           Character.current_location_id.is_not(None)))
+            ).all()}
+            campaign = await self._session.get(Campaign, str(campaign_id))
+            hero = await self._session.get(Entity, campaign.player_character_id) if campaign and campaign.player_character_id else None
+            hero_name = hero.canonical_name if hero else None
+
         for index, action in enumerate(contract.actions):
             effective_action = action
             produced_reference = (action.produced_item_action_index if action.produced_item_action_index is not None
@@ -454,6 +469,11 @@ class ActionPlanCompiler:
                     item.after_action_index == index for item in decision.item_introductions
                 ):
                     raise PlanContractError("Successful artifact creation is missing its typed item introduction")
+                if action.expected_effect == "item_read" and not any(
+                    read.action_index == index and read.item_id == action.subject_item_id
+                    for read in decision.item_revelations
+                ):
+                    raise PlanContractError("Successful reading requires concrete content for its registered document")
                 if action.expected_effect == "item_change" and not any(
                     change.action_index == index for change in decision.item_property_changes
                 ):
@@ -476,6 +496,15 @@ class ActionPlanCompiler:
                     discovery_steps.append(index)
             else:
                 step = self._compile_nonmovement(effective_action, outcome)
+            if virtual_positions and action.action_type == "movement" and step.resolution == "auto_success":
+                for name in [hero_name, *step.transition.carry_participants]:
+                    if name:
+                        virtual_positions[name] = cursor
+            if action.expected_effect == "presence_check" and step.resolution == "auto_success":
+                # Resolve at this hop, including departures/companions from earlier hops.
+                # Old descriptions and historical scene memberships are not occupancy evidence.
+                occupants = [name for name, position in virtual_positions.items() if position == cursor]
+                step.observable_outcome = "Присутствуют: " + ", ".join(occupants) + "."
             step.item_creations = list(created_by_source.get(index, ()))
             step.source_action_index = index
             steps.append(step)
@@ -667,6 +696,7 @@ class ActionPlanCompiler:
             item_introductions=introductions,
             place_introductions=decision.place_introductions,
             world_move=decision.world_move,
+            world_thread_closures=decision.world_thread_closures,
             addressed_response_requested=contract.addressed_response_requested,
             personal_name_revealed=False,
             identity_reveal_requested=contract.identity_reveal_requested,

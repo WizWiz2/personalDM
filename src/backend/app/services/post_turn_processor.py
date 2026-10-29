@@ -679,6 +679,9 @@ class PostTurnProcessor:
                         # Queue them behind the campaign write barrier; extraction already
                         # finished read-only above, so a turn never waits on memory models.
                         async with campaign_write_barrier.for_campaign(campaign_id):
+                            # Waiting may span a foreground commit. Discard the old SQLite
+                            # read snapshot before upgrading to a write transaction.
+                            await self._session.rollback()
                             # A turn may be undone between read-only inference and
                             # acquiring the barrier. Revalidate while holding it.
                             if not await self._source_pair_is_active(assistant.id):

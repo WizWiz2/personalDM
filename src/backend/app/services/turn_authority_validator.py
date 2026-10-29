@@ -54,15 +54,27 @@ def inventory_validation_model(authority: TurnAuthority, candidate_text: str | N
         )) or (candidate_text,)
         claim_model = create_model("ExtractiveItemPositionClaim", __base__=ItemPositionClaim,
             evidence=(Literal[fragments], Field(description="Select an exact candidate sentence containing this position claim.")))
-    review_model = create_model("ExtractiveItemReview", __base__=ItemNarrationReview,
-                                claims=(list[claim_model], Field(max_length=16)))
-    reviews = create_model(
-        "ItemReviewsByIdentity", __config__=ConfigDict(extra="forbid"),
-        **{str(state.item_id): (review_model, ...) for state in authority.item_states},
+    bound_reviews = {}
+    for index, state in enumerate(authority.item_states):
+        item_id = str(state.item_id)
+        bound_claim = create_model(f"ItemPositionClaim{index}", __base__=claim_model,
+                                   item_id=(Literal[item_id], ...))
+        bound_reviews[item_id] = (create_model(
+            f"ItemReview{index}", __base__=ItemNarrationReview,
+            item_id=(Literal[item_id], ...),
+            claims=(list[bound_claim], Field(max_length=16)),
+        ), Field(description=f"Review only {state.name}, registered ID {item_id}."))
+    reviews = create_model("ItemReviewsByIdentity", __config__=ConfigDict(extra="forbid"),
+                           **bound_reviews)
+    violation = create_model(
+        "ScopedNarrationViolation", __base__=NarrationViolation,
+        state_domain=(Literal["item_position", "item_content", "item_property", "other"], ...),
+        item_id=(Literal[tuple(str(item.item_id) for item in authority.item_states)] | None, ...),
     )
     return create_model(
         "CompleteInventoryValidation", __base__=InventoryNarrationValidation,
         item_reviews=(reviews, ...),
+        violations=(list[violation], Field(default_factory=list, max_length=12)),
     )
 
 
@@ -243,7 +255,10 @@ reference=absent: no mention of that item, claims=[].
 reference=mention: the item is mentioned but no position or possession is asserted, claims=[].
 reference=position: ANY assertion of who holds/keeps/receives it, or where it lies/hangs/is placed.
 Static, passive and pronoun references count. Extract EVERY positive position assertion as a claim.
-Do not turn a denial of a position into an assertion of that position; check denials under canon_conflict.
+Extract position denials too, with polarity=denied; positive claims use polarity=asserted.
+Never turn a denial into a positive claim. Every violation names state_domain and item_id (null
+for non-item issues). item_position is decided ONLY by the typed item_reviews comparison; do not
+supply prose corrections for custody/placement in violations. Other domains still need violations.
 Examples: "Перед Мартой на конторке лежит письмо" is position, mode=located, owner_id=null.
 "Письмо теперь хранится у Марты" is position, mode=owned, owner_id=Marta's ID.
 Both conflict with a letter still owned by the player, even if no transfer verb occurs.
@@ -358,6 +373,11 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
     @staticmethod
     def _interpret(authority: TurnAuthority, candidate_text: str, data: dict) -> NarrationValidationResult:
         if authority.item_states:
+            # Model prose cannot overrule executor-owned custody. Position claims, including
+            # negations, are compared below; retain semantic content/property/agency checks.
+            data = {**data, "violations": [violation for violation in data.get("violations", [])
+                    if not (violation.get("state_domain") == "item_position"
+                            and violation.get("violation_type") == "canon_conflict")]}
             if isinstance(data.get("item_reviews"), dict):
                 keyed = data["item_reviews"]
                 expected_keys = {str(state.item_id) for state in authority.item_states}
@@ -397,6 +417,10 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     verdict="repair_required", summary="Положение предмета противоречит канону.",
                     violations=[*extracted.violations, *conflicts][:12],
                 )
+        # The model's old verdict may refer only to a discarded position correction.
+        data = {**data, "verdict": "repair_required" if any(
+            violation.get("severity", "error") == "error" for violation in data.get("violations", [])
+        ) else "pass"}
         result = NarrationValidationResult.model_validate(data)
         staged = _untyped_entrances(data, candidate_text, authority)
         if staged:

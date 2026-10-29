@@ -264,10 +264,11 @@ class TurnIntentPlanningPipeline:
         if momentum["sources"] and world_context:
             first = world_context[0]
             source_context = (
-                "\n[ENGINE-VERIFIED ACTIVE WORLD THREADS]\n"
+                "\n[PERSISTED WORLD THREAD CANDIDATES — revalidate current conditions]\n"
                 + json.dumps(momentum, ensure_ascii=False)
                 + "\nA world_move names one of these threads by thread_id; its source "
-                  "and actor come from the thread. An absent NPC acts only at their "
+                  "and actor come from the thread. Old goals are candidates, never proof that a "
+                  "condition remains unmet. Review each against current state first. An absent NPC acts only at their "
                   "real location; never bring them into this scene without a "
                   "typed transition. When due_phase is specified, compare it "
                   "with the authoritative world_time_label. A quiet beat may "

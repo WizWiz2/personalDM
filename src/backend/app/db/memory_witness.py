@@ -1,5 +1,6 @@
 """Typed witnesses of a fact or belief: the cast physically present when it was published."""
 
+import json
 from uuid import UUID
 
 from sqlalchemy import String, select
@@ -17,15 +18,26 @@ class MemoryWitness(Base):
 
 
 async def record_witnesses(session, memory_id, source_turn_id) -> None:
-    """Witnesses are the source turn's scene cast at write time (post-turn runs right after it)."""
+    """Prefer the frozen publication cast; legacy turns fall back to scene membership."""
     if not source_turn_id:
         return
-    scene_id = await session.scalar(select(Turn.scene_id).where(Turn.id == str(source_turn_id)))
-    if not scene_id:
+    turn = await session.get(Turn, str(source_turn_id))
+    if not turn or not turn.scene_id:
         return
-    for entity_id in (await session.execute(
-        select(SceneParticipant.entity_id).where(SceneParticipant.scene_id == scene_id)
-    )).scalars().all():
+    try:
+        snapshot = json.loads(turn.context_snapshot or "{}")
+    except (TypeError, ValueError):
+        snapshot = {}
+    frame = snapshot.get("world_frame") if isinstance(snapshot, dict) else None
+    # The cast at publication is immutable; a later background write must not give a
+    # departed or newly arrived character knowledge of a conversation they never heard.
+    if frame is not None:
+        ids = frame.get("participant_ids") or []
+    else:
+        ids = (await session.execute(select(SceneParticipant.entity_id).where(
+            SceneParticipant.scene_id == turn.scene_id,
+        ))).scalars().all()
+    for entity_id in set(map(str, ids)):
         session.add(MemoryWitness(memory_id=str(memory_id), entity_id=entity_id))
     await session.flush()
 

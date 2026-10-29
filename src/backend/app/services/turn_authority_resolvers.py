@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.tables import Character, Turn
-from app.models.turn_authority import ExistingNpcArrival, PlannedNpcIntroduction
+from app.models.turn_authority import ExistingNpcArrival
 from app.services.entity_identity import exact_identity_matches, identity_key, resolve_character_candidates
 from app.services.name_identity_contract import (
     description_used_as_identity_name,
@@ -229,14 +229,9 @@ class NpcIntroductionResolver:
             keepers = found if filled else found[:1]
             introductions = [item.model_copy(update={"resident_slot": slot})
                              if any(item is keeper for keeper in keepers) else item for item in introductions]
-        if role and not filled \
-                and not any(getattr(item, "resident_slot", None) == slot for item in introductions):
-            # The keeper of a typed resident slot is at their place: authorized the moment the
-            # player is there (B6 T3: «трактирщик у стойки» on arrival was an absent character).
-            keeper = PlannedNpcIntroduction(canonical_name=role[:1].upper() + role[1:], role=role,
-                                            temporary_name=True, resident_slot=slot,
-                                            reason="Хранитель этого места находится на месте.")
-            introductions, references = [*introductions, keeper], [*references, keeper.canonical_name]
+        # A resident_role is a potential service, not proof of another person. Only
+        # a typed encounter from the outcome resolver may fill it. Inventing a keeper
+        # here created an invisible operator beside the station's existing cast.
         reserved_for_sanitize = {
             identity_key(value)
             for entity in all_characters

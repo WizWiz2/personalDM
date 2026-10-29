@@ -25,6 +25,19 @@ class WorldInitiativeLedger:
         self._session = session
 
     async def record(self, authority: TurnAuthority, assistant_turn_id: UUID) -> UUID | None:
+        # Resolve agendas even on a quiet turn with no independent move. Their sources are
+        # engine-bound, and events preserve turn provenance for ordinary undo/replay.
+        for closure in authority.world_thread_closures:
+            description = closure.model_dump_json()
+            existing_closure = await self._session.scalar(select(Event.id).where(
+                Event.campaign_id == str(authority.campaign_id), Event.event_type == "world_thread:closed",
+                Event.description == description, Event.source_turns == json.dumps([str(assistant_turn_id)]),
+            ))
+            if not existing_closure:
+                await EventRepository(self._session).create(authority.campaign_id, EventCreate(
+                    event_type="world_thread:closed", description=description,
+                    importance="normal", participant_ids=[],
+                ), source_turns=[assistant_turn_id])
         move = authority.world_move
         if not move:
             return None

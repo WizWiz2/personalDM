@@ -32,7 +32,7 @@ from app.models.player_intent import (
     TurnResolution,
 )
 from app.models.turn import ChatMessage
-from app.models.turn_authority import PlannedItemIntroduction, PlannedWorldMove
+from app.models.turn_authority import PlannedItemIntroduction, PlannedWorldMove, WorldThreadClosure
 from app.providers.llm_provider import LLMProvider, LLMProviderError
 from app.services.action_plan_compiler import MissingDestinationProfile
 from app.services.entity_identity import identity_key
@@ -148,6 +148,8 @@ not backdrop. Distinguish mentioning an object from actually producing one; neve
 unregistered physical result. Do not recreate an already registered artifact on subsequent turns.
 Set after_action_index to the act that actually creates/finds it. A newly produced distinct artifact
 needs a designation distinct from already registered items, even when their contents are the same.
+For a new written artifact, written_content is its complete literal text, including the text the
+human explicitly writes. Persist it at the creation source, not as a property of its source material.
 For a faithful reproduction, copy_of_item_id is the existing original's ID; do not invent its content.
 When one action creates multiple artifacts, list them in creation order. Later frozen
 produced_item_ordinal values select the corresponding zero-based artifact within that action.
@@ -192,10 +194,15 @@ both an authorized offer and actual acceptance, do not claim possession changed.
 service result is not physical evidence: every confirmed handoff requires an inventory receipt.
 
 INDEPENDENT STORY (world_move): the world acts on its own, without player instruction,
-by developing one ENGINE-VERIFIED ACTIVE WORLD THREAD named by thread_id (an
+by developing one CURRENTLY ACTIVE WORLD THREAD named by thread_id (an
 active_conflict, unresolved_beat, tension, deadline, promise/errand or a known NPC goal).
-world_initiative_due=true means the world has waited long enough under this master: the
-schema then requires a world_move. outcome is one concrete observable development.
+For EACH candidate thread return thread_reviews. A stored intention/old scene note is only a
+candidate: check current custody, heard introductions, confirmations and completed acts. A
+mere description of someone's presence or an already completed event is not an unfinished agenda.
+Mark fulfilled conditions resolved, displaced assumptions superseded, uncertainty uncertain. Never
+revoke completed transfers or demand an already heard introduction. The quoted old goal is not
+proof it is still unfulfilled. A world_move may select only a thread reviewed active.
+world_initiative_due=true asks for a development while at least one thread remains active. outcome is one concrete observable development.
 Kinds: pressure (a thread tightens), information (news reaches the hero through existing
 communication), deadline (due_phase equals the clock phase; one-shot), npc_action (the
 thread's actor acts at their own place, or here if present), npc_move (the thread's actor
@@ -480,8 +487,11 @@ def _outcome_wire_model(
     world_required: bool = False,
     last_world_kind: str | None = None,
     known_places: tuple[str, ...] = (),
-    required_absent: tuple[str, ...] = (),
+    required_absent: tuple[str, ...] | None = None,
     known_cast: dict[str, str] | None = None,
+    thread_sources: dict[str, dict] | None = None,
+    review_evidence: str = "",
+    initiative_due: bool = False,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -678,12 +688,26 @@ def _outcome_wire_model(
     place_model = create_model("BoundPlaceIntroductionDraft", __base__=PlaceIntroductionDraft, place=(
         Literal[tuple(f"new_in:{key}" for key in known_places)] if known_places else str, ...))
 
+    class ThreadReview(BaseModel):
+        status: Literal["active", "resolved", "superseded", "uncertain"]
+        evidence: str = Field(min_length=1, max_length=300, description=(
+            "Shortest exact current context/input or approved action-result evidence for this status; "
+            "the old intention itself is not evidence that it remains unfulfilled."))
+
+    reviews_model = create_model("WorldThreadReviews", __config__=ConfigDict(extra="forbid"),
+        **{key: (ThreadReview, ...) for key in thread_sources}) if thread_sources else type(None)
+
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
         model_config = ConfigDict(extra="ignore", json_schema_extra={
             # Absent people and places are decided every turn (explicit [] allowed), never skipped by omission.
             "required": ["action_outcomes", "npc_introductions", "absent_people", "place_introductions", "npc_item_handoffs", "player_item_handoffs", "item_revelations", "item_introductions", "item_property_changes",
+                         *(["thread_reviews"] if thread_sources else []),
                          *(["world_move"] if world_required and world_move_type is not type(None) else [])],
         })
+        if thread_sources:
+            thread_reviews: reviews_model
+        else:
+            thread_reviews: type(None) = None
         response_speaker_name: speaker_type = None
         # Not while the hero travels: the destination is profiled by travel (replay15 k3 twin inn).
         place_introductions: list[place_model] = Field(
@@ -702,7 +726,8 @@ def _outcome_wire_model(
         )
         # A person the human named who has no cast ID is typed offscreen this turn (replay15 Keeper).
         absent_people: list[npc_model] = Field(
-            default_factory=list, min_length=len(required_absent), max_length=max(2, len(required_absent)))
+            default_factory=list, min_length=len(required_absent or ()),
+            max_length=len(required_absent) if required_absent is not None else 2)
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
             min_length=1 if required_slot and allow_introductions else 0,
             max_length=introduction_cap,
@@ -760,6 +785,21 @@ def _outcome_wire_model(
         def validate_action_indices(self):
             outcomes = {outcome.action_index: outcome for outcome in self.action_outcomes}
             move = self.world_move
+            if thread_sources:
+                supporting_text = review_evidence + "\n" + "\n".join(
+                    outcome.observable_outcome or "" for outcome in self.action_outcomes)
+                for key, review in self.thread_reviews.model_dump().items():
+                    if review["evidence"] not in supporting_text:
+                        raise ValueError("Thread review evidence must quote current input/context or its approved outcome")
+                    if review["status"] in {"resolved", "superseded"} and (
+                        _compact(review["evidence"]) == _compact(thread_sources[key]["source"])
+                    ):
+                        raise ValueError("An old intention cannot certify its own fulfillment")
+                if (initiative_due and world_move_type is not type(None) and move is None
+                        and any(review["status"] == "active" for review in self.thread_reviews.model_dump().values())):
+                    raise ValueError("A due initiative requires a move from a currently active reviewed thread")
+                if move is not None and getattr(self.thread_reviews, move.thread_id).status != "active":
+                    raise ValueError("A world move cannot pursue a resolved, superseded or uncertain thread")
             if move is not None and move.kind in {"npc_action", "npc_move"} and not world_threads[move.thread_id]:
                 raise ValueError("npc_action/npc_move must name a thread that has an actor")
             if move is not None and move.kind == "arrival" and not world_threads[move.thread_id] \
@@ -767,7 +807,12 @@ def _outcome_wire_model(
                 raise ValueError("an arrival world_move without the thread's actor requires world_move.newcomer")
             typed = {identity_key(item.canonical_name) for item in self.absent_people
                      if not item.temporary_name and item.personal_name_evidence}
-            if any(identity_key(name) not in typed for name in required_absent):
+            if required_absent is not None and any(
+                identity_key(item.canonical_name) not in {identity_key(name) for name in required_absent}
+                for item in self.absent_people
+            ):
+                raise ValueError("Offscreen people must be the personal identities frozen from player input, not roles in document text")
+            if any(identity_key(name) not in typed for name in required_absent or ()):
                 raise ValueError(f"absent_people must type each named absent person {list(required_absent)} "
                                  "with temporary_name=false and personal_name_evidence")
             for index, effect in (required_effects or {}).items():
@@ -778,6 +823,8 @@ def _outcome_wire_model(
                     raise ValueError("An accepted errand to fetch someone requires that action's sends_for")
                 if effect == "item_creation" and not any(item.after_action_index == index for item in self.item_introductions):
                     raise ValueError("Successful artifact creation requires a typed introduction at its source index")
+                if effect == "item_read" and not any(read.action_index == index for read in self.item_revelations):
+                    raise ValueError("Successful document reading requires concrete typed disclosed content")
                 if effect == "item_change" and not any(item.action_index == index for item in self.item_property_changes):
                     raise ValueError("Successful physical change requires a typed property effect at its source index")
             for source, count in (required_artifact_counts or {}).items():
@@ -1264,10 +1311,13 @@ class TurnOutcomeResolver:
                 },
                 world_threads={key: bool(thread.get("actor_id")) for key, thread in threads.items()},
                 world_kinds=tuple(policy.world_moves),
-                world_required=bool(momentum.get("pressure_due")) and not contract.pending_player_choice,
+                world_required=False,  # reviews may establish that every candidate thread is already closed
                 last_world_kind=momentum.get("last_world_move_kind"),
                 known_places=tuple(known_places or ()),
                 required_absent=required_absent,
+                thread_sources=threads,
+                review_evidence=authoritative_context + "\n" + player_input,
+                initiative_due=bool(momentum.get("pressure_due")) and not contract.pending_player_choice,
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,
@@ -1339,7 +1389,7 @@ class TurnOutcomeResolver:
                         ),
                     ),
                 ],
-                max_tokens=1200,
+                max_tokens=1200 + 100 * len(threads),
                 temperature=0.0,
                 response_model=response_model,
             )
@@ -1361,6 +1411,13 @@ class TurnOutcomeResolver:
                     "world_move": move, "observable_consequences": [*consequences[:3], move.outcome],
                 })
             decision = normalize_outcome_draft(draft, contract, newcomer)
+            if draft.thread_reviews is not None:
+                decision.world_thread_closures = [WorldThreadClosure(
+                    source=threads[key]["source"], actor_id=threads[key].get("actor_id"),
+                    status=review["status"], evidence=review["evidence"],
+                ) for key, review in draft.thread_reviews.model_dump().items()
+                  if review["status"] in {"resolved", "superseded"}
+                  and not threads[key].get("due_phase")]
             decision = self._normalize_temporary_identities(decision)
             self.audit.append(
                 {

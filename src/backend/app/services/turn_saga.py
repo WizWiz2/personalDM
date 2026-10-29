@@ -480,6 +480,17 @@ class TurnSaga:
         if current_task is not None:
             active_tasks[campaign_key] = current_task
 
+        timed_out = False
+
+        def expire_turn():
+            nonlocal timed_out
+            timed_out = True
+            if current_task is not None:
+                current_task.cancel()
+
+        timeout_handle = asyncio.get_running_loop().call_later(
+            settings.TURN_TIMEOUT_SECONDS, expire_turn,
+        )
         try:
             primary_config = await self._config_repo.get_by_campaign_id(campaign_id)
             if not primary_config:
@@ -772,14 +783,22 @@ class TurnSaga:
                 ),
             )
 
-            if authority.world_move:
+            from app.services.published_speech_memory import remember_published_speech
+
+            await remember_published_speech(
+                self._session, authority, saved_assistant,
+                ((planner_metadata.get("telemetry") or {}).get("intent_contract") or {}),
+                narration.beat, world_frame.participant_ids if world_frame else [],
+            )
+
+            if authority.world_move or authority.world_thread_closures:
                 from app.services.world_initiative_ledger import WorldInitiativeLedger
 
                 # This is the compensating receipt for an autonomous *physical*
                 # NPC move. An event deletion alone cannot undo a change to
                 # characters.current_location_id (QA-209 regression).
                 if (
-                    authority.world_move.kind == "npc_move"
+                    authority.world_move is not None and authority.world_move.kind == "npc_move"
                     and authority.world_move.actor_id
                 ):
                     from app.db.tables import Character
@@ -799,9 +818,8 @@ class TurnSaga:
                 await WorldInitiativeLedger(self._session).record(
                     authority, saved_assistant.id,
                 )
-                context_metadata["approved_world_move"] = authority.world_move.model_dump(
-                    mode="json"
-                )
+                if authority.world_move:
+                    context_metadata["approved_world_move"] = authority.world_move.model_dump(mode="json")
 
             if applied_transition and applied_transition.status == "prepared":
                 if not transition_executor or not await transition_executor.mark_applied(
@@ -881,7 +899,9 @@ class TurnSaga:
             yield narration.text
 
         except asyncio.CancelledError:
-            record_decision("final", "cancelled", {"reason": "Cancellation requested"})
+            error = (f"Turn exceeded {settings.TURN_TIMEOUT_SECONDS:g}s wall-clock budget"
+                     if timed_out else "Cancellation requested")
+            record_decision("final", "failed" if timed_out else "cancelled", {"reason": error})
             await self._compensate(
                 generation_run.id,
                 transition_executor,
@@ -893,11 +913,13 @@ class TurnSaga:
             )
             await self._generation_runs.set_status(
                 generation_run.id,
-                "cancelled",
-                error="Cancellation requested",
+                "failed" if timed_out else "cancelled",
+                error=error,
             )
-            await self._fail_user_turn(user_turn.id, owns_user_turn)
-            raise
+            await self._fail_user_turn(user_turn.id, True if timed_out else owns_user_turn)
+            if not timed_out:
+                raise
+            yield f"\n[Generation failed: {error}]"
         except Exception as exc:
             # F-37: even if a streaming client disconnects before the final
             # telemetry transaction, the production log must preserve this failure.
@@ -939,6 +961,7 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             yield f"\n[Generation failed: {exc}]"
         finally:
+            timeout_handle.cancel()
             if barrier_held:
                 campaign_write_barrier.for_campaign(campaign_id).release()
             if campaign_key in active_tasks and active_tasks[campaign_key] == current_task:

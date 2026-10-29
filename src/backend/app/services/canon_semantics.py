@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, create_model, model_validator
 
-from app.models.fact_types import FactTypeId
+from app.models.fact_types import FACT_TYPE_IDS, FactTypeId
 from app.models.proposed_change import ChangeType, ProposedChangeCreate
 
 WORD_PATTERN = re.compile(r"[\w-]+", flags=re.UNICODE)
@@ -62,21 +62,39 @@ class CanonEnvelope(BaseModel):
 def canon_envelope_for_entities(entity_ids: set[str]):
     """Bind facts to an engine-owned identity before prose can become durable canon."""
     identity = Literal[tuple(sorted(entity_ids))] | None if entity_ids else type(None)
-    bound = create_model("BoundProposalAtom", __base__=ProposalAtom,
-                         subject_entity_id=(identity, None))
+    # The native schema must express the same requirements as backend validation.
+    # An optional subject plus an after-validator lets constrained decoding omit it on
+    # every retry, losing unrelated proposals along with the invalid fact.
+    fact_types = tuple(kind for kind in FACT_TYPE_IDS if kind not in {"holder", "location"})
+    fact = create_model(
+        "BoundFactProposal", __base__=ProposalAtom,
+        change_type=(Literal[ChangeType.FACT], ...),
+        subject_entity_id=(Literal[tuple(sorted(entity_ids))] if entity_ids else type(None), ...),
+        fact_type=(Literal[fact_types], ...),
+    )
 
-    class BoundProposal(bound):
+    class BoundFact(fact):
+        @model_validator(mode="before")
+        @classmethod
+        def reject_parallel_positions(cls, value):
+            if isinstance(value, dict) and value.get("fact_type") in {"holder", "location"}:
+                raise ValueError("Physical position belongs to structured state, not a parallel fact")
+            return value
+
         @model_validator(mode="after")
         def require_fact_identity(self):
-            if self.change_type == ChangeType.FACT:
-                if self.subject_entity_id is None:
-                    raise ValueError("A fact requires an existing subject_entity_id; groups need their own registered identity")
-                if self.fact_type in {"holder", "location"}:
-                    raise ValueError("Physical position belongs to structured state, not a parallel fact")
+            if self.subject_entity_id is None:
+                raise ValueError("A fact requires an existing subject_entity_id")
             return self
 
+    other = create_model(
+        "BoundNonFactProposal", __base__=ProposalAtom,
+        change_type=(Literal[tuple(kind for kind in ChangeType if kind != ChangeType.FACT)], ...),
+        subject_entity_id=(identity, None),
+    )
     return create_model("BoundCanonEnvelope", __base__=CanonEnvelope,
-                        proposals=(list[BoundProposal], Field(default_factory=list, max_length=12)))
+                        proposals=(list[BoundFact | other], Field(default_factory=list, max_length=12)))
+
 
 
 class CanonAudit(BaseModel):

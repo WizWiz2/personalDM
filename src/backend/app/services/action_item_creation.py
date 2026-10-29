@@ -32,9 +32,10 @@ async def create_step_items(session, campaign_id, player_id, location_id, turn_i
             owner_id=str(player_id) if introduction.owned_by_player else None,
             location_id=None if introduction.owned_by_player else str(location_id),
             placement_detail=introduction.placement_detail))
-        if str(introduction.copy_of_item_id) in contents:
-            session.add(ItemContentDisclosure(source_step_id=str(step_id), item_id=item_id,
-                                             content=contents[str(introduction.copy_of_item_id)][0]))
+        content = (contents[str(introduction.copy_of_item_id)][0]
+                   if str(introduction.copy_of_item_id) in contents else introduction.written_content)
+        if content is not None:
+            session.add(ItemContentDisclosure(source_step_id=str(step_id), item_id=item_id, content=content))
     await session.flush()
 
 

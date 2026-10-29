@@ -70,12 +70,11 @@ async def test_control_role_has_one_wall_clock_budget(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_narrator_role_does_not_use_control_timeout(monkeypatch):
-    called = False
+    observed = {}
 
-    async def forbidden_wait_for(*args, **kwargs):
-        nonlocal called
-        called = True
-        raise AssertionError("narrator must not use the structured control timeout")
+    async def observed_wait_for(awaitable, *, timeout):
+        observed["timeout"] = timeout
+        return await awaitable
 
     class _FastProvider:
         last_telemetry = {}
@@ -83,7 +82,9 @@ async def test_narrator_role_does_not_use_control_timeout(monkeypatch):
         async def generate_json(self, *args, **kwargs):
             return {"ok": True}
 
-    monkeypatch.setattr(router_module.asyncio, "wait_for", forbidden_wait_for)
+    monkeypatch.setattr(router_module.asyncio, "wait_for", observed_wait_for)
+    monkeypatch.setattr(settings, "CONTROL_LLM_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(settings, "NARRATOR_LLM_TIMEOUT_SECONDS", 73.0)
     provider = _FastProvider()
     result = await RoleModelRouter(config_repo=None).generate_json(
         provider,
@@ -92,4 +93,4 @@ async def test_narrator_role_does_not_use_control_timeout(monkeypatch):
     )
 
     assert result == {"ok": True}
-    assert called is False
+    assert observed["timeout"] == 73.0

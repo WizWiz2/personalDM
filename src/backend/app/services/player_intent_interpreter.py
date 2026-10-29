@@ -74,7 +74,16 @@ For an observation, reading or interaction with one existing item, bind subject_
 catalogued ID. This identifies the subject without changing custody; do not mix similar documents.
 Classify expected_effect by the committed act: item_creation produces a distinct persistent
 artifact; item_change physically alters an existing item's properties or a component; ordinary
-otherwise. Bind subject_item_id for item_change. Reading alone is not a property change.
+otherwise. Bind subject_item_id for item_change. Reading alone is not a property change: expected_effect=item_read and subject_item_id identifies
+EACH registered document whose contents/fields are requested, including a spoken request for an NPC
+to read or dictate it. Such a request is a service world_action, not discarded ordinary speech.
+Use one read action per document. A question unrelated to reading remains ordinary speech.
+A physical inspection of WHO IS HERE after a move is expected_effect=presence_check; the engine
+fills its result from current occupants, not old location descriptions, scene goals or history.
+Inventory IDs designate WHOLE registered objects. Taking one sheet from a stack, cutting a piece
+from fabric or producing a written note is item_creation, never taking/rewriting the whole supply.
+The creation intent includes the requested artifact's text/form; source material stays a separate
+registered object. Later transfers use produced_item_action_index, never the source material ID.
 fetch_person: the human asks someone here to fetch, find or send for a person who is not here.
 named_absent_people: the nominative personal name of each person the input speaks of by name
 who is not among the physically present characters; [] when none.
@@ -128,7 +137,7 @@ class PlayerActionIntentDraft(BaseModel):
     action_type: IntentActionType = "other"
     actor_role: Literal["speaker", "addressee"] = "speaker"
     requested_actor_id: str | None = None
-    expected_effect: Literal["ordinary", "item_creation", "item_change", "fetch_person"] = "ordinary"
+    expected_effect: Literal["ordinary", "item_creation", "item_change", "item_read", "presence_check", "fetch_person"] = "ordinary"
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
     place: str | None = None
@@ -159,6 +168,7 @@ class PlayerIntentContractDraft(BaseModel):
 
     summary: str = Field(min_length=2, max_length=500)
     spoken_identity_evidence: str | None = Field(default=None, max_length=500)
+    spoken_contributions: list[str] = Field(default_factory=list, max_length=8)
     actions: list[PlayerActionIntentDraft] = Field(max_length=8)
     addressed_response_requested: bool = False
     addressed_character_name: str | None = None
@@ -210,14 +220,18 @@ class _MovementWire(_ActionWire):
 
 
 class _InventoryWire(_ActionWire):
+    model_config = ConfigDict(extra="forbid", json_schema_extra=lambda schema: schema.setdefault("required", []).append("whole_registered_item"))
     action_type: Literal["inventory"]
+    whole_registered_item: Literal[True] = Field(default=True, description="This act concerns the whole registered object, not a portion or new artifact made from it.")
     item_id: UUID
     inventory_operation: Literal["take", "drop", "place", "reposition", "store"]
     item_placement_detail: str | None = Field(default=None, max_length=300)
 
 
 class _GiveWire(_ActionWire):
+    model_config = ConfigDict(extra="forbid", json_schema_extra=lambda schema: schema.setdefault("required", []).append("whole_registered_item"))
     action_type: Literal["inventory"]
+    whole_registered_item: Literal[True] = Field(default=True, description="This act concerns the whole registered object, not a portion or new artifact made from it.")
     item_id: UUID
     inventory_operation: Literal["give"]
     inventory_target_id: UUID
@@ -243,11 +257,11 @@ class _LocalActionWire(_ActionWire):
     action_type: Literal["service", "interaction", "observation", "other"]
     spatial_effect: Literal["local", "none"]
     subject_item_id: UUID | None = None
-    expected_effect: Literal["ordinary", "item_creation", "item_change", "fetch_person"]
+    expected_effect: Literal["ordinary", "item_creation", "item_change", "item_read", "presence_check", "fetch_person"]
 
     @model_validator(mode="after")
     def require_property_subject(self):
-        if self.expected_effect == "item_change" and self.subject_item_id is None:
+        if self.expected_effect in {"item_change", "item_read"} and self.subject_item_id is None:
             raise ValueError("A physical property change requires its existing subject_item_id")
         return self
 
@@ -255,7 +269,8 @@ class _LocalActionWire(_ActionWire):
 class _SpeechWire(_ActionWire):
     contribution_kind: Literal["speech"]
     intent: str = Field(min_length=2, max_length=500, description="What is said, paraphrased.")
-    expected_effect: Literal["ordinary", "fetch_person"]
+    expected_effect: Literal["ordinary", "item_read", "presence_check", "fetch_person"]
+    subject_item_id: UUID | None = None
 
 
 class _IntentWire(PlayerIntentContractDraft):
@@ -486,7 +501,8 @@ def normalize_intent_draft(
     fallback = _compact(player_input)
     summary = _compact(draft.summary) or fallback
     # A typed errand is a request with a world result, never a mere question (replay16 k2).
-    errand = any(action.expected_effect == "fetch_person" for action in draft.actions)
+    errand = any(action.expected_effect in {"fetch_person", "item_creation", "item_change", "item_read"}
+                 for action in draft.actions)
     source_actions = [] if draft.information_request_only and not errand else list(draft.actions)
     requests = {}
     addressee_owned = False
@@ -524,6 +540,7 @@ def normalize_intent_draft(
     return PlayerIntentContract.model_validate(
         {
             "summary": summary,
+            "spoken_contributions": [text for text in draft.spoken_contributions if text and text in player_input],
             "spoken_identity_evidence": (
                 draft.spoken_identity_evidence
                 if draft.spoken_identity_evidence and draft.spoken_identity_evidence in player_input
@@ -597,9 +614,14 @@ class PlayerIntentInterpreter:
         self.audit.append({"phase": "semantic_ownership", "syntax": syntax.__dict__})
         # Speech entries are not executable, except a spoken errand: someone here is asked to fetch
         # a person, and its outcome must type whom (replay16 k3). Local references follow the shift.
+        draft.spoken_contributions = [action.evidence_quote for action in draft.actions
+            if action.contribution_kind == "speech" and action.actor_role == "speaker"
+            and action.evidence_quote and action.evidence_quote in player_input]
         for action in draft.actions:
-            if action.contribution_kind == "speech" and action.expected_effect == "fetch_person":
+            if action.contribution_kind == "speech" and action.expected_effect in {"fetch_person", "item_read"}:
                 action.contribution_kind, action.action_type = "world_action", "service"
+        if any(action.expected_effect == "item_read" for action in draft.actions):
+            draft.information_request_only = False
         kept = [index for index, a in enumerate(draft.actions) if a.contribution_kind == "world_action"]
         remap = {old: new for new, old in enumerate(kept)}
         draft.actions = [draft.actions[index] for index in kept]

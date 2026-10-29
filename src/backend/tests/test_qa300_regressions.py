@@ -190,9 +190,14 @@ def test_inventory_validator_can_only_quote_actual_candidate_fragments():
     authority = _auth()
     prose = "Бумага лежит на столе. Конверт остаётся закрытым."
     schema = inventory_validation_model(authority, prose).model_json_schema()
-    evidence = schema["$defs"]["ExtractiveItemPositionClaim"]["properties"]["evidence"]
-    assert set(evidence["enum"]) == {"Бумага лежит на столе.", "Конверт остаётся закрытым."}
-    assert all(fragment in prose for fragment in evidence["enum"])
+    claims = [value["properties"] for value in schema["$defs"].values()
+              if "polarity" in value.get("properties", {})]
+    assert len(claims) == len(authority.item_states)
+    assert {claim["item_id"]["const"] for claim in claims} == {str(item.item_id) for item in authority.item_states}
+    for claim in claims:
+        evidence = claim["evidence"]
+        assert set(evidence["enum"]) == {"Бумага лежит на столе.", "Конверт остаётся закрытым."}
+        assert all(fragment in prose for fragment in evidence["enum"])
 
 
 @pytest.mark.asyncio

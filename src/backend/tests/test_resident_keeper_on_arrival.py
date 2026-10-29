@@ -11,7 +11,7 @@ from app.services.turn_authority_resolvers import NpcIntroductionResolver
 
 
 @pytest.mark.asyncio
-async def test_an_unfilled_resident_slot_authorizes_its_keeper_on_arrival(db_session):
+async def test_an_unfilled_resident_slot_binds_a_typed_keeper_on_arrival(db_session):
     """B6 T3: arriving at a new inn, «трактирщик у стойки» was judged an absent character."""
     campaign_id = uuid4()
     await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Keeper"))
@@ -19,7 +19,10 @@ async def test_an_unfilled_resident_slot_authorizes_its_keeper_on_arrival(db_ses
         canonical_name="Трактир", custom_fields={"resident_role": "трактирщик"}))
 
     resolved = await NpcIntroductionResolver(db_session).resolve(
-        campaign_id=campaign_id, introductions=[], present_names=[], target_location_id=inn.id)
+        campaign_id=campaign_id, introductions=[PlannedNpcIntroduction(
+            canonical_name="Трактирщик", role="трактирщик", temporary_name=True,
+            reason="За стойкой находится трактирщик, встретивший прибывшего гостя.")],
+        present_names=[], target_location_id=inn.id)
 
     [keeper] = resolved.new_introductions
     assert (keeper.canonical_name, keeper.resident_slot) == ("Трактирщик", str(inn.id))
