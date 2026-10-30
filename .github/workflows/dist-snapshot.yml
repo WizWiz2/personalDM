@@ -5,14 +5,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - "src/backend/**"
-      - "src/frontend/**"
-      - "play.bat"
-      - "uninstall.bat"
-      - "uninstall.ps1"
-      - "scripts/build-dist.ps1"
-      - ".github/workflows/dist-snapshot.yml"
 
 permissions:
   contents: write
