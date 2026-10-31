@@ -35,7 +35,7 @@ async def load_item_states(session: AsyncSession, campaign_id: UUID) -> list[Ite
         item_id=entity.id, name=entity.canonical_name,
         owner_id=item.current_owner_id, owner_name=names.get(item.current_owner_id),
         location_id=item.current_location_id, location_name=names.get(item.current_location_id),
-        placement_detail=item.placement_detail,
+        placement_detail=item.placement_detail, quantity=item.quantity,
         owner_location_id=owner_locations.get(item.current_owner_id),
         owner_location_name=names.get(owner_locations.get(item.current_owner_id)),
         revealed_content=contents.get(entity.id, (None, None))[0],

@@ -259,7 +259,7 @@ class PlayableBootstrapService:
                 current_owner_id=str(owner_id) if owner_id else None,
                 current_location_id=None if owner_id else str(location_id),
                 placement_detail=spec.initial_placement if not spec.held_by_player else None,
-                is_unique=True,
+                is_unique=True, quantity=spec.quantity,
             )
         )
         await self._session.flush()

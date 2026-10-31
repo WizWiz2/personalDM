@@ -408,7 +408,7 @@ class ActionPlanCompiler:
                 if outcome_by_index[source].resolution != "auto_success":
                     continue
                 key = identity_key(introduction.canonical_name)
-                if key in occupied:
+                if key in occupied and introduction.taken_from_item_id is None:
                     raise PlanContractError("A new artifact requires an identity distinct from existing items")
                 occupied.add(key)
                 introduction.reserved_item_id = uuid4()
