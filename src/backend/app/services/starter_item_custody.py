@@ -23,7 +23,9 @@ async def reconcile_starter_item_custody(router, provider, selection, draft, mes
 
     class CustodyBinding(BaseModel):
         item_index: Literal[indices]
-        holder: Literal["player", "npc", "unowned", "unchanged"]
+        holder: Literal["player", "npc", "unowned"] = Field(description=(
+            "player: the hero carries it (on the body, worn, in a bag or pocket, in hand); "
+            "npc: a present starter NPC holds or controls it; unowned: nobody keeps it."))
         npc_index: Literal[holders] | None if holders else type(None)
         source: str = Field(max_length=800)
 
@@ -49,8 +51,8 @@ async def reconcile_starter_item_custody(router, provider, selection, draft, mes
             "guarding or controlling access is custody even when the item hangs on a board "
             "or lies on furniture. Placement is not proof of being ownerless. Select the "
             "existing present NPC's index, never invent a keeper or infer ownership merely "
-            "from a profession. Preserve the draft with unchanged when no correction is "
-            "supported; unowned only when the agreed item is actually without a keeper. "
+            "from a profession. Choose for every item; unowned only when the agreed item is "
+            "actually without a keeper. "
             "source briefly explains the agreed evidence. Do not add items or change the scene."
         )),
         ChatMessage(role="user", content=json.dumps({
@@ -63,8 +65,6 @@ async def reconcile_starter_item_custody(router, provider, selection, draft, mes
     bindings = CustodyBindings.model_validate(data)
     updated = [item.model_copy(deep=True) for item in items]
     for binding in bindings.items:
-        if binding.holder == "unchanged":
-            continue
         item = updated[binding.item_index]
         item.held_by_player = binding.holder == "player"
         item.held_by_npc = (npcs[binding.npc_index].name or npcs[binding.npc_index].role
