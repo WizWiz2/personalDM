@@ -15,9 +15,9 @@ from app.models.character import CharacterCreate
 from app.models.entity import EntityCreate, EntityType
 from app.models.location import LocationCreate
 from app.models.scene_state import LocationExitCreate, SceneStateRead, SceneStateUpdate
-from app.models.session_zero_interview import SessionZeroStarterNPC, SessionZeroStarterItem
-from app.services.scene_state_service import SceneStateService
+from app.models.session_zero_interview import SessionZeroStarterItem, SessionZeroStarterNPC
 from app.services.entity_identity import identity_key
+from app.services.scene_state_service import SceneStateService
 
 
 @dataclass(frozen=True)
@@ -101,7 +101,7 @@ class PlayableBootstrapService:
                 claimed_starter_ids.add(character.id)
                 if created and created_npc_id is None:
                     created_npc_id = character.id
-        # Typed plot props are seeded before the generic fallback detail.
+        # Only explicitly agreed plot props become physical items.
         # Their identity/position is established in Session Zero, not inferred
         # by the narrator from the opening prose or the player's later wishes.
         starter_items = await self._structured_starter_items(campaign_id)
@@ -111,14 +111,6 @@ class PlayableBootstrapService:
             )
             if new_id is not None and created_object_id is None:
                 created_object_id = new_id
-
-        state = await self._state.require_valid(campaign_id, scene_id)
-        if not state.object_ids and not starter_items:
-            created_object_id = await self._create_starter_object(
-                campaign_id,
-                starting_location_id,
-                situation,
-            )
 
         state = await self._state.require_valid(campaign_id, scene_id)
         should_create_exit = (
@@ -148,11 +140,6 @@ class PlayableBootstrapService:
             created_exit_location_id = destination.id
 
         final = await self._state.require_valid(campaign_id, scene_id)
-        has_other_character = any(
-            value != player_character_id for value in final.participant_ids
-        )
-        if not (has_other_character or final.object_ids or starter_items or final.available_exits):
-            raise ValueError("Session Zero produced no actionable starting affordance")
         if not final.scene_goal:
             raise ValueError("Session Zero produced no structured starting hook")
 
@@ -363,40 +350,6 @@ class PlayableBootstrapService:
     def _starter_name(cls, spec: SessionZeroStarterNPC) -> str:
         value = cls._clean(spec.name) or cls._clean(spec.role) or "Местный собеседник"
         return value[:1].upper() + value[1:] if value else "Местный собеседник"
-
-    async def _create_starter_object(
-        self,
-        campaign_id: UUID,
-        location_id: UUID,
-        situation: str,
-    ) -> UUID:
-        preferred_name = "Заметная деталь"
-        description = (
-            "Обычная наблюдаемая деталь стартовой сцены, которую можно осмотреть без "
-            f"додумывания результата: {situation}"
-        )
-        name = await self._unique_name(campaign_id, EntityType.ITEM.value, preferred_name)
-        entity = await self._entities.create(
-            campaign_id,
-            EntityCreate(
-                entity_type=EntityType.ITEM,
-                canonical_name=name,
-                description=description,
-                custom_fields={"source": self.SOURCE, "bootstrap_affordance": True},
-            ),
-        )
-        self._session.add(
-            Item(
-                entity_id=str(entity.id),
-                item_type="scene_clue",
-                physical_properties="Обычный доступный для осмотра предмет или носитель информации.",
-                current_location_id=str(location_id),
-                is_unique=False,
-                lore=situation,
-            )
-        )
-        await self._session.flush()
-        return entity.id
 
     async def _create_fallback_destination(
         self,
