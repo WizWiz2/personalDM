@@ -821,3 +821,23 @@ async def test_new_destination_binding_carries_no_catalogued_identity():
     )
     assert result.actions[0].destination_location == "круглосуточная прачечная соседнего дома"
     assert result.actions[0].destination_location_id is None
+
+
+@pytest.mark.asyncio
+async def test_a_trailing_question_cannot_erase_typed_physical_acts():
+    """diag T1: one sentence ending in «?» parsed as all-interrogative and the syntax override set
+    information_request_only, dropping the climb and the bag placement. The narrator rendered them,
+    the validator rejected, and the published text said the bag stayed with the hero."""
+    text = "Поднимаюсь в комнату, кладу сумку трав у кровати и спрашиваю Борма через перила: «Во сколько завтрак?»"
+    router = _Router({"summary": text, "actions": [
+        {"action_type": "interaction", "intent": "Положить сумку у кровати.",
+         "evidence_quote": "кладу сумку трав у кровати", "contribution_kind": "world_action"},
+        {"action_type": "other", "intent": "Спросить про завтрак.",
+         "evidence_quote": "спрашиваю Борма через перила: «Во сколько завтрак?»", "contribution_kind": "speech"}],
+        "information_request_only": True})
+    interpreter = PlayerIntentInterpreter(router)
+    interpreter._linguistic_analyzer.analyze = lambda *a, **k: LinguisticIntentAnalysis(
+        uniform_action_role="speaker", action_roles=("speaker", "speaker"), imperative_clauses=(),
+        information_request_only=True, information_recipient="narrator")
+    result = await interpreter.interpret(SimpleNamespace(), [], text)
+    assert [act.intent for act in result.actions] == ["Положить сумку у кровати."]
