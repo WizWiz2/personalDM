@@ -37,8 +37,8 @@ def _world():
 
 def test_audit_covers_only_items_the_turn_can_touch():
     auth, states = _world()
-    reviews = inventory_validation_model(auth).model_json_schema()["$defs"]["ItemReviewsByIdentity"]["required"]
-    assert set(reviews) == {str(states[k].item_id) for k in ("held", "here", "npc_here", "split_source")}
+    claim = inventory_validation_model(auth).model_json_schema()["$defs"]["BoundItemPositionClaim"]
+    assert set(claim["properties"]["item_id"]["enum"]) == {str(states[k].item_id) for k in ("held", "here", "npc_here", "split_source")}
 
 
 @pytest.mark.asyncio
@@ -49,20 +49,16 @@ async def test_deterministic_simulation_honors_the_current_scoped_review_schema(
         "[FOUR BANS NARRATION CHECK]\n[TURN FACTS]\n"
         + json.dumps(auth.validator_payload(), ensure_ascii=False)
         + "\n\n[CANDIDATE NARRATION]\nВ комнате тихо."))], None, response_model=wire)
-    assert str(states["far"].item_id) not in response["item_reviews"]
-    assert set(wire.model_validate(response).item_reviews.model_dump()) == {
-        str(state.item_id) for state in auth.audited_item_states()}
+    assert wire.model_validate(response).position_claims == []
 
 
 @pytest.mark.asyncio
 async def test_a_conflict_about_an_unaudited_item_still_fails_publication():
     auth, states = _world()
-    audited = [s for k, s in states.items() if k != "far"]
-    reviews = {str(s.item_id): {"item_id": str(s.item_id), "reference": "absent", "claims": []} for s in audited}
     conflict = {"violation_type": "canon_conflict", "severity": "error", "state_domain": "item_position",
                 "item_id": str(states["far"].item_id), "evidence": "Письмо у тебя в кармане.",
                 "explanation": "Письмо лежит в другом месте.", "correction": "Письмо осталось на месте."}
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "repair_required", "item_reviews": reviews, "violations": [conflict]}))
+        "position_claims": [], "violations": [conflict]}))
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, "Письмо у тебя в кармане.")
     assert result.verdict == "repair_required"

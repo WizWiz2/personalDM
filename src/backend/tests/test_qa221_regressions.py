@@ -21,11 +21,12 @@ from tests.test_qa220_regressions import _auth
 pytestmark = pytest.mark.interagent_contract_enforced
 
 
-def _reply(auth, reference="mention", claims=()):
-    return {"verdict": "pass", "item_reviews": [
-        {"item_id": str(state.item_id), "reference": reference, "claims": list(claims)}
-        for state in auth.item_states
-    ]}
+def _reply(auth, claims=()):
+    return {"position_claims": list(claims)}
+
+
+BAD = {"position_claims": [{"item_id": "00000000-0000-0000-0000-000000000000", "evidence": "Осип",
+                            "scope": "current", "mode": "located"}]}
 
 
 @pytest.mark.asyncio
@@ -37,7 +38,6 @@ async def test_simple_mentions_need_no_redundant_quote_and_preserve_npc_answer()
     assert NarrationPublicationGuard.publish(auth, text, result)[0] == text
     assert router.generate_json.await_count == 1
     schema = InventoryNarrationValidation.model_json_schema()
-    assert "evidence" not in schema["$defs"]["ItemNarrationReview"]["properties"]
     assert "evidence" in schema["$defs"]["ItemPositionClaim"]["required"]
 
 
@@ -49,7 +49,7 @@ async def test_invalid_validator_response_retries_same_prose_without_renarrating
     prose = "Осип придерживает связку. — Четвёртый номер закрыт с прошлой недели."
     router = SimpleNamespace(
         resolve=AsyncMock(return_value=SimpleNamespace(config=SimpleNamespace(model_name="test"))),
-        generate_json=AsyncMock(side_effect=[{"verdict": "pass", "item_reviews": []}, _reply(auth)]),
+        generate_json=AsyncMock(side_effect=[BAD, _reply(auth)]),
     )
     pipeline = AuthorityNarrationPipeline(db_session, router)
     narrate = AsyncMock(return_value=(prose, None, {}))
@@ -72,8 +72,8 @@ async def test_response_repair_cannot_hide_a_real_custody_conflict():
     claim = {"item_id": str(auth.item_states[0].item_id), "evidence": text,
              "scope": "current", "aspect": "placement", "mode": "located"}
     router = SimpleNamespace(generate_json=AsyncMock(side_effect=[
-        _reply(auth, "position", [{**claim, "evidence": "Нет такой цитаты"}]),
-        _reply(auth, "position", [claim]),
+        _reply(auth, [{**claim, "evidence": "Нет такой цитаты"}]),
+        _reply(auth, [claim]),
     ]))
     validator = TurnAuthorityValidator(router)
     result = await validator.validate(SimpleNamespace(), auth, text)
@@ -85,7 +85,7 @@ async def test_response_repair_cannot_hide_a_real_custody_conflict():
 @pytest.mark.asyncio
 async def test_repeated_bad_response_is_bounded_and_does_not_certify_text():
     auth = _auth()
-    router = SimpleNamespace(generate_json=AsyncMock(return_value={"verdict": "pass", "item_reviews": []}))
+    router = SimpleNamespace(generate_json=AsyncMock(return_value=BAD))
     with pytest.raises(NarrationValidationError):
         await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, "Осип молчит.")
     assert router.generate_json.await_count == 2

@@ -116,9 +116,9 @@ def test_validator_cannot_reverse_a_canonical_position_through_free_text_correct
         "verdict": "repair_required", "violations": [{"violation_type": "canon_conflict", "severity": "error",
             "state_domain": "item_position", "item_id": str(document), "evidence": text,
             "correction": "Положить проколотый бланк под дверь маяка."}],
-        "item_reviews": [{"item_id": str(document), "reference": "position", "claims": [{
+        "position_claims": [{
             "item_id": str(document), "evidence": text, "scope": "current", "mode": "located",
-            "location_id": str(room), "polarity": "asserted"}]}],
+            "location_id": str(room), "polarity": "asserted"}],
     })
     assert result.verdict == "pass" and not result.violations
 

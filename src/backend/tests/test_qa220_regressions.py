@@ -49,12 +49,11 @@ async def test_owned_key_can_still_hang_on_its_established_board():
     state = auth.item_states[0]
     text = "Ключ от чердака по-прежнему висит на доске. Осип придерживает связку рукой."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "item_reviews": [{
-            "item_id": str(state.item_id), "reference": "position", "evidence": text, "claims": [{
+        "verdict": "pass", "position_claims": [{
             "item_id": str(state.item_id), "evidence": "Ключ от чердака по-прежнему висит на доске",
             "scope": "current", "aspect": "placement", "mode": "located",
             "location_id": str(state.owner_location_id), "placement_matches": True,
-        }]}],
+        }],
     }))
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)
     assert result.verdict == "pass"
@@ -67,12 +66,11 @@ async def test_custody_change_cannot_hide_behind_the_same_board():
     state = auth.item_states[0]
     text = "Ключ от чердака теперь у Ирмы."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "item_reviews": [{
-            "item_id": str(state.item_id), "reference": "position", "evidence": text, "claims": [{
+        "verdict": "pass", "position_claims": [{
             "item_id": str(state.item_id), "evidence": text, "scope": "current",
             "aspect": "custody", "mode": "owned", "owner_id": str(uuid4()),
             "placement_matches": True,
-        }]}],
+        }],
     }))
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)
     assert result.verdict == "repair_required"
@@ -91,12 +89,11 @@ async def test_take_animation_uses_its_real_before_state_only_when_completed(com
             "item_previous_placement_detail": "На металлических перилах",
             "item_result_owner_id": str(hero), "observable_outcome": "Письмо взято."}]})
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "item_reviews": [{
-            "item_id": str(item), "reference": "position", "evidence": text, "claims": [{
+        "verdict": "pass", "position_claims": [{
             "item_id": str(item), "evidence": "Ты снимаешь письмо с металла",
             "scope": "executed_action", "action_step_index": 0, "moment": "before",
             "mode": "located", "location_id": str(room),
-        }]}],
+        }],
     }))
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)
     assert result.verdict == ("pass" if completed else "repair_required")
@@ -121,11 +118,9 @@ async def test_truthful_refusal_preserves_question_and_dialogue_after_repair(db_
             {"verdict": "repair_required", "violations": [{
                 "violation_type": "player_agency", "evidence": "Ты отдаёшь письмо.",
                 "correction": "Оставь выбор игроку.",
-            }], "item_reviews": [{"item_id": str(state.item_id), "reference": "mention",
-                                  "evidence": "письмо", "claims": []} for state in auth.item_states]},
+            }], "position_claims": []},
             {"verdict": "pass", "outcome_coverage": {"result_0": "P0"},
-             "item_reviews": [{"item_id": str(state.item_id), "reference": "mention",
-                                                   "evidence": "письмо", "claims": []} for state in auth.item_states]},
+             "position_claims": []},
         ]),
     )
     pipeline = AuthorityNarrationPipeline(db_session, router)
@@ -176,29 +171,12 @@ async def test_complete_empty_inventory_does_not_override_a_real_canon_error():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["missing", "empty", "duplicate", "absent", "no_claim", "wrong_evidence"])
-async def test_incomplete_item_audit_cannot_authorize_publication(failure):
+async def test_an_invented_claim_excerpt_cannot_authorize_publication():
     auth = _auth()
     state = auth.item_states[0]
     text = "Ключ от чердака лежит на конторке."
-    review = {"item_id": str(state.item_id), "reference": "mention", "evidence": text, "claims": []}
-    data = {"verdict": "pass", "item_reviews": [review]}
-    if failure == "missing":
-        data = {"verdict": "pass", "item_position_claims": []}
-    elif failure == "empty":
-        data["item_reviews"] = []
-    elif failure == "duplicate":
-        data["item_reviews"] = [review, review]
-    elif failure == "absent":
-        review.update(reference="absent", evidence="")
-    elif failure == "no_claim":
-        review.update(reference="position")
-    else:
-        review.update(reference="position", claims=[{
-            "item_id": str(state.item_id), "evidence": "Придуманная цитата",
-            "scope": "current", "mode": "located",
-        }])
-    router = SimpleNamespace(generate_json=AsyncMock(return_value=data))
+    router = SimpleNamespace(generate_json=AsyncMock(return_value={"position_claims": [{
+        "item_id": str(state.item_id), "evidence": "Придуманная цитата", "scope": "current", "mode": "located"}]}))
     with pytest.raises(NarrationValidationError):
         await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)
 
@@ -209,9 +187,8 @@ async def test_exact_excerpts_wrapped_in_quotes_do_not_discard_valid_prose():
     text = "Ключ от чердака по-прежнему висит на доске."
     state = auth.item_states[0]
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "item_reviews": [{"item_id": str(state.item_id), "reference": "position",
-            "evidence": f"«{text}»", "claims": [{"item_id": str(state.item_id), "evidence": f"«{text}»",
-                "scope": "current", "aspect": "placement", "mode": "located", "placement_matches": True}]}],
+        "verdict": "pass", "position_claims": [{"item_id": str(state.item_id), "evidence": f"«{text}»",
+                "scope": "current", "aspect": "placement", "mode": "located", "placement_matches": True}],
     }))
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)
     assert result.verdict == "pass"
@@ -238,11 +215,10 @@ async def test_ownerless_counter_claim_after_take_is_still_rejected():
     state.placement_detail = None
     text = "Ключ лежит на столе перед героиней."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "item_reviews": [{
-            "item_id": str(state.item_id), "reference": "position", "evidence": text, "claims": [{
+        "verdict": "pass", "position_claims": [{
             "item_id": str(state.item_id), "evidence": text, "scope": "current",
             "aspect": "placement", "mode": "located", "location_id": str(state.owner_location_id),
-        }]}],
+        }],
     }))
     assert (await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)).verdict == "repair_required"
 

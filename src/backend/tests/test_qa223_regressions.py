@@ -170,23 +170,19 @@ async def test_compiler_backstop_repairs_missing_artifact_effect_before_executio
         await ActionPlanCompiler(db_session).compile(cid, contract, TurnOutcomeDecision(action_outcomes=[_success()]))
 
 
-def test_native_inventory_audit_has_required_identity_keys_and_cannot_omit_an_item():
+def test_native_inventory_audit_binds_each_claim_to_a_registered_identity():
     auth = _auth()
     model = inventory_validation_model(auth)
-    schema = model.model_json_schema()
-    fields = schema["$defs"]["ItemReviewsByIdentity"]
-    assert set(fields["required"]) == {str(item.item_id) for item in auth.item_states}
     with pytest.raises(ValidationError):
-        model.model_validate({"verdict": "pass", "item_reviews": {}})
+        model.model_validate({"position_claims": [{"item_id": "00000000-0000-0000-0000-000000000000",
+                                                   "evidence": "x", "scope": "current", "mode": "located"}]})
 
 
 @pytest.mark.asyncio
-async def test_keyed_audit_preserves_dialogue_but_does_not_invent_absent_reviews():
+async def test_claim_free_audit_preserves_dialogue():
     auth = _auth()
     prose = "Осип отвечает: — Я вас услышал."
-    reviews = {str(item.item_id): {"item_id": str(item.item_id), "reference": "absent", "claims": []}
-               for item in auth.item_states}
-    router = SimpleNamespace(generate_json=AsyncMock(return_value={"verdict": "pass", "item_reviews": reviews}))
+    router = SimpleNamespace(generate_json=AsyncMock(return_value={"position_claims": []}))
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, prose)
     assert result.verdict == "pass" and router.generate_json.await_count == 1
 
