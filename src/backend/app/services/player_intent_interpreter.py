@@ -20,6 +20,7 @@ from app.services.linguistic_intent_analyzer import (
 )
 from app.services.planning_context import action_reference_catalog, intent_reference_context
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
+from app.services.turn_performance import reason_scope
 from app.services.turn_planner import TurnPlanningError
 
 _INTENT_PROMPT = """[PLAYER INTENT INTERPRETER]
@@ -689,22 +690,23 @@ class PlayerIntentInterpreter:
                     f"act_{i}": (int, Field(ge=0, le=7, description=f"Index of the entry covering: {act}"))
                     for i, act in enumerate(acts)})
                 wire = create_model("PlayerIntentContractDraft", __base__=wire, stated_act_entries=(entries, ...))
-            data = await self._router.generate_json(
-                self._provider,
-                selection,
-                [
-                    ChatMessage(
-                        role="system",
-                        content=_INTENT_PROMPT
-                        + "\n\n[OUTPUT JSON SCHEMA]\n"
-                        + json.dumps(wire.model_json_schema(), ensure_ascii=False),
-                    ),
-                    ChatMessage(role="user", content=user),
-                ],
-                max_tokens=1000,
-                temperature=settings.PLANNER_TEMPERATURE,
-                response_model=wire,
-            )
+            with reason_scope("interpret_player_intent"):
+                data = await self._router.generate_json(
+                    self._provider,
+                    selection,
+                    [
+                        ChatMessage(
+                            role="system",
+                            content=_INTENT_PROMPT
+                            + "\n\n[OUTPUT JSON SCHEMA]\n"
+                            + json.dumps(wire.model_json_schema(), ensure_ascii=False),
+                        ),
+                        ChatMessage(role="user", content=user),
+                    ],
+                    max_tokens=1000,
+                    temperature=settings.PLANNER_TEMPERATURE,
+                    response_model=wire,
+                )
             self.audit.append(
                 {"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)}
             )

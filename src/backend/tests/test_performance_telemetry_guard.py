@@ -76,3 +76,16 @@ def test_performance_report_groups_stage_and_model() -> None:
     assert "text_stream" in report
     assert "qwen2.5:7b" in report
     assert "gemma4:e4b" in report
+
+
+def test_turn_summaries_do_not_inflate_model_call_totals() -> None:
+    report = _render_report([
+        {"kind": "structured", "stage": "planner:Intent", "model": "test",
+         "wall_ms": 2000, "attempt_count": 1},
+        {"kind": "turn_summary", "total_ms": 5000, "status": "failed",
+         "unaccounted_ms": 3000, "logical_calls": 1, "retries": 0,
+         "user_turn_id": "turn-1", "generation_run_id": "run-1"},
+    ])
+    assert "Calls: **1**" in report
+    assert "Median: 5.0s; P95: 5.0s" in report
+    assert "| turn-1 | run-1 | failed | 5.00s | 3.00s | 1 | 0 |" in report

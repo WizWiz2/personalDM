@@ -12,6 +12,15 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.services.turn_performance import (
+    call_reason,
+    correlation,
+    current_trace,
+    install_sql_timing,
+    operation_parent,
+    record_interval,
+    series_summary,
+)
 
 _INSTALLED = False
 _SEQUENCE = 0
@@ -95,10 +104,11 @@ def _attempt_summaries(telemetry: dict[str, Any]) -> list[dict[str, Any]]:
         usage = item.get("usage") if isinstance(item.get("usage"), dict) else {}
         summary = {
             "attempt": item.get("attempt"),
+            "duration_ms": item.get("duration_ms"),
             "status": item.get("status") or ("completed" if usage else None),
             "requested_max_tokens": item.get("requested_max_tokens"),
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "completion_tokens": usage.get("completion_tokens"),
+            "prompt_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
+            "completion_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
             "ollama_total_ms": usage.get("ollama_total_ms"),
             "ollama_load_ms": usage.get("ollama_load_ms"),
             "ollama_prompt_eval_ms": usage.get("ollama_prompt_eval_ms"),
@@ -115,6 +125,7 @@ def _append_record(record: dict[str, Any]) -> None:
     try:
         _SEQUENCE += 1
         payload = {
+            **correlation(),
             "sequence": _SEQUENCE,
             "timestamp": datetime.now(UTC).isoformat(),
             "task_id": _task_id(),
@@ -141,11 +152,17 @@ def _flatten_telemetry(telemetry: dict[str, Any]) -> dict[str, Any]:
         "queue_timeout_seconds": telemetry.get("queue_timeout_seconds"),
         "timeout_seconds": telemetry.get("timeout_seconds"),
         "attempt": telemetry.get("attempt"),
-        "attempt_count": len(attempts) or (1 if telemetry else 0),
-        "attempts": _attempt_summaries(telemetry) or None,
-        "prompt_tokens": usage.get("prompt_tokens"),
-        "completion_tokens": usage.get("completion_tokens"),
+        "attempt_count": (len(attempts) or (1 if telemetry else 0)) + (
+            len((telemetry.get('initial_network_telemetry') or {}).get('attempts') or [])
+            or int(telemetry.get('network_retry_count') or 0)),
+        "attempts": (_attempt_summaries(telemetry.get('initial_network_telemetry') or {})
+                     + _attempt_summaries(telemetry)) or None,
+        "network_retry_count": telemetry.get('network_retry_count'),
+        "initial_network_error": telemetry.get('initial_network_error'),
+        "prompt_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
+        "completion_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
         "total_tokens": usage.get("total_tokens"),
+        "reasoning_tokens": (usage.get('output_tokens_details') or usage.get('completion_tokens_details') or {}).get('reasoning_tokens'),
         "ollama_total_ms": usage.get("ollama_total_ms"),
         "ollama_load_ms": usage.get("ollama_load_ms"),
         "ollama_prompt_eval_ms": usage.get("ollama_prompt_eval_ms"),
@@ -186,6 +203,8 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
 
 
 def _render_report(records: list[dict[str, Any]]) -> str:
+    turns = [row for row in records if row.get('kind') == 'turn_summary']
+    records = [row for row in records if row.get('kind') != 'turn_summary']
     groups: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for record in records:
         key = (str(record.get("stage") or "unknown"), str(record.get("model") or "unknown"))
@@ -281,6 +300,17 @@ def _render_report(records: list[dict[str, Any]]) -> str:
             f"{_number(record, 'ollama_eval_ms') / 1000.0:.1f}s | "
             f"{int(_number(record, 'attempt_count'))} | {record.get('status') or ''} |"
         )
+    if turns:
+        summary = series_summary(turns)
+        lines.extend(['', '## Turn attempts', '',
+                      (f"Median: {summary['median_ms']/1000:.1f}s; P95: {summary['p95_ms']/1000:.1f}s; "
+                       f"attempts with retries: {summary['runs_with_retries']}/{summary['attempts']}"), '',
+                      '| Turn | Run | Status | Wall | Unaccounted | Calls | Retries |',
+                      '| --- | --- | --- | ---: | ---: | ---: | ---: |'])
+        for row in turns:
+            lines.append(f"| {row.get('user_turn_id')} | {row.get('generation_run_id')} | "
+                         f"{row['status']} | {row['total_ms']/1000:.2f}s | "
+                         f"{row['unaccounted_ms']/1000:.2f}s | {row['logical_calls']} | {row['retries']} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -296,6 +326,38 @@ def _write_report() -> None:
         report.write_text(_render_report(records), encoding="utf-8")
     except Exception:
         return
+
+
+def _begin_call():
+    from uuid import uuid4
+    call_id = str(uuid4())
+    parent = operation_parent.get()
+    return time.perf_counter(), call_id, parent, operation_parent.set(call_id)
+
+
+def _finish_call(provider, role, messages, kwargs, started, call_id, parent, token, error, kind):
+    ended = time.perf_counter()
+    telemetry = dict(getattr(provider, 'last_telemetry', None) or {})
+    response_model = getattr(kwargs.get('response_model'), '__name__', None)
+    message_count, prompt_characters = _message_stats(messages)
+    trace = current_trace()
+    details = {
+        **_flatten_telemetry(telemetry), 'operation_id': call_id,
+        'parent_id': parent or (trace.trace_id if trace else None),
+        'response_model': response_model, 'role': role,
+        'reason': call_reason.get() or 'normal_call',
+        'message_count': message_count, 'prompt_characters': prompt_characters,
+        'error': f'{type(error).__name__}: {error}'[:1200] if error else None,
+    }
+    if error:
+        details['status'] = 'cancelled' if isinstance(error, asyncio.CancelledError) else 'error'
+    try:
+        record_interval('llm', response_model or 'text_stream', started, ended, **details)
+        _append_record({**details, 'kind': kind,
+                        'stage': f'{role}:{response_model or "json"}' if kind == 'structured' else 'text_stream',
+                        'wall_ms': round((ended-started)*1000,3)})
+    finally:
+        operation_parent.reset(token)
 
 
 def install() -> None:
@@ -316,81 +378,40 @@ def install() -> None:
 
     LLMProvider._extract_usage = staticmethod(extract_usage_with_timings)
 
+    install_sql_timing()
     original_generate_json = RoleModelRouter.generate_json
 
     async def measured_generate_json(self, provider, selection, messages, **kwargs):
-        started = time.monotonic()
-        error: Exception | None = None
+        started, call_id, parent, token = _begin_call()
+        error = None
         try:
-            return await original_generate_json(
-                self,
-                provider,
-                selection,
-                messages,
-                **kwargs,
-            )
-        except Exception as exc:
+            return await original_generate_json(self, provider, selection, messages, **kwargs)
+        except BaseException as exc:
             error = exc
             raise
         finally:
-            telemetry = dict(getattr(provider, "last_telemetry", None) or {})
-            message_count, prompt_characters = _message_stats(messages)
-            response_model = kwargs.get("response_model")
-            response_model_name = getattr(response_model, "__name__", None)
-            role = getattr(getattr(selection, "role", None), "value", None)
-            _append_record(
-                {
-                    "kind": "structured",
-                    "role": role,
-                    "stage": (
-                        f"{role}:{response_model_name or 'json'}"
-                        if role
-                        else response_model_name or "structured_json"
-                    ),
-                    "response_model": response_model_name,
-                    "wall_ms": round((time.monotonic() - started) * 1000, 3),
-                    "message_count": message_count,
-                    "prompt_characters": prompt_characters,
-                    "error": str(error)[:1200] if error else None,
-                    **_flatten_telemetry(telemetry),
-                }
-            )
+            _finish_call(provider, selection.role.value, messages, kwargs, started,
+                         call_id, parent, token, error, 'structured')
 
     RoleModelRouter.generate_json = measured_generate_json
 
     original_generate_stream = LLMProvider.generate_stream
 
     async def measured_generate_stream(self, messages, config, api_key=None, **kwargs):
-        started = time.monotonic()
-        error: Exception | None = None
+        started, call_id, parent, token = _begin_call()
+        error = None
         try:
             async with aclosing(original_generate_stream(
-                self,
-                messages,
-                config,
-                api_key,
-                **kwargs,
+                self, messages, config, api_key, **kwargs,
             )) as stream:
                 async for chunk in stream:
                     yield chunk
-        except Exception as exc:
+        except BaseException as exc:
             error = exc
             raise
         finally:
-            telemetry = dict(getattr(self, "last_telemetry", None) or {})
-            message_count, prompt_characters = _message_stats(messages)
-            _append_record(
-                {
-                    "kind": "stream",
-                    "role": "text",
-                    "stage": "text_stream",
-                    "wall_ms": round((time.monotonic() - started) * 1000, 3),
-                    "message_count": message_count,
-                    "prompt_characters": prompt_characters,
-                    "error": str(error)[:1200] if error else None,
-                    **_flatten_telemetry(telemetry),
-                }
-            )
+            _finish_call(self, 'text', messages, kwargs, started,
+                         call_id, parent, token, error, 'stream')
 
     LLMProvider.generate_stream = measured_generate_stream
     atexit.register(_write_report)

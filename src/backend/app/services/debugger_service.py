@@ -14,6 +14,7 @@ from app.db.tables import (
     Entity,
     Event,
     Fact,
+    GenerationDecision,
     GenerationRun,
     Location,
     PostTurnJob,
@@ -251,6 +252,21 @@ class DebuggerService:
             )
         ).scalars().all()
         run_ids = [row.id for row in runs]
+        performance_rows = []
+        if run_ids:
+            receipts = (await self._session.execute(
+                select(GenerationDecision).where(
+                    GenerationDecision.generation_run_id.in_(run_ids),
+                    GenerationDecision.step == 'performance',
+                ).order_by(GenerationDecision.created_at.desc()).limit(100)
+            )).scalars().all()
+            performance_rows = [
+                {**_json(row.payload_json, {}), 'user_turn_id': row.user_turn_id,
+                 'generation_run_id': row.generation_run_id, 'created_at': _iso(row.created_at)}
+                for row in receipts
+            ]
+        from app.services.turn_performance import series_summary
+
         lifecycle_rows = []
         if run_ids:
             lifecycle_rows = (
@@ -448,6 +464,8 @@ class DebuggerService:
                 }
                 for row in jobs
             ],
+            "performance": {"attempts": performance_rows,
+                            "summary": series_summary(performance_rows)},
             "generation_runs": [
                 {
                     "id": row.id,

@@ -415,11 +415,14 @@ class TurnSaga:
         generation_run = await self._generation_runs.start_or_resume(campaign_id, user_turn.id)
         await self._generation_lifecycle.start_attempt(generation_run.id)
         await self._session.commit()
+        from app.services.turn_performance import finish_trace, mark_phase, record_interval
+
         usage_context_token = set_usage_context(
             campaign_id=campaign_id,
             user_turn_id=user_turn.id,
             generation_run_id=generation_run.id,
             bind=self._session.bind,
+            performance_started=started,
         )
 
         source_scene_id = user_turn.scene_id
@@ -472,6 +475,7 @@ class TurnSaga:
             messages, context_metadata = compiled
             stage_timings["context_ms"] = round((perf_counter() - phase_started) * 1000, 2)
             phase_started = perf_counter()
+            mark_phase("planning")
             plan: CoordinatedTurnPlan | None = None
             planner_metadata: dict = {
                 "status": "skipped",
@@ -500,10 +504,15 @@ class TurnSaga:
             # durable writes from the first prepare write until publication. Waiting for the
             # barrier with prepare writes already pending deadlocked with a memory job holding
             # it and waiting for SQLite, until busy_timeout failed the job (30 s per turn).
+            mark_phase("barrier")
             waited = perf_counter()
-            await campaign_write_barrier.for_campaign(campaign_id).acquire()
+            try:
+                await campaign_write_barrier.for_campaign(campaign_id).acquire()
+            finally:
+                record_interval("wait", "campaign_barrier", waited)
             stage_timings["barrier_wait_ms"] = round((perf_counter() - waited) * 1000, 2)
             barrier_held = True
+            mark_phase("preparation")
 
             if plan:
                 # Capture the pre-turn physical projection before *any* structured mutation.
@@ -631,6 +640,8 @@ class TurnSaga:
             stage_timings["preparation_ms"] = round((perf_counter() - phase_started) * 1000, 2)
             phase_started = perf_counter()
 
+            mark_phase("presentation")
+
             # Narrator always gets a fresh snapshot from the now-durable prepared world. This also
             # removes the old split where transition and NPC materialization could recompile at
             # different moments.
@@ -710,6 +721,7 @@ class TurnSaga:
                 "post_turn_mode": "background",
                 "structured_outcome_before_prose": True,
             }
+            mark_phase("publication")
             token_count = (narration.telemetry.get("usage") or {}).get("completion_tokens")
             if world_frame:
                 await world_frame.assert_unchanged(self._session, campaign_id)
@@ -858,6 +870,7 @@ class TurnSaga:
                 },
             )
             PostTurnDispatcher.schedule(self._session.bind, saved_assistant.id)
+            finish_trace()
             yield narration.text
 
         except asyncio.CancelledError:
@@ -873,6 +886,7 @@ class TurnSaga:
             await self._fail_user_turn(user_turn.id, True if timed_out else owns_user_turn)
             if not timed_out:
                 raise
+            finish_trace()
             yield f"\n[Generation failed: {error}]"
         except Exception as exc:
             # F-37: even if a streaming client disconnects before the final
@@ -905,6 +919,7 @@ class TurnSaga:
                 }
                 failed_user.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
             await self._fail_user_turn(user_turn.id, owns_user_turn)
+            finish_trace()
             yield f"\n[Generation failed: {exc}]"
         finally:
             timeout_handle.cancel()

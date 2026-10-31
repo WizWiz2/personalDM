@@ -21,6 +21,7 @@ from app.services.llm_usage_tracker import record_decision
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
+from app.services.turn_performance import call_reason, reason_scope
 
 FOUR_BANS = frozenset({"absent_character", "canon_conflict", "player_agency", "invalid_movement"})
 
@@ -340,16 +341,17 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                 + json.dumps(paragraphs, ensure_ascii=False))))
         for attempt in range(2):
             try:
-                data = await self._router.generate_json(
-                    self._provider,
-                    selection,
-                    messages,
-                    max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS,
-                                   max(1600, 450 * len(authority.audited_item_states()))
-                                   if authority.item_states else 700),
-                    temperature=0.0,
-                    response_model=wire,
-                )
+                with reason_scope(call_reason.get() or ("validate_narration" if attempt == 0 else "repair_validator_contract")):
+                    data = await self._router.generate_json(
+                        self._provider,
+                        selection,
+                        messages,
+                        max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS,
+                                       max(1600, 450 * len(authority.audited_item_states()))
+                                       if authority.item_states else 700),
+                        temperature=0.0,
+                        response_model=wire,
+                    )
             except (LLMProviderError, ValueError, TypeError) as exc:
                 raise NarrationValidationError(str(exc)) from exc
             try:

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
-from sqlalchemy.exc import OperationalError
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,11 +9,12 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.repositories.llm_usage_repo import LLMUsageRepository
 from app.services.llm_pricing import estimate_openai_text_cost_usd
-
+from app.services.turn_performance import PerformanceTrace
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +26,7 @@ class LLMUsageContext:
     generation_run_id: UUID | None = None
     assistant_turn_id: UUID | None = None
     bind: Any | None = None
+    performance: PerformanceTrace = field(default_factory=PerformanceTrace, compare=False)
     # Events are persisted when the context closes, outside the caller's transaction. Writing
     # them mid-turn from a second SQLite session blocked for busy_timeout behind the caller's own
     # uncommitted flush (e.g. the director selection during planning) and then lost the event.
@@ -49,6 +49,7 @@ def set_usage_context(
     generation_run_id: UUID | None = None,
     assistant_turn_id: UUID | None = None,
     bind: Any | None = None,
+    performance_started: float | None = None,
 ) -> Token:
     return _current_usage_context.set(
         LLMUsageContext(
@@ -57,12 +58,21 @@ def set_usage_context(
             generation_run_id=generation_run_id,
             assistant_turn_id=assistant_turn_id,
             bind=bind,
+            performance=(PerformanceTrace(started=performance_started)
+                         if performance_started is not None else PerformanceTrace()),
         )
     )
 
 
 async def close_usage_context(token: Token) -> None:
     context = _current_usage_context.get()
+    if context is not None and context.assistant_turn_id is None:
+        from app.services.performance_telemetry_guard import _append_record
+        from app.services.turn_performance import correlation, finish_trace
+        finish_trace()
+        summary = context.performance.snapshot()
+        _append_record({'kind': 'turn_summary', **correlation(), **summary})
+        record_decision('performance', summary['status'], summary)
     _current_usage_context.reset(token)
     if context is None or context.bind is None:
         return
@@ -115,7 +125,11 @@ def record_decision(
 ) -> None:
     """Buffer one pipeline decision of the current generation run (no-op outside a turn)."""
     context = current_usage_context()
-    if context is None or context.bind is None:
+    if context is None:
+        return
+    if step == 'final':
+        context.performance.status = str(outcome)
+    if context.bind is None:
         return
     context.decisions.append(
         {

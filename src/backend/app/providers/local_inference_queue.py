@@ -45,7 +45,8 @@ async def local_inference_slot(base_url: str, *, background: bool = False):
     # All loopback aliases and models share the same local inference server/GPU.
     queues = _queues.setdefault(loop, {})
     queue = queues.setdefault(parsed.port or 11434, _Queue())
-    started = time.monotonic()
+    from app.services.turn_performance import record_interval
+    started = time.perf_counter()
     if queue.busy:
         waiter = loop.create_future()
         entry = (int(background), next(queue.sequence), waiter)
@@ -54,6 +55,7 @@ async def local_inference_slot(base_url: str, *, background: bool = False):
             async with asyncio.timeout(max(1.0, settings.LOCAL_LLM_QUEUE_TIMEOUT_SECONDS)):
                 await waiter
         except BaseException as exc:
+            record_interval("wait", "inference_queue", started)
             # Cancellation can race with a grant. In that case pass the slot on.
             if waiter.done() and not waiter.cancelled():
                 queue.release()
@@ -65,7 +67,8 @@ async def local_inference_slot(base_url: str, *, background: bool = False):
             raise
     else:
         queue.busy = True
+    record_interval("wait", "inference_queue", started)
     try:
-        yield round((time.monotonic() - started) * 1000)
+        yield round((time.perf_counter() - started) * 1000)
     finally:
         queue.release()

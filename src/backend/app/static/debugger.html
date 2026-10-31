@@ -39,6 +39,7 @@
   <div id="health" class="health"></div>
   <section><h2>Runtime</h2><div id="runtime"></div></section>
   <section><h2>Turn publication trace</h2><div id="traceSummary"></div><div id="trace"></div></section>
+  <section><h2>Куда ушло время хода</h2><div id="performance"></div></section>
   <section><h2>Нулевая сессия</h2><div id="sessionZero"></div></section>
   <section><h2>Активная сцена</h2><div id="activeScene"></div><div id="sceneIssues"></div></section>
   <section><h2>Все сцены</h2><div id="scenes"></div></section>
@@ -102,6 +103,44 @@ function renderTrace() {
     }]
   ]);
 }
+const seconds = v => `${(Number(v || 0)/1000).toFixed(2)} с`;
+const phaseNames = {context:'Контекст',planning:'Планирование',barrier:'Ожидание барьера',preparation:'Подготовка',presentation:'Повествование и проверка',publication:'Публикация'};
+const reasonNames = {
+  interpret_player_intent:'Разбор намерения', resolve_action_outcomes:'Определение исходов',
+  ordinary_travel_obstacles:'Проверка препятствий перехода',
+  repair_after_contract_error:'Повтор: решение не прошло компиляцию',
+  missing_destination_profile:'Доп. запрос: нет профиля места',
+  render_authorized_narration:'Повествование', repair_narration:'Ремонт повествования',
+  narrowed_narration:'Повтор по суженному контракту', validate_narration:'Проверка повествования',
+  repair_validator_contract:'Повтор: некорректный ответ валидатора', validate_after_repair:'Повторная проверка после ремонта',
+  campaign_barrier:'Ожидание барьера кампании', inference_queue:'Очередь модели',
+  foreground_priority:'Приоритет активных ходов'
+};
+function renderPerformance() {
+  const perf=data.performance || {}, rows=perf.attempts || [], summary=perf.summary || {};
+  if(!rows.length) {
+    $('performance').innerHTML='<p class="muted">Подробные замеры появятся после новых ходов. Для старых сборок разложение не восстанавливается.</p>';
+    return;
+  }
+  $('performance').innerHTML=`<p>Последние ${esc(summary.attempts)} попыток с замерами: медиана ${seconds(summary.median_ms)}, P95 ${seconds(summary.p95_ms)}; с повторами запросов: ${esc(summary.runs_with_retries)}. Статусы: ${esc(JSON.stringify(summary.statuses))}.</p>
+  <p class="muted">Полное время — до готовности ответа, включая публикацию или откат; без фоновой памяти и записи самой телеметрии. SQL включает выполнение и возможное ожидание БД; это не отдельный замер блокировки SQLite. Неразмеченное время не приписывается модели.</p>` + rows.map(r=>{
+    const sums=r.exclusive_ms || {}, warnings=[];
+    if(r.retries) warnings.push(`Повторов внутри запросов: ${r.retries}`);
+    if((sums.database || 0)>1000) warnings.push(`Обращения к БД: ${seconds(sums.database)}`);
+    if(r.unaccounted_ms>Math.max(1000,r.total_ms*.1)) warnings.push(`Неразмечено: ${seconds(r.unaccounted_ms)}`);
+    if(r.dropped_intervals) warnings.push(`Лимит журнала: пропущено операций ${r.dropped_intervals}`);
+    const operations=(r.operations || []).filter(o=>!o.background && (o.category==='llm' || o.wall_ms>=5)).sort((a,b)=>a.start_ms-b.start_ms);
+    return `<details class="scene-card" style="margin-top:10px"><summary>
+      <strong>${seconds(r.total_ms)} · ${esc(r.status)}</strong> · запросов: ${esc(r.logical_calls)} · ход ${esc(r.user_turn_id)}
+      </summary><p class="muted">Run: ${esc(r.generation_run_id)} · Trace: ${esc(r.trace_id)}</p>
+      <p>Запросы без вложенных замеренных ожиданий: ${seconds(sums.llm)} · ожидания: ${seconds(sums.wait)} · SQL: ${seconds(sums.database)} · локальная работа: ${seconds(sums.local)} · неразмечено: ${seconds(r.unaccounted_ms)}</p>
+      ${warnings.length?`<p class="trace-unknown">${warnings.map(esc).join(' · ')}</p>`:''}
+      <h3>Этапы (не пересекаются)</h3>${table(r.phases,[['Этап','name',v=>esc(phaseNames[v] || v)],['Начало','start_ms',seconds],['Время','wall_ms',seconds]])}
+      <h3>Операции и запросы</h3><p class="muted">Операции могут быть вложенными и параллельными; сводка считает объединение интервалов, а не сумму строк. Ожидания и SQL короче 5 мс скрыты в таблице, но учтены в сводке.</p>
+      ${table(operations,[['Начало','start_ms',seconds],['Этап','phase',v=>esc(phaseNames[v] || v)],['Назначение','name',(v,o)=>esc(reasonNames[o.reason] || reasonNames[v] || v)],['Время','wall_ms',seconds],['Подробности','operation_id',(v,o)=>`<details><summary>${esc(o.model || o.category)} · попыток ${esc(o.attempt_count ?? '—')}</summary><pre>${esc(JSON.stringify(o,null,2))}</pre></details>`]])}
+      </details>`;
+  }).join('');
+}
 function renderSessionZero() {
   const setup = data.session_zero;
   if (!setup) { $('sessionZero').innerHTML = '<p class="muted">Контракт нулевой сессии отсутствует.</p>'; return; }
@@ -163,7 +202,7 @@ async function load() {
   const heroLocation = pathText(data.campaign.player_location_path) || data.campaign.player_location_name || 'не задана';
   $('status').textContent=`${data.campaign.name} · герой: ${data.campaign.player_character_name || 'не назначен'} · локация: ${heroLocation}`;
   $('health').innerHTML=Object.entries(data.health).map(([k,v])=>`<div class="metric"><span>${esc(k)}</span><strong class="${v?'bad':'ok'}">${v}</strong></div>`).join('');
-  renderRuntime(); renderTrace(); renderSessionZero(); renderSceneState(); renderPresence();
+  renderPerformance(); renderRuntime(); renderTrace(); renderSessionZero(); renderSceneState(); renderPresence();
   $('jobs').innerHTML=table(data.post_turn_jobs,[['Тип','job_type'],['Статус','status'],['Попытки','attempts'],['Ошибка','error'],['Действие','id',(v,r)=>r.status==='completed'?'':`<button onclick="retryJob('${v}')">Повторить</button>`]]);
   $('proposals').innerHTML=table(data.proposals,[['Тип','change_type'],['Статус','status'],['Payload / evidence','payload',(v)=>`<pre>${esc(JSON.stringify(v,null,2))}</pre>`],['Ход','turn_content']]);
   renderCanon();

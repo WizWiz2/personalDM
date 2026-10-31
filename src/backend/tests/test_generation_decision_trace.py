@@ -164,6 +164,12 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
     assert FAILURE in trace["error"]
     timeline = trace["timeline"]
     decisions = [item for item in timeline if item["kind"] == "decision"]
+    performance = [item for item in decisions if item['step'] == 'performance']
+    assert len(performance) == 1
+    assert performance[0]['payload']['status'] == 'failed'
+    assert performance[0]['payload']['total_ms'] > 0
+    assert performance[0]['payload']['phases'][-1]['name'] == 'presentation'
+    decisions = [item for item in decisions if item['step'] != 'performance']
     steps = [item["step"] for item in decisions]
 
     assert steps[0] == "authority"

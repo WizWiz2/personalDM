@@ -116,6 +116,13 @@ def test_turn_creates_durable_runs_jobs_and_debugger_snapshot(client: TestClient
     }
     assert all(job["status"] == "completed" for job in snapshot["post_turn_jobs"])
     assert snapshot["generation_runs"][0]["status"] == "completed"
+    performance = snapshot['performance']['attempts'][0]
+    assert performance['generation_run_id'] == snapshot['generation_runs'][0]['id']
+    assert performance['status'] == 'published'
+    assert performance['total_ms'] > 0
+    assert performance['accounted_ms'] <= performance['total_ms']
+    assert performance['phases'][-1]['name'] == 'publication'
+    assert snapshot['performance']['summary']['attempts'] == 1
     assert snapshot["proposals"][0]["payload"]["_canon"]["evidence"]
 
     assistant = next(turn for turn in snapshot["turns"] if turn["role"] == "assistant")
