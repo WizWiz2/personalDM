@@ -96,7 +96,8 @@ def entrance_model(authority: TurnAuthority, base: type[BaseModel]) -> type[Base
             "Cast name of whoever enters; background_crowd for an anonymous group acting as one; "
             "untyped_person for an individual with no cast name here."))),
     )
-    speakers = tuple(dict.fromkeys([*authority.present_character_names, *authority.allowed_new_npc_names]))
+    speakers = tuple(dict.fromkeys([*authority.present_character_names, *authority.allowed_new_npc_names,
+                                   *authority.present_before_departure]))
     naming = create_model(
         "GivenName", __config__=ConfigDict(extra="forbid"),
         evidence=(str, Field(max_length=300, description="Shortest exact candidate fragment.")),
@@ -188,6 +189,8 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    not in present_characters, allowed_new_npcs or allowed_existing_npc_arrivals speaks here in
    quotes. Unnamed, non-speaking background (a crowd, patrons, passers-by) is allowed.
    MENTIONING someone who is not here is allowed: names in dialogue, memories, rumours, elsewhere.
+   present_before_departure were with the player at source_location: they may act in the steps
+   before the typed trip, never at target_location.
    Set known_absent_name to the exact known_absent_characters entry when it is one, else null.
 2. canon_conflict: prose denies or overwrites an established_state entry, scene_time,
    a confirmed new physical item in allowed_new_items, or the result of an executed

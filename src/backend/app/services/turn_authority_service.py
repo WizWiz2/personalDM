@@ -233,6 +233,12 @@ class TurnAuthorityService:
                     reason=world_move.source[:500]))
                 present_names.append(arriving.canonical_name)
         present_keys = {identity_key(value) for value in present_names}
+        # A typed trip leaves people at its source: they share the steps before departure.
+        left_behind = [
+            name for name in (source_state.participant_names if source_state and target_state
+                              and source_state.location_id != target_state.location_id else [])
+            if identity_key(name) not in present_keys
+        ]
         all_characters = await self._entities.list_by_campaign(
             campaign_id,
             entity_type="character",
@@ -241,6 +247,7 @@ class TurnAuthorityService:
             entity.canonical_name
             for entity in all_characters
             if identity_key(entity.canonical_name) not in present_keys
+            and entity.canonical_name not in left_behind
         ]
 
         planned_disposition = plan.scene_disposition if plan else "stay"
@@ -299,6 +306,7 @@ class TurnAuthorityService:
             scene_time=getattr(target_state, "world_time_label", None),
             present_character_names=present_names,
             known_absent_character_names=absent_names,
+            present_before_departure=left_behind,
             allowed_new_npcs=npc_resolution.new_introductions,
             allowed_new_items=(
                 [
