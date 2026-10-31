@@ -23,7 +23,7 @@ from app.db.tables import (
 )
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
 from app.models.item_state import ItemPropertyChange
-from app.services.action_item_creation import create_step_items, undo_step_items
+from app.services.action_item_creation import create_step_items, merge_units, undo_step_items, unmerge_units
 from app.services.initial_world_state import InitialWorldStateService
 from app.services.item_content_authority import revealed_item_contents
 from app.services.scene_bridge_service import SceneBridgeService
@@ -432,6 +432,8 @@ class ActionSequenceExecutor:
         item.current_owner_id = result_owner
         item.current_location_id = result_location
         item.placement_detail = db_step.item_result_placement_detail
+        if operation not in {"take", "reposition", "receive"}:  # stowing, paying, setting down
+            await merge_units(self._session, item)
         await self._session.flush()
 
     async def get(self, sequence_id: UUID) -> ActionSequenceExecution:
@@ -605,6 +607,7 @@ class ActionSequenceExecutor:
             if applied_inventory:
                 item = await self._session.get(Item, step.item_id)
                 if item:
+                    await unmerge_units(self._session, item)
                     item.current_owner_id = step.item_previous_owner_id
                     item.current_location_id = step.item_previous_location_id
                     item.placement_detail = step.item_previous_placement_detail
