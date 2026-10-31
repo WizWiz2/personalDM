@@ -180,7 +180,9 @@ async def test_rejected_repair_gets_a_narrowed_contract_never_a_raw_projection(d
         campaign.id, TurnCreate(role="user", content="Стучу в дверь."),
     )
     await db_session.commit()
-    router = _Router(_verdict("player_agency"), _verdict("player_agency"), _verdict())
+    router = _Router(_verdict("player_agency"),
+        {**_verdict("player_agency"), "outcome_coverage": {"result_0": None}},
+        {**_verdict(), "outcome_coverage": {"result_0": "P0"}})
     pipeline = AuthorityNarrationPipeline(db_session, router)
     drafts: list[str] = []
 

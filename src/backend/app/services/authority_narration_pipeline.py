@@ -9,9 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db.tables import Belief, Entity
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
-from app.models.narration_validation import GrantedBeat, GrantedNarration, NarrationValidationResult, RouteDisclosure
+from app.db.tables import Belief, Entity
+from app.models.narration_validation import (
+    GrantedBeat,
+    GrantedNarration,
+    NarrationValidationResult,
+    RouteDisclosure,
+)
 from app.models.turn import ChatMessage
 from app.models.turn_authority import TurnAuthority
 from app.providers.llm_provider import (
@@ -20,15 +25,15 @@ from app.providers.llm_provider import (
     LLMProviderTruncatedError,
 )
 from app.services.actor_turn_authority_guard import _word_key, segment_actor_response
+from app.services.llm_usage_tracker import record_decision, record_provider_telemetry
+from app.services.narration_meta_guard import leaked_meta_lines
 from app.services.narration_publication_guard import (
     NarrationPublicationError,
     NarrationPublicationGuard,
 )
-from app.services.narration_meta_guard import leaked_meta_lines
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
-from app.services.script_consistency import consistent_script, foreign_script_intrusions
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
-from app.services.llm_usage_tracker import record_decision, record_provider_telemetry
+from app.services.script_consistency import consistent_script, foreign_script_intrusions
 from app.services.turn_authority_validator import TurnAuthorityValidator
 
 
@@ -246,7 +251,9 @@ class AuthorityNarrationPipeline:
                   "for an existing destination; new_in:<parent ID> for a genuinely new place inside "
                   "a registered area, with its nominative name and physical profile. Reuse names/aliases. "
                   "evidence must be an exact fragment of beat.evidence containing those directions. "
-                  "Include the full directions in beat.evidence. bidirectional=false for a one-way route. "
+                  "Include the full directions in beat.evidence. Ordinary directions are bidirectional=true. "
+                  "Only an explicit physical obstacle to returning permits bidirectional=false; "
+                  "one_way_evidence must quote that obstacle from the directions, otherwise null. "
                   "Use [] for rumours, lies, speculation, mere mentions, inaccessible destinations, "
                   "or routes starting elsewhere. This records knowledge, never movement or permission "
                   "to open a blocked passage."
@@ -293,8 +300,10 @@ class AuthorityNarrationPipeline:
         authority: TurnAuthority,
         candidate: str,
         attempt_index: int,
+        require_outcomes: bool = False,
     ) -> NarrationValidationResult:
-        result = await validator.validate(selection, authority, candidate)
+        result = await validator.validate(selection, authority, candidate,
+            **({"require_outcomes": True} if require_outcomes else {}))
         await audit.record_attempt(
             run,
             attempt_index=attempt_index,
@@ -399,7 +408,8 @@ class AuthorityNarrationPipeline:
                 repair_attempts=attempts,
                 telemetry=telemetry,
                 publication={"mode": "narrowed_candidate" if narrowed else "validated_candidate",
-                             "validated_surface": True},
+                             "validated_surface": True,
+                             "outcomes_verified": bool(validation and validation._outcomes_verified)},
                 validation_result=validation,
                 reason=reason,
                 beat=beat,
@@ -423,7 +433,8 @@ class AuthorityNarrationPipeline:
                 raise NarrationRefused(f"{reason}; narrowed narrator failed: {exc}") from exc
             if not (foreign_script_intrusions(text) or leaked_meta_lines(text)
                     or await self._repeats(campaign_id, text)):
-                result = await self._check(**check, candidate=text, attempt_index=attempts + 1)
+                result = await self._check(**check, candidate=text, attempt_index=attempts + 1,
+                                           require_outcomes=True)
                 if result.verdict == "pass":
                     return await accepted(text, "repaired", attempts + 1, reason=reason,
                                           validation=result, narrowed=True)
@@ -497,7 +508,7 @@ class AuthorityNarrationPipeline:
                 repaired_result = None
             else:
                 repaired_result = await self._check(
-                    **check, candidate=repaired, attempt_index=1
+                    **check, candidate=repaired, attempt_index=1, require_outcomes=True,
                 )
                 if repaired_result.verdict == "pass":
                     if repaired_failure:

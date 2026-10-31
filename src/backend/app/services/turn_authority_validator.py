@@ -18,6 +18,7 @@ from app.services.actor_turn_authority_guard import speech_spans
 from app.services.entity_identity import identity_key
 from app.services.item_state_authority import item_position_violations
 from app.services.llm_usage_tracker import record_decision
+from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 
@@ -305,11 +306,13 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
         selection: RoleModelSelection,
         authority: TurnAuthority,
         candidate_text: str,
+        *,
+        require_outcomes: bool = False,
     ) -> NarrationValidationResult:
         role = ModelRole.NARRATION_VALIDATOR.value
         self._response_retries = 0
         try:
-            result = await self._validate(selection, authority, candidate_text)
+            result = await self._validate(selection, authority, candidate_text, require_outcomes=require_outcomes)
         except NarrationValidationError as exc:
             record_decision("validate", "error", {"error": str(exc)[:500]}, role=role)
             raise
@@ -321,9 +324,22 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
         selection: RoleModelSelection,
         authority: TurnAuthority,
         candidate_text: str,
+        *,
+        require_outcomes: bool = False,
     ) -> NarrationValidationResult:
         if not candidate_text.strip():
             raise NarrationValidationError("Narrator returned empty prose")
+        wire = entrance_model(authority, inventory_validation_model(authority, candidate_text)
+                              if authority.item_states else NarrationValidationResult)
+        outcomes = NarrationPublicationGuard.confirmed_outcomes(authority) if require_outcomes else []
+        paragraphs = {f"P{index}": line.strip() for index, line in enumerate(
+            line for line in candidate_text.splitlines() if line.strip())}
+        coverage = None
+        if outcomes:
+            coverage = create_model("ConfirmedOutcomeCoverage", __config__=ConfigDict(extra="forbid"),
+                **{f"result_{index}": (Literal[tuple(paragraphs)] | None, Field(description=outcome))
+                   for index, outcome in enumerate(outcomes)})
+            wire = create_model(wire.__name__, __base__=wire, outcome_coverage=(coverage, ...))
         messages = [
             ChatMessage(role="system", content=(
                 self.ITEM_REVIEW_PROMPT + self.SYSTEM_PROMPT.split("For every error,")[0]
@@ -339,6 +355,13 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                 ),
             ),
         ]
+        if coverage is not None:
+            messages.append(ChatMessage(role="user", content=(
+                "[CONFIRMED RESULT COVERAGE]\nFor each outcome_coverage property select the P-number "
+                "of the paragraph that actually communicates that confirmed result, including a "
+                "faithful paraphrase. Mere silence, location or item custody does not cover a "
+                "different earned result. Select null if it is missing. Do not rewrite the candidate.\n"
+                + json.dumps(paragraphs, ensure_ascii=False))))
         for attempt in range(2):
             try:
                 data = await self._router.generate_json(
@@ -349,13 +372,24 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                                    max(1600, 450 * len(authority.audited_item_states()))
                                    if authority.item_states else 700),
                     temperature=0.0,
-                    response_model=entrance_model(authority, inventory_validation_model(authority, candidate_text)
-                                                  if authority.item_states else NarrationValidationResult),
+                    response_model=wire,
                 )
             except (LLMProviderError, ValueError, TypeError) as exc:
                 raise NarrationValidationError(str(exc)) from exc
             try:
-                return self._interpret(authority, candidate_text, data)
+                missing = []
+                if coverage is not None:
+                    checked = coverage.model_validate(data.get("outcome_coverage")).model_dump()
+                    missing = [outcome for index, outcome in enumerate(outcomes)
+                               if checked[f"result_{index}"] is None]
+                result = self._interpret(authority, candidate_text, data)
+                if missing:
+                    result = result.model_copy(update={"verdict": "repair_required", "violations": [
+                        *result.violations, *(NarrationViolation(violation_type="canon_conflict",
+                            evidence=candidate_text[:1000], correction="Сохрани подтверждённый результат: " + outcome[:900])
+                            for outcome in missing)]})
+                result._outcomes_verified = coverage is not None and not missing
+                return result
             except (NarrationValidationError, ValueError, TypeError) as exc:
                 if attempt:
                     raise NarrationValidationError(str(exc)) from exc
