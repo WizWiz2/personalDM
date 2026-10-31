@@ -90,11 +90,24 @@ class NarrationPublicationGuard:
         return f"{text.rstrip()}\n\n{outcome}"
 
     @classmethod
+    def confirmed_outcomes(cls, authority: TurnAuthority) -> list[str]:
+        """Engine-approved results, independent of item snapshots or the renderer's wording."""
+        parts = []
+        for step in authority.executed_steps():
+            cls._append_unique(parts, step["outcome"])
+        for consequence in authority.observable_consequences:
+            cls._append_unique(parts, consequence)
+        if authority.world_move:
+            cls._append_unique(parts, authority.world_move.outcome)
+        return parts
+
+    @classmethod
     def render_contract(cls, authority: TurnAuthority) -> str:
         """Typed outcome lines for a narrowed narrator contract (never published as-is)."""
+        parts = cls.confirmed_outcomes(authority)
         if authority.item_states:
-            return cls.render_item_states(authority)
-        return cls.render_authority(authority)
+            cls._append_unique(parts, cls.render_item_states(authority))
+        return "\n".join(parts) if parts else cls.render_authority(authority)
 
     @classmethod
     def render_item_states(cls, authority: TurnAuthority) -> str:
@@ -103,14 +116,7 @@ class NarrationPublicationGuard:
         # Even degradation should retain the player's earned results. These are
         # executed structured results, never salvaged fragments of rejected prose.
         for step in authority.executed_steps():
-            if step["status"] == "completed" and (
-                step["action_type"] in {"movement", "inventory", "wait", "rest"}
-                or step.get("item_property_changes")
-                or step["outcome"] and any(
-                    state.revealed_content and state.revealed_content in step["outcome"]
-                    for state in authority.item_states
-                )
-            ):
+            if step["status"] == "completed":
                 cls._append_unique(parts, step["outcome"])
         if authority.target_location_path:
             parts.append(f"Ты находишься здесь: {authority.target_location_path[-1]}.")

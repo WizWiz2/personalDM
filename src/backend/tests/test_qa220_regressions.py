@@ -123,7 +123,8 @@ async def test_truthful_refusal_preserves_question_and_dialogue_after_repair(db_
                 "correction": "Оставь выбор игроку.",
             }], "item_reviews": [{"item_id": str(state.item_id), "reference": "mention",
                                   "evidence": "письмо", "claims": []} for state in auth.item_states]},
-            {"verdict": "pass", "item_reviews": [{"item_id": str(state.item_id), "reference": "mention",
+            {"verdict": "pass", "outcome_coverage": {"result_0": "P0"},
+             "item_reviews": [{"item_id": str(state.item_id), "reference": "mention",
                                                    "evidence": "письмо", "claims": []} for state in auth.item_states]},
         ]),
     )

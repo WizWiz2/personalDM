@@ -97,6 +97,7 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
         if issubclass(kwargs.get("response_model") or object, NarrationValidationResult):
             return {
                 "verdict": "repair_required",
+                "outcome_coverage": {"result_0": None},
                 "summary": "Решение за игрока.",
                 "violations": [
                     {
@@ -116,7 +117,7 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
     monkeypatch.setattr(AuthorityNarrationPipeline, "_generate_text", narrate)
     monkeypatch.setattr(RoleModelRouter, "generate_json", control)
     monkeypatch.setattr(
-        NarrationPublicationGuard, "render_authority", classmethod(no_projection),
+        NarrationPublicationGuard, "render_contract", classmethod(no_projection),
     )
 
     output = "".join([

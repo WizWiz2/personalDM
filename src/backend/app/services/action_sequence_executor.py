@@ -9,14 +9,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.scene_transition_table import SceneTransition
-from app.db.tables import Campaign, Character, Entity, Item, ItemContentDisclosure, ItemCreationEffect, ItemPropertyEffect, Scene
 from app.db.scene_location_table import SceneLocationLink
-from app.services.item_content_authority import revealed_item_contents
-from app.services.action_item_creation import create_step_items, merge_units, undo_step_items, unmerge_units
+from app.db.scene_transition_table import SceneTransition
+from app.db.tables import (
+    Campaign,
+    Character,
+    Entity,
+    Item,
+    ItemContentDisclosure,
+    ItemCreationEffect,
+    ItemPropertyEffect,
+    Scene,
+)
 from app.models.action_sequence import ActionSequenceExecution, ExecutedActionStep
 from app.models.item_state import ItemPropertyChange
+from app.services.action_item_creation import create_step_items, merge_units, undo_step_items, unmerge_units
 from app.services.initial_world_state import InitialWorldStateService
+from app.services.item_content_authority import revealed_item_contents
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
 from app.services.scene_transition_executor import (
@@ -223,6 +232,7 @@ class ActionSequenceExecutor:
                         transition_plan,
                         allow_route_discovery=allow_route_discovery,
                         require_existing_route=require_existing_route,
+                        route_discovery_turn_id=route_discovery_turn_id or trigger_turn_id,
                     )
                 except ValueError as exc:
                     db_step.status = "blocked"

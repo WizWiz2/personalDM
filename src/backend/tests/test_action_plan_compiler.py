@@ -177,7 +177,9 @@ async def test_compound_route_is_compiled_from_each_virtual_intermediate_locatio
 
 
 @pytest.mark.asyncio
-async def test_missing_second_edge_blocks_that_hop_without_erasing_completed_prefix() -> None:
+async def test_closed_second_edge_blocks_that_hop_without_erasing_completed_prefix() -> None:
+    closed = _exit(CORRIDOR, WAREHOUSE, "Склад")
+    closed.active = False
     compiler = _Compiler(
         [
             _location(ROOM, "Комната Кая"),
@@ -186,7 +188,7 @@ async def test_missing_second_edge_blocks_that_hop_without_erasing_completed_pre
         ],
         {
             ROOM: [_exit(ROOM, CORRIDOR, "Коридор")],
-            CORRIDOR: [_exit(CORRIDOR, ROOM, "Комната Кая")],
+            CORRIDOR: [_exit(CORRIDOR, ROOM, "Комната Кая"), closed],
         },
     )
     contract = PlayerIntentContract(
@@ -203,7 +205,7 @@ async def test_missing_second_edge_blocks_that_hop_without_erasing_completed_pre
     assert first.transition.destination_location == "Коридор"
     assert second.resolution == "blocked"
     assert second.transition.required is False
-    assert "not reachable over known open routes" in (second.blocking_reason or "")
+    assert "inactive" in (second.blocking_reason or "")
 
 
 @pytest.mark.asyncio

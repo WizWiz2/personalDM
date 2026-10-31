@@ -372,13 +372,17 @@ def _semantic_plan_review() -> str:
     )
 
 
-def _authority_verdict(prompt: str) -> str:
+def _authority_verdict(prompt: str, response_model=None) -> str:
     CALLS["authority_validator"] += 1
     payload = {}
     if "[TURN FACTS]\n" in prompt and "[CANDIDATE NARRATION]\n" in prompt:
         encoded, candidate = prompt.split("[TURN FACTS]\n", 1)[1].split("\n\n[CANDIDATE NARRATION]\n", 1)
         facts = json.loads(encoded)
         states = facts.get("item_states", [])
+        if response_model and "item_reviews" in response_model.model_fields:
+            review_model = response_model.model_fields["item_reviews"].annotation
+            if hasattr(review_model, "model_fields"):
+                states = [state for state in states if state["item_id"] in review_model.model_fields]
         # This controlled mock prose contains no item positions. Refuse to
         # certify different prose by silently labelling a mentioned item absent.
         if any(state["name"].casefold() in candidate.casefold() for state in states):
@@ -397,7 +401,7 @@ def _authority_verdict(prompt: str) -> str:
     )
 
 
-def _dispatch_json(prompt: str) -> str:
+def _dispatch_json(prompt: str, response_model=None) -> str:
     if "[TURN PLAN SEMANTIC REVIEWER]" in prompt:
         return _semantic_plan_review()
     if (
@@ -406,7 +410,7 @@ def _dispatch_json(prompt: str) -> str:
     ):
         return _turn_authority_plan(prompt)
     if "[TURN AUTHORITY VALIDATOR]" in prompt or "[FOUR BANS NARRATION CHECK]" in prompt:
-        return _authority_verdict(prompt)
+        return _authority_verdict(prompt, response_model)
     if "[ACTOR CLAIM SEGMENT SELECTOR]" in prompt:
         return _actor_segment_selector(prompt)
     if "Ты проектируешь новый акт автономной кампании" in prompt:
@@ -465,7 +469,7 @@ async def deterministic_generate_json(self, messages, config, api_key=None, **kw
             },
         }, ensure_ascii=False)
     else:
-        output = _dispatch_json(_all_text(messages))
+        output = _dispatch_json(_all_text(messages), response_model)
     self.last_telemetry = {
         "status": "completed",
         "finish_reason": "stop",

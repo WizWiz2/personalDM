@@ -77,7 +77,7 @@ async def test_session_zero_completion_materializes_a_playable_start(db_session)
     assert state.world_time_order == 0
     assert "Вера" in state.participant_names
     assert len([name for name in state.participant_names if name != "Вера"]) >= 1
-    assert "Заметная деталь" in state.object_names
+    assert "Заметная деталь" not in state.object_names
     assert state.available_exits
     assert any(exit_.label == "наружу" for exit_ in state.available_exits)
 

@@ -10,17 +10,17 @@ from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_state_table import LocationExit, SceneRuntimeState
 from app.db.tables import Campaign, Character, Entity, Item, Scene, SceneParticipant
-from app.services.name_identity_contract import (
-    identity_display_label,
-    occupied_canonical_keys,
-    repair_persisted_character_identity,
-)
 from app.models.scene_state import (
     LocationExitCreate,
     LocationExitRead,
     SceneStateRead,
     SceneStateUpdate,
     SceneStateValidation,
+)
+from app.services.name_identity_contract import (
+    identity_display_label,
+    occupied_canonical_keys,
+    repair_persisted_character_identity,
 )
 
 
@@ -148,6 +148,16 @@ class SceneStateService:
                 access_rule=data.access_rule,
                 discovered=data.discovered,
                 active=data.active,
+            )
+        else:
+            # Explicit GM topology must encode the return restriction, rather than leave a missing
+            # edge indistinguishable from an ordinary route the player has not discovered yet.
+            await self._upsert_exit(
+                campaign_id, target.id, source.id,
+                label=data.reverse_label or source.canonical_name, direction=None,
+                travel_time=data.travel_time,
+                access_rule="Односторонний проход: обратный переход по этому пути недоступен.",
+                discovered=data.discovered, active=False,
             )
         await self._session.flush()
         return await self.list_exits(campaign_id, from_location_id, include_hidden=True)
@@ -356,6 +366,7 @@ class SceneStateService:
         target_location_id: UUID | None,
         *,
         allow_discovery: bool,
+        source_turn_id: UUID | None = None,
     ) -> None:
         if not source_location_id or not target_location_id:
             return
@@ -383,8 +394,11 @@ class SceneStateService:
                     raise ValueError("Destination exit has not been discovered")
                 row = await self._session.get(LocationExit, str(direct.id))
                 if row:
+                    from app.services.published_routes import _edge_state
+                    before = _edge_state(row)
                     row.discovered = True
                     await self._session.flush()
+                    await self._journal_route(source_turn_id, row, before)
             return
         if exits and not allow_discovery:
             names = ", ".join(item.to_location_name for item in exits if item.active)
@@ -405,18 +419,23 @@ class SceneStateService:
             access_rule=None,
             discovered=True,
             active=True,
+            source_turn_id=source_turn_id,
         )
-        await self._upsert_exit(
-            campaign_id,
-            target.id,
-            source.id,
-            label=source.canonical_name,
-            direction=None,
-            travel_time=None,
-            access_rule=None,
-            discovered=True,
-            active=True,
-        )
+        # Discovering the outbound route cannot erase a separately established return gate.
+        reverse = await self.list_exits(campaign_id, target.id, include_hidden=True)
+        if not any(edge.to_location_id == source.id for edge in reverse):
+            await self._upsert_exit(
+                campaign_id,
+                target.id,
+                source.id,
+                label=source.canonical_name,
+                direction=None,
+                travel_time=None,
+                access_rule=None,
+                discovered=True,
+                active=True,
+                source_turn_id=source_turn_id,
+            )
         await self._session.flush()
 
     TIME_PHASES = ("dawn", "morning", "day", "evening", "night")
@@ -542,6 +561,7 @@ class SceneStateService:
         access_rule: str | None,
         discovered: bool,
         active: bool,
+        source_turn_id: UUID | None = None,
     ) -> LocationExit:
         result = await self._session.execute(
             select(LocationExit).where(
@@ -550,6 +570,8 @@ class SceneStateService:
             )
         )
         row = result.scalar_one_or_none()
+        from app.services.published_routes import _edge_state
+        before = _edge_state(row) if row else None
         if row is None:
             row = LocationExit(
                 campaign_id=str(campaign_id),
@@ -565,7 +587,18 @@ class SceneStateService:
         row.discovered = discovered
         row.active = active
         await self._session.flush()
+        await self._journal_route(source_turn_id, row, before)
         return row
+
+    async def _journal_route(self, source_turn_id: UUID | None, row: LocationExit, before: dict | None) -> None:
+        from app.db.generation_lifecycle_table import ProvisionalTurnEffect
+        from app.services.published_routes import _edge_state
+
+        after = _edge_state(row)
+        if source_turn_id and before != after:
+            self._session.add(ProvisionalTurnEffect(trigger_turn_id=str(source_turn_id), kind="route",
+                entity_id=row.id, previous=json.dumps({"before": before, "after": after})))
+            await self._session.flush()
 
     async def _require_location(self, campaign_id: UUID, location_id: UUID):
         location = await self._locations.get_by_id(location_id)

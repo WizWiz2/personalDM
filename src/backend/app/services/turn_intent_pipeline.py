@@ -142,8 +142,9 @@ class TurnIntentPlanningPipeline:
         openings = dict((await self._session.execute(
             select(SceneLocationLink.location_id, Turn.content)
             .join(Turn, Turn.scene_id == SceneLocationLink.scene_id)
-            .where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant")
-            .order_by(Turn.created_at.desc())
+            .where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant",
+                   Turn.status == "active")
+            .order_by(Turn.created_at)
         )).all())
         try:
             here = str((await self._compiler._world(campaign_id))[1].location_id)

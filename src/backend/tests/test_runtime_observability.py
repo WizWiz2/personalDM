@@ -76,7 +76,7 @@ def test_playtest_quality_classification_distinguishes_raw_from_publication() ->
 
     quality = _quality_classification(audit, "repaired", "Хорошая большая сцена.", [])
 
-    assert quality["class"] == "RAW BAD/PUBLISHED GOOD"
+    assert quality["class"] == "RAW BAD/PUBLISHED UNKNOWN"
     assert quality["repair_preservation_ratio"] is not None
 
 
