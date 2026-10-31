@@ -72,14 +72,13 @@ def item_position_violations(
                     owner_location_id=receipt.get("source_location_id" if claim.moment == "before" else "target_location_id")
                     if receipt.get(f"{prefix}_owner_id") else None,
                 )
-        placement_only = claim.aspect == "placement"
         actual_mode = (
             "owned" if reference and reference.owner_id else "located"
             if reference and reference.location_id else "unpositioned"
         )
         compatible_surface = bool(
             reference and reference.owner_id and reference.placement_detail
-            and claim.mode == "located" and placement_only and claim.placement_matches is True
+            and claim.mode == "located" and claim.placement_matches is True
             and claim.owner_id in {None, reference.owner_id}
             and claim.location_id in {None, reference.owner_location_id}
         )
@@ -90,7 +89,7 @@ def item_position_violations(
         )
         position_conflict = not compatible_surface and (
             claim.mode != actual_mode
-            or (not placement_only and claim.owner_id != (reference.owner_id if reference else None))
+            or (claim.mode == "owned" and claim.owner_id != (reference.owner_id if reference else None))
             or (claim.location_id != (reference.location_id if reference else None) and not compatible_room)
         )
         if claim.polarity == "denied":

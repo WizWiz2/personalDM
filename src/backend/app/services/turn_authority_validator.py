@@ -250,7 +250,7 @@ For claims use exact IDs from facts; evidence is an exact candidate fragment.
 scope=current for narrator-confirmed reality, including past-tense narration of this turn;
 past only for explicitly earlier/recalled events; speech for quoted claims; conditional for wishes.
 mode=owned for custody/holding, located for a surface or room without a stated holder.
-Distinguish aspect=custody from placement and custody_and_placement. A key under NPC control
+A holder named in prose is always custody (mode=owned, owner_id). A key under NPC control
 can hang on its established board without ceasing to belong to that NPC. placement_matches=true
 only if the surface agrees semantically with placement_detail; placement_conflicts=true if not.
 The room of an owner is not a new loose-item location.
