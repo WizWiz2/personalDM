@@ -58,3 +58,14 @@ async def test_second_payment_joins_the_recipients_earlier_coins_of_the_same_pur
     await _execute(db_session, cid, scene, *_step(coin, "give", target=npc))
     states = {str(s.item_id): (s.quantity, str(s.owner_id)) for s in await load_item_states(db_session, cid)}
     assert states.get(paid) == (3, str(npc)) and coin not in states and states[purse][0] == 3
+
+
+@pytest.mark.asyncio
+async def test_a_coin_set_down_where_an_unowned_purse_lies_stays_its_own_identity(db_session):
+    """verify-r3 T1: the purse was typed located in the tavern; a coin placed on the counter merged."""
+    cid, room, _, hero, _, _, scene = await _world(db_session)
+    purse = await _item(db_session, cid, "Кошель", 4, location=room)
+    coin = await _item(db_session, cid, "серебряк", 1, owner=hero, split_from=purse)
+    await _execute(db_session, cid, scene, *_step(coin, "place"))
+    states = {str(s.item_id): s.quantity for s in await load_item_states(db_session, cid)}
+    assert states.get(coin) == 1 and states.get(purse) == 4

@@ -29,16 +29,15 @@ async def return_units(session, item_ids) -> None:
 
 
 async def merge_units(session, item) -> None:
-    """Split units rejoin, by ID, their source or a sibling split now in the same custody."""
-    if not item.split_from_item_id or not item.quantity:
+    """Split units rejoin, by ID, their source or a sibling split held by the same owner."""
+    if not item.split_from_item_id or not item.quantity or not item.current_owner_id:
         return
-    custody = (item.current_owner_id, item.current_location_id)
     candidates = [await session.get(Item, item.split_from_item_id), *(await session.execute(
         select(Item).join(Entity, Entity.id == Item.entity_id).where(
             Item.split_from_item_id == item.split_from_item_id, Item.entity_id != item.entity_id,
             Entity.status != "destroyed"))).scalars()]
     target = next((other for other in candidates if other is not None and other.quantity is not None
-                   and (other.current_owner_id, other.current_location_id) == custody), None)
+                   and other.current_owner_id == item.current_owner_id), None)
     if target is None:
         return
     target.quantity += item.quantity
