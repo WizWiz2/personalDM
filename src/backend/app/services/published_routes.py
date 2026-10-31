@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.generation_lifecycle_table import ProvisionalTurnEffect
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_state_table import LocationExit
@@ -31,6 +32,26 @@ def _edge_state(edge: LocationExit) -> dict:
         "campaign_id", "from_location_id", "to_location_id", "label", "direction",
         "travel_time", "access_rule", "discovered", "active",
     )}
+
+
+async def retract_discovered_routes(session: AsyncSession, source_turn_id: UUID,
+                                    statuses: tuple[str, ...] = ("provisional", "confirmed")) -> None:
+    """Compensate this turn's route edits while retaining independent later GM changes."""
+    effects = (await session.execute(select(ProvisionalTurnEffect).where(
+        ProvisionalTurnEffect.trigger_turn_id == str(source_turn_id),
+        ProvisionalTurnEffect.kind == "route", ProvisionalTurnEffect.status.in_(statuses),
+    ).order_by(ProvisionalTurnEffect.id.desc()))).scalars().all()
+    for effect in effects:
+        change = json.loads(effect.previous)
+        edge = await session.get(LocationExit, effect.entity_id)
+        if edge and _edge_state(edge) == change["after"]:
+            if change["before"] is None:
+                await session.delete(edge)
+            else:
+                for key, value in change["before"].items():
+                    setattr(edge, key, value)
+        effect.status = "rolled_back"
+    await session.flush()
 
 
 async def publish_routes(
@@ -84,10 +105,10 @@ async def publish_routes(
             receipt["places"].append(str(destination.id))
         if str(destination.id) == str(origin):
             continue
-        hops = [(str(origin), str(destination.id), destination.canonical_name)]
-        if route.bidirectional:
-            hops.append((str(destination.id), str(origin), by_id[str(origin)].canonical_name))
+        hops = [(str(origin), str(destination.id), destination.canonical_name),
+                (str(destination.id), str(origin), by_id[str(origin)].canonical_name)]
         for start, end, label in hops:
+            return_gate = not route.bidirectional and start == str(destination.id)
             edge = (await session.execute(select(LocationExit).where(
                 LocationExit.campaign_id == str(authority.campaign_id),
                 LocationExit.from_location_id == start, LocationExit.to_location_id == end,
@@ -103,12 +124,13 @@ async def publish_routes(
                     LocationExit.campaign_id == str(authority.campaign_id),
                     LocationExit.from_location_id == end, LocationExit.to_location_id == start,
                 ))).scalar_one_or_none()
-                if reverse and (not reverse.active or reverse.access_rule):
+                if route.bidirectional and reverse and (not reverse.active or reverse.access_rule):
                     continue  # A new reciprocal edge cannot bypass an established gate.
                 before = None
                 edge = LocationExit(campaign_id=str(authority.campaign_id),
                     from_location_id=start, to_location_id=end, label=label,
-                    discovered=True, active=True)
+                    discovered=True, active=not return_gate,
+                    access_rule=route.one_way_evidence if return_gate else None)
                 session.add(edge)
             await session.flush()
             receipt["edges"].append({"id": edge.id, "before": before, "after": _edge_state(edge)})

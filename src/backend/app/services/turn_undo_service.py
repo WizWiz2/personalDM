@@ -9,16 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.repositories.job_repo import GenerationRunRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.scene_transition_table import SceneTransition
 from app.db.scene_state_table import SceneRuntimeState
+from app.db.scene_transition_table import SceneTransition
 from app.db.tables import Campaign, Character, Entity, Event, EventParticipant, SceneThesis, Turn
-from app.services.scene_transition_executor import release_transition_target
 from app.services.action_sequence_executor import ActionSequenceExecutor
 from app.services.active_canon_replay import ActiveCanonReplayService
 from app.services.scene_bridge_service import SceneBridgeService
 from app.services.scene_lifecycle import SceneLifecycleService
+from app.services.scene_transition_executor import release_transition_target
 from app.services.truth_engine import CanonicalEventStore, WorldReducer
-
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +124,7 @@ class TurnUndoService:
         # Prefer restoring the pre-commit rhythm snapshot from the undone turn when present.
         try:
             import json
+
             from app.services.master_service import MasterService
 
             snapshot = {}
@@ -224,11 +224,13 @@ class TurnUndoService:
         """
         assistant = await self._turns.get_by_id(assistant_turn_id)
         if assistant and assistant.parent_turn_id:
-            await CanonicalEventStore(self._session).set_turn_status(
-                campaign_id,
-                assistant.parent_turn_id,
-                active=False,
-            )
+            from app.services.published_routes import retract_discovered_routes
+
+            await retract_discovered_routes(self._session, assistant.parent_turn_id)
+            for source in (assistant.parent_turn_id, assistant_turn_id):
+                await CanonicalEventStore(self._session).set_turn_status(
+                    campaign_id, source, active=False,
+                )
         await ActiveCanonReplayService(self._session).replay(campaign_id)
         await WorldReducer(self._session).rebuild(campaign_id)
         await self._remove_turn_introductions(campaign_id, assistant_turn_id)

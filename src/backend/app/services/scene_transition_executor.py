@@ -138,6 +138,7 @@ class SceneTransitionExecutor:
         *,
         allow_route_discovery: bool | None = None,
         require_existing_route: bool = False,
+        route_discovery_turn_id: UUID | None = None,
     ) -> AppliedSceneTransition | None:
         if not plan.required or plan.transition_type == "none":
             return None
@@ -175,8 +176,14 @@ class SceneTransitionExecutor:
         target_location_id = source_location_id
         destination_created = False
         if plan.transition_type == "location_transition" and plan.destination_location_id:
-            # The compiler already proved identity and an open route; nothing is re-matched by name.
+            # Identity is already bound. Still persist the approved physical route: skipping this
+            # branch used to move the hero without recording any way back.
             target_location_id = plan.destination_location_id
+            await self._state.ensure_destination(
+                campaign_id, source_location_id, target_location_id,
+                allow_discovery=bool(allow_route_discovery),
+                source_turn_id=route_discovery_turn_id or trigger_turn_id,
+            )
         elif plan.transition_type == "location_transition":
             destination = plan.destination_location or ""
             authorization = None
@@ -246,6 +253,7 @@ class SceneTransitionExecutor:
                 source_location_id,
                 target_location_id,
                 allow_discovery=destination_created or bool(allow_route_discovery),
+                source_turn_id=route_discovery_turn_id or trigger_turn_id,
             )
 
         resolved_location = None

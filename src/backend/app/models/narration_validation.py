@@ -71,11 +71,17 @@ class RouteDisclosure(BaseModel):
     profile: str | None = Field(default=None, min_length=32, max_length=600)
     evidence: str = Field(min_length=5, max_length=1000)
     bidirectional: bool = True
+    one_way_evidence: str | None = Field(default=None, min_length=5, max_length=500,
+        description="Exact fragment of the directions explaining the physical obstacle to returning; null for ordinary reversible travel.")
 
     @model_validator(mode="after")
     def new_place_has_profile(self):
         if self.destination.startswith("new_in:") and not self.profile:
             raise ValueError("a new route destination requires a physical profile")
+        if not self.bidirectional and (
+            not self.one_way_evidence or self.one_way_evidence not in self.evidence
+        ):
+            raise ValueError("a one-way route requires an explicit return obstacle in its public directions")
         return self
 
 
@@ -139,6 +145,7 @@ class NarrationValidationResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
     # Runtime attestation, never accepted from model JSON or serialized as a fact.
     _item_states_verified: bool = PrivateAttr(default=False)
+    _outcomes_verified: bool = PrivateAttr(default=False)
 
     verdict: Literal["pass", "repair_required"]
     summary: str = Field(default="", max_length=1500)

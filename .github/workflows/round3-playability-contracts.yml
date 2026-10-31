@@ -37,6 +37,7 @@ on:
       - "src/backend/tests/test_planner_control_plane_simplification.py"
       - "src/backend/tests/test_narration_validation.py"
       - "src/backend/tests/test_qa302_strict_schema.py"
+      - "src/backend/tests/test_qa303_*.py"
       - ".github/workflows/round3-playability-contracts.yml"
 
 jobs:
@@ -95,4 +96,5 @@ jobs:
             tests/test_planner_control_plane_simplification.py \
             tests/test_narration_validation.py \
             tests/test_qa302_strict_schema.py \
+            tests/test_qa303_*.py \
             --tb=short

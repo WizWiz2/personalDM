@@ -7,13 +7,13 @@ from enum import Enum
 from urllib.parse import urlparse
 from uuid import UUID
 
-from app.services import campaign_write_barrier
 from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.providers.llm_provider import LLMProvider, LLMProviderAuthenticationError, LLMProviderError
 from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
+from app.services import campaign_write_barrier
 from app.services.chatgpt_auth_service import ChatGPTAuthError, ChatGPTAuthService
 from app.services.llm_usage_tracker import record_provider_telemetry
 
