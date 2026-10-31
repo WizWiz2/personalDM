@@ -372,7 +372,8 @@ class OutcomeNpcIntroductionDraft(BaseModel):
 
     canonical_name: str = Field(min_length=2, max_length=120)
     cast_id: str | None = None
-    role: str = Field(min_length=2, max_length=120)
+    # The decoder holds the short-designation shape (<=5 words, no list punctuation): no retry.
+    role: str = Field(min_length=2, max_length=40, pattern=r"^[^,;:\s]+( [^,;:\s]+){0,4}$")
     current_goal: str | None = Field(default=None, max_length=500)
     description: str = Field(min_length=32, max_length=800)
     appearance: str = Field(min_length=32, max_length=800)
@@ -496,7 +497,6 @@ def _outcome_wire_model(
     known_cast: dict[str, str] | None = None,
     thread_sources: dict[str, dict] | None = None,
     review_evidence: str = "",
-    initiative_due: bool = False,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -811,12 +811,9 @@ def _outcome_wire_model(
         def validate_action_indices(self):
             outcomes = {outcome.action_index: outcome for outcome in self.action_outcomes}
             move = self.world_move
-            if thread_sources:
-                if (initiative_due and world_move_type is not type(None) and move is None
-                        and any(review["status"] == "active" for review in self.thread_reviews.model_dump().values())):
-                    raise ValueError("A due initiative requires a move from a currently active reviewed thread")
-                if move is not None and getattr(self.thread_reviews, move.thread_id).status != "active":
-                    raise ValueError("A world move cannot pursue a resolved, superseded or uncertain thread")
+            if thread_sources and move is not None and getattr(self.thread_reviews, move.thread_id).status != "active":
+                # The draft's own review closed this thread: its review wins, the move is void (no retry).
+                self.world_move = move = None
             if move is not None and move.kind in {"npc_action", "npc_move"} and not world_threads[move.thread_id]:
                 raise ValueError("npc_action/npc_move must name a thread that has an actor")
             if move is not None and move.kind == "arrival" and not world_threads[move.thread_id] \
@@ -1348,7 +1345,6 @@ class TurnOutcomeResolver:
                 required_absent=required_absent,
                 thread_sources=threads,
                 review_evidence=authoritative_context + "\n" + player_input,
-                initiative_due=bool(momentum.get("pressure_due")) and not contract.pending_player_choice,
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,
