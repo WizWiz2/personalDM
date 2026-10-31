@@ -369,3 +369,31 @@ async def test_explicit_provider_stop_beats_terminal_punctuation_heuristic(
     )
     assert text == "Ответ заканчивается именем Рэт"
     assert telemetry["completion_recovered_from_false_punctuation_truncation"] is True
+
+
+@pytest.mark.asyncio
+async def test_people_left_behind_by_a_typed_trip_are_present_before_departure(
+    db_session: AsyncSession,
+):
+    """verify274 T7: «жму Варну руку, возвращаюсь в трактир». Varn shook hands before the trip, so
+    he is not a known-absent person of this turn; prose of the handshake was rejected twice."""
+    campaign_id, player, _absent, yard = await _world(db_session)
+    locations, scenes, entities = (
+        LocationRepository(db_session), SceneRepository(db_session), EntityRepository(db_session))
+    inn = await locations.create(campaign_id, LocationCreate(canonical_name="Трактир"))
+    rider = await entities.create_character(
+        campaign_id, CharacterCreate(canonical_name="Варн", current_location_id=yard.location_id))
+    await scenes.add_participant(yard.id, rider.id, allow_movement=True)
+    hall = await scenes.create(campaign_id, SceneCreate(title="Зал", location_id=inn.id))
+    await scenes.add_participant(hall.id, player.id, allow_movement=True)
+    await db_session.commit()
+
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=campaign_id, trigger_turn_id=uuid4(),
+        player_input="Жму Варну руку и возвращаюсь в трактир.",
+        source_scene_id=yard.id, target_scene_id=hall.id, plan=None, acting_character_id=None,
+    )
+    assert authority.present_before_departure == ["Варн"]
+    assert "Варн" not in authority.known_absent_character_names
+    assert "Шептун" in authority.known_absent_character_names
+    assert authority.validator_payload()["present_before_departure"] == ["Варн"]
