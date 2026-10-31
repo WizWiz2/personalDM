@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.db.repositories.generation_lifecycle_repo import GenerationLifecycleRepository
 from app.db.tables import Turn
 from app.models.jobs import GenerationPhase
+from app.services import campaign_write_barrier
 from app.services.post_turn_processor import PostTurnProcessor
 from app.services.visual_generation_dispatcher import VisualGenerationDispatcher
 
@@ -32,6 +33,7 @@ class PostTurnDispatcher:
                 return pending
 
         async def run() -> None:
+            campaign_write_barrier.background_job.set(True)  # yields provider calls to turns
             factory = async_sessionmaker(
                 bind=bind,
                 expire_on_commit=False,
