@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.generation_lifecycle_table import GenerationLifecycle
+from app.db.repositories.event_repo import EventRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import (
     Belief,
@@ -213,6 +214,8 @@ class DebuggerService:
                 .order_by(Event.created_at)
             )
         ).scalars().all()
+        event_status = {row.id: (await EventRepository(self._session).get_by_id(UUID(row.id))).status
+                        for row in events}
         proposals = []
         if turn_ids:
             proposals = (
@@ -399,6 +402,7 @@ class DebuggerService:
                 {
                     "id": row.id,
                     "event_type": row.event_type,
+                    "status": event_status[row.id],
                     "description": row.description,
                     "location_id": row.location_id,
                     "source_turns": _json(row.source_turns, []),
