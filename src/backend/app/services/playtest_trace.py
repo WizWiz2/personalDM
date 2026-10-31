@@ -14,7 +14,6 @@ from app.db.narration_validation_table import NarrationValidationRun
 from app.services.context_compiler import count_tokens
 from app.services.debugger_service import DebuggerService
 
-
 _TECHNICAL_RE = re.compile(
     r"(?:\[Generation failed|Traceback|Pydantic|validation error|UUID\(|"
     r"finish_reason|LLMProvider|JSONDecodeError)",
@@ -60,6 +59,7 @@ def _quality_classification(
     publication_mode: str,
     assistant_text: str,
     diagnostics: list[dict],
+    publication_guard: dict | None = None,
 ) -> dict:
     if audit is None:
         raw = "unknown"
@@ -94,13 +94,18 @@ def _quality_classification(
         or "TECHNICAL_LEAK" in diagnostic_errors
     )
     published = "bad" if published_bad else "good"
+    if not published_bad and publication_mode == "repaired" and not (
+        publication_guard or {}
+    ).get("outcomes_verified"):
+        published = "unknown"
     label = f"RAW {raw.upper()}/PUBLISHED {published.upper()}"
     return {
         "class": label,
         "raw": raw,
         "published": published,
         "raw_basis": raw_basis,
-        "published_basis": "publication mode + deterministic surface diagnostics",
+        "published_basis": ("repair has no confirmed-result coverage assessment" if published == "unknown"
+                            else "publication mode + deterministic surface diagnostics"),
         "repair_preservation_ratio": _repair_preservation_ratio(audit),
     }
 
@@ -432,6 +437,7 @@ class PlaytestTraceService:
             publication_mode,
             assistant_text,
             diagnostics,
+            publication_guard=narration_validation.get("publication_guard"),
         )
 
         context_breakdown = dict(context.get("token_budget_breakdown") or {})

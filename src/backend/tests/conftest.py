@@ -170,7 +170,7 @@ def deterministic_narration_validator(request):
         else None
     )
 
-    async def bridge_authority_validation(_self, selection, authority, candidate_text):
+    async def bridge_authority_validation(_self, selection, authority, candidate_text, *, require_outcomes=False):
         legacy = NarrationValidator(None, None)
         checked = await legacy.validate(
             selection,
@@ -187,6 +187,7 @@ def deterministic_narration_validator(request):
         # audit. Tests of that audit opt out with interagent_contract_enforced.
         checked = checked.model_copy(deep=True)
         checked._item_states_verified = checked.verdict == "pass"
+        checked._outcomes_verified = require_outcomes and checked.verdict == "pass"
         return checked
 
     authority_patch = (
