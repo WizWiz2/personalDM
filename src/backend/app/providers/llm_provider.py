@@ -291,6 +291,13 @@ class LLMProvider:
             result[key] = value
         if result.get("type") == "object" and "properties" in result:
             result.setdefault("additionalProperties", False)
+            # A property with one possible value (null, []) is not a choice: never make the model
+            # write it. Its model default fills it on validation.
+            fixed = {name for name, item in result["properties"].items()
+                     if item == {"type": "null"} or item.get("type") == "array" and item.get("maxItems") == 0}
+            result["properties"] = {k: v for k, v in result["properties"].items() if k not in fixed}
+            if "required" in result:
+                result["required"] = [name for name in result["required"] if name not in fixed]
         return result
 
     @classmethod
