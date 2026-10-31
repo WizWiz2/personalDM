@@ -605,7 +605,7 @@ def _outcome_wire_model(
         # A trip brings only the traveler: at the destination only its typed residents appear (A10 T5).
         IndexedNpcIntroductionDraft = create_model(
             "ResidentOnlyNpcIntroductionDraft", __base__=IndexedNpcIntroductionDraft,
-            resident_slot=(Literal[tuple(resident_slots)] if resident_slots else type(None), ...),
+            resident_slot=(Literal[tuple(resident_slots)], ...) if resident_slots else (type(None), None),
         )
 
     if required_slot:
@@ -623,15 +623,20 @@ def _outcome_wire_model(
         arriving: arrival_type = None
         sends_for: arrival_type = None
 
+    # Each result kind carries only its own fields: strict decoding writes every listed one.
     class SuccessfulActionOutcomeDraft(IndexedActionOutcomeDraft):
         resolution: Literal["auto_success"]
         observable_outcome: str = Field(min_length=2, max_length=1000)
+        blocking_reason: None = None
+        blocking_evidence_quote: None = None
         blocking_evidence_ref: None = None
 
     class BlockedActionOutcomeDraft(IndexedActionOutcomeDraft):
         resolution: Literal["blocked"]
         blocking_reason: str = Field(min_length=2, max_length=1000)
         blocking_evidence_quote: str | None = Field(default=None, max_length=500)
+        sends_for: None = None
+        carry_participants: list[str] = Field(default_factory=list, max_length=0)
 
     action_model = (
         IndexedActionOutcomeDraft
@@ -663,7 +668,8 @@ def _outcome_wire_model(
                         action_index=(Literal[tuple(sorted(indices))], ...),
                         carry_participants=(
                             list[participant_type],
-                            Field(default_factory=list, max_length=limit),
+                            Field(default_factory=list,
+                                  max_length=0 if base is BlockedActionOutcomeDraft else limit),
                         ),
                         # A trip carries its party; it brings nobody new (A10 T5 «Служащий»).
                         **({"arriving": (type(None), None)} if limit else {}),
@@ -741,7 +747,7 @@ def _outcome_wire_model(
         response_revealed_name: revealed_name_type = None
         response_name_evidence: revealed_name_type = None
         action_outcomes: list[action_model] = Field(
-            min_length=action_count,
+            default_factory=list, min_length=action_count,
             max_length=action_count,
         )
         # A person the human named who has no cast ID is typed offscreen this turn (replay15 Keeper).
@@ -749,7 +755,7 @@ def _outcome_wire_model(
             default_factory=list, min_length=len(required_absent or ()),
             max_length=len(required_absent) if required_absent is not None else 2)
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
-            min_length=1 if required_slot and allow_introductions else 0,
+            default_factory=list, min_length=1 if required_slot and allow_introductions else 0,
             max_length=introduction_cap,
         )
         if world_required and world_move_type is not type(None):
