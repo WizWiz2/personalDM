@@ -601,7 +601,9 @@ class PlayerIntentInterpreter:
         if any("contribution_kind" in a.model_fields_set for a in draft.actions):
             # Typed kinds decide; a summary flag cannot erase physical acts of a mixed turn.
             draft.information_request_only = all(a.contribution_kind == "speech" for a in draft.actions)
-        if syntax.information_request_only is True and syntax.information_recipient == "narrator":
+        physical = any("contribution_kind" in a.model_fields_set and a.contribution_kind == "world_action"
+                       for a in draft.actions)
+        if syntax.information_request_only is True and syntax.information_recipient == "narrator" and not physical:
             draft.information_request_only = True
             draft.world_state_question = True
             draft.addressed_response_requested = False
