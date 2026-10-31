@@ -497,6 +497,14 @@ class TurnSaga:
 
             # Planner output is durable before any structured world mutation begins.
             await self._set_phase(generation_run.id, GenerationPhase.PLANNED)
+            # Lock order is barrier → SQLite writer: the campaign is held against post-turn
+            # durable writes from the first prepare write until publication. Waiting for the
+            # barrier with prepare writes already pending deadlocked with a memory job holding
+            # it and waiting for SQLite, until busy_timeout failed the job (30 s per turn).
+            waited = perf_counter()
+            await campaign_write_barrier.for_campaign(campaign_id).acquire()
+            stage_timings["barrier_wait_ms"] = round((perf_counter() - waited) * 1000, 2)
+            barrier_held = True
 
             if plan:
                 # Capture the pre-turn physical projection before *any* structured mutation.
@@ -607,13 +615,6 @@ class TurnSaga:
                 authority,
                 source_turn_id=user_turn.id,
             )
-            # From the fingerprint capture until the publication commit the campaign is
-            # held exclusively against post-turn durable writes; otherwise a memory job
-            # auto-committing MOVEMENT/presence mid-narration would fail assert_unchanged
-            # and compensate a turn that was legitimately in flight.
-            campaign_barrier = campaign_write_barrier.for_campaign(campaign_id)
-            await campaign_barrier.acquire()
-            barrier_held = True
             world_frame = (
                 await TurnWorldFrame.capture(self._session, campaign_id, effective_scene_id)
                 if effective_scene_id else None
