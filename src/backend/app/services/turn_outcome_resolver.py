@@ -846,7 +846,10 @@ def _outcome_wire_model(
                     raise ValueError("Successful artifact creation requires a typed introduction at its source index")
                 if effect == "item_read" and not any(read.action_index == index for read in self.item_revelations):
                     raise ValueError("Successful document reading requires concrete typed disclosed content")
-                if effect == "item_change" and not any(item.action_index == index for item in self.item_property_changes):
+                # Units taken out of an item are its typed change (its count), not a free property.
+                if effect == "item_change" and not any(item.action_index == index for item in self.item_property_changes) \
+                        and not any(item.after_action_index == index and item.taken_from_item_id
+                                    for item in self.item_introductions):
                     raise ValueError("Successful physical change requires a typed property effect at its source index")
             for source, count in (required_artifact_counts or {}).items():
                 if source in outcomes and outcomes[source].resolution == "auto_success" and sum(
@@ -859,7 +862,8 @@ def _outcome_wire_model(
                 if not source or source.resolution != "auto_success" or (target and str(change.item_id) != target):
                     raise ValueError("Property effect requires a successful source and the frozen subject identity")
                 if change.property_name in ItemStateSnapshot.model_fields:
-                    raise ValueError("Property effects cannot replace another authoritative item state slot")
+                    raise ValueError("Property effects cannot replace another authoritative item state slot; "
+                                     "units taken out are an item_introductions entry with taken_from_item_id")
             for handoff in self.npc_item_handoffs:
                 prerequisite = outcomes.get(handoff.after_action_index)
                 if prerequisite and (prerequisite.resolution != "auto_success" or prerequisite.npc_response == "refused"):

@@ -74,3 +74,20 @@ async def test_taking_more_than_the_source_holds_fails_closed(file_db):
 def test_a_split_requires_a_positive_count():
     with pytest.raises(ValueError):
         PlannedItemIntroduction(canonical_name="серебряк", evidence="серебряк на стойке", taken_from_item_id=uuid4())
+
+
+def test_taking_units_out_is_the_typed_change_of_that_item():
+    """Live verify281 T6: «вытряхиваю из кошеля» was item_change; quantity is not a free property."""
+    from app.models.item_state import ItemStateSnapshot
+    from app.services.turn_outcome_resolver import _outcome_wire_model
+    purse = ItemStateSnapshot(item_id=uuid4(), name="Кошель", owner_id=uuid4(), quantity=1)
+    wire = _outcome_wire_model(1, allow_choice=False, required_effects={0: "item_change"}, handoff_states=[purse])
+    draft = wire.model_validate({
+        "action_outcomes": [{"action_index": 0, "resolution": "auto_success", "safe_mundane": True,
+                             "observable_outcome": "Серебряк на ладони."}],
+        "npc_introductions": [], "absent_people": [], "place_introductions": [], "item_revelations": [],
+        "item_property_changes": [], "item_introductions": [{
+            "canonical_name": "серебряк", "evidence": "Серебряк на ладони.", "owned_by_player": True,
+            "after_action_index": 0, "taken_from_item_id": str(purse.item_id), "quantity": 1}],
+    })
+    assert str(draft.item_introductions[0].taken_from_item_id) == str(purse.item_id)

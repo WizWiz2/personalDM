@@ -476,7 +476,8 @@ class ActionPlanCompiler:
                     raise PlanContractError("Successful reading requires concrete content for its registered document")
                 if action.expected_effect == "item_change" and not any(
                     change.action_index == index for change in decision.item_property_changes
-                ):
+                ) and not any(item.after_action_index == index and item.taken_from_item_id
+                              for item in decision.item_introductions):
                     raise PlanContractError("Successful physical change is missing its typed property effect")
             if action.action_type == "movement":
                 step, next_cursor, discovery = await self._compile_movement(
