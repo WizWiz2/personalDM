@@ -45,8 +45,7 @@ from app.services.turn_outcome_materializer import (
 )
 from app.services.turn_planner import TurnPlanningError
 from app.services.turn_world_frame import TurnWorldFrame
-
-active_tasks: dict[str, asyncio.Task] = {}
+from app.services.campaign_write_barrier import active_tasks
 
 
 class TurnSaga:

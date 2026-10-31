@@ -7,6 +7,7 @@ from enum import Enum
 from urllib.parse import urlparse
 from uuid import UUID
 
+from app.services import campaign_write_barrier
 from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.models.provider_config import ProviderConfigRead
@@ -323,6 +324,7 @@ class RoleModelRouter:
         messages: list[ChatMessage],
         **kwargs,
     ) -> dict:
+        await campaign_write_barrier.yield_to_turns()
         try:
             result = await self._generate_json_once(
                 provider,
