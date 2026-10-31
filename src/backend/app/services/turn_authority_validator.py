@@ -8,7 +8,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from app.services.turn_performance import call_reason, reason_scope
 from app.config import settings
 from app.models.item_state import ItemPositionClaim
 from app.models.narration_validation import NarrationValidationResult, NarrationViolation
@@ -22,6 +21,7 @@ from app.services.llm_usage_tracker import record_decision
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
+from app.services.turn_performance import call_reason, reason_scope
 
 FOUR_BANS = frozenset({"absent_character", "canon_conflict", "player_agency", "invalid_movement"})
 

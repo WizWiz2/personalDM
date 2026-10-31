@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-
-from sqlalchemy.exc import OperationalError
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -11,12 +9,12 @@ from typing import Any
 from urllib.parse import urlparse
 from uuid import UUID
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db.repositories.llm_usage_repo import LLMUsageRepository
 from app.services.llm_pricing import estimate_openai_text_cost_usd
 from app.services.turn_performance import PerformanceTrace
-
 
 logger = logging.getLogger(__name__)
 

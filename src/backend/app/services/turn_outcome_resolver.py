@@ -16,7 +16,6 @@ from pydantic import (
     model_validator,
 )
 
-from app.services.turn_performance import reason_scope
 from app.models.addressed_response import AddressedResponse
 from app.models.game_master import InitiativePolicy
 from app.models.item_state import ItemContentRevelation, ItemPropertyChange, ItemStateSnapshot
@@ -54,6 +53,7 @@ from app.services.turn_authority_resolvers import (
     AuthorityResolutionError,
     NpcIntroductionResolver,
 )
+from app.services.turn_performance import reason_scope
 from app.services.turn_planner import TurnPlanningError
 
 _OUTCOME_PROMPT = """[FROZEN INTENT OUTCOME RESOLVER]

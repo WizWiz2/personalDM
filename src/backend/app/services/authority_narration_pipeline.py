@@ -8,7 +8,6 @@ from pydantic import Field, create_model
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.turn_performance import reason_scope
 from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.tables import Belief, Entity
@@ -36,6 +35,7 @@ from app.services.narration_validator import NarrationValidationError, Narration
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.script_consistency import consistent_script, foreign_script_intrusions
 from app.services.turn_authority_validator import TurnAuthorityValidator
+from app.services.turn_performance import reason_scope
 
 
 class NarrationRefused(RuntimeError):

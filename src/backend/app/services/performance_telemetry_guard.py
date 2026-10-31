@@ -13,8 +13,13 @@ from typing import Any
 
 from app.config import settings
 from app.services.turn_performance import (
-    call_reason, correlation, current_trace, install_sql_timing,
-    operation_parent, record_interval, series_summary,
+    call_reason,
+    correlation,
+    current_trace,
+    install_sql_timing,
+    operation_parent,
+    record_interval,
+    series_summary,
 )
 
 _INSTALLED = False

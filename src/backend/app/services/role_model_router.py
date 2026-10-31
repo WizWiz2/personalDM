@@ -325,6 +325,7 @@ class RoleModelRouter:
         **kwargs,
     ) -> dict:
         from time import perf_counter
+
         from app.services.turn_performance import record_interval
         waited = perf_counter()
         try:
