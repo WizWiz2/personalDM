@@ -55,3 +55,32 @@ async def test_queued_memory_writers_keep_arrival_order() -> None:
     gate.set()
     await asyncio.gather(*tasks)
     assert order == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_turn_takes_the_barrier_before_its_first_prepare_write(db_session, monkeypatch) -> None:
+    """Lock order is barrier → SQLite writer. A turn that wrote its prepare transaction and then
+    waited for the barrier deadlocked with a memory job holding the barrier and waiting for SQLite:
+    both sat out busy_timeout (30 s) and the memory job failed and re-ran its models."""
+    from app.models.campaign import CampaignCreate
+    from app.models.turn import TurnCreate
+    from app.services.campaign_service import CampaignService
+    from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
+    from app.services.turn_saga import TurnSaga
+
+    campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Lock order"))
+    held: list[bool] = []
+
+    async def plan(self, **kwargs):
+        return None, {"status": "skipped"}
+
+    async def build(self, **kwargs):
+        held.append(campaign_write_barrier.for_campaign(campaign.id).locked())
+        raise TurnAuthorityError("stop after the check")
+
+    monkeypatch.setattr(TurnSaga, "_plan", plan)
+    monkeypatch.setattr(TurnAuthorityService, "build", build)
+    _ = [chunk async for chunk in TurnSaga(db_session).run_turn_stream(
+        campaign.id, TurnCreate(role="user", content="Осматриваюсь."))]
+    assert held == [True]
+    assert not campaign_write_barrier.for_campaign(campaign.id).locked()
