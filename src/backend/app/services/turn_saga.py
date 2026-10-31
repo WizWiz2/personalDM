@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from time import perf_counter
 from collections.abc import AsyncIterator
+from time import perf_counter
 from uuid import UUID
 
 from app.config import settings
@@ -18,8 +18,9 @@ from app.db.tables import Turn
 from app.models.jobs import GenerationPhase
 from app.models.turn import ChatMessage, TurnCreate
 from app.providers.llm_provider import LLMProviderError
-from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
 from app.services import campaign_write_barrier
+from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services.campaign_write_barrier import active_tasks
 from app.services.initial_world_state import InitialWorldStateService
 from app.services.llm_usage_tracker import (
     close_usage_context,
@@ -28,6 +29,7 @@ from app.services.llm_usage_tracker import (
 )
 from app.services.post_turn_dispatcher import PostTurnDispatcher
 from app.services.post_turn_processor import PostTurnProcessor
+from app.services.prepared_turn_compensation import compensate_prepared_turn
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.scene_transition_executor import (
     AppliedSceneTransition,
@@ -38,14 +40,12 @@ from app.services.turn_authority_planner import (
     TurnAuthorityPlanner,
 )
 from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
-from app.services.prepared_turn_compensation import compensate_prepared_turn
 from app.services.turn_outcome_materializer import (
     MaterializedTurnOutcome,
     TurnOutcomeMaterializer,
 )
 from app.services.turn_planner import TurnPlanningError
 from app.services.turn_world_frame import TurnWorldFrame
-from app.services.campaign_write_barrier import active_tasks
 
 
 class TurnSaga:
@@ -743,8 +743,8 @@ class TurnSaga:
                 ),
             )
 
-            from app.services.published_speech_memory import remember_published_speech
             from app.services.published_routes import publish_routes
+            from app.services.published_speech_memory import remember_published_speech
 
             context_metadata["published_routes"] = await publish_routes(
                 self._session, authority, narration.beat, narration.text, saved_assistant.id,
@@ -792,7 +792,7 @@ class TurnSaga:
                 ):
                     raise RuntimeError("Prepared scene transition could not be finalized")
 
-            if materializer and materialized_outcome.has_changes:
+            if materializer:
                 await materializer.bind_to_assistant(user_turn.id, saved_assistant.id)
             if materializer and materialized_outcome.has_changes:
                 context_metadata["turn_materialization"]["status"] = "applied"

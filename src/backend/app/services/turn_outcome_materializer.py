@@ -4,25 +4,34 @@ import json
 from dataclasses import dataclass, replace
 from uuid import UUID, uuid5
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.action_sequence_table import ActionSequence, ActionStep
 from app.db.generation_lifecycle_table import ProvisionalTurnEffect
-
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
-from app.db.tables import Character, Entity, Location, Item, ItemContentDisclosure, ItemCreationEffect, NpcIdentityAnchor, SceneParticipant, Turn
-from app.db.action_sequence_table import ActionSequence, ActionStep
-from app.services.action_item_creation import return_units, take_units
-from app.services.item_content_authority import revealed_item_contents
+from app.db.tables import (
+    Character,
+    Entity,
+    Item,
+    ItemContentDisclosure,
+    ItemCreationEffect,
+    Location,
+    NpcIdentityAnchor,
+    SceneParticipant,
+    Turn,
+)
 from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
 from app.models.entity import EntityCreate, EntityType
 from app.models.location import LocationCreate
 from app.models.narration_validation import GrantedBeat
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
+from app.services.action_item_creation import return_units, take_units
 from app.services.entity_identity import identity_key
+from app.services.item_content_authority import revealed_item_contents
 from app.services.name_identity_contract import NEEDS_NAME_FIELD, given_name_collides
 from app.services.turn_authority_resolvers import AuthorityResolutionError, NpcIntroductionResolver
 
@@ -480,6 +489,9 @@ class TurnOutcomeMaterializer:
 
     async def rollback(self, trigger_turn_id: UUID) -> None:
         """Compensate this turn's provisional changes from the durable journal (idempotent)."""
+        from app.services.published_routes import retract_discovered_routes
+
+        await retract_discovered_routes(self._session, trigger_turn_id, ("provisional",))
         for effect in await self._provisional(trigger_turn_id):
             entity_id = UUID(effect.entity_id)
             if effect.kind == "identity":

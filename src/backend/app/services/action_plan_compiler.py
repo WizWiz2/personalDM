@@ -63,7 +63,7 @@ class ActionPlanCompiler:
         )
 
     async def _route_blocker(
-        self, campaign_id: UUID, source_id: UUID, target_id: UUID
+        self, campaign_id: UUID, source_id: UUID, target_id: UUID, *, allow_discovery: bool = False,
     ) -> tuple[str, str] | None:
         """None when a discovered open path joins the places; otherwise (internal, public) reason.
 
@@ -94,6 +94,8 @@ class ActionPlanCompiler:
                     seen.add(item.to_location_id)
                     following.append(item.to_location_id)
             frontier = following
+        if allow_discovery:
+            return None  # Missing topology is not an established wall; the resolver approved the trip.
         return (
             "Destination is not reachable over known open routes.",
             "Из текущего места туда нет доступного прохода.",
@@ -161,6 +163,9 @@ class ActionPlanCompiler:
             if action.destination_location_id == cursor[0] and cursor[1] is None:
                 return None  # the same place: the resolver describes the local step
             exits = await self._state.list_exits(campaign_id, cursor[0], include_hidden=True)
+            if (not any(item.to_location_id == action.destination_location_id for item in exits)
+                    and await self._route_blocker(campaign_id, cursor[0], action.destination_location_id)):
+                return None  # Unknown route needs an external outcome, not a fabricated refusal.
             if any(
                 item.access_rule and item.to_location_id == action.destination_location_id
                 for item in exits
@@ -174,7 +179,7 @@ class ActionPlanCompiler:
             )
             step, cursor, _ = await self._compile_movement(
                 campaign_id=campaign_id, action=action, outcome=candidate,
-                cursor=cursor, by_id=by_id,
+                cursor=cursor, by_id=by_id, allow_route_discovery=False,
             )
             outcomes.append(ActionOutcomeDecision(
                 action_index=index,
@@ -236,6 +241,7 @@ class ActionPlanCompiler:
         outcome,
         cursor: tuple[UUID | None, tuple[str, str | None] | None],
         by_id: dict[UUID, object],
+        allow_route_discovery: bool = True,
     ) -> tuple[ActionStepPlan, tuple, bool]:
         """Compile one hop from the virtual cursor (known place, pending new place this turn)."""
         if outcome.resolution != "auto_success":
@@ -274,7 +280,8 @@ class ActionPlanCompiler:
             return step, cursor, False
         if target is not None:
             # A place created earlier this turn is joined only to its origin, the cursor.
-            blocker = await self._route_blocker(campaign_id, location_id, target.id)
+            blocker = await self._route_blocker(campaign_id, location_id, target.id,
+                                                allow_discovery=allow_route_discovery)
             if blocker is not None:
                 return self._blocked(action, *blocker), cursor, False
             transition = SceneTransitionPlan(
