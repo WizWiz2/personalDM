@@ -16,6 +16,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.services.turn_performance import reason_scope
 from app.models.addressed_response import AddressedResponse
 from app.models.game_master import InitiativePolicy
 from app.models.item_state import ItemContentRevelation, ItemPropertyChange, ItemStateSnapshot
@@ -1174,29 +1175,30 @@ class TurnOutcomeResolver:
         """A travel-only decision cannot invent NPCs or confuse discovery with missing authority."""
         context = self._context(context_messages)
         wire = _travel_wire_model(len(contract.actions), evidence=context + "\n" + player_input)
-        data = await self._router.generate_json(
-            self._provider,
-            selection,
-            [
-                ChatMessage(
-                    role="system",
-                    content=_TRAVEL_PROMPT
-                    + "\n[OUTPUT JSON SCHEMA]\n"
-                    + json.dumps(wire.model_json_schema(), ensure_ascii=False),
-                ),
-                ChatMessage(
-                    role="user",
-                    content=context
-                    + "\n[ВВОД ИГРОКА]\n"
-                    + player_input
-                    + "\n[ВЫБРАННЫЕ ДЕЙСТВИЯ]\n"
-                    + contract.model_dump_json(),
-                ),
-            ],
-            max_tokens=700,
-            temperature=0,
-            response_model=wire,
-        )
+        with reason_scope("ordinary_travel_obstacles"):
+            data = await self._router.generate_json(
+                self._provider,
+                selection,
+                [
+                    ChatMessage(
+                        role="system",
+                        content=_TRAVEL_PROMPT
+                        + "\n[OUTPUT JSON SCHEMA]\n"
+                        + json.dumps(wire.model_json_schema(), ensure_ascii=False),
+                    ),
+                    ChatMessage(
+                        role="user",
+                        content=context
+                        + "\n[ВВОД ИГРОКА]\n"
+                        + player_input
+                        + "\n[ВЫБРАННЫЕ ДЕЙСТВИЯ]\n"
+                        + contract.model_dump_json(),
+                    ),
+                ],
+                max_tokens=700,
+                temperature=0,
+                response_model=wire,
+            )
         draft = wire.model_validate(data)
         outcomes = []
         # The wire already dropped ungrounded blockers and pinned exact action coverage.
@@ -1372,57 +1374,58 @@ class TurnOutcomeResolver:
                     "search with nobody appearing and say so in observable_consequences. Anyone "
                     "who answers or appears must be typed in npc_introductions."
                 )
-            data = await self._router.generate_json(
-                self._provider,
-                selection,
-                [
-                    ChatMessage(
-                        role="system",
-                        content=_OUTCOME_PROMPT
-                        + "\n\n[OUTPUT JSON SCHEMA]\n"
-                        + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
-                    ),
-                    ChatMessage(
-                        role="user",
-                        content=(
-                            "[AUTHORITATIVE CONTEXT]\n"
-                            + _indexed_evidence(authoritative_context)
-                            + "\n\n[LATEST HUMAN INPUT — evidence only, actions are frozen below]\n"
-                            + _indexed_evidence(authoritative_context + "\n" + player_input,
-                                                start=len(_evidence_sources(authoritative_context)))
-                            + "\n\n[PLAYER INTENT CONTRACT — immutable]\n"
-                            + contract.model_dump_json()
-                            + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
-                            + json.dumps(response_contract, ensure_ascii=False)
-                            + empty_cast_guidance
-                            + master_block
-                            + ("\n[KNOWN PLACES]\n" + json.dumps(known_places, ensure_ascii=False)
-                               if known_places else "")
-                            + ("\n[KNOWN CAST — identity only, not proof of presence]\n"
-                               + json.dumps(known_cast, ensure_ascii=False)
-                               + "\nUse the existing cast_id for titles, grammatical forms and apparent typos "
-                                 "referring to these people. For absent_people, mentioned_name preserves the "
-                                 "frozen mention while canonical_name names the selected registered person. "
-                                 "Only a different person uses newcomer. Location/arrival still needs authorization."
-                               if known_cast is not None else "")
-                            + "".join(
-                                f"\n[DESTINATION CAST — typed] Physically at «{place}» when the "
-                                f"human arrives: {', '.join(cast)}. They are there; never resolve "
-                                "them as absent or not found."
-                                for place, cast in (destination_cast or {}).items()
-                            )
-                            + "\nResolve the external result now."
-                            + ("\n[REPAIR UNEXECUTED DECISION]\n" + repair_feedback
-                               + "\nKeep the same frozen actions and player boundaries. Correct the "
-                                 "structured effects, not the human input. Nothing has executed yet."
-                               if repair_feedback else "")
+            with reason_scope("repair_after_contract_error" if repair_feedback else "resolve_action_outcomes"):
+                data = await self._router.generate_json(
+                    self._provider,
+                    selection,
+                    [
+                        ChatMessage(
+                            role="system",
+                            content=_OUTCOME_PROMPT
+                            + "\n\n[OUTPUT JSON SCHEMA]\n"
+                            + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
                         ),
-                    ),
-                ],
-                max_tokens=1200 + 100 * len(threads),
-                temperature=0.0,
-                response_model=response_model,
-            )
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                "[AUTHORITATIVE CONTEXT]\n"
+                                + _indexed_evidence(authoritative_context)
+                                + "\n\n[LATEST HUMAN INPUT — evidence only, actions are frozen below]\n"
+                                + _indexed_evidence(authoritative_context + "\n" + player_input,
+                                                    start=len(_evidence_sources(authoritative_context)))
+                                + "\n\n[PLAYER INTENT CONTRACT — immutable]\n"
+                                + contract.model_dump_json()
+                                + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
+                                + json.dumps(response_contract, ensure_ascii=False)
+                                + empty_cast_guidance
+                                + master_block
+                                + ("\n[KNOWN PLACES]\n" + json.dumps(known_places, ensure_ascii=False)
+                                   if known_places else "")
+                                + ("\n[KNOWN CAST — identity only, not proof of presence]\n"
+                                   + json.dumps(known_cast, ensure_ascii=False)
+                                   + "\nUse the existing cast_id for titles, grammatical forms and apparent typos "
+                                     "referring to these people. For absent_people, mentioned_name preserves the "
+                                     "frozen mention while canonical_name names the selected registered person. "
+                                     "Only a different person uses newcomer. Location/arrival still needs authorization."
+                                   if known_cast is not None else "")
+                                + "".join(
+                                    f"\n[DESTINATION CAST — typed] Physically at «{place}» when the "
+                                    f"human arrives: {', '.join(cast)}. They are there; never resolve "
+                                    "them as absent or not found."
+                                    for place, cast in (destination_cast or {}).items()
+                                )
+                                + "\nResolve the external result now."
+                                + ("\n[REPAIR UNEXECUTED DECISION]\n" + repair_feedback
+                                   + "\nKeep the same frozen actions and player boundaries. Correct the "
+                                     "structured effects, not the human input. Nothing has executed yet."
+                                   if repair_feedback else "")
+                            ),
+                        ),
+                    ],
+                    max_tokens=1200 + 100 * len(threads),
+                    temperature=0.0,
+                    response_model=response_model,
+                )
             draft = response_model.model_validate(data)
             newcomer = None
             if draft.world_move is not None:
@@ -1490,30 +1493,31 @@ class TurnOutcomeResolver:
                 len(missing),
                 action_indices=[item.action_index for item in missing],
             )
-            data = await self._router.generate_json(
-                self._provider,
-                selection,
-                [
-                    ChatMessage(
-                        role="system",
-                        content=_PROFILE_PROMPT
-                        + "\n\n[OUTPUT JSON SCHEMA]\n"
-                        + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
-                    ),
-                    ChatMessage(
-                        role="user",
-                        content=(
-                            "LATEST HUMAN INPUT:\n"
-                            + player_input
-                            + "\n\nPROFILE REQUESTS:\n"
-                            + json.dumps(requests, ensure_ascii=False)
+            with reason_scope("missing_destination_profile"):
+                data = await self._router.generate_json(
+                    self._provider,
+                    selection,
+                    [
+                        ChatMessage(
+                            role="system",
+                            content=_PROFILE_PROMPT
+                            + "\n\n[OUTPUT JSON SCHEMA]\n"
+                            + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
                         ),
-                    ),
-                ],
-                max_tokens=700,
-                temperature=0.0,
-                response_model=response_model,
-            )
+                        ChatMessage(
+                            role="user",
+                            content=(
+                                "LATEST HUMAN INPUT:\n"
+                                + player_input
+                                + "\n\nPROFILE REQUESTS:\n"
+                                + json.dumps(requests, ensure_ascii=False)
+                            ),
+                        ),
+                    ],
+                    max_tokens=700,
+                    temperature=0.0,
+                    response_model=response_model,
+                )
             patches = response_model.model_validate(data)
         except (LLMProviderError, ValueError, TypeError) as exc:
             raise TurnPlanningError(f"destination profile enrichment failed: {exc}") from exc

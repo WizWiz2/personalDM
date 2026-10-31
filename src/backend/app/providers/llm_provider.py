@@ -963,6 +963,7 @@ class LLMProvider:
 
                     telemetry = {
                         **attempt_metrics,
+                        "duration_ms": round((time.monotonic() - attempt_started) * 1000),
                         "attempt": attempt,
                         "requested_max_tokens": budget,
                     "requested_num_ctx": request_context if is_ollama else None,

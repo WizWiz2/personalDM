@@ -8,6 +8,7 @@ from pydantic import Field, create_model
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.turn_performance import reason_scope
 from app.config import settings
 from app.db.repositories.provider_config_repo import ProviderConfigRepository
 from app.db.tables import Belief, Entity
@@ -225,10 +226,12 @@ class AuthorityNarrationPipeline:
         authority: TurnAuthority,
         *,
         temperature: float,
+        diagnostic_reason: str = "render_authorized_narration",
     ) -> tuple[str, GrantedBeat | None, dict]:
         """Prose; under a beat grant, structured prose plus the narrator's typed beat claim."""
         if authority.beat_owner_id is None:
-            text, telemetry = await self._generate_text(messages, selection, temperature=temperature)
+            with reason_scope(diagnostic_reason):
+                text, telemetry = await self._generate_text(messages, selection, temperature=temperature)
             return text, None, telemetry
         # The schema admits only the owner's ID: strict decoding cannot mistype it (live B5 T4).
         from app.services.published_routes import route_catalog
@@ -259,10 +262,11 @@ class AuthorityNarrationPipeline:
                   "to open a blocked passage."
             ))]
         try:
-            narration = wire.model_validate(await self._router.generate_json(
-                self._provider, selection, messages,
-                temperature=temperature, response_model=wire,
-            ))
+            with reason_scope(diagnostic_reason):
+                narration = wire.model_validate(await self._router.generate_json(
+                    self._provider, selection, messages,
+                    temperature=temperature, response_model=wire,
+                ))
         except (ValueError, TypeError) as exc:
             raise LLMProviderError(f"granted narration is malformed: {exc}") from exc
         return narration.prose.strip(), narration.beat, self.last_telemetry
@@ -302,8 +306,9 @@ class AuthorityNarrationPipeline:
         attempt_index: int,
         require_outcomes: bool = False,
     ) -> NarrationValidationResult:
-        result = await validator.validate(selection, authority, candidate,
-            **({"require_outcomes": True} if require_outcomes else {}))
+        with reason_scope('validate_after_repair' if attempt_index else 'validate_narration'):
+            result = await validator.validate(selection, authority, candidate,
+                **({"require_outcomes": True} if require_outcomes else {}))
         await audit.record_attempt(
             run,
             attempt_index=attempt_index,
@@ -428,6 +433,7 @@ class AuthorityNarrationPipeline:
                     [*narrator_messages, ChatMessage(role="user", content=NARROWED_CONTRACT.format(
                         reason=reason[:600], contract=contract))],
                     narrator_selection, authority, temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+                    diagnostic_reason="narrowed_narration",
                 )
             except LLMProviderError as exc:
                 raise NarrationRefused(f"{reason}; narrowed narrator failed: {exc}") from exc
@@ -495,6 +501,7 @@ class AuthorityNarrationPipeline:
                     narrator_selection,
                     authority,
                     temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+                    diagnostic_reason="repair_narration",
                 )
             except LLMProviderError as exc:
                 return await narrow(f"repair narrator failed: {type(exc).__name__}: {exc}", 1)

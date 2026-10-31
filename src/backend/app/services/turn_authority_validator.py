@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
+from app.services.turn_performance import call_reason, reason_scope
 from app.config import settings
 from app.models.item_state import ItemPositionClaim
 from app.models.narration_validation import NarrationValidationResult, NarrationViolation
@@ -340,16 +341,17 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                 + json.dumps(paragraphs, ensure_ascii=False))))
         for attempt in range(2):
             try:
-                data = await self._router.generate_json(
-                    self._provider,
-                    selection,
-                    messages,
-                    max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS,
-                                   max(1600, 450 * len(authority.audited_item_states()))
-                                   if authority.item_states else 700),
-                    temperature=0.0,
-                    response_model=wire,
-                )
+                with reason_scope(call_reason.get() or ("validate_narration" if attempt == 0 else "repair_validator_contract")):
+                    data = await self._router.generate_json(
+                        self._provider,
+                        selection,
+                        messages,
+                        max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS,
+                                       max(1600, 450 * len(authority.audited_item_states()))
+                                       if authority.item_states else 700),
+                        temperature=0.0,
+                        response_model=wire,
+                    )
             except (LLMProviderError, ValueError, TypeError) as exc:
                 raise NarrationValidationError(str(exc)) from exc
             try:

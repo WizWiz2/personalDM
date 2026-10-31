@@ -324,7 +324,13 @@ class RoleModelRouter:
         messages: list[ChatMessage],
         **kwargs,
     ) -> dict:
-        await campaign_write_barrier.yield_to_turns()
+        from time import perf_counter
+        from app.services.turn_performance import record_interval
+        waited = perf_counter()
+        try:
+            await campaign_write_barrier.yield_to_turns()
+        finally:
+            record_interval('wait', 'foreground_priority', waited)
         try:
             result = await self._generate_json_once(
                 provider,
