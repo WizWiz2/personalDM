@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import ClassVar
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.action_sequence_table import ActionSequence, ActionStep
@@ -109,6 +109,10 @@ class ActionSequenceExecutor:
         existing = await self.existing_for_turn(campaign_id, trigger_turn_id)
         if existing:
             return existing
+        # A retry reuses the failed turn's ID: its compensated sequence gives way to the new attempt.
+        stale = select(ActionSequence.id).where(ActionSequence.trigger_turn_id == str(trigger_turn_id))
+        await self._session.execute(delete(ActionStep).where(ActionStep.sequence_id.in_(stale)))
+        await self._session.execute(delete(ActionSequence).where(ActionSequence.trigger_turn_id == str(trigger_turn_id)))
         if not plan.steps:
             raise ValueError("Action sequence has no steps")
 
