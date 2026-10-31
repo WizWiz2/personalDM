@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.turn import ChatMessage
+from app.services.turn_planner import TurnPlanningError
 from app.services.linguistic_intent_analyzer import LinguisticIntentAnalysis
 from app.services.player_intent_interpreter import (
     PlayerActionIntentDraft,
@@ -17,13 +18,27 @@ from app.services.player_intent_interpreter import (
 
 
 @pytest.mark.asyncio
-async def test_a_stated_own_act_without_an_entry_gets_one_coverage_repair():
+async def test_every_stated_own_act_is_typed_in_the_one_intent_call():
     text = "Расплачиваюсь, прощаюсь до утра и иду обратно на пристань."
     router = _Router({"summary": text, "actions": [
         {"action_type": "service", "intent": "Расплатиться.", "evidence_quote": "Расплачиваюсь"},
-        {"action_type": "other", "intent": "Попрощаться.", "evidence_quote": "прощаюсь до утра"}]})
+        {"action_type": "other", "intent": "Попрощаться.", "evidence_quote": "прощаюсь до утра"}],
+        "stated_act_entries": {"act_0": 0, "act_1": 1, "act_2": 1}})
     await PlayerIntentInterpreter(router).interpret(SimpleNamespace(), [], text)
-    assert router.calls == ["PlayerIntentContractDraft"] * 2  # «иду обратно на пристань» had no entry
+    assert router.calls == ["PlayerIntentContractDraft"]  # no second model call
+    acts = router.schemas[0]["$defs"]["StatedActEntries"]
+    assert len(acts["required"]) == 3  # «иду обратно на пристань» must be mapped to an entry
+
+
+@pytest.mark.asyncio
+async def test_a_stated_act_mapped_to_no_entry_fails_closed():
+    text = "Расплачиваюсь и иду обратно на пристань."
+    router = _Router({"summary": text, "actions": [
+        {"action_type": "service", "intent": "Расплатиться.", "evidence_quote": "Расплачиваюсь"}],
+        "stated_act_entries": {"act_0": 0, "act_1": 3}})
+    with pytest.raises(TurnPlanningError):
+        await PlayerIntentInterpreter(router).interpret(SimpleNamespace(), [], text)
+    assert router.calls == ["PlayerIntentContractDraft"]
 
 
 @pytest.mark.asyncio
@@ -93,6 +108,7 @@ class _Router:
         """One intent call now carries ownership and place; fixtures fold them into it."""
         del provider, selection, messages, kwargs
         self.calls.append(response_model.__name__)
+        self.schemas = [*getattr(self, "schemas", []), response_model.model_json_schema()]
         assert issubclass(response_model, PlayerIntentContractDraft)
         payload = {**self.payload, "actions": [dict(a) for a in self.payload.get("actions", [])]}
         for item in (self.review or {}).get("action_ownership", []):
@@ -111,6 +127,9 @@ class _Router:
             payload["addressed_character_name"] = self.review.get("addressed_character_name")
         for key, place in (self.bindings or {}).items():
             payload["actions"][int(key.removeprefix("action_"))]["place"] = place
+        if "stated_act_entries" in response_model.model_fields:  # fixtures not about coverage
+            payload.setdefault("stated_act_entries", dict.fromkeys(
+                response_model.model_fields["stated_act_entries"].annotation.model_fields, 0))
         return payload
 
 
@@ -126,8 +145,8 @@ class _LinguisticAnalyzer:
         del player_input, action_evidence
         return self.analysis
 
-    def uncovered_acts(self, player_input: str, evidence: list[str]) -> tuple[str, ...]:
-        del player_input, evidence
+    def stated_acts(self, player_input: str) -> tuple[str, ...]:
+        del player_input
         return ()
 
 

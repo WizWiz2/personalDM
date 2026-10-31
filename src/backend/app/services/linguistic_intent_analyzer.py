@@ -157,9 +157,9 @@ class LinguisticIntentAnalyzer:
                 return True
         return False
 
-    def uncovered_acts(self, player_input: str, evidence: list[str]) -> tuple[str, ...]:
-        """Clauses of the speaker's own finite predicates (outside quoted speech) that no entry's
-        evidence touches: a stated act the intent dropped (REPORT14 p10 «иду обратно на пристань»)."""
+    def stated_acts(self, player_input: str) -> tuple[str, ...]:
+        """Clauses of the speaker's own finite predicates outside quoted speech: each stated act the
+        intent must map to an entry (REPORT14 p10 «иду обратно на пристань»)."""
         doc = self.pipeline(player_input)
         quoted, depth = set(), 0
         for token in doc:
@@ -177,17 +177,12 @@ class LinguisticIntentAnalyzer:
                 token = token.head
             return token.i if token.i in predicates else None
 
-        spans = [(start, start + len(quote)) for quote in evidence
-                 if quote and (start := player_input.find(quote)) >= 0]
         clauses: dict[int, list] = {}
         for token in doc:
             if (key := owner(token)) is not None:
                 clauses.setdefault(key, []).append(token)
-        return tuple(
-            player_input[tokens[0].idx: tokens[-1].idx + len(tokens[-1])]
-            for tokens in clauses.values()
-            if not any(a < t.idx + len(t) and t.idx < b for t in tokens for a, b in spans)
-        )
+        return tuple(player_input[tokens[0].idx: tokens[-1].idx + len(tokens[-1])]
+                     for tokens in clauses.values())
 
     def analyze(
         self,
