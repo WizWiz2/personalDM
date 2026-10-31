@@ -511,7 +511,10 @@ def _outcome_wire_model(
     participant_type = Literal[tuple(present_names)] if present_names else str
     prerequisite_type = Literal[tuple(range(action_count))] | None if action_count else type(None)
     revealed_name_type = str | None if allow_name_revelation else type(None)
-    speaker_type = Literal[bound_response_speaker] | None if bound_response_speaker else str | None
+    # With other people here the answering person is a closed choice; "newcomer" is this turn's introduction.
+    speaker_type = (Literal[bound_response_speaker] | None if bound_response_speaker
+                    else Literal[(*present_names, "newcomer")] | None if len(present_names or ()) > 1
+                    else str | None)
 
     slot_type = Literal[tuple(resident_slots)] | None if resident_slots else type(None)
     npc_model = OutcomeNpcIntroductionDraft
@@ -811,6 +814,9 @@ def _outcome_wire_model(
         @model_validator(mode="after")
         def validate_action_indices(self):
             outcomes = {outcome.action_index: outcome for outcome in self.action_outcomes}
+            # A count is the typed split's job, never a free property: such an entry is void, not a retry.
+            self.item_property_changes = [change for change in self.item_property_changes
+                                          if change.property_name not in ItemStateSnapshot.model_fields]
             move = self.world_move
             if thread_sources and move is not None and getattr(self.thread_reviews, move.thread_id).status != "active":
                 # The draft's own review closed this thread: its review wins, the move is void (no retry).
@@ -859,9 +865,6 @@ def _outcome_wire_model(
                 target = (discovery_targets or {}).get(change.action_index)
                 if not source or source.resolution != "auto_success" or (target and str(change.item_id) != target):
                     raise ValueError("Property effect requires a successful source and the frozen subject identity")
-                if change.property_name in ItemStateSnapshot.model_fields:
-                    raise ValueError("Property effects cannot replace another authoritative item state slot; "
-                                     "units taken out are an item_introductions entry with taken_from_item_id")
             for handoff in self.npc_item_handoffs:
                 prerequisite = outcomes.get(handoff.after_action_index)
                 if prerequisite and (prerequisite.resolution != "auto_success" or prerequisite.npc_response == "refused"):
@@ -879,19 +882,8 @@ def _outcome_wire_model(
                     revealed_name=self.response_revealed_name,
                     name_evidence=self.response_name_evidence,
                 )
-            # With other people physically here, the response owner is one of them or a newcomer.
-            cast = {
-                *(present_names or ()), bound_response_speaker or "",
-                *(npc.canonical_name for npc in self.npc_introductions),
-            }
-            if len(present_names or ()) > 1 and self.response_speaker_name and identity_key(
-                self.response_speaker_name
-            ) not in {identity_key(name) for name in cast}:
-                raise ValueError(
-                    "response_speaker_name must be a present person's current designation "
-                    "or one of this turn's npc_introductions: type a person who answers but is not "
-                    "yet in the cast in npc_introductions, or leave response_speaker_name null"
-                )
+            if self.response_speaker_name == "newcomer":
+                self.response_speaker_name = next((npc.canonical_name for npc in self.npc_introductions), None)
             dependencies = [
                 self.response_after_action_index,
                 *(npc.after_action_index for npc in self.npc_introductions),

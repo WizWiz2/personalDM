@@ -307,7 +307,7 @@ def test_unbound_response_speaker_is_a_present_designation_or_this_turns_introdu
     payload["response_revealed_name"] = "Семён"
     payload["response_name_evidence"] = "Зовут меня Семён."
     payload["response_speaker_name"] = "Семён"
-    with pytest.raises(ValidationError, match="current designation"):
+    with pytest.raises(ValidationError):  # closed choice: not a present person and not "newcomer"
         wire.model_validate(payload)
     payload["response_speaker_name"] = "Трактирщик"
     assert wire.model_validate(payload).response_revealed_name == "Семён"
