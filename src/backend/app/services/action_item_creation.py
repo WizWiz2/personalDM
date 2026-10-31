@@ -28,6 +28,36 @@ async def return_units(session, item_ids) -> None:
             source.quantity += item.quantity
 
 
+async def merge_units(session, item) -> None:
+    """Split units rejoin, by ID, their source or a sibling split now in the same custody."""
+    if not item.split_from_item_id or not item.quantity:
+        return
+    custody = (item.current_owner_id, item.current_location_id)
+    candidates = [await session.get(Item, item.split_from_item_id), *(await session.execute(
+        select(Item).join(Entity, Entity.id == Item.entity_id).where(
+            Item.split_from_item_id == item.split_from_item_id, Item.entity_id != item.entity_id,
+            Entity.status != "destroyed"))).scalars()]
+    target = next((other for other in candidates if other is not None and other.quantity is not None
+                   and (other.current_owner_id, other.current_location_id) == custody), None)
+    if target is None:
+        return
+    target.quantity += item.quantity
+    item.split_from_item_id = target.entity_id
+    (await session.get(Entity, item.entity_id)).status = "destroyed"
+
+
+async def unmerge_units(session, item) -> None:
+    """Undo merge_units: the merged record becomes its own identity again."""
+    entity = await session.get(Entity, item.entity_id)
+    target = await session.get(Item, item.split_from_item_id) if item.split_from_item_id else None
+    if entity is None or entity.status != "destroyed" or target is None or not item.quantity:
+        return
+    target.quantity -= item.quantity
+    entity.status = "active"
+    if target.split_from_item_id:
+        item.split_from_item_id = target.split_from_item_id
+
+
 async def create_step_items(session, campaign_id, player_id, location_id, turn_id, step_id, introductions):
     contents = await revealed_item_contents(session, campaign_id) if any(i.copy_of_item_id for i in introductions) else {}
     for introduction in introductions:
