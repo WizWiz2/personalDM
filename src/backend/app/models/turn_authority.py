@@ -303,6 +303,20 @@ class TurnAuthority(BaseModel):
             receipts.extend({**frame, **created} for created in step.get("created_items", []))
         return receipts
 
+    def audited_item_states(self) -> list[ItemStateSnapshot]:
+        """Items this turn's prose can touch: here, in hand, moved or split now. Unknown place: all."""
+        if not self.place_frame.get("location_id"):
+            return self.item_states
+        receipts = self.inventory_receipts()
+        places = {str(self.place_frame["location_id"])} | {
+            str(row[key]) for row in receipts for key in ("source_location_id", "target_location_id") if row.get(key)}
+        touched = {str(row.get("item_id")) for row in receipts} | {
+            str(item.taken_from_item_id) for item in self.allowed_new_items if item.taken_from_item_id}
+        holders = {str(value) for value in (self.player_character_id, self.acting_character_id) if value}
+        return [state for state in self.item_states
+                if str(state.item_id) in touched or str(state.owner_id) in holders
+                or str(state.location_id) in places or str(state.owner_location_id) in places]
+
     def validator_payload(self) -> dict:
         """Typed facts the four bans are judged against, and nothing else."""
         return {

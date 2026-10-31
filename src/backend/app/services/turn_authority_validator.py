@@ -55,7 +55,7 @@ def inventory_validation_model(authority: TurnAuthority, candidate_text: str | N
         claim_model = create_model("ExtractiveItemPositionClaim", __base__=ItemPositionClaim,
             evidence=(Literal[fragments], Field(description="Select an exact candidate sentence containing this position claim.")))
     bound_reviews = {}
-    for index, state in enumerate(authority.item_states):
+    for index, state in enumerate(authority.audited_item_states()):
         item_id = str(state.item_id)
         bound_claim = create_model(f"ItemPositionClaim{index}", __base__=claim_model,
                                    item_id=(Literal[item_id], ...))
@@ -346,7 +346,8 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     selection,
                     messages,
                     max_tokens=min(settings.NARRATION_VALIDATOR_MAX_TOKENS,
-                                   max(1600, 450 * len(authority.item_states)) if authority.item_states else 700),
+                                   max(1600, 450 * len(authority.audited_item_states()))
+                                   if authority.item_states else 700),
                     temperature=0.0,
                     response_model=entrance_model(authority, inventory_validation_model(authority, candidate_text)
                                                   if authority.item_states else NarrationValidationResult),
@@ -378,21 +379,24 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
     @staticmethod
     def _interpret(authority: TurnAuthority, candidate_text: str, data: dict) -> NarrationValidationResult:
         if authority.item_states:
-            # Model prose cannot overrule executor-owned custody. Position claims, including
-            # negations, are compared below; retain semantic content/property/agency checks.
+            audited = authority.audited_item_states()
+            audited_ids = {str(state.item_id) for state in audited}
+            # Model prose cannot overrule executor-owned custody. Audited position claims, including
+            # negations, are compared below; an unaudited item keeps the model's own conflict.
             data = {**data, "violations": [violation for violation in data.get("violations", [])
                     if not (violation.get("state_domain") == "item_position"
-                            and violation.get("violation_type") == "canon_conflict")]}
+                            and violation.get("violation_type") == "canon_conflict"
+                            and (violation.get("item_id") is None or str(violation.get("item_id")) in audited_ids))]}
             if isinstance(data.get("item_reviews"), dict):
                 keyed = data["item_reviews"]
-                expected_keys = {str(state.item_id) for state in authority.item_states}
+                expected_keys = audited_ids
                 if set(keyed) != expected_keys or any(
                     str(review.get("item_id")) != key for key, review in keyed.items()
                 ):
                     raise NarrationValidationError("Item review keys must match their registered identities")
                 data = {**data, "item_reviews": list(keyed.values())}
             extracted = InventoryNarrationValidation.model_validate(data)
-            expected = {state.item_id for state in authority.item_states}
+            expected = {state.item_id for state in audited}
             reviewed = [review.item_id for review in extracted.item_reviews]
             if len(reviewed) != len(expected) or set(reviewed) != expected:
                 raise NarrationValidationError("Item reviews must cover every registered item exactly once")
@@ -402,7 +406,7 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     raise NarrationValidationError("Item position review has no extracted claims")
                 if review.reference != "position" and review.claims:
                     raise NarrationValidationError("Item claims require a position review")
-                state = next(state for state in authority.item_states if state.item_id == review.item_id)
+                state = next(state for state in audited if state.item_id == review.item_id)
                 if review.reference == "absent" and state.name.casefold() in candidate_text.casefold():
                     raise NarrationValidationError("Explicit item mention was marked absent")
                 if any(claim.item_id != review.item_id for claim in review.claims):
