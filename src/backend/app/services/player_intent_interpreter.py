@@ -372,16 +372,18 @@ def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str
                     for v in variants]
     action_model = reduce(or_, variants)
 
+    others = tuple(sorted(name for key, name in people.items() if key != controlled_id))
+
     class ReferencedIntentWire(_IntentWire):
         actions: list[action_model] = Field(max_length=8)
+        # Present people are a choice; a not-yet-registered designation stays free text.
+        addressed_character_name: (Literal[others] | str | None) if others else str | None = None
 
         @model_validator(mode="after")
-        def validate_response_owner(self):
+        def drop_self_address(self):
+            # The protagonist is never their own addressee: that is no addressee, not a retry.
             if controlled_name and _compact(self.addressed_character_name).casefold() == controlled_name.casefold():
-                raise ValueError(
-                    "The controlled protagonist cannot be their own addressee. "
-                    "Use the other person's designation from the input, even if not yet registered."
-                )
+                self.addressed_character_name = None
             return self
 
     ReferencedIntentWire.__name__ = "PlayerIntentContractDraft"

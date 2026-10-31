@@ -50,9 +50,8 @@ def test_inventory_schema_rejects_a_one_digit_uuid_error_and_self_recipient():
     for field, bad_id in (("item_id", item[:-1] + "9"), ("inventory_target_id", player)):
         with pytest.raises(ValidationError):
             wire.model_validate({**payload, "actions": [{**action, field: bad_id}]})
-    with pytest.raises(ValidationError, match="own addressee"):
-        wire.model_validate({"summary": "Спрашиваю дежурного.", "actions": [],
-                             "addressed_character_name": "Кай"})
+    assert wire.model_validate({"summary": "Спрашиваю дежурного.", "actions": [],
+                                "addressed_character_name": "Кай"}).addressed_character_name is None
 
 
 def test_empty_action_schema_exposes_only_null_prerequisites():

@@ -205,13 +205,12 @@ def test_a_closed_goal_cannot_drive_another_world_move():
     source = "Выдать бланк после представления инспектора."
     wire = _outcome_wire_model(0, world_threads={"thread_0": True}, world_kinds=("npc_action",),
         thread_sources={"thread_0": {"source": source}},
-        review_evidence=f"{source}\nИнспектор назвал имя и должность.", initiative_due=True)
+        review_evidence=f"{source}\nИнспектор назвал имя и должность.")
     data = {"action_outcomes": [], "npc_introductions": [], "observable_consequences": ["В зале тихо."],
         "thread_reviews": {"thread_0": {"status": "resolved", "evidence": "E1"}}}
     wire.model_validate(data)  # No fake pressure required after all candidates have closed.
-    with pytest.raises(ValidationError, match="resolved"):
-        wire.model_validate({**data, "world_move": {"thread_id": "thread_0", "kind": "npc_action",
-            "outcome": "Оператор снова требует назвать имя и должность."}})
+    assert wire.model_validate({**data, "world_move": {"thread_id": "thread_0", "kind": "npc_action",
+        "outcome": "Оператор снова требует назвать имя и должность."}}).world_move is None
 
 
 def test_thread_review_evidence_is_a_selected_anchor_not_a_quote():
