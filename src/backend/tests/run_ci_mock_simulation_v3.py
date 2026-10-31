@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import typing
 import asyncio
 import json
 import os
@@ -379,17 +380,15 @@ def _authority_verdict(prompt: str, response_model=None) -> str:
         encoded, candidate = prompt.split("[TURN FACTS]\n", 1)[1].split("\n\n[CANDIDATE NARRATION]\n", 1)
         facts = json.loads(encoded)
         states = facts.get("item_states", [])
-        if response_model and "item_reviews" in response_model.model_fields:
-            review_model = response_model.model_fields["item_reviews"].annotation
-            if hasattr(review_model, "model_fields"):
-                states = [state for state in states if state["item_id"] in review_model.model_fields]
+        if response_model and "position_claims" in response_model.model_fields:
+            claim = typing.get_args(response_model.model_fields["position_claims"].annotation)[0]
+            audited = set(typing.get_args(claim.model_fields["item_id"].annotation))
+            states = [state for state in states if state["item_id"] in audited]
         # This controlled mock prose contains no item positions. Refuse to
-        # certify different prose by silently labelling a mentioned item absent.
+        # certify different prose by silently reporting no claim for a mentioned item.
         if any(state["name"].casefold() in candidate.casefold() for state in states):
             raise AssertionError("Mock inventory auditor does not support positional prose")
-        payload = {"item_reviews": {state["item_id"]: {
-            "item_id": state["item_id"], "reference": "absent", "claims": []
-        } for state in states}, "entrances": [], "names_given": []}
+        payload = {"position_claims": [], "entrances": [], "names_given": []}
     return json.dumps(
         {
             **payload,

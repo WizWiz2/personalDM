@@ -25,27 +25,19 @@ from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModel
 FOUR_BANS = frozenset({"absent_character", "canon_conflict", "player_agency", "invalid_movement"})
 
 
-class ItemNarrationReview(BaseModel):
-    item_id: UUID
-    reference: Literal["absent", "mention", "position"]
-    claims: list[ItemPositionClaim] = Field(max_length=16)
-
-
-class InventoryNarrationValidation(BaseModel):
-    # Extraction comes before the verdict: the model must inspect the candidate first.
-    item_reviews: list[ItemNarrationReview]
-    verdict: Literal["pass", "repair_required"]
-    summary: str = Field(default="", max_length=1500)
+class NarrationFindings(BaseModel):
+    """Violations only: the verdict is derived in code, no walk-through and no summary."""
     violations: list[NarrationViolation] = Field(default_factory=list, max_length=12)
 
 
-def inventory_validation_model(authority: TurnAuthority, candidate_text: str | None = None) -> type[BaseModel]:
-    """Make completeness a schema property, rather than a model's counting task.
+class InventoryNarrationValidation(NarrationFindings):
+    position_claims: list[ItemPositionClaim] = Field(default_factory=list, max_length=16)
 
-    Each registered identity is a required object key. Nothing is inferred absent
-    from an omitted review; native decoding and provider repair require that review.
-    """
-    claim_model = ItemPositionClaim
+
+def inventory_validation_model(authority: TurnAuthority, candidate_text: str | None = None) -> type[BaseModel]:
+    """Only the position assertions the prose makes, each bound to an audited ID; code compares them."""
+    ids = tuple(str(state.item_id) for state in authority.audited_item_states())
+    fields = {"item_id": (Literal[ids], ...)} if ids else {}
     if candidate_text is not None:
         fragments = tuple(dict.fromkeys(
             chunk.strip()
@@ -53,21 +45,8 @@ def inventory_validation_model(authority: TurnAuthority, candidate_text: str | N
             for start in range(0, len(match.group()), 1000)
             if (chunk := match.group()[start:start + 1000]).strip()
         )) or (candidate_text,)
-        claim_model = create_model("ExtractiveItemPositionClaim", __base__=ItemPositionClaim,
-            evidence=(Literal[fragments], Field(description="Select an exact candidate sentence containing this position claim.")))
-    bound_reviews = {}
-    for index, state in enumerate(authority.audited_item_states()):
-        item_id = str(state.item_id)
-        bound_claim = create_model(f"ItemPositionClaim{index}", __base__=claim_model,
-                                   item_id=(Literal[item_id], ...))
-        bound_reviews[item_id] = (create_model(
-            f"ItemReview{index}", __base__=ItemNarrationReview,
-            __doc__=f"Review only {state.name}, registered ID {item_id}.",
-            item_id=(Literal[item_id], ...),
-            claims=(list[bound_claim], Field(max_length=16)),
-        ), ...)
-    reviews = create_model("ItemReviewsByIdentity", __config__=ConfigDict(extra="forbid"),
-                           **bound_reviews)
+        fields["evidence"] = (Literal[fragments], Field(description="Exact candidate sentence with this claim."))
+    claim = create_model("BoundItemPositionClaim", __base__=ItemPositionClaim, **fields)
     violation = create_model(
         "ScopedNarrationViolation", __base__=NarrationViolation,
         state_domain=(Literal["item_position", "item_content", "item_property", "other"], ...),
@@ -75,7 +54,9 @@ def inventory_validation_model(authority: TurnAuthority, candidate_text: str | N
     )
     return create_model(
         "CompleteInventoryValidation", __base__=InventoryNarrationValidation,
-        item_reviews=(reviews, ...),
+        position_claims=(list[claim], Field(default_factory=list, max_length=16, description=(
+            "Every assertion the candidate makes of who holds an audited item or where it lies, "
+            "including transfers and denials. [] if the prose asserts none."))),
         violations=(list[violation], Field(default_factory=list, max_length=12)),
     )
 
@@ -233,12 +214,11 @@ opinions, claims or new information. None of that is required and none of it is 
 Style, completeness, pacing, atmosphere and how a question is answered are not your concern.
 
 For every error, evidence is the shortest exact fragment of the candidate and correction is a
-short prose-only fix in Russian. Return exactly:
+short prose-only fix in Russian. Report violations only: no walk-through, no summary; [] if none.
+Return exactly:
 {
   "entrances": [{"evidence": "exact fragment", "who": "cast name|background_crowd|untyped_person"}],
   "names_given": [{"evidence": "exact fragment", "who": "cast name", "name": "name given in prose"}],
-  "verdict": "pass|repair_required",
-  "summary": "short reason in Russian",
   "violations": [
     {
       "violation_type": "absent_character|canon_conflict|player_agency|invalid_movement",
@@ -251,24 +231,20 @@ short prose-only fix in Russian. Return exactly:
 }
 """
 
-    ITEM_REVIEW_PROMPT = """[MANDATORY ITEM AUDIT: DO THIS BEFORE DECIDING THE VERDICT]
-Return the InventoryNarrationValidation JSON schema, starting with item_reviews.
-item_reviews is an object keyed by the exact item IDs required by the response schema.
-For EACH key return its review, even if the item is absent from the prose. Never omit a key.
-Read the CANDIDATE, not just the player's input. Extract what the prose actually asserts even
+    ITEM_REVIEW_PROMPT = """[ITEM POSITION CLAIMS]
+position_claims lists ONLY assertions the candidate makes about an audited item's holder or place.
+Items that are absent or merely mentioned get no entry. Read the CANDIDATE, not just the player's input. Extract what the prose actually asserts even
 when it is false. Do not copy the authoritative position into a claim to make it agree.
-reference=absent: no mention of that item, claims=[].
-reference=mention: the item is mentioned but no position or possession is asserted, claims=[].
-reference=position: ANY assertion of who holds/keeps/receives it, or where it lies/hangs/is placed.
+A claim is ANY assertion of who holds/keeps/receives an item, or where it lies/hangs/is placed.
 Static, passive and pronoun references count. Extract EVERY positive position assertion as a claim.
 Extract position denials too, with polarity=denied; positive claims use polarity=asserted.
 Never turn a denial into a positive claim. Every violation names state_domain and item_id (null
-for non-item issues). item_position is decided ONLY by the typed item_reviews comparison; do not
+for non-item issues). item_position is decided ONLY by the typed position_claims comparison; do not
 supply prose corrections for custody/placement in violations. Other domains still need violations.
-Examples: "Перед Мартой на конторке лежит письмо" is position, mode=located, owner_id=null.
-"Письмо теперь хранится у Марты" is position, mode=owned, owner_id=Marta's ID.
+Examples: "Перед Мартой на конторке лежит письмо" is a claim, mode=located, owner_id=null.
+"Письмо теперь хранится у Марты" is a claim, mode=owned, owner_id=Marta's ID.
 Both conflict with a letter still owned by the player, even if no transfer verb occurs.
-"Какое письмо?" is mention; "она протягивает ладонь" asserts no letter position.
+"Какое письмо?" is no claim; "она протягивает ладонь" asserts no letter position.
 
 For claims use exact IDs from facts; evidence is an exact candidate fragment.
 scope=current for narrator-confirmed reality, including past-tense narration of this turn;
@@ -286,7 +262,7 @@ Creation receipts use item_operation=create and authorize their own AFTER state.
 turn may create, carry and place one artifact in different locations. Rendered intermediate
 states use their actual receipt and moment; never compare them to the end-of-turn snapshot.
 Location IDs in each receipt identify the owner's room at that moment, not the owner's final room.
-After item_reviews, check the four bans below and return verdict, summary and violations.
+Then check the four bans below; report only violations.
 For errors, evidence is an exact quote and correction is a short prose-only fix in Russian.
 
 """
@@ -402,7 +378,7 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                         "[REPAIR VALIDATOR RESPONSE]\n"
                         "Your response could not be checked: " + str(exc)[:500]
                         + ". Recheck the SAME candidate against the SAME facts. Return the complete "
-                        "validation JSON, covering every item once. Each positional claim needs an "
+                        "validation JSON. Each positional claim needs an "
                         "exact candidate excerpt, without paraphrase or added punctuation. "
                         "Simple mentions require no claim or quote. Do not rewrite the narration "
                         "and do not change facts to match it."
@@ -421,36 +397,16 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     if not (violation.get("state_domain") == "item_position"
                             and violation.get("violation_type") == "canon_conflict"
                             and (violation.get("item_id") is None or str(violation.get("item_id")) in audited_ids))]}
-            if isinstance(data.get("item_reviews"), dict):
-                keyed = data["item_reviews"]
-                expected_keys = audited_ids
-                if set(keyed) != expected_keys or any(
-                    str(review.get("item_id")) != key for key, review in keyed.items()
-                ):
-                    raise NarrationValidationError("Item review keys must match their registered identities")
-                data = {**data, "item_reviews": list(keyed.values())}
             extracted = InventoryNarrationValidation.model_validate(data)
-            expected = {state.item_id for state in audited}
-            reviewed = [review.item_id for review in extracted.item_reviews]
-            if len(reviewed) != len(expected) or set(reviewed) != expected:
-                raise NarrationValidationError("Item reviews must cover every registered item exactly once")
             claims = []
-            for review in extracted.item_reviews:
-                if review.reference == "position" and not review.claims:
-                    raise NarrationValidationError("Item position review has no extracted claims")
-                if review.reference != "position" and review.claims:
-                    raise NarrationValidationError("Item claims require a position review")
-                state = next(state for state in audited if state.item_id == review.item_id)
-                if review.reference == "absent" and state.name.casefold() in candidate_text.casefold():
-                    raise NarrationValidationError("Explicit item mention was marked absent")
-                if any(claim.item_id != review.item_id for claim in review.claims):
-                    raise NarrationValidationError("Item review refers to another item")
-                for claim in review.claims:
-                    if claim.evidence not in candidate_text:
-                        claim.evidence = claim.evidence.strip().strip('«»"“”„')
-                    if not claim.evidence or claim.evidence not in candidate_text:
-                        raise NarrationValidationError("Item position evidence is not in the candidate")
-                claims.extend(review.claims)
+            for claim in extracted.position_claims:
+                if str(claim.item_id) not in audited_ids:
+                    raise NarrationValidationError("Item claim refers to an unaudited identity")
+                if claim.evidence not in candidate_text:
+                    claim.evidence = claim.evidence.strip().strip('«»"“”„')
+                if not claim.evidence or claim.evidence not in candidate_text:
+                    raise NarrationValidationError("Item position evidence is not in the candidate")
+                claims.append(claim)
             conflicts = item_position_violations(
                 authority.item_states, claims, candidate_text,
                 authority.inventory_receipts(),
@@ -460,7 +416,6 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     verdict="repair_required", summary="Положение предмета противоречит канону.",
                     violations=[*extracted.violations, *conflicts][:12],
                 )
-        # The model's old verdict may refer only to a discarded position correction.
         data = {**data, "verdict": "repair_required" if any(
             violation.get("severity", "error") == "error" for violation in data.get("violations", [])
         ) else "pass"}

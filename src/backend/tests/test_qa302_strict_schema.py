@@ -42,30 +42,21 @@ def test_inventory_wire_is_compatible_with_strict_reference_subset(count):
     schema = LLMProvider._strict_schema(LLMProvider._compact_schema(original))
     _check_refs(schema)
     if count:
-        review_ref = schema["properties"]["item_reviews"]["$ref"].split("/")[-1]
-        reviews = schema["$defs"][review_ref]
-        assert set(reviews["required"]) == {str(item.item_id) for item in authority.item_states}
-        for item in authority.item_states:
-            target = reviews["properties"][str(item.item_id)]["$ref"].split("/")[-1]
-            review = schema["$defs"][target]
-            assert review["properties"]["item_id"]["const"] == str(item.item_id)
-            assert review["description"]
-        data = {"item_reviews": {str(item.item_id): {"item_id": str(item.item_id),
-            "reference": "absent", "claims": []} for item in authority.item_states},
-            "verdict": "pass", "violations": [], "entrances": [], "names_given": []}
-        assert wire.model_validate(data).verdict == "pass"
-        first = str(authority.item_states[0].item_id)
-        data["item_reviews"][first]["item_id"] = str(uuid4())
+        claims = schema["properties"]["position_claims"]["items"]["$ref"].split("/")[-1]
+        bound = schema["$defs"][claims]["properties"]["item_id"]
+        assert set(bound.get("enum") or [bound.get("const")]) == {
+            str(item.item_id) for item in authority.item_states}
+        data = {"position_claims": [], "violations": [], "entrances": [], "names_given": []}
+        assert wire.model_validate(data).position_claims == []
+        data["position_claims"] = [{"item_id": str(uuid4()), "evidence": "На пристани спокойно.",
+                                    "scope": "current", "mode": "located"}]
         with pytest.raises(ValidationError):
             wire.model_validate(data)
-
 
 @pytest.mark.asyncio
 async def test_registered_item_validation_survives_serialized_responses_request(monkeypatch):
     authority, wire = _wire(2)
-    item_reviews = {str(item.item_id): {"item_id": str(item.item_id), "reference": "absent", "claims": []}
-                    for item in authority.item_states}
-    expected = {"item_reviews": item_reviews, "verdict": "pass", "summary": "", "violations": [],
+    expected = {"position_claims": [], "violations": [],
                 "entrances": [], "names_given": []}
 
     def handle(request):
@@ -86,6 +77,5 @@ async def test_registered_item_validation_survives_serialized_responses_request(
     provider = LLMProvider()
     result = await provider.generate_json([ChatMessage(role="user", content="Осматриваюсь.")],
         _chatgpt_config(), "test-token", response_model=wire)
-    assert result["verdict"] == "pass"
-    assert result["item_reviews"] == item_reviews
+    assert result["position_claims"] == []
     assert provider.last_telemetry["attempt"] == 1

@@ -56,12 +56,11 @@ async def test_static_item_claim_is_rejected_even_when_model_verdict_says_pass(m
     item, hero, npc, room = uuid4(), uuid4(), uuid4(), uuid4()
     text = "Письмо теперь находится у Марты за конторкой." if mode == "owned" else "Письмо лежит на конторке."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "violations": [], "item_reviews": [{
-            "item_id": str(item), "reference": "position", "evidence": text, "claims": [{
+        "verdict": "pass", "violations": [], "position_claims": [{
             "item_id": str(item), "evidence": text, "scope": "current", "mode": mode,
             "owner_id": str(npc) if mode == "owned" else None,
             "location_id": str(room) if mode == "located" else None,
-        }]}],
+        }],
     }))
     auth = TurnAuthority(
         campaign_id=uuid4(), trigger_turn_id=uuid4(), player_input="Где письмо?",
@@ -78,11 +77,10 @@ async def test_quoted_past_position_does_not_override_current_owner():
     item, hero, room = uuid4(), uuid4(), uuid4()
     text = "— Вчера письмо лежало на конторке, — вспоминает Марта."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "violations": [], "item_reviews": [{
-            "item_id": str(item), "reference": "position", "evidence": text, "claims": [{
+        "verdict": "pass", "violations": [], "position_claims": [{
             "item_id": str(item), "evidence": "Вчера письмо лежало на конторке", "scope": "past",
             "mode": "located", "location_id": str(room),
-        }]}],
+        }],
     }))
     auth = TurnAuthority(campaign_id=uuid4(), trigger_turn_id=uuid4(), player_input="Где письмо?",
                          item_states=[ItemStateSnapshot(item_id=item, name="Письмо", owner_id=hero)])
@@ -127,11 +125,10 @@ async def test_repeated_false_static_claim_falls_back_to_actual_item_state(db_se
     router = SimpleNamespace(
         resolve=AsyncMock(return_value=SimpleNamespace(config=SimpleNamespace(model_name="test"))),
         generate_json=AsyncMock(return_value={
-            "verdict": "pass", "violations": [], "item_reviews": [{
-                "item_id": str(letter), "reference": "position", "evidence": false_text, "claims": [{
+            "verdict": "pass", "violations": [], "position_claims": [{
                 "item_id": str(letter), "evidence": false_text, "scope": "current",
                 "mode": "located", "location_id": str(room),
-            }]}],
+            }],
         }),
     )
     auth = TurnAuthority(
