@@ -91,4 +91,4 @@ async def test_untyped_opening_prose_cannot_create_people_or_routes(db_session, 
     assert result.state.available_exits == []
     assert result.created_npc_id is None
     assert result.created_exit_location_id is None
-    assert result.state.object_ids
+    assert not result.state.object_ids
