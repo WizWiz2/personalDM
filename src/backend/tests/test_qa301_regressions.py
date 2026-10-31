@@ -203,15 +203,29 @@ async def test_return_presence_observation_ignores_legacy_descriptions(db_sessio
 
 def test_a_closed_goal_cannot_drive_another_world_move():
     source = "Выдать бланк после представления инспектора."
-    evidence = "Инспектор назвал имя и должность."
     wire = _outcome_wire_model(0, world_threads={"thread_0": True}, world_kinds=("npc_action",),
-        thread_sources={"thread_0": {"source": source}}, review_evidence=evidence, initiative_due=True)
+        thread_sources={"thread_0": {"source": source}},
+        review_evidence=f"{source}\nИнспектор назвал имя и должность.", initiative_due=True)
     data = {"action_outcomes": [], "npc_introductions": [], "observable_consequences": ["В зале тихо."],
-        "thread_reviews": {"thread_0": {"status": "resolved", "evidence": evidence}}}
+        "thread_reviews": {"thread_0": {"status": "resolved", "evidence": "E1"}}}
     wire.model_validate(data)  # No fake pressure required after all candidates have closed.
     with pytest.raises(ValidationError, match="resolved"):
         wire.model_validate({**data, "world_move": {"thread_id": "thread_0", "kind": "npc_action",
             "outcome": "Оператор снова требует назвать имя и должность."}})
+
+
+def test_thread_review_evidence_is_a_selected_anchor_not_a_quote():
+    source = "Выдать бланк после представления инспектора."
+    wire = _outcome_wire_model(1, thread_sources={"thread_0": {"source": source}},
+        review_evidence=f"Сцена: приёмная.\n- {source}\nЯ инспектор Орлов.")
+    review = lambda ref: {"action_outcomes": [{"action_index": 0, "resolution": "auto_success",
+        "observable_outcome": "Оператор кивает."}], "npc_introductions": [],
+        "thread_reviews": {"thread_0": {"status": "resolved", "evidence": ref}}}
+    wire.model_validate(review("E2"))  # current input line
+    wire.model_validate(review("A0"))  # this draft's approved action result
+    for invalid in ("E1", "Я инспектор", "E9"):  # own source, paraphrase, unknown anchor
+        with pytest.raises(ValidationError):
+            wire.model_validate(review(invalid))
 
 
 @pytest.mark.asyncio

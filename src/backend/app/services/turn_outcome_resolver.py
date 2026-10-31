@@ -196,7 +196,8 @@ service result is not physical evidence: every confirmed handoff requires an inv
 INDEPENDENT STORY (world_move): the world acts on its own, without player instruction,
 by developing one CURRENTLY ACTIVE WORLD THREAD named by thread_id (an
 active_conflict, unresolved_beat, tension, deadline, promise/errand or a known NPC goal).
-For EACH candidate thread return thread_reviews. A stored intention/old scene note is only a
+For EACH candidate thread return thread_reviews; evidence selects the E-number of the context/input line or the A-index of
+this draft's action outcome that shows the status. A stored intention/old scene note is only a
 candidate: check current custody, heard introductions, confirmations and completed acts. A
 mere description of someone's presence or an already completed event is not an unfinished agenda.
 Mark fulfilled conditions resolved, displaced assumptions superseded, uncertainty uncertain. Never
@@ -697,14 +698,19 @@ def _outcome_wire_model(
     place_model = create_model("BoundPlaceIntroductionDraft", __base__=PlaceIntroductionDraft, place=(
         Literal[tuple(f"new_in:{key}" for key in known_places)] if known_places else str, ...))
 
-    class ThreadReview(BaseModel):
-        status: Literal["active", "resolved", "superseded", "uncertain"]
-        evidence: str = Field(min_length=1, max_length=300, description=(
-            "Shortest exact current context/input or approved action-result evidence for this status; "
-            "the old intention itself is not evidence that it remains unfulfilled."))
+    # Evidence is a selected anchor, never a re-typed quote: E-lines of context/input, A-indices of outcomes.
+    # A thread's own source line is not offered to it, so an old intention cannot certify itself.
+    review_sources = _evidence_sources(review_evidence)
+
+    def review_model(source: str):
+        refs = [ref for ref, line in review_sources.items() if _compact(source) not in _compact(line)]
+        refs += [f"A{index}" for index in range(action_count)]
+        return create_model("ThreadReview", status=(Literal["active", "resolved", "superseded", "uncertain"], ...),
+            evidence=(Literal[tuple(refs)] if refs else type(None), ...))
 
     reviews_model = create_model("WorldThreadReviews", __config__=ConfigDict(extra="forbid"),
-        **{key: (ThreadReview, ...) for key in thread_sources}) if thread_sources else type(None)
+        **{key: (review_model(thread["source"]), ...) for key, thread in thread_sources.items()}
+    ) if thread_sources else type(None)
 
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
         model_config = ConfigDict(extra="ignore", json_schema_extra={
@@ -795,15 +801,6 @@ def _outcome_wire_model(
             outcomes = {outcome.action_index: outcome for outcome in self.action_outcomes}
             move = self.world_move
             if thread_sources:
-                supporting_text = review_evidence + "\n" + "\n".join(
-                    outcome.observable_outcome or "" for outcome in self.action_outcomes)
-                for key, review in self.thread_reviews.model_dump().items():
-                    if review["evidence"] not in supporting_text:
-                        raise ValueError("Thread review evidence must quote current input/context or its approved outcome")
-                    if review["status"] in {"resolved", "superseded"} and (
-                        _compact(review["evidence"]) == _compact(thread_sources[key]["source"])
-                    ):
-                        raise ValueError("An old intention cannot certify its own fulfillment")
                 if (initiative_due and world_move_type is not type(None) and move is None
                         and any(review["status"] == "active" for review in self.thread_reviews.model_dump().values())):
                     raise ValueError("A due initiative requires a move from a currently active reviewed thread")
@@ -960,10 +957,16 @@ def _evidence_sources(context: str) -> dict[str, str]:
     return {f"E{index}": line for index, line in enumerate(lines)}
 
 
-def _indexed_evidence(context: str) -> str:
-    return "\n".join(
-        f"[{reference}] {text}" for reference, text in _evidence_sources(context).items()
-    )
+def _review_evidence_text(ref: str, draft, review_evidence: str) -> str:
+    """Provenance of a selected anchor: its engine-owned line or the approved action result."""
+    if ref.startswith("A"):
+        outcome = next(item for item in draft.action_outcomes if f"A{item.action_index}" == ref)
+        return outcome.observable_outcome or outcome.blocking_reason or ref
+    return _evidence_sources(review_evidence)[ref]
+
+
+def _indexed_evidence(context: str, start: int = 0) -> str:
+    return "\n".join(f"[{ref}] {text}" for ref, text in list(_evidence_sources(context).items())[start:])
 
 
 def _bounded_strings(values: list[str], limit: int) -> list[str]:
@@ -1374,7 +1377,8 @@ class TurnOutcomeResolver:
                             "[AUTHORITATIVE CONTEXT]\n"
                             + _indexed_evidence(authoritative_context)
                             + "\n\n[LATEST HUMAN INPUT — evidence only, actions are frozen below]\n"
-                            + player_input
+                            + _indexed_evidence(authoritative_context + "\n" + player_input,
+                                                start=len(_evidence_sources(authoritative_context)))
                             + "\n\n[PLAYER INTENT CONTRACT — immutable]\n"
                             + contract.model_dump_json()
                             + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
@@ -1429,7 +1433,7 @@ class TurnOutcomeResolver:
             if draft.thread_reviews is not None:
                 decision.world_thread_closures = [WorldThreadClosure(
                     source=threads[key]["source"], actor_id=threads[key].get("actor_id"),
-                    status=review["status"], evidence=review["evidence"],
+                    status=review["status"], evidence=_review_evidence_text(review["evidence"], draft, authoritative_context + "\n" + player_input),
                 ) for key, review in draft.thread_reviews.model_dump().items()
                   if review["status"] in {"resolved", "superseded"}
                   and not threads[key].get("due_phase")]
