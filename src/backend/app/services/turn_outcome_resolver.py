@@ -151,6 +151,10 @@ needs a designation distinct from already registered items, even when their cont
 For a new written artifact, written_content is its complete literal text, including the text the
 human explicitly writes. Persist it at the creation source, not as a property of its source material.
 For a faithful reproduction, copy_of_item_id is the existing original's ID; do not invent its content.
+COUNTABLE UNITS: item_states.quantity is the typed count and wins over any number in a name.
+Units taken out of an item (coins from a purse, to pay or hold) are one new item_introductions
+entry with quantity and taken_from_item_id; give source_quantity_before only when the source has
+no quantity yet. The source's count then decreases by that ID; never rename the source.
 When one action creates multiple artifacts, list them in creation order. Later frozen
 produced_item_ordinal values select the corresponding zero-based artifact within that action.
 An introduction describes the object's state immediately AFTER ITS SOURCE action, not the final
@@ -586,6 +590,7 @@ def _outcome_wire_model(
     class IndexedItemIntroduction(PlannedItemIntroduction):
         after_action_index: prerequisite_type = None
         copy_of_item_id: copy_reference_type = None
+        taken_from_item_id: copy_reference_type = None
         reserved_item_id: None = None
 
     if bound_response_speaker and action_count:

@@ -515,6 +515,10 @@ class Item(Base):
     is_unique: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     placement_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     lore: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Countable units this record holds (coins in a purse); null = not counted (legacy saves).
+    quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Units taken out of another item; undoing this record returns them to that source.
+    split_from_item_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
     base_entity = relationship(
         "Entity", back_populates="item_data", foreign_keys=[entity_id]

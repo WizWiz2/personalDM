@@ -14,6 +14,7 @@ class ItemStateSnapshot(BaseModel):
     location_id: UUID | None = None
     location_name: str | None = None
     placement_detail: str | None = None
+    quantity: int | None = None  # typed count of units; wins over any count in the name
     owner_location_id: UUID | None = None
     owner_location_name: str | None = None
     revealed_content: str | None = None

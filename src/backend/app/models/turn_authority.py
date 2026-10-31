@@ -60,6 +60,18 @@ class PlannedItemIntroduction(BaseModel):
     written_content: str | None = Field(default=None, min_length=1, max_length=2500,
         description="Complete literal text of a newly written artifact, never a description of writing; null for non-documents.")
     reserved_item_id: UUID | None = None  # allocated by compiler, never by a model
+    quantity: int | None = Field(default=None, ge=1, le=100000,
+        description="Countable units this new item holds (coins, arrows); null when not countable.")
+    taken_from_item_id: UUID | None = Field(default=None,
+        description="Existing item these units are taken out of (coins from a purse); its count decreases.")
+    source_quantity_before: int | None = Field(default=None, ge=1, le=100000,
+        description="Only when the source has no typed quantity yet: how many units it held before.")
+
+    @model_validator(mode="after")
+    def split_has_a_count(self):
+        if self.taken_from_item_id is not None and self.quantity is None:
+            raise ValueError("Units taken from an item require their typed quantity")
+        return self
 
 
 class PlannedWorldMove(BaseModel):

@@ -201,6 +201,7 @@ Everything that is not banned below is allowed. Return repair_required ONLY for 
    a completed transfer's result for a precondition that prevented that transfer.
    item_states is the authoritative CURRENT custody and placement, overriding old dialogue,
    established_state and every generic service/interaction outcome.
+   Its quantity is the current typed count of units; a count inside an item name is stale.
    Its properties are the current physical conditions of that exact item or its components.
    A completed property change remains true on later turns; old appearance prose cannot reset it.
    A static assertion

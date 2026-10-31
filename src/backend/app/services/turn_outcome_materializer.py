@@ -14,6 +14,7 @@ from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.tables import Character, Entity, Location, Item, ItemContentDisclosure, ItemCreationEffect, NpcIdentityAnchor, SceneParticipant, Turn
 from app.db.action_sequence_table import ActionSequence, ActionStep
+from app.services.action_item_creation import return_units, take_units
 from app.services.item_content_authority import revealed_item_contents
 from app.models.addressed_response import AddressedResponse
 from app.models.character import CharacterCreate
@@ -176,8 +177,8 @@ class TurnOutcomeMaterializer:
                 if source_step and source_step.target_scene_id:
                     item_location_id = await self._scenes.get_location_id(UUID(source_step.target_scene_id))
             key = identity_key(introduction.canonical_name)
-            if key in occupied:
-                continue  # Repeated evidence refers to the same object, never a new clone.
+            if key in occupied and introduction.taken_from_item_id is None:
+                continue  # Repeated evidence refers to the same object; taken units are a new ID.
             if introduction.owned_by_player and not authority.player_character_id:
                 continue
             item = await self._entities.create(
@@ -209,6 +210,8 @@ class TurnOutcomeMaterializer:
                         getattr(introduction, "placement_detail", None)
                         if not introduction.owned_by_player else None
                     ),
+                    quantity=introduction.quantity,
+                    split_from_item_id=await take_units(self._session, introduction),
                 )
             )
             if introduction.copy_of_item_id and str(introduction.copy_of_item_id) in disclosed_contents:
@@ -499,6 +502,7 @@ class TurnOutcomeMaterializer:
                     SceneParticipant.entity_id == effect.entity_id))
                 await self._session.execute(delete(ItemContentDisclosure).where(
                     ItemContentDisclosure.item_id == effect.entity_id))
+                await return_units(self._session, [effect.entity_id])
                 item = await self._session.get(Item, effect.entity_id)
                 if item:
                     await self._session.delete(item)

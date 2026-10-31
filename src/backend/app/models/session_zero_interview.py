@@ -57,6 +57,8 @@ class SessionZeroStarterItem(BaseModel):
         description="Exact starter NPC name holding or controlling this item, otherwise null.",
     )
     present_at_start: bool = True
+    quantity: int | None = Field(default=None, ge=1, le=100000, description=(
+        "Countable units it holds (coins in a purse, arrows in a quiver); null when not countable."))
 
     @model_validator(mode="after")
     def single_holder(self):
