@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import or_, select
 
 from app.db.repositories.base import BaseRepository
-from app.db.tables import Event, EventParticipant
+from app.db.tables import Event, EventParticipant, Turn
 from app.db.truth_engine_table import TruthEventRecord
 from app.models.event import EventCreate, EventRead
 
@@ -68,13 +68,24 @@ class EventRepository(BaseRepository):
             except (ValueError, TypeError, json.JSONDecodeError):
                 source_turns = []
 
+        status = truth_record.status if truth_record else "active"
+        if status == "active" and source_turns:
+            sources = (await self._session.execute(select(Turn.status).where(
+                Turn.campaign_id == db_event.campaign_id,
+                Turn.id.in_([str(turn_id) for turn_id in source_turns]),
+            ))).scalars().all()
+            if "undone" in sources:
+                status = "undone"
+            elif any(source != "active" for source in sources):
+                status = "inactive"
+
         return EventRead(
             id=UUID(db_event.id),
             campaign_id=UUID(db_event.campaign_id),
             # Public API keeps the legacy movement type; provenance remains
             # explicit in the persisted event for safe independent GM undo.
             event_type="movement" if db_event.event_type == "gm_movement" else db_event.event_type,
-            status=truth_record.status if truth_record else "active",
+            status=status,
             description=db_event.description,
             world_time=db_event.world_time,
             location_id=(UUID(db_event.location_id) if db_event.location_id else None),
@@ -103,6 +114,6 @@ class EventRepository(BaseRepository):
         events = []
         for db_event in result.scalars().all():
             event = await self.get_by_id(UUID(db_event.id))
-            if event:
+            if event and event.status == "active":
                 events.append(event)
         return events
