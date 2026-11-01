@@ -26,7 +26,7 @@ def _reply(auth, claims=()):
 
 
 BAD = {"position_claims": [{"item_id": "00000000-0000-0000-0000-000000000000", "evidence": "Осип",
-                            "scope": "current", "mode": "located"}]}
+                            "change": "moved", "scope": "current", "mode": "located"}]}
 
 
 @pytest.mark.asyncio
@@ -70,7 +70,7 @@ async def test_response_repair_cannot_hide_a_real_custody_conflict():
     auth.observable_consequences = ["Ключ остаётся под контролем Осипа."]
     text = "Ключ от чердака лежит на конторке."
     claim = {"item_id": str(auth.item_states[0].item_id), "evidence": text,
-             "scope": "current", "aspect": "placement", "mode": "located"}
+             "change": "moved", "scope": "current", "aspect": "placement", "mode": "located"}
     router = SimpleNamespace(generate_json=AsyncMock(side_effect=[
         _reply(auth, [{**claim, "evidence": "Нет такой цитаты"}]),
         _reply(auth, [claim]),

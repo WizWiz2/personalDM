@@ -57,7 +57,7 @@ async def test_static_item_claim_is_rejected_even_when_model_verdict_says_pass(m
     text = "Письмо теперь находится у Марты за конторкой." if mode == "owned" else "Письмо лежит на конторке."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
         "verdict": "pass", "violations": [], "position_claims": [{
-            "item_id": str(item), "evidence": text, "scope": "current", "mode": mode,
+            "item_id": str(item), "evidence": text, "change": "moved", "scope": "current", "mode": mode,
             "owner_id": str(npc) if mode == "owned" else None,
             "location_id": str(room) if mode == "located" else None,
         }],
@@ -78,7 +78,7 @@ async def test_quoted_past_position_does_not_override_current_owner():
     text = "— Вчера письмо лежало на конторке, — вспоминает Марта."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
         "verdict": "pass", "violations": [], "position_claims": [{
-            "item_id": str(item), "evidence": "Вчера письмо лежало на конторке", "scope": "past",
+            "item_id": str(item), "evidence": "Вчера письмо лежало на конторке", "change": "moved", "scope": "past",
             "mode": "located", "location_id": str(room),
         }],
     }))
@@ -126,7 +126,7 @@ async def test_repeated_false_static_claim_falls_back_to_actual_item_state(db_se
         resolve=AsyncMock(return_value=SimpleNamespace(config=SimpleNamespace(model_name="test"))),
         generate_json=AsyncMock(return_value={
             "verdict": "pass", "violations": [], "position_claims": [{
-                "item_id": str(letter), "evidence": false_text, "scope": "current",
+                "item_id": str(letter), "evidence": false_text, "change": "moved", "scope": "current",
                 "mode": "located", "location_id": str(room),
             }],
         }),

@@ -183,21 +183,17 @@ async def test_explicit_cast_binding_reuses_a_known_person_without_creating_an_a
     assert [arrival.entity_id for arrival in resolution.existing_arrivals] == [npc]
 
 
-def test_inventory_validator_can_only_quote_actual_candidate_fragments():
-    from app.services.turn_authority_validator import inventory_validation_model
+def test_inventory_validator_can_only_cite_actual_candidate_sentences():
+    from app.services.turn_authority_validator import candidate_sentences, inventory_validation_model
     from tests.test_qa220_regressions import _auth
 
     authority = _auth()
     prose = "Бумага лежит на столе. Конверт остаётся закрытым."
     schema = inventory_validation_model(authority, prose).model_json_schema()
-    claims = [value["properties"] for value in schema["$defs"].values()
-              if "polarity" in value.get("properties", {})]
-    assert len(claims) == len(authority.item_states)
-    assert {claim["item_id"]["const"] for claim in claims} == {str(item.item_id) for item in authority.item_states}
-    for claim in claims:
-        evidence = claim["evidence"]
-        assert set(evidence["enum"]) == {"Бумага лежит на столе.", "Конверт остаётся закрытым."}
-        assert all(fragment in prose for fragment in evidence["enum"])
+    claim = schema["$defs"]["BoundItemPositionClaim"]["properties"]
+    assert "evidence" not in claim or claim["evidence"].get("type") == "null"
+    assert set(claim["sentence"]["enum"]) == {"S0", "S1"}
+    assert candidate_sentences(prose) == {"S0": "Бумага лежит на столе.", "S1": "Конверт остаётся закрытым."}
 
 
 @pytest.mark.asyncio

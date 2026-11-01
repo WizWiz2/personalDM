@@ -64,11 +64,14 @@ class ItemPropertyChange(BaseModel):
 
 class ItemPositionClaim(BaseModel):
     model_config = ConfigDict(json_schema_extra={"required": [
-        "item_id", "evidence", "scope", "action_step_index", "moment",
+        "item_id", "evidence", "change", "scope", "action_step_index", "moment",
         "mode", "owner_id", "location_id", "placement_conflicts", "placement_matches", "polarity",
     ]})
     item_id: UUID
     evidence: str = Field(min_length=1, max_length=1000)
+    # What the cited sentence does to this item. Only a change can conflict with the typed state;
+    # a static description is decoration and never triggers a repair.
+    change: Literal["moved", "given", "taken", "placed", "stowed", "static"] = "static"
     scope: Literal["current", "past", "speech", "conditional", "executed_action"]
     action_step_index: int | None = Field(default=None, ge=0, le=15)
     moment: Literal["before", "after"] = "after"

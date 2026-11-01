@@ -38,6 +38,6 @@ async def test_a_single_reported_claim_against_custody_is_still_caught():
     hero, npc, coin = uuid4(), uuid4(), uuid4()
     text = "Серебряк теперь у купца."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={"violations": [], "position_claims": [{
-        "item_id": str(coin), "evidence": text, "scope": "current", "mode": "owned", "owner_id": str(npc)}]}))
+        "item_id": str(coin), "evidence": text, "change": "moved", "scope": "current", "mode": "owned", "owner_id": str(npc)}]}))
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), _authority(hero, [coin, uuid4()]), text)
     assert result.verdict == "repair_required" and result.violations[0].violation_type == "canon_conflict"
