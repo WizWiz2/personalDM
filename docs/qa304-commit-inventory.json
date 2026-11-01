@@ -1,0 +1,1648 @@
+{
+  "target_sha": "665f134fdea64e49655a54bd56d37c8d855322c2",
+  "base_before_window": "149fc895a6218d9d01a25db57967d8ac35cc7f26",
+  "window_local": "2026-10-31 00:00 through 2026-11-01, captured at target commit",
+  "timezone": "Asia/Almaty (UTC+05:00)",
+  "window_utc": [
+    "2026-10-30T19:00:00Z",
+    "2026-11-01T19:00:00Z"
+  ],
+  "commit_count": 54,
+  "pr_count": 24,
+  "changed_file_count": 82,
+  "commits": [
+    {
+      "sha": "0cf99f87afa7ce823ec1ddb6a0667689463c6124",
+      "author_time": "2026-10-31T18:32:20+05:00",
+      "committer_time": "2026-10-31T18:32:20+05:00",
+      "parents": [
+        "149fc895a6218d9d01a25db57967d8ac35cc7f26"
+      ],
+      "subject": "perf: one intent call — stated-act coverage in the schema (no #234 repair call)",
+      "included_by_prs": [
+        273
+      ],
+      "changed_files": [
+        "src/backend/app/services/linguistic_intent_analyzer.py",
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/tests/test_player_intent_interpreter.py"
+      ]
+    },
+    {
+      "sha": "90fa83a3f99d0896f5167faf9c941e56aba28cfc",
+      "author_time": "2026-10-31T18:32:36+05:00",
+      "committer_time": "2026-10-31T18:32:36+05:00",
+      "parents": [
+        "149fc895a6218d9d01a25db57967d8ac35cc7f26",
+        "0cf99f87afa7ce823ec1ddb6a0667689463c6124"
+      ],
+      "subject": "Merge pull request #273 from WizWiz2/perf/one-intent-call",
+      "included_by_prs": [
+        273
+      ],
+      "changed_files": [
+        "src/backend/app/services/linguistic_intent_analyzer.py",
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/tests/test_player_intent_interpreter.py"
+      ]
+    },
+    {
+      "sha": "963c74a1cfbb63bf0a043e6de96b65cc432c458d",
+      "author_time": "2026-10-31T19:27:09+05:00",
+      "committer_time": "2026-10-31T19:27:09+05:00",
+      "parents": [
+        "90fa83a3f99d0896f5167faf9c941e56aba28cfc"
+      ],
+      "subject": "Thread review evidence: select a typed anchor (E-line / A-index) instead of a verbatim quote",
+      "included_by_prs": [
+        274
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_qa301_regressions.py"
+      ]
+    },
+    {
+      "sha": "57096772778ba5fe2f8c93c228ca8b5bb6443ffc",
+      "author_time": "2026-10-31T19:27:16+05:00",
+      "committer_time": "2026-10-31T19:27:16+05:00",
+      "parents": [
+        "90fa83a3f99d0896f5167faf9c941e56aba28cfc",
+        "963c74a1cfbb63bf0a043e6de96b65cc432c458d"
+      ],
+      "subject": "Merge pull request #274 from WizWiz2/fix/thread-evidence-refs",
+      "included_by_prs": [
+        274
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_qa301_regressions.py"
+      ]
+    },
+    {
+      "sha": "7a5a640f75fd6a853455549ee0aeb3217a5f37a9",
+      "author_time": "2026-10-31T19:56:14+05:00",
+      "committer_time": "2026-10-31T19:56:14+05:00",
+      "parents": [
+        "57096772778ba5fe2f8c93c228ca8b5bb6443ffc"
+      ],
+      "subject": "Turn takes campaign barrier before first prepare write (lock order fix)",
+      "included_by_prs": [
+        275
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/tests/test_campaign_write_barrier.py"
+      ]
+    },
+    {
+      "sha": "715a983486da04770620fb647cf76134176207d6",
+      "author_time": "2026-10-31T19:56:24+05:00",
+      "committer_time": "2026-10-31T19:56:24+05:00",
+      "parents": [
+        "57096772778ba5fe2f8c93c228ca8b5bb6443ffc",
+        "7a5a640f75fd6a853455549ee0aeb3217a5f37a9"
+      ],
+      "subject": "Merge pull request #275 from WizWiz2/fix/barrier-lock-order",
+      "included_by_prs": [
+        275
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/tests/test_campaign_write_barrier.py"
+      ]
+    },
+    {
+      "sha": "3f8445ba759270b2e8b2a8e2c294f4d2aab7333e",
+      "author_time": "2026-10-31T19:59:54+05:00",
+      "committer_time": "2026-10-31T19:59:54+05:00",
+      "parents": [
+        "715a983486da04770620fb647cf76134176207d6"
+      ],
+      "subject": "Authority: people left behind by a typed trip are present before departure, not known-absent",
+      "included_by_prs": [
+        276
+      ],
+      "changed_files": [
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/turn_authority_service.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_interagent_turn_authority.py"
+      ]
+    },
+    {
+      "sha": "ab9e5a8af33001925708ffc1c00c81aa25fc2f00",
+      "author_time": "2026-10-31T19:59:59+05:00",
+      "committer_time": "2026-10-31T19:59:59+05:00",
+      "parents": [
+        "715a983486da04770620fb647cf76134176207d6",
+        "3f8445ba759270b2e8b2a8e2c294f4d2aab7333e"
+      ],
+      "subject": "Merge pull request #276 from WizWiz2/fix/present-before-departure",
+      "included_by_prs": [
+        276
+      ],
+      "changed_files": [
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/turn_authority_service.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_interagent_turn_authority.py"
+      ]
+    },
+    {
+      "sha": "4221133fc515fac68cabaf1c8b5c3e7c118389dd",
+      "author_time": "2026-10-31T20:04:06+05:00",
+      "committer_time": "2026-10-31T20:04:06+05:00",
+      "parents": [
+        "ab9e5a8af33001925708ffc1c00c81aa25fc2f00"
+      ],
+      "subject": "Intent: a trailing question cannot erase typed physical acts",
+      "included_by_prs": [
+        277
+      ],
+      "changed_files": [
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/tests/test_player_intent_interpreter.py"
+      ]
+    },
+    {
+      "sha": "8a14c665eb3fa56b850903f076812b067fd1c364",
+      "author_time": "2026-10-31T20:04:10+05:00",
+      "committer_time": "2026-10-31T20:04:10+05:00",
+      "parents": [
+        "ab9e5a8af33001925708ffc1c00c81aa25fc2f00",
+        "4221133fc515fac68cabaf1c8b5c3e7c118389dd"
+      ],
+      "subject": "Merge pull request #277 from WizWiz2/fix/question-keeps-typed-acts",
+      "included_by_prs": [
+        277
+      ],
+      "changed_files": [
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/tests/test_player_intent_interpreter.py"
+      ]
+    },
+    {
+      "sha": "7adfae35f25d9f2351fc999351dffc16cbb3a4d3",
+      "author_time": "2026-10-31T20:27:19+05:00",
+      "committer_time": "2026-10-31T20:27:19+05:00",
+      "parents": [
+        "8a14c665eb3fa56b850903f076812b067fd1c364"
+      ],
+      "subject": "Items: typed countable units; taking coins decrements the source purse by ID",
+      "included_by_prs": [
+        278
+      ],
+      "changed_files": [
+        "src/backend/alembic/versions/c2d3e4f5a6b7_typed_item_quantity.py",
+        "src/backend/app/db/tables.py",
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/models/session_zero_interview.py",
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/item_state_authority.py",
+        "src/backend/app/services/playable_bootstrap.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/app/services/turn_outcome_materializer.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_generative_simulation_overhaul.py",
+        "src/backend/tests/test_legacy_migration_drift_chain.py",
+        "src/backend/tests/test_qa214_migration_upgrade.py",
+        "src/backend/tests/test_typed_item_quantity.py"
+      ]
+    },
+    {
+      "sha": "dbb785d3b2a6ac0ae734dc7c9764d7bde6175a51",
+      "author_time": "2026-10-31T20:27:32+05:00",
+      "committer_time": "2026-10-31T20:27:32+05:00",
+      "parents": [
+        "8a14c665eb3fa56b850903f076812b067fd1c364",
+        "7adfae35f25d9f2351fc999351dffc16cbb3a4d3"
+      ],
+      "subject": "Merge pull request #278 from WizWiz2/fix/typed-item-quantity",
+      "included_by_prs": [
+        278
+      ],
+      "changed_files": [
+        "src/backend/alembic/versions/c2d3e4f5a6b7_typed_item_quantity.py",
+        "src/backend/app/db/tables.py",
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/models/session_zero_interview.py",
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/item_state_authority.py",
+        "src/backend/app/services/playable_bootstrap.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/app/services/turn_outcome_materializer.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_generative_simulation_overhaul.py",
+        "src/backend/tests/test_legacy_migration_drift_chain.py",
+        "src/backend/tests/test_qa214_migration_upgrade.py",
+        "src/backend/tests/test_typed_item_quantity.py"
+      ]
+    },
+    {
+      "sha": "d8d999dbab02680483737ad6dfced6d00d4418e2",
+      "author_time": "2026-10-31T20:37:54+05:00",
+      "committer_time": "2026-10-31T20:37:54+05:00",
+      "parents": [
+        "dbb785d3b2a6ac0ae734dc7c9764d7bde6175a51"
+      ],
+      "subject": "Wire: never ask strict decoding for a forced value; outcome kinds carry only their own fields",
+      "included_by_prs": [
+        279
+      ],
+      "changed_files": [
+        "src/backend/app/providers/llm_provider.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_null_free_wire.py"
+      ]
+    },
+    {
+      "sha": "f515512ffdf00b5c5b28f003af653c64248914d7",
+      "author_time": "2026-10-31T20:38:02+05:00",
+      "committer_time": "2026-10-31T20:38:02+05:00",
+      "parents": [
+        "dbb785d3b2a6ac0ae734dc7c9764d7bde6175a51",
+        "d8d999dbab02680483737ad6dfced6d00d4418e2"
+      ],
+      "subject": "Merge pull request #279 from WizWiz2/fix/null-free-wire",
+      "included_by_prs": [
+        279
+      ],
+      "changed_files": [
+        "src/backend/app/providers/llm_provider.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_null_free_wire.py"
+      ]
+    },
+    {
+      "sha": "3c8064bf5da3c85b7c23f3d2938591e9a733793a",
+      "author_time": "2026-10-31T20:44:09+05:00",
+      "committer_time": "2026-10-31T20:44:09+05:00",
+      "parents": [
+        "f515512ffdf00b5c5b28f003af653c64248914d7"
+      ],
+      "subject": "Validator: audit only items the turn can touch; unaudited item conflicts still fail",
+      "included_by_prs": [
+        280
+      ],
+      "changed_files": [
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ]
+    },
+    {
+      "sha": "4819de8040038e50c5f1ea42b28005f17bd91076",
+      "author_time": "2026-10-31T20:44:19+05:00",
+      "committer_time": "2026-10-31T20:44:19+05:00",
+      "parents": [
+        "f515512ffdf00b5c5b28f003af653c64248914d7",
+        "3c8064bf5da3c85b7c23f3d2938591e9a733793a"
+      ],
+      "subject": "Merge pull request #280 from WizWiz2/fix/scoped-item-audit",
+      "included_by_prs": [
+        280
+      ],
+      "changed_files": [
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ]
+    },
+    {
+      "sha": "128dd7bd59cd05393eb4b95c10689147f89a752f",
+      "author_time": "2026-10-31T20:47:58+05:00",
+      "committer_time": "2026-10-31T20:47:58+05:00",
+      "parents": [
+        "4819de8040038e50c5f1ea42b28005f17bd91076"
+      ],
+      "subject": "Memory jobs start no provider call while a turn is in flight",
+      "included_by_prs": [
+        281
+      ],
+      "changed_files": [
+        "src/backend/app/services/campaign_write_barrier.py",
+        "src/backend/app/services/post_turn_dispatcher.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/tests/test_memory_yields_to_turn.py"
+      ]
+    },
+    {
+      "sha": "cdb6cfb0bbb823d7432df76f930e0b455c804b5a",
+      "author_time": "2026-10-31T20:48:05+05:00",
+      "committer_time": "2026-10-31T20:48:05+05:00",
+      "parents": [
+        "4819de8040038e50c5f1ea42b28005f17bd91076",
+        "128dd7bd59cd05393eb4b95c10689147f89a752f"
+      ],
+      "subject": "Merge pull request #281 from WizWiz2/fix/memory-yields-to-turn",
+      "included_by_prs": [
+        281
+      ],
+      "changed_files": [
+        "src/backend/app/services/campaign_write_barrier.py",
+        "src/backend/app/services/post_turn_dispatcher.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/tests/test_memory_yields_to_turn.py"
+      ]
+    },
+    {
+      "sha": "00497e1c65e0b1a8902f7e17c743e9393e883eec",
+      "author_time": "2026-10-31T21:01:14+05:00",
+      "committer_time": "2026-10-31T21:01:14+05:00",
+      "parents": [
+        "cdb6cfb0bbb823d7432df76f930e0b455c804b5a"
+      ],
+      "subject": "Items: taking units out satisfies the item's typed change; quantity is never a free property",
+      "included_by_prs": [
+        282
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_typed_item_quantity.py"
+      ]
+    },
+    {
+      "sha": "4ed37bb2b87f6eea220641b2720ba8d331bcf952",
+      "author_time": "2026-10-31T21:01:18+05:00",
+      "committer_time": "2026-10-31T21:01:18+05:00",
+      "parents": [
+        "cdb6cfb0bbb823d7432df76f930e0b455c804b5a",
+        "00497e1c65e0b1a8902f7e17c743e9393e883eec"
+      ],
+      "subject": "Merge pull request #282 from WizWiz2/fix/split-satisfies-item-change",
+      "included_by_prs": [
+        282
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_typed_item_quantity.py"
+      ]
+    },
+    {
+      "sha": "83e950de870128b9136b754ea64cb47fbce6d12c",
+      "author_time": "2026-10-31T22:52:16+05:00",
+      "committer_time": "2026-10-31T22:52:16+05:00",
+      "parents": [
+        "4ed37bb2b87f6eea220641b2720ba8d331bcf952"
+      ],
+      "subject": "Fix QA302 route discovery, return paths and durable compensation",
+      "included_by_prs": [
+        283
+      ],
+      "changed_files": [
+        ".github/workflows/round3-playability-contracts.yml",
+        "src/backend/app/models/narration_validation.py",
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/app/services/published_routes.py",
+        "src/backend/app/services/scene_state_service.py",
+        "src/backend/app/services/scene_transition_executor.py",
+        "src/backend/app/services/turn_outcome_materializer.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/app/services/turn_undo_service.py",
+        "src/backend/tests/test_action_plan_compiler.py",
+        "src/backend/tests/test_qa303_routes.py"
+      ]
+    },
+    {
+      "sha": "1eb3093685158850baa890a5023a330ba0d966eb",
+      "author_time": "2026-10-31T22:53:05+05:00",
+      "committer_time": "2026-10-31T22:53:05+05:00",
+      "parents": [
+        "83e950de870128b9136b754ea64cb47fbce6d12c"
+      ],
+      "subject": "Exclude undone source events and scene descriptions from active context",
+      "included_by_prs": [
+        284
+      ],
+      "changed_files": [
+        "src/backend/app/db/repositories/event_repo.py",
+        "src/backend/app/services/debugger_service.py",
+        "src/backend/app/services/turn_intent_pipeline.py",
+        "src/backend/tests/test_qa303_undo.py"
+      ]
+    },
+    {
+      "sha": "88939177e25e4ea88a2b63e1ad2006ae62298484",
+      "author_time": "2026-10-31T22:53:25+05:00",
+      "committer_time": "2026-10-31T22:53:25+05:00",
+      "parents": [
+        "1eb3093685158850baa890a5023a330ba0d966eb"
+      ],
+      "subject": "Preserve and attest confirmed outcomes when repairing narration",
+      "included_by_prs": [
+        285
+      ],
+      "changed_files": [
+        "src/backend/app/services/authority_narration_pipeline.py",
+        "src/backend/app/services/narration_publication_guard.py",
+        "src/backend/app/services/playtest_trace.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/conftest.py",
+        "src/backend/tests/test_four_bans.py",
+        "src/backend/tests/test_generation_decision_trace.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa303_repair.py",
+        "src/backend/tests/test_runtime_observability.py"
+      ]
+    },
+    {
+      "sha": "f3eb58295ab92793aa4616b80a218ef245a65df2",
+      "author_time": "2026-10-31T22:53:46+05:00",
+      "committer_time": "2026-10-31T22:53:46+05:00",
+      "parents": [
+        "88939177e25e4ea88a2b63e1ad2006ae62298484"
+      ],
+      "subject": "Do not fabricate a placeholder physical item at campaign bootstrap",
+      "included_by_prs": [
+        286
+      ],
+      "changed_files": [
+        "src/backend/app/services/playable_bootstrap.py",
+        "src/backend/tests/test_qa303_bootstrap.py",
+        "src/backend/tests/test_round18_fresh_campaign_playability.py",
+        "src/backend/tests/test_semantic_runtime_boundaries.py"
+      ]
+    },
+    {
+      "sha": "3fb36f08f7e84565769d488535a2159b2cea82ae",
+      "author_time": "2026-10-31T22:58:38+05:00",
+      "committer_time": "2026-10-31T22:58:38+05:00",
+      "parents": [
+        "83e950de870128b9136b754ea64cb47fbce6d12c"
+      ],
+      "subject": "Align deterministic inventory auditor with the scoped schema; fix imports",
+      "included_by_prs": [
+        283
+      ],
+      "changed_files": [
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ]
+    },
+    {
+      "sha": "1e645e4d9223cf66af231a14f59f84f76408d443",
+      "author_time": "2026-10-31T22:58:41+05:00",
+      "committer_time": "2026-10-31T22:58:41+05:00",
+      "parents": [
+        "1eb3093685158850baa890a5023a330ba0d966eb",
+        "3fb36f08f7e84565769d488535a2159b2cea82ae"
+      ],
+      "subject": "Merge prior QA302 CI contract repair",
+      "included_by_prs": [
+        284
+      ],
+      "changed_files": [
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ]
+    },
+    {
+      "sha": "c504844b88a5f846d75718631ada01b5f6f955c1",
+      "author_time": "2026-10-31T22:58:45+05:00",
+      "committer_time": "2026-10-31T22:58:45+05:00",
+      "parents": [
+        "88939177e25e4ea88a2b63e1ad2006ae62298484",
+        "1e645e4d9223cf66af231a14f59f84f76408d443"
+      ],
+      "subject": "Merge prior QA302 CI contract repair",
+      "included_by_prs": [
+        285
+      ],
+      "changed_files": [
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ]
+    },
+    {
+      "sha": "4830183e9bb29f81148c690481624c025e1ad80b",
+      "author_time": "2026-10-31T22:58:48+05:00",
+      "committer_time": "2026-10-31T22:58:48+05:00",
+      "parents": [
+        "f3eb58295ab92793aa4616b80a218ef245a65df2",
+        "c504844b88a5f846d75718631ada01b5f6f955c1"
+      ],
+      "subject": "Merge prior QA302 CI contract repair",
+      "included_by_prs": [
+        286
+      ],
+      "changed_files": [
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ]
+    },
+    {
+      "sha": "4c94be5e74be36b4c7c774d16c99ff9b97b2acf5",
+      "author_time": "2026-10-31T23:04:14+05:00",
+      "committer_time": "2026-10-31T23:04:14+05:00",
+      "parents": [
+        "4ed37bb2b87f6eea220641b2720ba8d331bcf952",
+        "3fb36f08f7e84565769d488535a2159b2cea82ae"
+      ],
+      "subject": "Merge pull request #283 from WizWiz2/fix/qa302-route-persistence",
+      "included_by_prs": [
+        283
+      ],
+      "changed_files": [
+        ".github/workflows/round3-playability-contracts.yml",
+        "src/backend/app/models/narration_validation.py",
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/app/services/published_routes.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/scene_state_service.py",
+        "src/backend/app/services/scene_transition_executor.py",
+        "src/backend/app/services/turn_outcome_materializer.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/app/services/turn_undo_service.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_action_plan_compiler.py",
+        "src/backend/tests/test_qa303_routes.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ]
+    },
+    {
+      "sha": "31d1923e03b1b604c89aa214479505095705950a",
+      "author_time": "2026-10-31T23:04:28+05:00",
+      "committer_time": "2026-10-31T23:04:28+05:00",
+      "parents": [
+        "4c94be5e74be36b4c7c774d16c99ff9b97b2acf5",
+        "1e645e4d9223cf66af231a14f59f84f76408d443"
+      ],
+      "subject": "Merge pull request #284 from WizWiz2/fix/qa302-active-history",
+      "included_by_prs": [
+        284
+      ],
+      "changed_files": [
+        "src/backend/app/db/repositories/event_repo.py",
+        "src/backend/app/services/debugger_service.py",
+        "src/backend/app/services/turn_intent_pipeline.py",
+        "src/backend/tests/test_qa303_undo.py"
+      ]
+    },
+    {
+      "sha": "b8360b397888d750ad31a65012cd2069f024ac53",
+      "author_time": "2026-10-31T23:04:49+05:00",
+      "committer_time": "2026-10-31T23:04:49+05:00",
+      "parents": [
+        "31d1923e03b1b604c89aa214479505095705950a",
+        "c504844b88a5f846d75718631ada01b5f6f955c1"
+      ],
+      "subject": "Merge pull request #285 from WizWiz2/fix/qa302-repair-outcomes",
+      "included_by_prs": [
+        285
+      ],
+      "changed_files": [
+        "src/backend/app/services/authority_narration_pipeline.py",
+        "src/backend/app/services/narration_publication_guard.py",
+        "src/backend/app/services/playtest_trace.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/conftest.py",
+        "src/backend/tests/test_four_bans.py",
+        "src/backend/tests/test_generation_decision_trace.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa303_repair.py",
+        "src/backend/tests/test_runtime_observability.py"
+      ]
+    },
+    {
+      "sha": "d79fd0ce7600147f20dfb412d0d2ccb3ae5579a3",
+      "author_time": "2026-10-31T23:05:39+05:00",
+      "committer_time": "2026-10-31T23:05:39+05:00",
+      "parents": [
+        "b8360b397888d750ad31a65012cd2069f024ac53",
+        "4830183e9bb29f81148c690481624c025e1ad80b"
+      ],
+      "subject": "Merge pull request #286 from WizWiz2/fix/qa302-bootstrap-items",
+      "included_by_prs": [
+        286
+      ],
+      "changed_files": [
+        "src/backend/app/services/playable_bootstrap.py",
+        "src/backend/tests/test_qa303_bootstrap.py",
+        "src/backend/tests/test_round18_fresh_campaign_playability.py",
+        "src/backend/tests/test_semantic_runtime_boundaries.py"
+      ]
+    },
+    {
+      "sha": "ae7fd7b5f9cd66af8e1d4f10f61950c32f4764ee",
+      "author_time": "2026-10-31T23:12:56+05:00",
+      "committer_time": "2026-10-31T23:12:56+05:00",
+      "parents": [
+        "4ed37bb2b87f6eea220641b2720ba8d331bcf952"
+      ],
+      "subject": "Items: split units rejoin their source or a same-custody sibling by ID; undo splits them again",
+      "included_by_prs": [
+        287
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/tests/test_coin_merge_back.py"
+      ]
+    },
+    {
+      "sha": "a9eebd8b7c773aac766754f1adc82303a92f6b49",
+      "author_time": "2026-10-31T23:14:54+05:00",
+      "committer_time": "2026-10-31T23:14:54+05:00",
+      "parents": [
+        "ae7fd7b5f9cd66af8e1d4f10f61950c32f4764ee",
+        "d79fd0ce7600147f20dfb412d0d2ccb3ae5579a3"
+      ],
+      "subject": "Merge main into fix/coin-merge-back",
+      "included_by_prs": [
+        287
+      ],
+      "changed_files": [
+        ".github/workflows/round3-playability-contracts.yml",
+        "src/backend/app/db/repositories/event_repo.py",
+        "src/backend/app/models/narration_validation.py",
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/app/services/authority_narration_pipeline.py",
+        "src/backend/app/services/debugger_service.py",
+        "src/backend/app/services/narration_publication_guard.py",
+        "src/backend/app/services/playable_bootstrap.py",
+        "src/backend/app/services/playtest_trace.py",
+        "src/backend/app/services/published_routes.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/scene_state_service.py",
+        "src/backend/app/services/scene_transition_executor.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/app/services/turn_intent_pipeline.py",
+        "src/backend/app/services/turn_outcome_materializer.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/app/services/turn_undo_service.py",
+        "src/backend/tests/conftest.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_action_plan_compiler.py",
+        "src/backend/tests/test_four_bans.py",
+        "src/backend/tests/test_generation_decision_trace.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa303_bootstrap.py",
+        "src/backend/tests/test_qa303_repair.py",
+        "src/backend/tests/test_qa303_routes.py",
+        "src/backend/tests/test_qa303_undo.py",
+        "src/backend/tests/test_round18_fresh_campaign_playability.py",
+        "src/backend/tests/test_runtime_observability.py",
+        "src/backend/tests/test_scoped_item_audit.py",
+        "src/backend/tests/test_semantic_runtime_boundaries.py"
+      ]
+    },
+    {
+      "sha": "1287b9dbe510d4cc337bd89e4118618420a6a0e0",
+      "author_time": "2026-10-31T23:14:59+05:00",
+      "committer_time": "2026-10-31T23:14:59+05:00",
+      "parents": [
+        "d79fd0ce7600147f20dfb412d0d2ccb3ae5579a3",
+        "a9eebd8b7c773aac766754f1adc82303a92f6b49"
+      ],
+      "subject": "Merge pull request #287 from WizWiz2/fix/coin-merge-back",
+      "included_by_prs": [
+        287
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/tests/test_coin_merge_back.py"
+      ]
+    },
+    {
+      "sha": "ff2dfb812ca17252028013e3579b6886b022761c",
+      "author_time": "2026-10-31T23:24:47+05:00",
+      "committer_time": "2026-10-31T23:24:47+05:00",
+      "parents": [
+        "1287b9dbe510d4cc337bd89e4118618420a6a0e0"
+      ],
+      "subject": "Validator: report position claims and violations only; no per-item walk-through, verdict or summary",
+      "included_by_prs": [
+        288
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_qa219_regressions.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa221_regressions.py",
+        "src/backend/tests/test_qa223_regressions.py",
+        "src/backend/tests/test_qa301_regressions.py",
+        "src/backend/tests/test_qa302_strict_schema.py",
+        "src/backend/tests/test_scoped_item_audit.py",
+        "src/backend/tests/test_validator_item_review_grounding.py",
+        "src/backend/tests/test_validator_violations_only.py"
+      ]
+    },
+    {
+      "sha": "627cc57ff50b46e75185fded39829d96d0464cf7",
+      "author_time": "2026-10-31T23:24:56+05:00",
+      "committer_time": "2026-10-31T23:24:56+05:00",
+      "parents": [
+        "1287b9dbe510d4cc337bd89e4118618420a6a0e0",
+        "ff2dfb812ca17252028013e3579b6886b022761c"
+      ],
+      "subject": "Merge pull request #288 from WizWiz2/perf/validator-claims-only",
+      "included_by_prs": [
+        288
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_qa219_regressions.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa221_regressions.py",
+        "src/backend/tests/test_qa223_regressions.py",
+        "src/backend/tests/test_qa301_regressions.py",
+        "src/backend/tests/test_qa302_strict_schema.py",
+        "src/backend/tests/test_scoped_item_audit.py",
+        "src/backend/tests/test_validator_item_review_grounding.py",
+        "src/backend/tests/test_validator_violations_only.py"
+      ]
+    },
+    {
+      "sha": "99ea8b79bc0e384c152a3cee48277cad37b74116",
+      "author_time": "2026-10-31T23:27:02+05:00",
+      "committer_time": "2026-10-31T23:27:02+05:00",
+      "parents": [
+        "627cc57ff50b46e75185fded39829d96d0464cf7"
+      ],
+      "subject": "Custody claims: a named holder is always compared by ID; drop the 'aspect' escape hatch",
+      "included_by_prs": [
+        289
+      ],
+      "changed_files": [
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/services/item_state_authority.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_typed_custody_claims.py"
+      ]
+    },
+    {
+      "sha": "9b84b096276872a4b4ecc7b0000900d32dbbdde2",
+      "author_time": "2026-10-31T23:27:08+05:00",
+      "committer_time": "2026-10-31T23:27:08+05:00",
+      "parents": [
+        "627cc57ff50b46e75185fded39829d96d0464cf7",
+        "99ea8b79bc0e384c152a3cee48277cad37b74116"
+      ],
+      "subject": "Merge pull request #289 from WizWiz2/fix/typed-custody-claims",
+      "included_by_prs": [
+        289
+      ],
+      "changed_files": [
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/services/item_state_authority.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_typed_custody_claims.py"
+      ]
+    },
+    {
+      "sha": "a77a15ecf52cff6c727848539dcf904aae73c3e8",
+      "author_time": "2026-10-31T23:31:42+05:00",
+      "committer_time": "2026-10-31T23:31:42+05:00",
+      "parents": [
+        "9b84b096276872a4b4ecc7b0000900d32dbbdde2"
+      ],
+      "subject": "No hidden schema retries: self-address is no addressee, a closed thread's move is void, NPC role shape is a decoder constraint",
+      "included_by_prs": [
+        290
+      ],
+      "changed_files": [
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_frozen_intent_wire_schema.py",
+        "src/backend/tests/test_no_silent_schema_retries.py",
+        "src/backend/tests/test_qa301_regressions.py"
+      ]
+    },
+    {
+      "sha": "6d8b0fc019531297131c1593a633a2bc00788f98",
+      "author_time": "2026-10-31T23:31:48+05:00",
+      "committer_time": "2026-10-31T23:31:48+05:00",
+      "parents": [
+        "9b84b096276872a4b4ecc7b0000900d32dbbdde2",
+        "a77a15ecf52cff6c727848539dcf904aae73c3e8"
+      ],
+      "subject": "Merge pull request #290 from WizWiz2/perf/no-silent-schema-retries",
+      "included_by_prs": [
+        290
+      ],
+      "changed_files": [
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_frozen_intent_wire_schema.py",
+        "src/backend/tests/test_no_silent_schema_retries.py",
+        "src/backend/tests/test_qa301_regressions.py"
+      ]
+    },
+    {
+      "sha": "0fb090cf1a698a6efdfd574731541cf7f5f3dbae",
+      "author_time": "2026-11-01T02:18:31+05:00",
+      "committer_time": "2026-11-01T02:18:31+05:00",
+      "parents": [
+        "6d8b0fc019531297131c1593a633a2bc00788f98"
+      ],
+      "subject": "Add per-turn performance accounting and correlated model calls (checkpoint)",
+      "included_by_prs": [
+        291
+      ],
+      "changed_files": [
+        "src/backend/app/providers/llm_provider.py",
+        "src/backend/app/providers/local_inference_queue.py",
+        "src/backend/app/services/authority_narration_pipeline.py",
+        "src/backend/app/services/debugger_service.py",
+        "src/backend/app/services/llm_usage_tracker.py",
+        "src/backend/app/services/performance_telemetry_guard.py",
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/app/services/turn_performance.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/tests/test_turn_performance.py"
+      ]
+    },
+    {
+      "sha": "c8ec721f35281c9c7d7b3c7c9733c4291c6989cb",
+      "author_time": "2026-11-01T02:22:17+05:00",
+      "committer_time": "2026-11-01T02:22:17+05:00",
+      "parents": [
+        "0fb090cf1a698a6efdfd574731541cf7f5f3dbae"
+      ],
+      "subject": "Show per-turn latency breakdown and persist failed and cancelled attempts",
+      "included_by_prs": [
+        291
+      ],
+      "changed_files": [
+        "docs/turn-performance-debugging.md",
+        "src/backend/app/services/authority_narration_pipeline.py",
+        "src/backend/app/services/debugger_service.py",
+        "src/backend/app/services/llm_usage_tracker.py",
+        "src/backend/app/services/performance_telemetry_guard.py",
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/app/services/turn_performance.py",
+        "src/backend/app/static/debugger.html",
+        "src/backend/tests/test_generation_decision_trace.py",
+        "src/backend/tests/test_performance_telemetry_guard.py",
+        "src/backend/tests/test_playable_debugger_foundation.py",
+        "src/backend/tests/test_turn_performance.py"
+      ]
+    },
+    {
+      "sha": "af5daf08c3678f44e19a802dab3517f087ac77f1",
+      "author_time": "2026-11-01T02:27:09+05:00",
+      "committer_time": "2026-11-01T02:27:09+05:00",
+      "parents": [
+        "6d8b0fc019531297131c1593a633a2bc00788f98",
+        "c8ec721f35281c9c7d7b3c7c9733c4291c6989cb"
+      ],
+      "subject": "Merge pull request #291 from WizWiz2/feat/turn-performance-trace",
+      "included_by_prs": [
+        291
+      ],
+      "changed_files": [
+        "docs/turn-performance-debugging.md",
+        "src/backend/app/providers/llm_provider.py",
+        "src/backend/app/providers/local_inference_queue.py",
+        "src/backend/app/services/authority_narration_pipeline.py",
+        "src/backend/app/services/debugger_service.py",
+        "src/backend/app/services/llm_usage_tracker.py",
+        "src/backend/app/services/performance_telemetry_guard.py",
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/app/services/turn_performance.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/app/static/debugger.html",
+        "src/backend/tests/test_generation_decision_trace.py",
+        "src/backend/tests/test_performance_telemetry_guard.py",
+        "src/backend/tests/test_playable_debugger_foundation.py",
+        "src/backend/tests/test_turn_performance.py"
+      ]
+    },
+    {
+      "sha": "30613e5eee124440118de55351d523e20eade9c3",
+      "author_time": "2026-11-01T02:28:56+05:00",
+      "committer_time": "2026-11-01T02:28:56+05:00",
+      "parents": [
+        "af5daf08c3678f44e19a802dab3517f087ac77f1"
+      ],
+      "subject": "Coin merge-back: only into a source or sibling held by the same owner ID, never by matching location",
+      "included_by_prs": [
+        292
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/tests/test_coin_merge_back.py"
+      ]
+    },
+    {
+      "sha": "91070ed4193751f181470c9ff0568d446313eec7",
+      "author_time": "2026-11-01T02:29:10+05:00",
+      "committer_time": "2026-11-01T02:29:10+05:00",
+      "parents": [
+        "af5daf08c3678f44e19a802dab3517f087ac77f1",
+        "30613e5eee124440118de55351d523e20eade9c3"
+      ],
+      "subject": "Merge pull request #292 from WizWiz2/fix/merge-needs-owner",
+      "included_by_prs": [
+        292
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/tests/test_coin_merge_back.py"
+      ]
+    },
+    {
+      "sha": "91f98e2f2eb058d06ecf237f522ecc4af60eaabb",
+      "author_time": "2026-11-01T02:31:45+05:00",
+      "committer_time": "2026-11-01T02:31:45+05:00",
+      "parents": [
+        "91070ed4193751f181470c9ff0568d446313eec7"
+      ],
+      "subject": "Session zero: every opening item gets an explicit custody choice; carried by the hero means owner = hero",
+      "included_by_prs": [
+        293
+      ],
+      "changed_files": [
+        "src/backend/app/services/session_zero_agent.py",
+        "src/backend/app/services/starter_item_custody.py",
+        "src/backend/tests/test_starter_item_custody_choice.py"
+      ]
+    },
+    {
+      "sha": "782aa90e9fad204e1014d51a09f82a9b8b2b1468",
+      "author_time": "2026-11-01T02:31:55+05:00",
+      "committer_time": "2026-11-01T02:31:55+05:00",
+      "parents": [
+        "91070ed4193751f181470c9ff0568d446313eec7",
+        "91f98e2f2eb058d06ecf237f522ecc4af60eaabb"
+      ],
+      "subject": "Merge pull request #293 from WizWiz2/fix/bootstrap-held-items",
+      "included_by_prs": [
+        293
+      ],
+      "changed_files": [
+        "src/backend/app/services/session_zero_agent.py",
+        "src/backend/app/services/starter_item_custody.py",
+        "src/backend/tests/test_starter_item_custody_choice.py"
+      ]
+    },
+    {
+      "sha": "b611394744c3493dc796baa5560a816af1c3e1de",
+      "author_time": "2026-11-01T02:34:18+05:00",
+      "committer_time": "2026-11-01T02:34:18+05:00",
+      "parents": [
+        "782aa90e9fad204e1014d51a09f82a9b8b2b1468"
+      ],
+      "subject": "Retry: a compensated action sequence gives way to the same turn's new attempt",
+      "included_by_prs": [
+        294
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/tests/test_retry_reuses_trigger_turn.py"
+      ]
+    },
+    {
+      "sha": "ac02743db1b777fcc23031b196cf00b0c12451f4",
+      "author_time": "2026-11-01T02:34:29+05:00",
+      "committer_time": "2026-11-01T02:34:29+05:00",
+      "parents": [
+        "782aa90e9fad204e1014d51a09f82a9b8b2b1468",
+        "b611394744c3493dc796baa5560a816af1c3e1de"
+      ],
+      "subject": "Merge pull request #294 from WizWiz2/fix/retry-clears-action-sequence",
+      "included_by_prs": [
+        294
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/tests/test_retry_reuses_trigger_turn.py"
+      ]
+    },
+    {
+      "sha": "c0d06ca0419ce3da693ba852f0a0ddee97e40b06",
+      "author_time": "2026-11-01T02:37:05+05:00",
+      "committer_time": "2026-11-01T02:37:05+05:00",
+      "parents": [
+        "ac02743db1b777fcc23031b196cf00b0c12451f4"
+      ],
+      "subject": "Outcome audit: speaker is a closed choice of present people or the turn's newcomer; a count written as a property is void",
+      "included_by_prs": [
+        295
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_frozen_intent_wire_schema.py",
+        "src/backend/tests/test_no_silent_schema_retries.py"
+      ]
+    },
+    {
+      "sha": "412765a3ac3492ea438325e4201b85567e84a255",
+      "author_time": "2026-11-01T02:37:17+05:00",
+      "committer_time": "2026-11-01T02:37:17+05:00",
+      "parents": [
+        "ac02743db1b777fcc23031b196cf00b0c12451f4",
+        "c0d06ca0419ce3da693ba852f0a0ddee97e40b06"
+      ],
+      "subject": "Merge pull request #295 from WizWiz2/perf/outcome-audit-closed-choices",
+      "included_by_prs": [
+        295
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_frozen_intent_wire_schema.py",
+        "src/backend/tests/test_no_silent_schema_retries.py"
+      ]
+    },
+    {
+      "sha": "4533127aa6e59959f152a397eba5f5f05f9bd906",
+      "author_time": "2026-11-01T11:44:12+05:00",
+      "committer_time": "2026-11-01T11:44:12+05:00",
+      "parents": [
+        "412765a3ac3492ea438325e4201b85567e84a255"
+      ],
+      "subject": "Validator: claims cite a code-numbered sentence anchor and declare the narrated change; static descriptions never trigger a repair",
+      "included_by_prs": [
+        296
+      ],
+      "changed_files": [
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_anchored_change_claims.py",
+        "src/backend/tests/test_qa219_regressions.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa221_regressions.py",
+        "src/backend/tests/test_qa300_regressions.py",
+        "src/backend/tests/test_validator_item_review_grounding.py",
+        "src/backend/tests/test_validator_violations_only.py"
+      ]
+    },
+    {
+      "sha": "665f134fdea64e49655a54bd56d37c8d855322c2",
+      "author_time": "2026-11-01T11:44:18+05:00",
+      "committer_time": "2026-11-01T11:44:18+05:00",
+      "parents": [
+        "412765a3ac3492ea438325e4201b85567e84a255",
+        "4533127aa6e59959f152a397eba5f5f05f9bd906"
+      ],
+      "subject": "Merge pull request #296 from WizWiz2/fix/anchored-change-claims",
+      "included_by_prs": [
+        296
+      ],
+      "changed_files": [
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_anchored_change_claims.py",
+        "src/backend/tests/test_qa219_regressions.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa221_regressions.py",
+        "src/backend/tests/test_qa300_regressions.py",
+        "src/backend/tests/test_validator_item_review_grounding.py",
+        "src/backend/tests/test_validator_violations_only.py"
+      ]
+    }
+  ],
+  "pull_requests": [
+    {
+      "number": 273,
+      "merge_sha": "90fa83a3f99d0896f5167faf9c941e56aba28cfc",
+      "title": "Merge pull request #273 from WizWiz2/perf/one-intent-call",
+      "commits": [
+        "90fa83a3f99d0896f5167faf9c941e56aba28cfc",
+        "0cf99f87afa7ce823ec1ddb6a0667689463c6124"
+      ],
+      "changed_files": [
+        "src/backend/app/services/linguistic_intent_analyzer.py",
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/tests/test_player_intent_interpreter.py"
+      ],
+      "added_tests": [
+        "test_every_stated_own_act_is_typed_in_the_one_intent_call",
+        "test_a_stated_act_mapped_to_no_entry_fails_closed"
+      ]
+    },
+    {
+      "number": 274,
+      "merge_sha": "57096772778ba5fe2f8c93c228ca8b5bb6443ffc",
+      "title": "Merge pull request #274 from WizWiz2/fix/thread-evidence-refs",
+      "commits": [
+        "57096772778ba5fe2f8c93c228ca8b5bb6443ffc",
+        "963c74a1cfbb63bf0a043e6de96b65cc432c458d"
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_qa301_regressions.py"
+      ],
+      "added_tests": [
+        "test_thread_review_evidence_is_a_selected_anchor_not_a_quote"
+      ]
+    },
+    {
+      "number": 275,
+      "merge_sha": "715a983486da04770620fb647cf76134176207d6",
+      "title": "Merge pull request #275 from WizWiz2/fix/barrier-lock-order",
+      "commits": [
+        "715a983486da04770620fb647cf76134176207d6",
+        "7a5a640f75fd6a853455549ee0aeb3217a5f37a9"
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/tests/test_campaign_write_barrier.py"
+      ],
+      "added_tests": [
+        "test_turn_takes_the_barrier_before_its_first_prepare_write"
+      ]
+    },
+    {
+      "number": 276,
+      "merge_sha": "ab9e5a8af33001925708ffc1c00c81aa25fc2f00",
+      "title": "Merge pull request #276 from WizWiz2/fix/present-before-departure",
+      "commits": [
+        "ab9e5a8af33001925708ffc1c00c81aa25fc2f00",
+        "3f8445ba759270b2e8b2a8e2c294f4d2aab7333e"
+      ],
+      "changed_files": [
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/turn_authority_service.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_interagent_turn_authority.py"
+      ],
+      "added_tests": [
+        "test_people_left_behind_by_a_typed_trip_are_present_before_departure"
+      ]
+    },
+    {
+      "number": 277,
+      "merge_sha": "8a14c665eb3fa56b850903f076812b067fd1c364",
+      "title": "Merge pull request #277 from WizWiz2/fix/question-keeps-typed-acts",
+      "commits": [
+        "8a14c665eb3fa56b850903f076812b067fd1c364",
+        "4221133fc515fac68cabaf1c8b5c3e7c118389dd"
+      ],
+      "changed_files": [
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/tests/test_player_intent_interpreter.py"
+      ],
+      "added_tests": [
+        "test_a_trailing_question_cannot_erase_typed_physical_acts"
+      ]
+    },
+    {
+      "number": 278,
+      "merge_sha": "dbb785d3b2a6ac0ae734dc7c9764d7bde6175a51",
+      "title": "Merge pull request #278 from WizWiz2/fix/typed-item-quantity",
+      "commits": [
+        "dbb785d3b2a6ac0ae734dc7c9764d7bde6175a51",
+        "7adfae35f25d9f2351fc999351dffc16cbb3a4d3"
+      ],
+      "changed_files": [
+        "src/backend/alembic/versions/c2d3e4f5a6b7_typed_item_quantity.py",
+        "src/backend/app/db/tables.py",
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/models/session_zero_interview.py",
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/item_state_authority.py",
+        "src/backend/app/services/playable_bootstrap.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/app/services/turn_outcome_materializer.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_generative_simulation_overhaul.py",
+        "src/backend/tests/test_legacy_migration_drift_chain.py",
+        "src/backend/tests/test_qa214_migration_upgrade.py",
+        "src/backend/tests/test_typed_item_quantity.py"
+      ],
+      "added_tests": [
+        "test_taking_coins_decrements_the_legacy_purse_by_id_and_rollback_returns_them",
+        "test_known_count_wins_and_a_same_named_second_split_is_a_new_identity",
+        "test_taking_more_than_the_source_holds_fails_closed",
+        "test_a_split_requires_a_positive_count"
+      ]
+    },
+    {
+      "number": 279,
+      "merge_sha": "f515512ffdf00b5c5b28f003af653c64248914d7",
+      "title": "Merge pull request #279 from WizWiz2/fix/null-free-wire",
+      "commits": [
+        "f515512ffdf00b5c5b28f003af653c64248914d7",
+        "d8d999dbab02680483737ad6dfced6d00d4418e2"
+      ],
+      "changed_files": [
+        "src/backend/app/providers/llm_provider.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_null_free_wire.py"
+      ],
+      "added_tests": [
+        "test_outcome_and_intent_wires_never_ask_for_a_forced_value",
+        "test_success_and_block_carry_only_their_own_fields",
+        "test_omitted_forced_fields_validate_to_their_only_value"
+      ]
+    },
+    {
+      "number": 280,
+      "merge_sha": "4819de8040038e50c5f1ea42b28005f17bd91076",
+      "title": "Merge pull request #280 from WizWiz2/fix/scoped-item-audit",
+      "commits": [
+        "4819de8040038e50c5f1ea42b28005f17bd91076",
+        "3c8064bf5da3c85b7c23f3d2938591e9a733793a"
+      ],
+      "changed_files": [
+        "src/backend/app/models/turn_authority.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ],
+      "added_tests": [
+        "test_audit_covers_only_items_the_turn_can_touch",
+        "test_a_conflict_about_an_unaudited_item_still_fails_publication"
+      ]
+    },
+    {
+      "number": 281,
+      "merge_sha": "cdb6cfb0bbb823d7432df76f930e0b455c804b5a",
+      "title": "Merge pull request #281 from WizWiz2/fix/memory-yields-to-turn",
+      "commits": [
+        "cdb6cfb0bbb823d7432df76f930e0b455c804b5a",
+        "128dd7bd59cd05393eb4b95c10689147f89a752f"
+      ],
+      "changed_files": [
+        "src/backend/app/services/campaign_write_barrier.py",
+        "src/backend/app/services/post_turn_dispatcher.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/tests/test_memory_yields_to_turn.py"
+      ],
+      "added_tests": [
+        "test_background_call_waits_for_the_turn_to_publish",
+        "test_job_holding_the_barrier_does_not_wait_for_a_turn",
+        "test_a_turn_call_is_never_delayed"
+      ]
+    },
+    {
+      "number": 282,
+      "merge_sha": "4ed37bb2b87f6eea220641b2720ba8d331bcf952",
+      "title": "Merge pull request #282 from WizWiz2/fix/split-satisfies-item-change",
+      "commits": [
+        "4ed37bb2b87f6eea220641b2720ba8d331bcf952",
+        "00497e1c65e0b1a8902f7e17c743e9393e883eec"
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_typed_item_quantity.py"
+      ],
+      "added_tests": [
+        "test_taking_units_out_is_the_typed_change_of_that_item"
+      ]
+    },
+    {
+      "number": 283,
+      "merge_sha": "4c94be5e74be36b4c7c774d16c99ff9b97b2acf5",
+      "title": "Merge pull request #283 from WizWiz2/fix/qa302-route-persistence",
+      "commits": [
+        "4c94be5e74be36b4c7c774d16c99ff9b97b2acf5",
+        "3fb36f08f7e84565769d488535a2159b2cea82ae",
+        "83e950de870128b9136b754ea64cb47fbce6d12c"
+      ],
+      "changed_files": [
+        ".github/workflows/round3-playability-contracts.yml",
+        "src/backend/app/models/narration_validation.py",
+        "src/backend/app/services/action_plan_compiler.py",
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/app/services/published_routes.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/scene_state_service.py",
+        "src/backend/app/services/scene_transition_executor.py",
+        "src/backend/app/services/turn_outcome_materializer.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/app/services/turn_undo_service.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_action_plan_compiler.py",
+        "src/backend/tests/test_qa303_routes.py",
+        "src/backend/tests/test_scoped_item_audit.py"
+      ],
+      "added_tests": [
+        "test_closed_second_edge_blocks_that_hop_without_erasing_completed_prefix",
+        "test_one_way_directions_require_an_explicit_public_obstacle",
+        "test_one_way_restriction_must_be_part_of_the_disclosed_directions",
+        "test_discovered_route_does_not_reopen_an_established_return_gate",
+        "test_missing_edge_is_not_a_blocker_of_an_approved_physical_trip",
+        "test_discovered_trip_routes_retract_after_compensation_or_published_undo",
+        "test_explicit_one_way_exit_is_a_real_return_restriction",
+        "test_grounded_one_way_disclosure_persists_and_undo_retracts_its_return_obstacle",
+        "test_reversible_directions_and_undo_preserve_an_existing_one_way_gate",
+        "test_deterministic_simulation_honors_the_current_scoped_review_schema"
+      ]
+    },
+    {
+      "number": 284,
+      "merge_sha": "31d1923e03b1b604c89aa214479505095705950a",
+      "title": "Merge pull request #284 from WizWiz2/fix/qa302-active-history",
+      "commits": [
+        "31d1923e03b1b604c89aa214479505095705950a",
+        "1e645e4d9223cf66af231a14f59f84f76408d443",
+        "1eb3093685158850baa890a5023a330ba0d966eb"
+      ],
+      "changed_files": [
+        "src/backend/app/db/repositories/event_repo.py",
+        "src/backend/app/services/debugger_service.py",
+        "src/backend/app/services/turn_intent_pipeline.py",
+        "src/backend/tests/test_qa303_undo.py"
+      ],
+      "added_tests": [
+        "test_undo_hides_legacy_source_events_from_active_history_but_keeps_audit",
+        "test_source_status_also_filters_events_without_a_truth_record",
+        "test_location_catalog_uses_latest_active_opening_not_undone_prose"
+      ]
+    },
+    {
+      "number": 285,
+      "merge_sha": "b8360b397888d750ad31a65012cd2069f024ac53",
+      "title": "Merge pull request #285 from WizWiz2/fix/qa302-repair-outcomes",
+      "commits": [
+        "b8360b397888d750ad31a65012cd2069f024ac53",
+        "c504844b88a5f846d75718631ada01b5f6f955c1",
+        "88939177e25e4ea88a2b63e1ad2006ae62298484"
+      ],
+      "changed_files": [
+        "src/backend/app/services/authority_narration_pipeline.py",
+        "src/backend/app/services/narration_publication_guard.py",
+        "src/backend/app/services/playtest_trace.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/conftest.py",
+        "src/backend/tests/test_four_bans.py",
+        "src/backend/tests/test_generation_decision_trace.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa303_repair.py",
+        "src/backend/tests/test_runtime_observability.py"
+      ],
+      "added_tests": [
+        "test_narrowed_contract_preserves_the_earned_interaction_with_items_in_scene",
+        "test_narrowed_contract_keeps_the_typed_world_development_and_response",
+        "test_narrowed_publication_must_account_for_its_earned_result",
+        "test_repair_coverage_survives_the_serialized_strict_provider_boundary",
+        "test_model_cannot_forge_result_coverage_attestation",
+        "test_a_repaired_publication_is_not_classified_good_without_result_coverage"
+      ]
+    },
+    {
+      "number": 286,
+      "merge_sha": "d79fd0ce7600147f20dfb412d0d2ccb3ae5579a3",
+      "title": "Merge pull request #286 from WizWiz2/fix/qa302-bootstrap-items",
+      "commits": [
+        "d79fd0ce7600147f20dfb412d0d2ccb3ae5579a3",
+        "4830183e9bb29f81148c690481624c025e1ad80b",
+        "f3eb58295ab92793aa4616b80a218ef245a65df2"
+      ],
+      "changed_files": [
+        "src/backend/app/services/playable_bootstrap.py",
+        "src/backend/tests/test_qa303_bootstrap.py",
+        "src/backend/tests/test_round18_fresh_campaign_playability.py",
+        "src/backend/tests/test_semantic_runtime_boundaries.py"
+      ],
+      "added_tests": [
+        "test_bootstrap_does_not_invent_an_unspecified_physical_item"
+      ]
+    },
+    {
+      "number": 287,
+      "merge_sha": "1287b9dbe510d4cc337bd89e4118618420a6a0e0",
+      "title": "Merge pull request #287 from WizWiz2/fix/coin-merge-back",
+      "commits": [
+        "1287b9dbe510d4cc337bd89e4118618420a6a0e0",
+        "a9eebd8b7c773aac766754f1adc82303a92f6b49",
+        "ae7fd7b5f9cd66af8e1d4f10f61950c32f4764ee"
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/tests/test_coin_merge_back.py"
+      ],
+      "added_tests": [
+        "test_coin_put_back_rejoins_its_purse_by_id_and_undo_splits_it_again",
+        "test_second_payment_joins_the_recipients_earlier_coins_of_the_same_purse"
+      ]
+    },
+    {
+      "number": 288,
+      "merge_sha": "627cc57ff50b46e75185fded39829d96d0464cf7",
+      "title": "Merge pull request #288 from WizWiz2/perf/validator-claims-only",
+      "commits": [
+        "627cc57ff50b46e75185fded39829d96d0464cf7",
+        "ff2dfb812ca17252028013e3579b6886b022761c"
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/run_ci_mock_simulation_v3.py",
+        "src/backend/tests/test_qa219_regressions.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa221_regressions.py",
+        "src/backend/tests/test_qa223_regressions.py",
+        "src/backend/tests/test_qa301_regressions.py",
+        "src/backend/tests/test_qa302_strict_schema.py",
+        "src/backend/tests/test_scoped_item_audit.py",
+        "src/backend/tests/test_validator_item_review_grounding.py",
+        "src/backend/tests/test_validator_violations_only.py"
+      ],
+      "added_tests": [
+        "test_an_invented_claim_excerpt_cannot_authorize_publication",
+        "test_native_inventory_audit_binds_each_claim_to_a_registered_identity",
+        "test_claim_free_audit_preserves_dialogue",
+        "test_prose_without_position_claims_passes",
+        "test_ungrounded_claim_is_refused",
+        "test_wire_has_no_per_item_walkthrough_verdict_or_summary",
+        "test_silent_prose_passes_with_an_empty_claim_list",
+        "test_a_single_reported_claim_against_custody_is_still_caught"
+      ]
+    },
+    {
+      "number": 289,
+      "merge_sha": "9b84b096276872a4b4ecc7b0000900d32dbbdde2",
+      "title": "Merge pull request #289 from WizWiz2/fix/typed-custody-claims",
+      "commits": [
+        "9b84b096276872a4b4ecc7b0000900d32dbbdde2",
+        "99ea8b79bc0e384c152a3cee48277cad37b74116"
+      ],
+      "changed_files": [
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/services/item_state_authority.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_typed_custody_claims.py"
+      ],
+      "added_tests": [
+        "test_prose_only_handoff_is_a_conflict_even_when_labelled_placement",
+        "test_the_holders_surface_is_still_compatible"
+      ]
+    },
+    {
+      "number": 290,
+      "merge_sha": "6d8b0fc019531297131c1593a633a2bc00788f98",
+      "title": "Merge pull request #290 from WizWiz2/perf/no-silent-schema-retries",
+      "commits": [
+        "6d8b0fc019531297131c1593a633a2bc00788f98",
+        "a77a15ecf52cff6c727848539dcf904aae73c3e8"
+      ],
+      "changed_files": [
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_frozen_intent_wire_schema.py",
+        "src/backend/tests/test_no_silent_schema_retries.py",
+        "src/backend/tests/test_qa301_regressions.py"
+      ],
+      "added_tests": [
+        "test_self_address_is_no_addressee_and_present_people_are_offered_as_a_choice",
+        "test_a_move_on_a_thread_its_own_review_closed_is_void_not_a_retry",
+        "test_npc_role_shape_is_a_decoder_constraint"
+      ]
+    },
+    {
+      "number": 291,
+      "merge_sha": "af5daf08c3678f44e19a802dab3517f087ac77f1",
+      "title": "Merge pull request #291 from WizWiz2/feat/turn-performance-trace",
+      "commits": [
+        "af5daf08c3678f44e19a802dab3517f087ac77f1",
+        "c8ec721f35281c9c7d7b3c7c9733c4291c6989cb",
+        "0fb090cf1a698a6efdfd574731541cf7f5f3dbae"
+      ],
+      "changed_files": [
+        "docs/turn-performance-debugging.md",
+        "src/backend/app/providers/llm_provider.py",
+        "src/backend/app/providers/local_inference_queue.py",
+        "src/backend/app/services/authority_narration_pipeline.py",
+        "src/backend/app/services/debugger_service.py",
+        "src/backend/app/services/llm_usage_tracker.py",
+        "src/backend/app/services/performance_telemetry_guard.py",
+        "src/backend/app/services/player_intent_interpreter.py",
+        "src/backend/app/services/role_model_router.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/app/services/turn_performance.py",
+        "src/backend/app/services/turn_saga.py",
+        "src/backend/app/static/debugger.html",
+        "src/backend/tests/test_generation_decision_trace.py",
+        "src/backend/tests/test_performance_telemetry_guard.py",
+        "src/backend/tests/test_playable_debugger_foundation.py",
+        "src/backend/tests/test_turn_performance.py"
+      ],
+      "added_tests": [
+        "test_turn_summaries_do_not_inflate_model_call_totals",
+        "test_overlapping_calls_and_nested_wait_are_not_counted_twice",
+        "test_phases_do_not_hide_unknown_time_and_barrier_is_separate",
+        "test_series_keeps_failures_and_retries",
+        "test_sqlite_contention_is_measured_by_two_real_engines",
+        "test_cancelled_request_retains_correlation_reason_and_partial_time",
+        "test_background_context_is_independent_and_not_in_foreground_total"
+      ]
+    },
+    {
+      "number": 292,
+      "merge_sha": "91070ed4193751f181470c9ff0568d446313eec7",
+      "title": "Merge pull request #292 from WizWiz2/fix/merge-needs-owner",
+      "commits": [
+        "91070ed4193751f181470c9ff0568d446313eec7",
+        "30613e5eee124440118de55351d523e20eade9c3"
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_item_creation.py",
+        "src/backend/tests/test_coin_merge_back.py"
+      ],
+      "added_tests": [
+        "test_a_coin_set_down_where_an_unowned_purse_lies_stays_its_own_identity"
+      ]
+    },
+    {
+      "number": 293,
+      "merge_sha": "782aa90e9fad204e1014d51a09f82a9b8b2b1468",
+      "title": "Merge pull request #293 from WizWiz2/fix/bootstrap-held-items",
+      "commits": [
+        "782aa90e9fad204e1014d51a09f82a9b8b2b1468",
+        "91f98e2f2eb058d06ecf237f522ecc4af60eaabb"
+      ],
+      "changed_files": [
+        "src/backend/app/services/session_zero_agent.py",
+        "src/backend/app/services/starter_item_custody.py",
+        "src/backend/tests/test_starter_item_custody_choice.py"
+      ],
+      "added_tests": [
+        "test_custody_is_chosen_for_every_opening_item_and_carried_means_player"
+      ]
+    },
+    {
+      "number": 294,
+      "merge_sha": "ac02743db1b777fcc23031b196cf00b0c12451f4",
+      "title": "Merge pull request #294 from WizWiz2/fix/retry-clears-action-sequence",
+      "commits": [
+        "ac02743db1b777fcc23031b196cf00b0c12451f4",
+        "b611394744c3493dc796baa5560a816af1c3e1de"
+      ],
+      "changed_files": [
+        "src/backend/app/services/action_sequence_executor.py",
+        "src/backend/tests/test_retry_reuses_trigger_turn.py"
+      ],
+      "added_tests": [
+        "test_a_rolled_back_sequence_does_not_block_the_same_turns_retry"
+      ]
+    },
+    {
+      "number": 295,
+      "merge_sha": "412765a3ac3492ea438325e4201b85567e84a255",
+      "title": "Merge pull request #295 from WizWiz2/perf/outcome-audit-closed-choices",
+      "commits": [
+        "412765a3ac3492ea438325e4201b85567e84a255",
+        "c0d06ca0419ce3da693ba852f0a0ddee97e40b06"
+      ],
+      "changed_files": [
+        "src/backend/app/services/turn_outcome_resolver.py",
+        "src/backend/tests/test_frozen_intent_wire_schema.py",
+        "src/backend/tests/test_no_silent_schema_retries.py"
+      ],
+      "added_tests": [
+        "test_a_count_written_as_a_property_is_dropped_when_the_split_is_typed",
+        "test_response_speaker_is_a_closed_choice_of_present_people"
+      ]
+    },
+    {
+      "number": 296,
+      "merge_sha": "665f134fdea64e49655a54bd56d37c8d855322c2",
+      "title": "Merge pull request #296 from WizWiz2/fix/anchored-change-claims",
+      "commits": [
+        "665f134fdea64e49655a54bd56d37c8d855322c2",
+        "4533127aa6e59959f152a397eba5f5f05f9bd906"
+      ],
+      "changed_files": [
+        "src/backend/app/models/item_state.py",
+        "src/backend/app/services/turn_authority_validator.py",
+        "src/backend/tests/test_anchored_change_claims.py",
+        "src/backend/tests/test_qa219_regressions.py",
+        "src/backend/tests/test_qa220_regressions.py",
+        "src/backend/tests/test_qa221_regressions.py",
+        "src/backend/tests/test_qa300_regressions.py",
+        "src/backend/tests/test_validator_item_review_grounding.py",
+        "src/backend/tests/test_validator_violations_only.py"
+      ],
+      "added_tests": [
+        "test_static_descriptions_from_verify_r4_never_trigger_a_repair",
+        "test_an_unrecorded_payment_is_still_a_conflict",
+        "test_inventory_validator_can_only_cite_actual_candidate_sentences"
+      ]
+    }
+  ]
+}
