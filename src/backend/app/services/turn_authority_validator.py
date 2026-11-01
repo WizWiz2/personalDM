@@ -35,18 +35,26 @@ class InventoryNarrationValidation(NarrationFindings):
     position_claims: list[ItemPositionClaim] = Field(default_factory=list, max_length=16)
 
 
+def candidate_sentences(text: str) -> dict[str, str]:
+    """Code-numbered sentences S<n>: the validator cites an anchor, never re-types prose."""
+    fragments = dict.fromkeys(
+        chunk.strip()
+        for match in re.finditer(r"[^.!?\n]+(?:[.!?]|$)", text)
+        for start in range(0, len(match.group()), 1000)
+        if (chunk := match.group()[start:start + 1000]).strip()
+    ) or {text: None}
+    return {f"S{index}": sentence for index, sentence in enumerate(fragments)}
+
+
 def inventory_validation_model(authority: TurnAuthority, candidate_text: str | None = None) -> type[BaseModel]:
-    """Only the position assertions the prose makes, each bound to an audited ID; code compares them."""
+    """Only the item changes the prose narrates, each bound to an audited ID and a sentence anchor."""
     ids = tuple(str(state.item_id) for state in authority.audited_item_states())
     fields = {"item_id": (Literal[ids], ...)} if ids else {}
     if candidate_text is not None:
-        fragments = tuple(dict.fromkeys(
-            chunk.strip()
-            for match in re.finditer(r"[^.!?\n]+(?:[.!?]|$)", candidate_text)
-            for start in range(0, len(match.group()), 1000)
-            if (chunk := match.group()[start:start + 1000]).strip()
-        )) or (candidate_text,)
-        fields["evidence"] = (Literal[fragments], Field(description="Exact candidate sentence with this claim."))
+        sentences = candidate_sentences(candidate_text)
+        fields["evidence"] = (type(None), None)
+        fields["sentence"] = (Literal[tuple(sentences)], Field(description=(
+            "Anchor of the candidate sentence: " + json.dumps(sentences, ensure_ascii=False))))
     claim = create_model("BoundItemPositionClaim", __base__=ItemPositionClaim, **fields)
     violation = create_model(
         "ScopedNarrationViolation", __base__=NarrationViolation,
@@ -56,8 +64,8 @@ def inventory_validation_model(authority: TurnAuthority, candidate_text: str | N
     return create_model(
         "CompleteInventoryValidation", __base__=InventoryNarrationValidation,
         position_claims=(list[claim], Field(default_factory=list, max_length=16, description=(
-            "Every assertion the candidate makes of who holds an audited item or where it lies, "
-            "including transfers and denials. [] if the prose asserts none."))),
+            "Each sentence that moves, hands over, takes, sets down or stows an audited item, or "
+            "asserts its holder or place. change=static for a mere description. [] if none."))),
         violations=(list[violation], Field(default_factory=list, max_length=12)),
     )
 
@@ -247,7 +255,9 @@ Examples: "Перед Мартой на конторке лежит письмо
 Both conflict with a letter still owned by the player, even if no transfer verb occurs.
 "Какое письмо?" is no claim; "она протягивает ладонь" asserts no letter position.
 
-For claims use exact IDs from facts; evidence is an exact candidate fragment.
+For claims use exact IDs from facts and cite the sentence by its S anchor. change names what that
+sentence does to THIS item: moved, given, taken, placed or stowed when it narrates that act;
+static when it only describes where the item is or who has it (static claims are not compared).
 scope=current for narrator-confirmed reality, including past-tense narration of this turn;
 past only for explicitly earlier/recalled events; speech for quoted claims; conditional for wishes.
 mode=owned for custody/holding, located for a surface or room without a stated holder.
@@ -399,15 +409,18 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     if not (violation.get("state_domain") == "item_position"
                             and violation.get("violation_type") == "canon_conflict"
                             and (violation.get("item_id") is None or str(violation.get("item_id")) in audited_ids))]}
+            sentences = candidate_sentences(candidate_text)
+            data = {**data, "position_claims": [
+                {**claim, "evidence": sentences.get(claim.get("sentence"), claim.get("evidence"))}
+                for claim in data.get("position_claims") or [] if claim.get("change", "static") != "static"]}
             extracted = InventoryNarrationValidation.model_validate(data)
             claims = []
             for claim in extracted.position_claims:
                 if str(claim.item_id) not in audited_ids:
                     raise NarrationValidationError("Item claim refers to an unaudited identity")
-                if claim.evidence not in candidate_text:
-                    claim.evidence = claim.evidence.strip().strip('«»"“”„')
-                if not claim.evidence or claim.evidence not in candidate_text:
+                if not claim.evidence or claim.evidence.strip().strip('«»"“”„') not in candidate_text:
                     raise NarrationValidationError("Item position evidence is not in the candidate")
+                claim.evidence = claim.evidence.strip().strip('«»"“”„')
                 claims.append(claim)
             conflicts = item_position_violations(
                 authority.item_states, claims, candidate_text,

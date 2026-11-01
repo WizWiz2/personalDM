@@ -51,7 +51,7 @@ async def test_owned_key_can_still_hang_on_its_established_board():
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
         "verdict": "pass", "position_claims": [{
             "item_id": str(state.item_id), "evidence": "Ключ от чердака по-прежнему висит на доске",
-            "scope": "current", "aspect": "placement", "mode": "located",
+            "change": "moved", "scope": "current", "aspect": "placement", "mode": "located",
             "location_id": str(state.owner_location_id), "placement_matches": True,
         }],
     }))
@@ -67,7 +67,7 @@ async def test_custody_change_cannot_hide_behind_the_same_board():
     text = "Ключ от чердака теперь у Ирмы."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
         "verdict": "pass", "position_claims": [{
-            "item_id": str(state.item_id), "evidence": text, "scope": "current",
+            "item_id": str(state.item_id), "evidence": text, "change": "moved", "scope": "current",
             "aspect": "custody", "mode": "owned", "owner_id": str(uuid4()),
             "placement_matches": True,
         }],
@@ -91,7 +91,7 @@ async def test_take_animation_uses_its_real_before_state_only_when_completed(com
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
         "verdict": "pass", "position_claims": [{
             "item_id": str(item), "evidence": "Ты снимаешь письмо с металла",
-            "scope": "executed_action", "action_step_index": 0, "moment": "before",
+            "change": "moved", "scope": "executed_action", "action_step_index": 0, "moment": "before",
             "mode": "located", "location_id": str(room),
         }],
     }))
@@ -176,7 +176,7 @@ async def test_an_invented_claim_excerpt_cannot_authorize_publication():
     state = auth.item_states[0]
     text = "Ключ от чердака лежит на конторке."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={"position_claims": [{
-        "item_id": str(state.item_id), "evidence": "Придуманная цитата", "scope": "current", "mode": "located"}]}))
+        "item_id": str(state.item_id), "evidence": "Придуманная цитата", "change": "moved", "scope": "current", "mode": "located"}]}))
     with pytest.raises(NarrationValidationError):
         await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)
 
@@ -188,7 +188,7 @@ async def test_exact_excerpts_wrapped_in_quotes_do_not_discard_valid_prose():
     state = auth.item_states[0]
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
         "verdict": "pass", "position_claims": [{"item_id": str(state.item_id), "evidence": f"«{text}»",
-                "scope": "current", "aspect": "placement", "mode": "located", "placement_matches": True}],
+                "change": "moved", "scope": "current", "aspect": "placement", "mode": "located", "placement_matches": True}],
     }))
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)
     assert result.verdict == "pass"
@@ -216,7 +216,7 @@ async def test_ownerless_counter_claim_after_take_is_still_rejected():
     text = "Ключ лежит на столе перед героиней."
     router = SimpleNamespace(generate_json=AsyncMock(return_value={
         "verdict": "pass", "position_claims": [{
-            "item_id": str(state.item_id), "evidence": text, "scope": "current",
+            "item_id": str(state.item_id), "evidence": text, "change": "moved", "scope": "current",
             "aspect": "placement", "mode": "located", "location_id": str(state.owner_location_id),
         }],
     }))

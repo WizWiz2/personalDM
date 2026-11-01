@@ -23,7 +23,7 @@ def _authority() -> TurnAuthority:
 
 
 def _claim(item, evidence, owner=HERO):
-    return {"item_id": str(item), "evidence": evidence, "scope": "current", "mode": "owned",
+    return {"item_id": str(item), "evidence": evidence, "change": "moved", "scope": "current", "mode": "owned",
             "owner_id": str(owner), "location_id": None}
 
 
