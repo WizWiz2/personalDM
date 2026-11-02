@@ -525,12 +525,25 @@ def _outcome_wire_model(
         choice = Literal[(*known_cast, "newcomer")]
 
         class BoundNpc(OutcomeNpcIntroductionDraft):
-            cast_id: choice = Field(description="Existing cast ID even for an inflected name or title; newcomer only for a different person.")
+            cast_id: choice = Field(description=(
+                "Existing cast ID even for an inflected name or title. newcomer requires a distinct "
+                "grounded identity; never manufacture a second cast member by numbering an existing role."))
 
             @model_validator(mode="after")
             def bind_cast(self):
                 if self.cast_id in known_cast:
                     self.canonical_name = known_cast[self.cast_id]
+                else:
+                    # Test the grounded identity BEFORE campaign-unique label allocation.
+                    # A role collision is ambiguity, not permission to invent "Role 2".
+                    [grounded] = NpcIntroductionResolver.sanitize_introductions([self])
+                    if identity_key(grounded.canonical_name) in {
+                        identity_key(name) for name in known_cast.values()
+                    }:
+                        raise ValueError(
+                            "Newcomer conflicts with existing cast; select its cast ID or provide "
+                            "a distinct grounded identity for a different person"
+                        )
                 return self
 
         npc_model = BoundNpc
