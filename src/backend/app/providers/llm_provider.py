@@ -15,6 +15,7 @@ from app.config import settings
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
+from app.services.provider_request_timing import local_span, measured_local, observe_event, timed_client, validate_structured
 
 
 class LLMProviderError(RuntimeError):
@@ -216,6 +217,7 @@ class LLMProvider:
         return any(marker in text for marker in cls.JSON_MARKERS)
 
     @staticmethod
+    @measured_local("response.json_decode")
     def _parse_json_object(text: str) -> dict[str, Any]:
         clean = text.strip()
         if clean.startswith("```"):
@@ -598,29 +600,30 @@ class LLMProvider:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
-        base_messages = self._messages_payload(messages)
-        original_schema = response_model.model_json_schema() if response_model else None
-        response_schema = self._compact_schema(original_schema) if original_schema else None
-        text_format = None
-        if response_schema:
-            compact_text = json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))
-            for message in base_messages:
-                for ascii_only in (False, True):
-                    message["content"] = message["content"].replace(
-                        json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
-                    )
-            with suppress(ValueError):  # an open dictionary stays prompt-only
-                text_format = {"type": "json_schema", "name": response_model.__name__[:64],
-                               "schema": self._strict_schema(response_schema), "strict": True}
+        with local_span("request.prepare"):
+            base_messages = self._messages_payload(messages)
+            original_schema = response_model.model_json_schema() if response_model else None
+            response_schema = self._compact_schema(original_schema) if original_schema else None
+            text_format = None
+            if response_schema:
+                compact_text = json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))
+                for message in base_messages:
+                    for ascii_only in (False, True):
+                        message["content"] = message["content"].replace(
+                            json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
+                        )
+                with suppress(ValueError):  # an open dictionary stays prompt-only
+                    text_format = {"type": "json_schema", "name": response_model.__name__[:64],
+                                   "schema": self._strict_schema(response_schema), "strict": True}
 
         started = time.monotonic()
         last_error: Exception | None = None
         last_raw_text = ""
         attempts: list[dict[str, Any]] = []
-        async with httpx.AsyncClient(
+        async with timed_client(httpx.AsyncClient(
             trust_env=False,
             timeout=httpx.Timeout(240.0, connect=10.0),
-        ) as client:
+        )) as client:
             for attempt in range(1, 4):
                 request_messages = list(base_messages)
                 if attempt > 1:
@@ -640,14 +643,14 @@ class LLMProvider:
                     if response_model is not None:
                         try:
                             try:
-                                parsed = response_model.model_validate(parsed).model_dump(mode="json")
+                                parsed = validate_structured(response_model, parsed)
                             except ValidationError:
                                 sanitized = self._sanitize_partial_planner_inventory(
                                     parsed, response_model
                                 )
                                 if sanitized is parsed:
                                     raise
-                                parsed = response_model.model_validate(sanitized).model_dump(mode="json")
+                                parsed = validate_structured(response_model, sanitized)
                         except ValidationError as exc:
                             raise LLMProviderError(
                                 f"structured response failed {response_model.__name__} validation: {exc}"
@@ -720,10 +723,10 @@ class LLMProvider:
         frames = 0
         completed = False
         try:
-            async with httpx.AsyncClient(
+            async with timed_client(httpx.AsyncClient(
                 trust_env=False,
                 timeout=httpx.Timeout(240.0, connect=10.0),
-            ) as client:
+            )) as client:
                 async for data in self._stream_once(client, url, headers, payload):
                     if data.get("_malformed"):
                         continue
@@ -790,19 +793,20 @@ class LLMProvider:
             headers["Authorization"] = f"Bearer {api_key}"
 
         base_budget = max_tokens or settings.CONTROL_RESPONSE_RESERVE_TOKENS
-        base_messages = self._messages_payload(messages)
-        original_schema = response_model.model_json_schema() if response_model else None
-        response_schema = self._compact_schema(original_schema) if original_schema else None
-        if original_schema:
-            # Callers expose the schema in text because native `format` is a decoder constraint,
-            # not model-visible instructions. Replace that copy with the same compact contract.
-            prompt_schema = self._schema_outline(response_schema) if is_ollama else response_schema
-            compact_text = json.dumps(prompt_schema, ensure_ascii=False, separators=(",", ":"))
-            for message in base_messages:
-                for ascii_only in (False, True):
-                    message["content"] = message["content"].replace(
-                        json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
-                    )
+        with local_span("request.prepare"):
+            base_messages = self._messages_payload(messages)
+            original_schema = response_model.model_json_schema() if response_model else None
+            response_schema = self._compact_schema(original_schema) if original_schema else None
+            if original_schema:
+                # Callers expose the schema in text because native `format` is a decoder constraint,
+                # not model-visible instructions. Replace that copy with the same compact contract.
+                prompt_schema = self._schema_outline(response_schema) if is_ollama else response_schema
+                compact_text = json.dumps(prompt_schema, ensure_ascii=False, separators=(",", ":"))
+                for message in base_messages:
+                    for ascii_only in (False, True):
+                        message["content"] = message["content"].replace(
+                            json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
+                        )
         started = time.monotonic()
         last_error: Exception | None = None
         last_raw_text = ""
@@ -810,10 +814,10 @@ class LLMProvider:
         needs_more_output = False
         from app.services.base_context_compiler import count_tokens
 
-        async with httpx.AsyncClient(
+        async with timed_client(httpx.AsyncClient(
             trust_env=False,
             timeout=httpx.Timeout(240.0, connect=10.0),
-        ) as client:
+        )) as client:
             for attempt in range(1, 4):
                 # More tokens help a truncated JSON object, not a semantically rejected one.
                 # Doubling every validation retry used to extend inference while evicting the
@@ -896,7 +900,8 @@ class LLMProvider:
                         raise LLMProviderError(
                             f"LLM returned HTTP {response.status_code}: {response.text[:2000]}"
                         )
-                    data = response.json()
+                    with local_span("response.envelope_decode"):
+                        data = response.json()
                     if not isinstance(data, dict):
                         raise LLMProviderError("LLM returned a non-object response")
                     provider_error = data.get("error")
@@ -939,9 +944,7 @@ class LLMProvider:
                             ):
                                 parsed = parsed[response_model.__name__]
                             try:
-                                parsed = response_model.model_validate(parsed).model_dump(
-                                    mode="json"
-                                )
+                                parsed = validate_structured(response_model, parsed)
                             except ValidationError:
                                 sanitized = self._sanitize_partial_planner_inventory(
                                     parsed,
@@ -949,9 +952,7 @@ class LLMProvider:
                                 )
                                 if sanitized is parsed:
                                     raise
-                                parsed = response_model.model_validate(sanitized).model_dump(
-                                    mode="json"
-                                )
+                                parsed = validate_structured(response_model, sanitized)
                         except ValidationError as exc:
                             last_raw_text = raw_text or json.dumps(
                                 parsed, ensure_ascii=False
@@ -1066,6 +1067,9 @@ class LLMProvider:
                     yield {"_malformed": True}
                     continue
                 if isinstance(data, dict):
+                    visible=(data.get('delta') if data.get('type')=='response.output_text.delta'
+                             else self._extract_content(data))
+                    observe_event(data,visible)
                     yield data
 
     async def generate_stream(
@@ -1180,10 +1184,10 @@ class LLMProvider:
         last_error: Exception | None = None
 
         try:
-            async with httpx.AsyncClient(
+            async with timed_client(httpx.AsyncClient(
                 trust_env=False,
                 timeout=httpx.Timeout(240.0, connect=10.0),
-            ) as client:
+            )) as client:
                 for candidate_index, candidate in enumerate(payload_variants):
                     used_payload = candidate
                     try:

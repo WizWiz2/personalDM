@@ -204,7 +204,10 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
 
 def _render_report(records: list[dict[str, Any]]) -> str:
     turns = [row for row in records if row.get('kind') == 'turn_summary']
-    records = [row for row in records if row.get('kind') != 'turn_summary']
+    http_requests=[row for row in records if row.get('kind')=='provider_request']
+    started_http={row['http_request_id'] for row in records if row.get('kind')=='provider_request_start'}
+    finished_http={row['http_request_id'] for row in http_requests}
+    records = [row for row in records if row.get('kind') in (None,'structured','stream')]
     groups: dict[tuple[str, str], dict[str, float]] = defaultdict(lambda: defaultdict(float))
     for record in records:
         key = (str(record.get("stage") or "unknown"), str(record.get("model") or "unknown"))
@@ -311,6 +314,15 @@ def _render_report(records: list[dict[str, Any]]) -> str:
             lines.append(f"| {row.get('user_turn_id')} | {row.get('generation_run_id')} | "
                          f"{row['status']} | {row['total_ms']/1000:.2f}s | "
                          f"{row['unaccounted_ms']/1000:.2f}s | {row['logical_calls']} | {row['retries']} |")
+    if http_requests or started_http:
+        lines.extend(['', '## HTTP request timing (nested in logical calls)', '',
+                      f'HTTP requests: {len(http_requests)}; started without a finish: {len(started_http-finished_http)}',
+                      '', '| Request | Purpose | Status | Total ms | Headers ms | First event ms | First text ms | Body ms |',
+                      '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |'])
+        for request in http_requests:
+            cells=[request.get(key) for key in ['http_request_id','reason','status','wall_ms','headers_ms',
+                                               'first_event_ms','first_text_ms','body_ms']]
+            lines.append('| '+' | '.join('unknown' if v is None else str(v).replace('|','/') for v in cells)+' |')
     lines.append("")
     return "\n".join(lines)
 
@@ -332,7 +344,12 @@ def _begin_call():
     from uuid import uuid4
     call_id = str(uuid4())
     parent = operation_parent.get()
-    return time.perf_counter(), call_id, parent, operation_parent.set(call_id)
+    started=time.perf_counter()
+    token=operation_parent.set(call_id)
+    _append_record({'kind':'llm_call_start','operation_id':call_id,
+                    'parent_id':parent or (current_trace().trace_id if current_trace() else None),
+                    'reason':call_reason.get() or 'normal_call'})
+    return started, call_id, parent, token
 
 
 def _finish_call(provider, role, messages, kwargs, started, call_id, parent, token, error, kind):
@@ -341,7 +358,11 @@ def _finish_call(provider, role, messages, kwargs, started, call_id, parent, tok
     response_model = getattr(kwargs.get('response_model'), '__name__', None)
     message_count, prompt_characters = _message_stats(messages)
     trace = current_trace()
+    child_operations=[row for row in trace.intervals if row['parent_id']==call_id] if trace else []
     details = {
+        'http_request_count':sum(row['category']=='provider' for row in child_operations),
+        'http_requests':[row for row in child_operations if row['category']=='provider'],
+        'local_operations':[row for row in child_operations if row['category']=='local'],
         **_flatten_telemetry(telemetry), 'operation_id': call_id,
         'parent_id': parent or (trace.trace_id if trace else None),
         'response_model': response_model, 'role': role,

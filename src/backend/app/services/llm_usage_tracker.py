@@ -65,6 +65,11 @@ def set_usage_context(
 
 
 async def close_usage_context(token: Token) -> None:
+    from time import perf_counter
+    from app.services.performance_telemetry_guard import _append_record
+    from app.services.turn_performance import correlation
+    flush_started=perf_counter()
+    ids=correlation()
     context = _current_usage_context.get()
     if context is not None and context.assistant_turn_id is None:
         from app.services.performance_telemetry_guard import _append_record
@@ -81,6 +86,7 @@ async def close_usage_context(token: Token) -> None:
         expire_on_commit=False,
         autoflush=False,
     )
+    flush_started=perf_counter()
     # Separate transactions: a missing decisions table must not cost the usage accounting.
     await _flush(factory, "LLM usage telemetry", context, context.pending, LLMUsageRepository.record)
     await _flush(
@@ -90,6 +96,9 @@ async def close_usage_context(token: Token) -> None:
         context.decisions,
         LLMUsageRepository.record_decision,
     )
+    _append_record({'kind':'telemetry_flush',**ids,
+                    'wall_ms':round((perf_counter()-flush_started)*1000,3),
+                    'boundary':'after_response_ready'})
 
 
 async def _flush(factory, label: str, context: LLMUsageContext, rows: list, write) -> None:

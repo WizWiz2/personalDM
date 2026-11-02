@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
+from app.services.provider_request_timing import measured_local, model_schema_json
 from app.config import settings
 from app.models.item_state import RequestedInventoryAction
 from app.models.player_intent import DayPart, IntentActionType, PlayerIntentContract
@@ -318,6 +319,7 @@ def _controlled_id(context_messages: list[ChatMessage]) -> str | None:
     ), None)
 
 
+@measured_local("schema.intent")
 def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str, str] | None = None,
                        visited: tuple[str, ...] = ()):
     owned = action_reference_catalog(context_messages, "Player-owned items:")
@@ -699,7 +701,7 @@ class PlayerIntentInterpreter:
                             role="system",
                             content=_INTENT_PROMPT
                             + "\n\n[OUTPUT JSON SCHEMA]\n"
-                            + json.dumps(wire.model_json_schema(), ensure_ascii=False),
+                            + model_schema_json(wire),
                         ),
                         ChatMessage(role="user", content=user),
                     ],

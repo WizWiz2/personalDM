@@ -105,6 +105,7 @@ class PerformanceTrace:
             "exclusive_ms": {key: round(value, 3) for key, value in exclusive.items() if value},
             "logical_calls": len(calls),
             "retries": sum(max(0, row.get("attempt_count", 1) - 1) for row in calls),
+            "http_requests":sum(row['category']=='provider' for row in foreground),
             "phases": phases,
             "operations": [dict(row) for row in self.intervals],
             "dropped_intervals": self.dropped_intervals,
