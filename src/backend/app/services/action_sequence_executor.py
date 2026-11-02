@@ -320,6 +320,19 @@ class ActionSequenceExecutor:
                         known[str(revelation.item_id)] = (revelation.content, db_step.id)
             sequence.completed_steps += 1
 
+        # Keep produced identities addressable throughout their ordered actions.
+        # Coalesce each final stack once, after give/store/reposition have finished.
+        await self._session.flush()
+        final_inventory = {}
+        for row in (await self._session.execute(select(ActionStep).where(
+            ActionStep.sequence_id == sequence.id, ActionStep.status == "completed",
+            ActionStep.item_id.is_not(None),
+        ).order_by(ActionStep.step_index))).scalars():
+            final_inventory[row.item_id] = row.item_operation
+        for item_id, operation in final_inventory.items():
+            if operation not in {"take", "reposition", "receive", None}:
+                await merge_units(self._session, await self._session.get(Item, item_id))
+
         sequence.final_scene_id = (
             str(current_scene_id) if current_scene_id else None
         )
@@ -340,7 +353,7 @@ class ActionSequenceExecutor:
         item = await self._session.get(Item, str(step.item_id))
         entity = await self._session.get(Entity, str(step.item_id))
         campaign = await self._session.get(Campaign, str(campaign_id))
-        if not item or not entity or entity.campaign_id != str(campaign_id):
+        if not item or not entity or entity.status == "destroyed" or entity.campaign_id != str(campaign_id):
             raise InventoryExecutionError("Inventory step references an item outside the campaign")
         if not campaign or not campaign.player_character_id:
             raise InventoryExecutionError("Inventory step has no player character")
@@ -436,8 +449,6 @@ class ActionSequenceExecutor:
         item.current_owner_id = result_owner
         item.current_location_id = result_location
         item.placement_detail = db_step.item_result_placement_detail
-        if operation not in {"take", "reposition", "receive"}:  # stowing, paying, setting down
-            await merge_units(self._session, item)
         await self._session.flush()
 
     async def get(self, sequence_id: UUID) -> ActionSequenceExecution:

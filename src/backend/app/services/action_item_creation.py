@@ -32,17 +32,21 @@ async def merge_units(session, item) -> None:
     """Split units rejoin, by ID, their source or a sibling split held by the same owner."""
     if not item.split_from_item_id or not item.quantity or not item.current_owner_id:
         return
-    candidates = [await session.get(Item, item.split_from_item_id), *(await session.execute(
-        select(Item).join(Entity, Entity.id == Item.entity_id).where(
-            Item.split_from_item_id == item.split_from_item_id, Item.entity_id != item.entity_id,
-            Entity.status != "destroyed"))).scalars()]
-    target = next((other for other in candidates if other is not None and other.quantity is not None
-                   and other.current_owner_id == item.current_owner_id), None)
+    entity = await session.get(Entity, item.entity_id)
+    if entity is None or entity.status == "destroyed":
+        return  # a merged receipt retains its quantity for undo, not for spending again
+    candidates = (await session.execute(select(Item).join(Entity, Entity.id == Item.entity_id).where(
+        (Item.entity_id == item.split_from_item_id) | (Item.split_from_item_id == item.split_from_item_id),
+        Item.entity_id != item.entity_id, Entity.status != "destroyed",
+        Item.current_owner_id == item.current_owner_id, Item.quantity.is_not(None),
+    ).order_by(Item.entity_id != item.split_from_item_id, Entity.created_at, Entity.id))).scalars().all()
+    target = next(iter(candidates), None)
     if target is None:
         return
     target.quantity += item.quantity
     item.split_from_item_id = target.entity_id
-    (await session.get(Entity, item.entity_id)).status = "destroyed"
+    entity.status = "destroyed"
+    await session.flush()
 
 
 async def unmerge_units(session, item) -> None:
