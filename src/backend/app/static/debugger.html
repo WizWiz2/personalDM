@@ -116,6 +116,17 @@ const reasonNames = {
   campaign_barrier:'Ожидание барьера кампании', inference_queue:'Очередь модели',
   foreground_priority:'Приоритет активных ходов'
 };
+const measured = value => value == null ? 'нет замера' : seconds(value);
+function requestTimingTable(operations) {
+  const requests=(operations || []).filter(o=>o.category==='provider' && !o.background).sort((a,b)=>a.start_ms-b.start_ms);
+  if(!requests.length) return '<p class="muted">Подробного HTTP-разложения нет: старый trace либо транспорт не прошёл через HTTP-замер.</p>';
+  return `<h3>HTTP-запросы внутри LLM-вызовов (${requests.length})</h3>
+    <p class="muted">Заголовки, событие и текст — моменты от начала одного запроса, их нельзя складывать. Ожидание первого текста включает сеть и работу сервера. Внутренние очередь, prefill и reasoning сервера отдельно неизвестны.</p>`+
+    table(requests,[['Назначение','reason',v=>esc(reasonNames[v] || v)],['HTTP / итог','http_status',(v,o)=>esc(`${v ?? '—'} / ${o.status}`)],
+      ['Всего','wall_ms',measured],['Заголовки','headers_ms',measured],['Первое событие','first_event_ms',measured],
+      ['Первый текст','first_text_ms',measured],['После первого текста','after_first_text_ms',measured],
+      ['Детали','http_request_id',(v,o)=>`<details><summary>${esc(v)}</summary><pre>${esc(JSON.stringify(o,null,2))}</pre></details>`]]);
+}
 function renderPerformance() {
   const perf=data.performance || {}, rows=perf.attempts || [], summary=perf.summary || {};
   if(!rows.length) {
@@ -131,13 +142,14 @@ function renderPerformance() {
     if(r.dropped_intervals) warnings.push(`Лимит журнала: пропущено операций ${r.dropped_intervals}`);
     const operations=(r.operations || []).filter(o=>!o.background && (o.category==='llm' || o.wall_ms>=5)).sort((a,b)=>a.start_ms-b.start_ms);
     return `<details class="scene-card" style="margin-top:10px"><summary>
-      <strong>${seconds(r.total_ms)} · ${esc(r.status)}</strong> · запросов: ${esc(r.logical_calls)} · ход ${esc(r.user_turn_id)}
+      <strong>${seconds(r.total_ms)} · ${esc(r.status)}</strong> · LLM: ${esc(r.logical_calls)} · HTTP: ${esc(r.http_requests ?? "нет замера")} · ход ${esc(r.user_turn_id)}
       </summary><p class="muted">Run: ${esc(r.generation_run_id)} · Trace: ${esc(r.trace_id)}</p>
       <p>Запросы без вложенных замеренных ожиданий: ${seconds(sums.llm)} · ожидания: ${seconds(sums.wait)} · SQL: ${seconds(sums.database)} · локальная работа: ${seconds(sums.local)} · неразмечено: ${seconds(r.unaccounted_ms)}</p>
       ${warnings.length?`<p class="trace-unknown">${warnings.map(esc).join(' · ')}</p>`:''}
       <h3>Этапы (не пересекаются)</h3>${table(r.phases,[['Этап','name',v=>esc(phaseNames[v] || v)],['Начало','start_ms',seconds],['Время','wall_ms',seconds]])}
+      ${requestTimingTable(r.operations)}
       <h3>Операции и запросы</h3><p class="muted">Операции могут быть вложенными и параллельными; сводка считает объединение интервалов, а не сумму строк. Ожидания и SQL короче 5 мс скрыты в таблице, но учтены в сводке.</p>
-      ${table(operations,[['Начало','start_ms',seconds],['Этап','phase',v=>esc(phaseNames[v] || v)],['Назначение','name',(v,o)=>esc(reasonNames[o.reason] || reasonNames[v] || v)],['Время','wall_ms',seconds],['Подробности','operation_id',(v,o)=>`<details><summary>${esc(o.model || o.category)} · попыток ${esc(o.attempt_count ?? '—')}</summary><pre>${esc(JSON.stringify(o,null,2))}</pre></details>`]])}
+      ${table(operations,[['Начало','start_ms',seconds],['Этап','phase',v=>esc(phaseNames[v] || v)],['Назначение','name',(v,o)=>esc(reasonNames[o.reason] || reasonNames[v] || v)],['Время','wall_ms',seconds],['Остаток внутри LLM-вызова','call_unaccounted_ms',measured],['Подробности','operation_id',(v,o)=>`<details><summary>${esc(o.model || o.category)} · попыток ${esc(o.attempt_count ?? '—')}</summary><pre>${esc(JSON.stringify(o,null,2))}</pre></details>`]])}
       </details>`;
   }).join('');
 }

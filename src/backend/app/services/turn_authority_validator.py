@@ -20,6 +20,7 @@ from app.services.item_state_authority import item_position_violations
 from app.services.llm_usage_tracker import record_decision
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.narration_validator import NarrationValidationError
+from app.services.provider_request_timing import local_span
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.turn_performance import call_reason, reason_scope
 
@@ -316,39 +317,40 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
     ) -> NarrationValidationResult:
         if not candidate_text.strip():
             raise NarrationValidationError("Narrator returned empty prose")
-        wire = entrance_model(authority, inventory_validation_model(authority, candidate_text)
-                              if authority.item_states else NarrationValidationResult)
-        outcomes = NarrationPublicationGuard.confirmed_outcomes(authority) if require_outcomes else []
-        paragraphs = {f"P{index}": line.strip() for index, line in enumerate(
-            line for line in candidate_text.splitlines() if line.strip())}
-        coverage = None
-        if outcomes:
-            coverage = create_model("ConfirmedOutcomeCoverage", __config__=ConfigDict(extra="forbid"),
-                **{f"result_{index}": (Literal[tuple(paragraphs)] | None, Field(description=outcome))
-                   for index, outcome in enumerate(outcomes)})
-            wire = create_model(wire.__name__, __base__=wire, outcome_coverage=(coverage, ...))
-        messages = [
-            ChatMessage(role="system", content=(
-                self.ITEM_REVIEW_PROMPT + self.SYSTEM_PROMPT.split("For every error,")[0]
-                if authority.item_states else self.SYSTEM_PROMPT
-            )),
-            ChatMessage(
-                role="user",
-                content=(
-                    "[TURN FACTS]\n"
-                    + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
-                    + "\n\n[CANDIDATE NARRATION]\n"
-                    + candidate_text
+        with local_span("validation.prepare"):
+            wire = entrance_model(authority, inventory_validation_model(authority, candidate_text)
+                                  if authority.item_states else NarrationValidationResult)
+            outcomes = NarrationPublicationGuard.confirmed_outcomes(authority) if require_outcomes else []
+            paragraphs = {f"P{index}": line.strip() for index, line in enumerate(
+                line for line in candidate_text.splitlines() if line.strip())}
+            coverage = None
+            if outcomes:
+                coverage = create_model("ConfirmedOutcomeCoverage", __config__=ConfigDict(extra="forbid"),
+                    **{f"result_{index}": (Literal[tuple(paragraphs)] | None, Field(description=outcome))
+                       for index, outcome in enumerate(outcomes)})
+                wire = create_model(wire.__name__, __base__=wire, outcome_coverage=(coverage, ...))
+            messages = [
+                ChatMessage(role="system", content=(
+                    self.ITEM_REVIEW_PROMPT + self.SYSTEM_PROMPT.split("For every error,")[0]
+                    if authority.item_states else self.SYSTEM_PROMPT
+                )),
+                ChatMessage(
+                    role="user",
+                    content=(
+                        "[TURN FACTS]\n"
+                        + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
+                        + "\n\n[CANDIDATE NARRATION]\n"
+                        + candidate_text
+                    ),
                 ),
-            ),
-        ]
-        if coverage is not None:
-            messages.append(ChatMessage(role="user", content=(
-                "[CONFIRMED RESULT COVERAGE]\nFor each outcome_coverage property select the P-number "
-                "of the paragraph that actually communicates that confirmed result, including a "
-                "faithful paraphrase. Mere silence, location or item custody does not cover a "
-                "different earned result. Select null if it is missing. Do not rewrite the candidate.\n"
-                + json.dumps(paragraphs, ensure_ascii=False))))
+            ]
+            if coverage is not None:
+                messages.append(ChatMessage(role="user", content=(
+                    "[CONFIRMED RESULT COVERAGE]\nFor each outcome_coverage property select the P-number "
+                    "of the paragraph that actually communicates that confirmed result, including a "
+                    "faithful paraphrase. Mere silence, location or item custody does not cover a "
+                    "different earned result. Select null if it is missing. Do not rewrite the candidate.\n"
+                    + json.dumps(paragraphs, ensure_ascii=False))))
         for attempt in range(2):
             try:
                 with reason_scope(call_reason.get() or ("validate_narration" if attempt == 0 else "repair_validator_contract")):

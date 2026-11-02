@@ -16,7 +16,6 @@ from pydantic import (
     model_validator,
 )
 
-from app.services.provider_request_timing import measured_local, model_schema_json
 from app.models.addressed_response import AddressedResponse
 from app.models.game_master import InitiativePolicy
 from app.models.item_state import ItemContentRevelation, ItemPropertyChange, ItemStateSnapshot
@@ -48,6 +47,7 @@ from app.services.planning_context import (
     outcome_reference_context,
 )
 from app.services.player_intent_contract import contains_cjk
+from app.services.provider_request_timing import measured_local, model_schema_json
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
 from app.services.turn_authority_resolvers import (

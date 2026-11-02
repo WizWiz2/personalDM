@@ -15,7 +15,13 @@ from app.config import settings
 from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
-from app.services.provider_request_timing import local_span, measured_local, observe_event, timed_client, validate_structured
+from app.services.provider_request_timing import (
+    local_span,
+    measured_local,
+    observe_event,
+    timed_client,
+    validate_structured,
+)
 
 
 class LLMProviderError(RuntimeError):
@@ -716,7 +722,8 @@ class LLMProvider:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
         }
-        payload = self._responses_payload(config, self._messages_payload(messages))
+        with local_span("request.prepare"):
+            payload = self._responses_payload(config, self._messages_payload(messages))
         started = time.monotonic()
         parts: list[str] = []
         usage: dict[str, int] = {}
@@ -1067,8 +1074,11 @@ class LLMProvider:
                     yield {"_malformed": True}
                     continue
                 if isinstance(data, dict):
-                    visible=(data.get('delta') if data.get('type')=='response.output_text.delta'
-                             else self._extract_content(data))
+                    event_type=str(data.get('type') or '')
+                    if event_type.startswith('response.') or event_type=='error':
+                        visible=data.get('delta') if event_type=='response.output_text.delta' else None
+                    else:
+                        visible=self._extract_content(data)
                     observe_event(data,visible)
                     yield data
 

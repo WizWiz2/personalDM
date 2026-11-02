@@ -8,7 +8,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
-from app.services.provider_request_timing import measured_local, model_schema_json
 from app.config import settings
 from app.models.item_state import RequestedInventoryAction
 from app.models.player_intent import DayPart, IntentActionType, PlayerIntentContract
@@ -20,6 +19,7 @@ from app.services.linguistic_intent_analyzer import (
     LinguisticParserUnavailable,
 )
 from app.services.planning_context import action_reference_catalog, intent_reference_context
+from app.services.provider_request_timing import measured_local, model_schema_json
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_performance import reason_scope
 from app.services.turn_planner import TurnPlanningError

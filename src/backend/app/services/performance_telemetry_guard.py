@@ -162,6 +162,7 @@ def _flatten_telemetry(telemetry: dict[str, Any]) -> dict[str, Any]:
         "prompt_tokens": usage.get("prompt_tokens", usage.get("input_tokens")),
         "completion_tokens": usage.get("completion_tokens", usage.get("output_tokens")),
         "total_tokens": usage.get("total_tokens"),
+        "cached_input_tokens": (usage.get('input_tokens_details') or usage.get('prompt_tokens_details') or {}).get('cached_tokens'),
         "reasoning_tokens": (usage.get('output_tokens_details') or usage.get('completion_tokens_details') or {}).get('reasoning_tokens'),
         "ollama_total_ms": usage.get("ollama_total_ms"),
         "ollama_load_ms": usage.get("ollama_load_ms"),
@@ -203,6 +204,9 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
 
 
 def _render_report(records: list[dict[str, Any]]) -> str:
+    started_calls={r['operation_id'] for r in records if r.get('kind')=='llm_call_start'}
+    finished_calls={r['operation_id'] for r in records if r.get('kind') in ('structured','stream') and r.get('operation_id')}
+    tails=[row for row in records if row.get('kind')=='telemetry_flush']
     turns = [row for row in records if row.get('kind') == 'turn_summary']
     http_requests=[row for row in records if row.get('kind')=='provider_request']
     started_http={row['http_request_id'] for row in records if row.get('kind')=='provider_request_start'}
@@ -248,6 +252,7 @@ def _render_report(records: list[dict[str, Any]]) -> str:
         "# PersonalDM LLM performance",
         "",
         f"Calls: **{len(records)}**  ",
+        f"Logical calls started without a finish: **{len(started_calls-finished_calls)}**",
         f"Summed call wall time: **{total_wall / 1000.0:.1f}s**  ",
         f"Ollama reported total: **{total_provider / 1000.0:.1f}s**  ",
         f"Model load: **{total_load / 1000.0:.1f}s**  ",
@@ -323,6 +328,13 @@ def _render_report(records: list[dict[str, Any]]) -> str:
             cells=[request.get(key) for key in ['http_request_id','reason','status','wall_ms','headers_ms',
                                                'first_event_ms','first_text_ms','body_ms']]
             lines.append('| '+' | '.join('unknown' if v is None else str(v).replace('|','/') for v in cells)+' |')
+    if tails:
+        lines.extend(['', '## After response ready (not in interactive total)', '',
+                      '| Trace | Flush ms | Resume gap ms | Observed server total ms | Usage saved | Decisions saved |',
+                      '| --- | ---: | ---: | ---: | --- | --- |'])
+        for tail in tails:
+            cells=[tail.get(k) for k in ['trace_id','wall_ms','resume_gap_ms','server_observed_ms','usage_saved','decisions_saved']]
+            lines.append('| '+' | '.join('unknown' if v is None else str(v) for v in cells)+' |')
     lines.append("")
     return "\n".join(lines)
 
@@ -340,7 +352,7 @@ def _write_report() -> None:
         return
 
 
-def _begin_call():
+def _begin_call(role=None, model=None, response_model=None):
     from uuid import uuid4
     call_id = str(uuid4())
     parent = operation_parent.get()
@@ -348,7 +360,8 @@ def _begin_call():
     token=operation_parent.set(call_id)
     _append_record({'kind':'llm_call_start','operation_id':call_id,
                     'parent_id':parent or (current_trace().trace_id if current_trace() else None),
-                    'reason':call_reason.get() or 'normal_call'})
+                    'reason':call_reason.get() or 'normal_call','role':role,'model':model,
+                    'response_model':getattr(response_model,'__name__',None)})
     return started, call_id, parent, token
 
 
@@ -359,7 +372,19 @@ def _finish_call(provider, role, messages, kwargs, started, call_id, parent, tok
     message_count, prompt_characters = _message_stats(messages)
     trace = current_trace()
     child_operations=[row for row in trace.intervals if row['parent_id']==call_id] if trace else []
+    call_unaccounted=None
+    if trace:
+        left=(started-trace.started)*1000
+        right=(ended-trace.started)*1000
+        covered=0.0
+        cursor=left
+        for start,stop in sorted((max(left,r['start_ms']),min(right,r['end_ms'])) for r in child_operations):
+            if stop>cursor:
+                covered+=stop-max(cursor,start)
+                cursor=stop
+        call_unaccounted=round(max(0,right-left-covered),3)
     details = {
+        'call_unaccounted_ms':call_unaccounted,
         'http_request_count':sum(row['category']=='provider' for row in child_operations),
         'http_requests':[row for row in child_operations if row['category']=='provider'],
         'local_operations':[row for row in child_operations if row['category']=='local'],
@@ -403,7 +428,8 @@ def install() -> None:
     original_generate_json = RoleModelRouter.generate_json
 
     async def measured_generate_json(self, provider, selection, messages, **kwargs):
-        started, call_id, parent, token = _begin_call()
+        started, call_id, parent, token = _begin_call(selection.role.value,
+            getattr(selection.config,'model_name',None),kwargs.get('response_model'))
         error = None
         try:
             return await original_generate_json(self, provider, selection, messages, **kwargs)
@@ -419,7 +445,7 @@ def install() -> None:
     original_generate_stream = LLMProvider.generate_stream
 
     async def measured_generate_stream(self, messages, config, api_key=None, **kwargs):
-        started, call_id, parent, token = _begin_call()
+        started, call_id, parent, token = _begin_call('text',getattr(config,'model_name',None))
         error = None
         try:
             async with aclosing(original_generate_stream(
