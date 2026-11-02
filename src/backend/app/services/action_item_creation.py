@@ -1,7 +1,7 @@
 """Materialize and compensate item creation at its executed source step."""
 import json
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 
 from app.db.tables import Entity, Item, ItemContentDisclosure, ItemCreationEffect, ItemPropertyEffect
 from app.services.item_content_authority import revealed_item_contents
@@ -96,6 +96,17 @@ async def undo_step_items(session, source_step_id):
     ))).scalars())
     if not ids:
         return
+    # These subjects did not exist before this action. Their migration baselines
+    # must not outlive the creation receipt, including unscoped rows in old saves.
+    from app.db.truth_engine_table import TruthEventEffect, TruthEventRecord
+
+    baseline_events = select(TruthEventEffect.event_id).where(
+        func.json_extract(TruthEventEffect.payload_json, "$.subject_entity_id").in_(ids)
+    )
+    await session.execute(update(TruthEventRecord).where(
+        TruthEventRecord.source_kind == "legacy_baseline",
+        TruthEventRecord.event_id.in_(baseline_events),
+    ).values(status="reverted"))
     await return_units(session, ids)
     # Explicit deletion also supports SQLite installations without FK cascades.
     for model in (ItemContentDisclosure, ItemPropertyEffect, ItemCreationEffect):
