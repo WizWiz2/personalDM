@@ -588,7 +588,7 @@ class PlayerIntentInterpreter:
         return intent_reference_context(context_messages)
 
     def _apply_ownership(self, draft, player_input, controlled_id):
-        """Typed ownership from the single intent call; UD syntax still owns person/mood."""
+        """Catalogued actor IDs own execution; syntax supplies legacy missing IDs only."""
         for action in draft.actions:
             if action.actor_id and controlled_id:
                 action.actor_role = "speaker" if action.actor_id == controlled_id else "addressee"
@@ -599,10 +599,13 @@ class PlayerIntentInterpreter:
         ]) if draft.actions else self._linguistic_analyzer.analyze(player_input)
         for index, action_role in enumerate(syntax.action_roles):
             if action_role is not None and index < len(draft.actions):
-                draft.actions[index].actor_role = action_role
+                action = draft.actions[index]
+                if not (action.actor_id and controlled_id):
+                    action.actor_role = action_role
         if not syntax.action_roles and syntax.uniform_action_role is not None:
             for action in draft.actions:
-                action.actor_role = syntax.uniform_action_role
+                if not (action.actor_id and controlled_id):
+                    action.actor_role = syntax.uniform_action_role
         if any("contribution_kind" in a.model_fields_set for a in draft.actions):
             # Typed kinds decide; a summary flag cannot erase physical acts of a mixed turn.
             draft.information_request_only = all(a.contribution_kind == "speech" for a in draft.actions)
