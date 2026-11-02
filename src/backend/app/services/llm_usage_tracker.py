@@ -65,6 +65,11 @@ def set_usage_context(
 
 
 async def close_usage_context(token: Token) -> None:
+    from time import perf_counter
+
+    from app.services.performance_telemetry_guard import _append_record
+    from app.services.turn_performance import correlation
+    ids=correlation()
     context = _current_usage_context.get()
     if context is not None and context.assistant_turn_id is None:
         from app.services.performance_telemetry_guard import _append_record
@@ -81,20 +86,27 @@ async def close_usage_context(token: Token) -> None:
         expire_on_commit=False,
         autoflush=False,
     )
+    flush_started=perf_counter()
+    _append_record({'kind':'telemetry_flush_start',**ids,'boundary':'after_response_ready'})
     # Separate transactions: a missing decisions table must not cost the usage accounting.
-    await _flush(factory, "LLM usage telemetry", context, context.pending, LLMUsageRepository.record)
-    await _flush(
+    usage_saved=await _flush(factory, "LLM usage telemetry", context, context.pending, LLMUsageRepository.record)
+    decisions_saved=await _flush(
         factory,
         "Generation decision trace",
         context,
         context.decisions,
         LLMUsageRepository.record_decision,
     )
+    _append_record({'kind':'telemetry_flush',**ids,
+                    'wall_ms':round((perf_counter()-flush_started)*1000,3),
+                    'boundary':'after_response_ready','usage_saved':usage_saved,'decisions_saved':decisions_saved,
+                    'resume_gap_ms':round(max(0,flush_started-(context.performance.finished or flush_started))*1000,3),
+                    'server_observed_ms':round((perf_counter()-context.performance.started)*1000,3)})
 
 
-async def _flush(factory, label: str, context: LLMUsageContext, rows: list, write) -> None:
+async def _flush(factory, label: str, context: LLMUsageContext, rows: list, write) -> bool:
     if not rows:
-        return
+        return True
     # F-38: small independent telemetry transactions contend with the
     # SQLite campaign writer. Retry only transient lock errors; every attempt
     # gets a fresh session so no failed SQLAlchemy transaction is reused.
@@ -105,15 +117,15 @@ async def _flush(factory, label: str, context: LLMUsageContext, rows: list, writ
                 for row in rows:
                     await write(repository, context, row)
                 await session.commit()
-            return
+            return True
         except OperationalError as exc:
             if "database is locked" not in str(exc).casefold() or attempt == 3:
                 logger.warning("%s write failed: %s", label, exc, exc_info=True)
-                return
+                return False
             await asyncio.sleep(0.15 * (2 ** attempt))
         except Exception as exc:  # telemetry must never break gameplay
             logger.warning("%s write failed: %s", label, exc, exc_info=True)
-            return
+            return False
 
 
 def record_decision(

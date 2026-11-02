@@ -47,6 +47,7 @@ from app.services.planning_context import (
     outcome_reference_context,
 )
 from app.services.player_intent_contract import contains_cjk
+from app.services.provider_request_timing import measured_local, model_schema_json
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.starter_identity import present_character_names
 from app.services.turn_authority_resolvers import (
@@ -259,6 +260,7 @@ class TravelObstacleDraft(BaseModel):
     evidence_quote: str | None
 
 
+@measured_local("schema.travel")
 def _travel_wire_model(action_count: int, *, evidence: str = ""):
     class IndexedTravelObstacle(TravelObstacleDraft):
         action_index: Literal[tuple(range(action_count))]
@@ -469,6 +471,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
         return kept
 
 
+@measured_local("schema.outcome")
 def _outcome_wire_model(
     action_count: int,
     *,
@@ -926,6 +929,7 @@ def _outcome_wire_model(
     return result_model
 
 
+@measured_local("schema.profile")
 def _profile_wire_model(
     patch_count: int,
     *,
@@ -1176,7 +1180,7 @@ class TurnOutcomeResolver:
                         role="system",
                         content=_TRAVEL_PROMPT
                         + "\n[OUTPUT JSON SCHEMA]\n"
-                        + json.dumps(wire.model_json_schema(), ensure_ascii=False),
+                        + model_schema_json(wire),
                     ),
                     ChatMessage(
                         role="user",
@@ -1375,7 +1379,7 @@ class TurnOutcomeResolver:
                             role="system",
                             content=_OUTCOME_PROMPT
                             + "\n\n[OUTPUT JSON SCHEMA]\n"
-                            + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
+                            + model_schema_json(response_model),
                         ),
                         ChatMessage(
                             role="user",
@@ -1494,7 +1498,7 @@ class TurnOutcomeResolver:
                             role="system",
                             content=_PROFILE_PROMPT
                             + "\n\n[OUTPUT JSON SCHEMA]\n"
-                            + json.dumps(response_model.model_json_schema(), ensure_ascii=False),
+                            + model_schema_json(response_model),
                         ),
                         ChatMessage(
                             role="user",

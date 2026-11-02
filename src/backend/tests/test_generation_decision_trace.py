@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from uuid import uuid4
 
@@ -216,11 +217,14 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
 
 
 @pytest.mark.asyncio
-async def test_decision_write_failure_is_logged_and_keeps_usage(db_session, monkeypatch, caplog):
+async def test_decision_write_failure_is_logged_and_keeps_usage(db_session, monkeypatch, caplog, tmp_path):
     campaign_id, _scene_id = await _world(db_session)
     user_turn = Turn(campaign_id=str(campaign_id), role="user", content="Иду.")
     db_session.add(user_turn)
     await db_session.commit()
+
+    log_path=tmp_path/'flush.jsonl'
+    monkeypatch.setenv('PDM_PERFORMANCE_LOG',str(log_path))
 
     async def broken(self, context, decision):
         raise RuntimeError("no such table: generation_decisions")
@@ -237,3 +241,7 @@ async def test_decision_write_failure_is_logged_and_keeps_usage(db_session, monk
     assert "Generation decision trace write failed" in caplog.text
     usage = (await db_session.execute(select(LLMUsageEvent))).scalars().all()
     assert [row.model_role for row in usage] == ["planner"]
+    receipts=[json.loads(line) for line in log_path.read_text().splitlines()]
+    tail=next(row for row in receipts if row['kind']=='telemetry_flush')
+    assert tail['usage_saved'] is True and tail['decisions_saved'] is False
+    assert tail['wall_ms']>=0 and tail['server_observed_ms']>=tail['wall_ms']

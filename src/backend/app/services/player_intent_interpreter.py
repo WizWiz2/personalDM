@@ -19,6 +19,7 @@ from app.services.linguistic_intent_analyzer import (
     LinguisticParserUnavailable,
 )
 from app.services.planning_context import action_reference_catalog, intent_reference_context
+from app.services.provider_request_timing import measured_local, model_schema_json
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_performance import reason_scope
 from app.services.turn_planner import TurnPlanningError
@@ -318,6 +319,7 @@ def _controlled_id(context_messages: list[ChatMessage]) -> str | None:
     ), None)
 
 
+@measured_local("schema.intent")
 def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str, str] | None = None,
                        visited: tuple[str, ...] = ()):
     owned = action_reference_catalog(context_messages, "Player-owned items:")
@@ -699,7 +701,7 @@ class PlayerIntentInterpreter:
                             role="system",
                             content=_INTENT_PROMPT
                             + "\n\n[OUTPUT JSON SCHEMA]\n"
-                            + json.dumps(wire.model_json_schema(), ensure_ascii=False),
+                            + model_schema_json(wire),
                         ),
                         ChatMessage(role="user", content=user),
                     ],
