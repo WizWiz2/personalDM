@@ -517,6 +517,23 @@ class ActionPlanCompiler:
             step.source_action_index = index
             steps.append(step)
 
+        seen_placements = set()
+        for placement in decision.npc_item_placements:
+            index = placement.action_index
+            if index >= len(contract.actions) or index in seen_placements:
+                raise PlanContractError("NPC placement must identify one frozen request")
+            action, outcome = contract.actions[index], outcome_by_index[index]
+            if (action.action_type != "service" or action.requested_actor_id is None
+                    or action.requested_inventory is not None or action.subject_item_id != placement.item_id
+                    or outcome.resolution != "auto_success" or outcome.npc_response != "accepted"):
+                raise PlanContractError("NPC placement requires its successful accepted subject request")
+            steps[index] = steps[index].model_copy(update={
+                "action_type": "inventory", "item_id": placement.item_id,
+                "inventory_operation": placement.operation, "inventory_actor_id": action.requested_actor_id,
+                "item_placement_detail": placement.placement_detail,
+            })
+            seen_placements.add(index)
+
         if decision.item_property_changes:
             registered = {state.item_id for state in await load_item_states(self._session, campaign_id)}
             seen = set()
