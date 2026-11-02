@@ -446,6 +446,7 @@ def _normalized_action(
         "action_type": action_type,
         "intent": intent,
         "subject_item_id": action.subject_item_id,
+        "requested_actor_id": action.requested_actor_id if action_type == "service" else None,
         "expected_effect": action.expected_effect,
         "destination_location": None,
         "item_id": None,

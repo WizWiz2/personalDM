@@ -18,7 +18,12 @@ from pydantic import (
 
 from app.models.addressed_response import AddressedResponse
 from app.models.game_master import InitiativePolicy
-from app.models.item_state import ItemContentRevelation, ItemPropertyChange, ItemStateSnapshot
+from app.models.item_state import (
+    ItemContentRevelation,
+    ItemPropertyChange,
+    ItemStateSnapshot,
+    NpcItemPlacement,
+)
 from app.models.player_intent import (
     ActionOutcomeDecision,
     ActionResolution,
@@ -168,6 +173,13 @@ Use stable property_name keys (reuse the keys in item_states.properties) and the
 Component conditions are properties of their registered parent; do not create a separate entity
 for every part. Properties cannot establish custody, identity, location or rewrite revealed_content.
 These effects execute before narration. Do not describe an unrecorded physical transformation.
+
+NPC ITEM PLACEMENTS (npc_item_placements): When an accepted frozen service request with
+requested_actor_id and subject_item_id makes that NPC place, drop, reposition or stow its item,
+record action_index, that exact item_id, operation and placement_detail here. This executes before
+narration. Do not announce an unrecorded placement in observable_outcome. Use [] for mere discussion,
+refusals, or requests already carrying requested_inventory. Do not grant custody of another holder's
+item: the physical executor still checks possession and presence.
 
 NPC-TO-PLAYER HANDOFFS (npc_item_handoffs): For an EXISTING significant item
 owned by a physically present NPC who voluntarily hands it to the player in
@@ -436,6 +448,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
         "Named people spoken of but not here and not in the cast: typed offscreen, identity reserved."))
     place_introductions: list[PlaceIntroductionDraft] = Field(default_factory=list, max_length=1)
     item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
+    npc_item_placements: list[NpcItemPlacement] = Field(default_factory=list, max_length=8)
     npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
     player_item_handoffs: list[PlayerItemHandoff] = Field(default_factory=list, max_length=4)
     item_revelations: list[ItemContentRevelation] = Field(default_factory=list, max_length=4)
@@ -499,6 +512,7 @@ def _outcome_wire_model(
     known_places: tuple[str, ...] = (),
     required_absent: tuple[str, ...] | None = None,
     known_cast: dict[str, str] | None = None,
+    npc_placement_targets: dict[int, str] | None = None,
     thread_sources: dict[str, dict] | None = None,
     review_evidence: str = "",
 ) -> type[TurnOutcomeDecisionDraft]:
@@ -635,6 +649,22 @@ def _outcome_wire_model(
             resident_slot=(Literal[required_slot], ...),
         )
 
+    placement_model = NpcItemPlacement
+    if npc_placement_targets is not None:
+        targets = npc_placement_targets
+
+        class BoundNpcItemPlacement(NpcItemPlacement):
+            action_index: Literal[tuple(targets)] if targets else type(None)
+            item_id: Literal[tuple(sorted(set(targets.values())))] if targets else type(None)
+
+            @model_validator(mode="after")
+            def bind_requested_subject(self):
+                if targets.get(self.action_index) != str(self.item_id):
+                    raise ValueError("NPC placement must keep its frozen request subject")
+                return self
+
+        placement_model = BoundNpcItemPlacement
+
     class IndexedActionOutcomeDraft(ActionOutcomeDraft):
         # Coverage is structural, so enforce the known indices in native decoding too.
         action_index: Literal[tuple(range(action_count)) or tuple(range(8))]
@@ -744,6 +774,8 @@ def _outcome_wire_model(
     ) if thread_sources else type(None)
 
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
+        npc_item_placements: list[placement_model] = Field(default_factory=list,
+            max_length=8 if npc_placement_targets is None or npc_placement_targets else 0)
         model_config = ConfigDict(extra="ignore", json_schema_extra={
             # Absent people and places are decided every turn (explicit [] allowed), never skipped by omission.
             "required": ["action_outcomes", "npc_introductions", "absent_people", "place_introductions", "npc_item_handoffs", "player_item_handoffs", "item_revelations", "item_introductions", "item_property_changes",
@@ -830,6 +862,13 @@ def _outcome_wire_model(
         @model_validator(mode="after")
         def validate_action_indices(self):
             outcomes = {outcome.action_index: outcome for outcome in self.action_outcomes}
+            seen_placements = set()
+            for placement in self.npc_item_placements:
+                source = outcomes.get(placement.action_index)
+                if (source is None or source.resolution != "auto_success" or source.npc_response != "accepted"
+                        or placement.action_index in seen_placements):
+                    raise ValueError("NPC placement requires one successful accepted request")
+                seen_placements.add(placement.action_index)
             # A count is the typed split's job, never a free property: such an entry is void, not a retry.
             self.item_property_changes = [change for change in self.item_property_changes
                                           if change.property_name not in ItemStateSnapshot.model_fields]
@@ -1112,6 +1151,7 @@ def normalize_outcome_draft(
             "item_introductions": [
                 item.model_dump(mode="json") for item in draft.item_introductions
             ],
+            "npc_item_placements": [item.model_dump(mode="json") for item in draft.npc_item_placements],
             "npc_item_handoffs": [
                 item.model_dump(mode="json") for item in draft.npc_item_handoffs
             ],
@@ -1309,6 +1349,10 @@ class TurnOutcomeResolver:
             response_model = _outcome_wire_model(
                 len(contract.actions),
                 known_cast=known_cast,
+                npc_placement_targets={index: str(action.subject_item_id)
+                    for index, action in enumerate(contract.actions)
+                    if action.action_type == "service" and action.requested_actor_id is not None
+                    and action.subject_item_id is not None and action.requested_inventory is None},
                 handoff_states=item_reference_states(context_messages),
                 controlled_id=next((line.removeprefix("Controlled character:").strip()
                                     for message in context_messages for line in message.content.splitlines()

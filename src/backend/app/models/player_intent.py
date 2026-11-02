@@ -9,6 +9,7 @@ from app.models.addressed_response import AddressedResponse
 from app.models.item_state import (
     ItemContentRevelation,
     ItemPropertyChange,
+    NpcItemPlacement,
     RequestedInventoryAction,
 )
 from app.models.turn_authority import (
@@ -46,6 +47,7 @@ class PlayerActionIntent(BaseModel):
     intent: str = Field(min_length=2, max_length=500)
     subject_item_id: UUID | None = None
     requested_inventory: RequestedInventoryAction | None = None
+    requested_actor_id: UUID | None = None
     expected_effect: Literal["ordinary", "item_creation", "item_change", "item_read", "presence_check", "fetch_person"] = "ordinary"
 
     # Movement authority is only the human-selected endpoint, never a route/path policy.
@@ -76,6 +78,8 @@ class PlayerActionIntent(BaseModel):
     def validate_domain_fields(self):
         if self.expected_effect in {"item_change", "item_read"} and self.subject_item_id is None and self.item_id is None:
             raise ValueError("a requested physical property change requires its registered subject")
+        if self.requested_actor_id is not None and self.action_type != "service":
+            raise ValueError("an addressed actor belongs to a service action")
         if self.requested_inventory is not None and self.action_type != "service":
             raise ValueError("an addressed inventory request belongs to a service action")
         if self.action_type == "movement":
@@ -289,6 +293,7 @@ class TurnOutcomeDecision(BaseModel):
     npc_introductions: list[OutcomeNpcIntroduction] = Field(default_factory=list, max_length=4)
     item_introductions: list[PlannedItemIntroduction] = Field(default_factory=list, max_length=4)
     place_introductions: list[PlannedPlaceIntroduction] = Field(default_factory=list, max_length=1)
+    npc_item_placements: list[NpcItemPlacement] = Field(default_factory=list, max_length=8)
     npc_item_handoffs: list[NpcItemHandoff] = Field(default_factory=list, max_length=4)
     player_item_handoffs: list[PlayerItemHandoff] = Field(default_factory=list, max_length=4)
     item_revelations: list[ItemContentRevelation] = Field(default_factory=list, max_length=4)

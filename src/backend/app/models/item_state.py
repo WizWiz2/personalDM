@@ -53,6 +53,15 @@ class RequestedInventoryAction(BaseModel):
         return self
 
 
+class NpcItemPlacement(BaseModel):
+    """Approved physical result of a frozen NPC request about its registered subject."""
+    model_config = ConfigDict(extra="forbid")
+    action_index: int = Field(ge=0, le=7)
+    item_id: UUID
+    operation: Literal["place", "drop", "reposition", "store"]
+    placement_detail: str | None = Field(default=None, max_length=300)
+
+
 class ItemPropertyChange(BaseModel):
     """A physical property result, not custody, identity or document contents."""
     model_config = ConfigDict(extra="forbid")
