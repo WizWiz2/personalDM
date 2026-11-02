@@ -127,6 +127,19 @@ class ActionPlanCompiler:
             )
         return by_index
 
+    @staticmethod
+    def _bind_return(action, origins, by_id):
+        if action.return_to_action_index is None:
+            return action
+        origin_id, _ = origins[action.return_to_action_index]
+        if origin_id is None or origin_id not in by_id:
+            raise PlanContractError("A return needs a persisted departure location")
+        return action.model_copy(update={
+            "destination_location_id": origin_id,
+            "destination_location": by_id[origin_id].canonical_name,
+            "destination_parent_location_id": None,
+        })
+
     async def resolve_known_travel(
         self, campaign_id: UUID, contract: PlayerIntentContract
     ) -> TurnOutcomeDecision | None:
@@ -141,7 +154,8 @@ class ActionPlanCompiler:
             or contract.addressed_response_requested
             or contract.pending_player_choice
             or any(action.action_type != "movement" for action in contract.actions)
-            or any(action.destination_location_id is None for action in contract.actions)
+            or any(action.destination_location_id is None and action.return_to_action_index is None
+                   for action in contract.actions)
             or any(action.movement_method != "ordinary" for action in contract.actions)
             or any(action.requested_companions for action in contract.actions)
         ):
@@ -152,7 +166,10 @@ class ActionPlanCompiler:
         by_id = {item.id: item for item in locations}
         cursor = (state.location_id, None)
         outcomes = []
+        origins = {}
         for index, action in enumerate(contract.actions):
+            origins[index] = cursor
+            action = self._bind_return(action, origins, by_id)
             if outcomes and outcomes[-1].resolution != "auto_success":
                 outcomes.append(ActionOutcomeDecision(
                     action_index=index,
@@ -445,7 +462,11 @@ class ActionPlanCompiler:
             hero = await self._session.get(Entity, campaign.player_character_id) if campaign and campaign.player_character_id else None
             hero_name = hero.canonical_name if hero else None
 
+        origins = {}
         for index, action in enumerate(contract.actions):
+            origins[index] = cursor
+            if action.action_type == "movement":
+                action = self._bind_return(action, origins, by_id)
             effective_action = action
             produced_reference = (action.produced_item_action_index if action.produced_item_action_index is not None
                                   else action.requested_inventory.produced_item_action_index
