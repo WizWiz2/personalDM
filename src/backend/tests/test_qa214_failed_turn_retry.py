@@ -12,14 +12,15 @@ from app.db.tables import Campaign, GenerationRun, Turn
 
 
 @pytest.mark.asyncio
-async def test_retry_latest_failed_turn_reuses_immutable_player_input(db_session: AsyncSession):
+@pytest.mark.parametrize("generation_status", ["failed", "cancelled"])
+async def test_retry_latest_failed_turn_reuses_immutable_player_input(db_session: AsyncSession, generation_status):
     campaign_id, turn_id = uuid4(), uuid4()
     db_session.add(Campaign(id=str(campaign_id), name="F-37 retry"))
     db_session.add(Turn(id=str(turn_id), campaign_id=str(campaign_id),
                         role="user", content="Конюх входит и представляется.",
                         status="failed"))
     db_session.add(GenerationRun(campaign_id=str(campaign_id),
-                                 user_turn_id=str(turn_id), status="failed"))
+                                 user_turn_id=str(turn_id), status=generation_status))
     await db_session.commit()
 
     async def chunks():

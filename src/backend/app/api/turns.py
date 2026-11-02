@@ -238,8 +238,8 @@ async def retry_failed_turn(
     if not turn or turn.campaign_id != str(campaign_id) or turn.role != "user":
         raise HTTPException(status_code=404, detail="Failed user turn not found")
     generation = await GenerationRunRepository(session).get_by_user_turn(turn_id)
-    if turn.status != "failed" or not generation or generation.status != "failed":
-        raise HTTPException(status_code=409, detail="Only failed user turns can be retried")
+    if turn.status != "failed" or not generation or generation.status not in {"failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Only failed or cancelled user turns can be retried")
     newest_user_turn_id = (
         await session.execute(
             select(Turn.id).where(
