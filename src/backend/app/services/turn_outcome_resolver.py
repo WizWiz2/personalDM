@@ -190,6 +190,9 @@ NPC-initiated conversational outcome). A player request is NOT consent. Never
 claim transfer from an absent NPC, or invent UUIDs. These are not new items.
 No prose-only handoffs: any approved transfer of an existing owned item must
 be covered by this typed receipt, otherwise resolve without claiming delivery.
+A requested_inventory take/store of the player-owned subject already carries the player grant;
+accepted execution transfers THAT exact subject. Do not substitute a different catalog item or
+add another player_item_handoff for that request.
 Set each action's npc_response=accepted when the NPC agrees, refused when they
 decline, not_applicable otherwise. A refusal and an accepted handoff cannot
 refer to the same act. Handoff evidence describes its public result; it need

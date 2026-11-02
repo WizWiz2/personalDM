@@ -447,6 +447,19 @@ class ActionPlanCompiler:
                 raise PlanContractError("A produced item ordinal has no corresponding artifact introduction")
             return artifacts[ordinal].reserved_item_id
 
+        # A typed request to take/stow the player's item is the player's grant;
+        # the outcome still owns the recipient's explicit consent. Track custody
+        # across the frozen sequence so later verbs cannot grant the same item twice.
+        before_effects = {}
+        virtual_owners = {}
+        player_id = None
+        if any(action.requested_inventory for action in contract.actions):
+            campaign = await self._session.get(Campaign, str(campaign_id))
+            player_id = UUID(campaign.player_character_id) if campaign and campaign.player_character_id else None
+            virtual_owners = {item.item_id: item.owner_id for item in await load_item_states(self._session, campaign_id)}
+            virtual_owners.update({item.reserved_item_id: player_id if item.owned_by_player else None
+                                   for items in created_by_source.values() for item in items})
+
         virtual_positions = {}
         hero_name = None
         if any(action.expected_effect == "presence_check" for action in contract.actions):
@@ -534,6 +547,24 @@ class ActionPlanCompiler:
                 # Old descriptions and historical scene memberships are not occupancy evidence.
                 occupants = [name for name, position in virtual_positions.items() if position == cursor]
                 step.observable_outcome = "Присутствуют: " + ", ".join(occupants) + "."
+            request = effective_action.requested_inventory
+            if (player_id is not None and request and request.operation in {"take", "store"} and request.actor_id != player_id
+                    and request.item_id in virtual_owners and virtual_owners[request.item_id] == player_id
+                    and outcome.resolution == "auto_success" and outcome.npc_response == "accepted"):
+                grant = ActionStepPlan(source_action_index=index, action_type="inventory",
+                    intent=action.intent, resolution="auto_success", observable_outcome=outcome.observable_outcome,
+                    item_id=request.item_id, inventory_operation="give", inventory_target_id=request.actor_id)
+                if request.operation == "take":
+                    step = grant  # acceptance itself completes taking; do not take an already held item again
+                else:
+                    before_effects[index] = grant
+            if virtual_owners and step.action_type == "inventory" and step.resolution == "auto_success":
+                if step.inventory_operation == "give":
+                    virtual_owners[step.item_id] = step.inventory_target_id
+                elif step.inventory_operation in {"take", "store", "receive"}:
+                    virtual_owners[step.item_id] = step.inventory_actor_id or player_id
+                elif step.inventory_operation in {"place", "drop"}:
+                    virtual_owners[step.item_id] = None
             step.item_creations = list(created_by_source.get(index, ()))
             step.source_action_index = index
             steps.append(step)
@@ -659,6 +690,16 @@ class ActionPlanCompiler:
                     raise PlanContractError("Player item handoff depends on an unfinished action")
                 if prerequisite.npc_response == "refused":
                     raise PlanContractError("Player item handoff contradicts the recipient's refusal")
+            if handoff.after_action_index is not None:
+                source_action = contract.actions[handoff.after_action_index]
+                request = source_action.requested_inventory
+                if request and request.operation in {"take", "store"} and (
+                    steps[handoff.after_action_index].item_id != handoff.item_id
+                    or request.actor_id != handoff.recipient_id
+                ):
+                    raise PlanContractError("A handoff cannot replace the frozen request subject or recipient")
+                if request and request.operation in {"take", "store"}:
+                    continue  # the accepted request already compiles its exact handoff once
             giving_step = existing_inventory(handoff.item_id, handoff.after_action_index)
             if giving_step is not None:
                 if giving_step.resolution != "auto_success":
@@ -680,15 +721,19 @@ class ActionPlanCompiler:
 
         # Effects happen at their originating act, before a subsequent journey.
         # Frozen action identity is independent of the number of executable receipts.
-        if deferred_effects:
+        if deferred_effects or before_effects:
             expanded = []
             for step in steps:
                 linked = [effect for effect in deferred_effects
                           if effect.source_action_index == step.source_action_index]
                 if linked and step.action_type == "service":
                     step.observable_outcome = "Согласие на передачу получено."  # physical results belong to receipts below
+                if step.source_action_index in before_effects:
+                    expanded.append(before_effects[step.source_action_index])
                 expanded.extend([step, *linked])
             expanded.extend(effect for effect in deferred_effects if effect.source_action_index is None)
+            if len(expanded) > 16:
+                raise PlanContractError("Too many actions for accepted item requests")
             steps = expanded
             discovery_steps = [index for index, step in enumerate(steps)
                                if step.action_type == "movement" and step.source_action_index in discovery_steps]
