@@ -21,8 +21,9 @@ from app.services.meta_command_router import MetaCommandRunner, parse_meta_comma
 from app.services.turn_runner import TurnRunner
 
 
-class GenerationAlreadyRunningError(ValueError):
-    pass
+from app.services.campaign_process_lease import (
+    GenerationAlreadyRunningError, campaign_process_lease,
+)
 
 
 @dataclass(frozen=True)
@@ -65,27 +66,34 @@ class DetachedTurnDispatcher:
         mistaken for a completed game action.
         """
         runs = GenerationRunRepository(session)
-        latest = await runs.list_for_campaign(campaign_id, limit=1)
-        if not latest:
-            return None
-        run = latest[0]
-        if run.status != "running" or cls._has_live_task(campaign_id):
-            return run
+        try:
+            with campaign_process_lease(session.bind, campaign_id):
+                latest = await runs.list_for_campaign(campaign_id, limit=1)
+                if not latest:
+                    return None
+                run = latest[0]
+                if run.status != "running" or cls._has_live_task(campaign_id):
+                    return run
+                from app.db.tables import GenerationRun
+                from app.services.generation_startup_recovery import _recover_run
 
-        await runs.set_status(
-            run.id,
-            "failed",
-            error="Generation worker disappeared before completion",
-        )
-        turns = TurnRepository(session)
-        stale_user = await turns.get_by_id(run.user_turn_id)
-        if stale_user and stale_user.status == "active":
-            await turns.mark_failed(stale_user.id)
-        await session.commit()
-        return await runs.get_by_user_turn(run.user_turn_id)
+                await _recover_run(session, await session.get(GenerationRun, str(run.id)))
+                await session.commit()
+                return await runs.get_by_user_turn(run.user_turn_id)
+        except GenerationAlreadyRunningError:
+            # Another process owns the worker; absence from our task dict proves nothing.
+            latest = await runs.list_for_campaign(campaign_id, limit=1)
+            return latest[0] if latest else None
 
     @classmethod
-    async def submit(
+    async def submit(cls, campaign_id, data, session):
+        with campaign_process_lease(session.bind, campaign_id) as lease:
+            accepted = await cls._submit_owned(campaign_id, data, session)
+            lease.transfer_to(cls._tasks[str(campaign_id)])
+            return accepted
+
+    @classmethod
+    async def _submit_owned(
         cls,
         campaign_id: UUID,
         data: TurnCreate,
@@ -170,7 +178,14 @@ class DetachedTurnDispatcher:
         )
 
     @classmethod
-    async def _run(
+    async def _run(cls, factory, campaign_id, channel, data, user_turn_id):
+        async with factory() as session:
+            bind = session.bind
+        with campaign_process_lease(bind, campaign_id):
+            await cls._run_owned(factory, campaign_id, channel, data, user_turn_id)
+
+    @classmethod
+    async def _run_owned(
         cls,
         factory,
         campaign_id: UUID,

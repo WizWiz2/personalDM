@@ -394,7 +394,16 @@ class TurnSaga:
         except Exception:
             pass
 
-    async def run_turn_stream(
+    async def run_turn_stream(self, campaign_id, turn_create, existing_user_turn_id=None):
+        from app.services.campaign_process_lease import campaign_process_lease
+
+        with campaign_process_lease(self._session.bind, campaign_id):
+            async for chunk in self._run_turn_stream_owned(
+                campaign_id, turn_create, existing_user_turn_id,
+            ):
+                yield chunk
+
+    async def _run_turn_stream_owned(
         self,
         campaign_id: UUID,
         turn_create: TurnCreate,
