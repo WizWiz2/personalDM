@@ -871,6 +871,8 @@ class TurnSaga:
             )
             PostTurnDispatcher.schedule(self._session.bind, saved_assistant.id)
             finish_trace()
+            await close_usage_context(usage_context_token)
+            usage_context_token = None
             yield narration.text
 
         except asyncio.CancelledError:
@@ -887,6 +889,8 @@ class TurnSaga:
             if not timed_out:
                 raise
             finish_trace()
+            await close_usage_context(usage_context_token)
+            usage_context_token = None
             yield f"\n[Generation failed: {error}]"
         except Exception as exc:
             # F-37: even if a streaming client disconnects before the final
@@ -920,6 +924,8 @@ class TurnSaga:
                 failed_user.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
             await self._fail_user_turn(user_turn.id, owns_user_turn)
             finish_trace()
+            await close_usage_context(usage_context_token)
+            usage_context_token = None
             yield f"\n[Generation failed: {exc}]"
         finally:
             timeout_handle.cancel()
@@ -927,7 +933,8 @@ class TurnSaga:
                 campaign_write_barrier.for_campaign(campaign_id).release()
             if campaign_key in active_tasks and active_tasks[campaign_key] == current_task:
                 del active_tasks[campaign_key]
-            await close_usage_context(usage_context_token)
+            if usage_context_token is not None:
+                await close_usage_context(usage_context_token)
 
 
 __all__ = ["TurnSaga", "active_tasks"]
