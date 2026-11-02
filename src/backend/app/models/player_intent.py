@@ -52,6 +52,8 @@ class PlayerActionIntent(BaseModel):
     destination_location: str | None = Field(default=None, max_length=255)
     # Bound identity of a known place; None means the player selected a new place.
     destination_location_id: UUID | None = None
+    # Source of an earlier movement in THIS input; the compiler owns its actual location.
+    return_to_action_index: int | None = Field(default=None, ge=0, le=7)
     # The known place a new (uncatalogued) destination lies in: a building's town, a room's house.
     destination_parent_location_id: UUID | None = None
     movement_method: Literal["ordinary", "special"] = "ordinary"
@@ -77,10 +79,10 @@ class PlayerActionIntent(BaseModel):
         if self.requested_inventory is not None and self.action_type != "service":
             raise ValueError("an addressed inventory request belongs to a service action")
         if self.action_type == "movement":
-            if not self.destination_location:
+            if not self.destination_location and self.return_to_action_index is None:
                 raise ValueError("movement intent requires destination_location")
         elif any(value is not None for value in (
-            self.destination_location, self.destination_location_id, self.destination_parent_location_id,
+            self.destination_location, self.destination_location_id, self.destination_parent_location_id, self.return_to_action_index,
         )):
             raise ValueError("only movement intent may carry destination authority")
         if self.requested_companions and self.action_type != "movement":
@@ -152,6 +154,10 @@ class PlayerIntentContract(BaseModel):
 
     @model_validator(mode="after")
     def validate_response_target(self):
+        for index, action in enumerate(self.actions):
+            source = action.return_to_action_index
+            if source is not None and (source >= index or self.actions[source].action_type != "movement"):
+                raise ValueError("A return must reference an earlier movement in this input")
         if not self.addressed_response_requested:
             self.addressed_character_name = None
         return self

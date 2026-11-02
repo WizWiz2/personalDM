@@ -142,6 +142,7 @@ class PlayerActionIntentDraft(BaseModel):
     expected_effect: Literal["ordinary", "item_creation", "item_change", "item_read", "presence_check", "fetch_person"] = "ordinary"
     intent: str = Field(min_length=2, max_length=500)
     destination_location: str | None = None
+    return_to_action_index: int | None = Field(default=None, ge=0, le=7)
     place: str | None = None
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
     movement_method: Literal[
@@ -221,6 +222,15 @@ class _MovementWire(_ActionWire):
     requested_companions: list[str] = Field(default_factory=list, max_length=8)
 
 
+class _SequenceReturnWire(_ActionWire):
+    action_type: Literal["movement"]
+    return_to_action_index: int = Field(ge=0, le=7, description=(
+        "Return to the SOURCE of this earlier movement in the same input. For A→B→C→A, "
+        "the final return references action 0. No destination name or catalog choice is needed."))
+    movement_method: Literal["ordinary", "teleportation", "force", "stealth", "ability"]
+    requested_companions: list[str] = Field(default_factory=list, max_length=8)
+
+
 class _InventoryWire(_ActionWire):
     model_config = ConfigDict(extra="forbid", json_schema_extra=lambda schema: schema.setdefault("required", []).append("whole_registered_item"))
     action_type: Literal["inventory"]
@@ -291,7 +301,7 @@ class _IntentWire(PlayerIntentContractDraft):
     )
     # Conditional requirements belong in the model-facing schema: a movement needs a destination,
     # and a transfer needs an item and recipient. Keep the permissive draft for legacy normalization.
-    actions: list[_MovementWire | _InventoryWire | _GiveWire | _ProducedInventoryWire | _TimeWire | _LocalActionWire
+    actions: list[_MovementWire | _SequenceReturnWire | _InventoryWire | _GiveWire | _ProducedInventoryWire | _TimeWire | _LocalActionWire
                   | _SpeechWire] = (
         Field(max_length=8)
     )
@@ -299,6 +309,11 @@ class _IntentWire(PlayerIntentContractDraft):
     @model_validator(mode="after")
     def validate_produced_sources(self):
         for index, action in enumerate(self.actions):
+            departure = getattr(action, "return_to_action_index", None)
+            if departure is not None and (
+                departure >= index or getattr(self.actions[departure], "action_type", None) != "movement"
+            ):
+                raise ValueError("A return must reference an earlier movement in this input")
             source = getattr(action, "produced_item_action_index", None)
             if source is not None and (
                 source >= index or getattr(self.actions[source], "expected_effect", None) != "item_creation"
@@ -335,7 +350,7 @@ def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str
     refs = tuple(references or ())
     movement = create_model("ReferencedMovement", __base__=_MovementWire, place=(
         Literal[refs + tuple(f"new_in:{key}" for key in refs) + ("new", "unresolved")], ...))
-    variants = [movement, _TimeWire, _ProducedInventoryWire, _SpeechWire, _LocalActionWire]
+    variants = [movement, _SequenceReturnWire, _TimeWire, _ProducedInventoryWire, _SpeechWire, _LocalActionWire]
     if visited:
         # Going back is a choice among places that already had a scene, never a new twin (replay15 r10).
         variants[:1] = [
@@ -443,7 +458,7 @@ def _normalized_action(
     }
 
     destination = _compact(action.destination_location)
-    if action_type == "movement" and not destination:
+    if action_type == "movement" and not destination and action.return_to_action_index is None:
         # No selected place, no trip (ban 4): a local step, not a failed turn.
         action_type = "interaction"
     if action_type == "inventory" and not (
@@ -461,7 +476,8 @@ def _normalized_action(
     payload["action_type"] = action_type
 
     if action_type == "movement":
-        payload["destination_location"] = destination
+        payload["destination_location"] = destination or None
+        payload["return_to_action_index"] = action.return_to_action_index
         reference = action.place or ""
         if reference.startswith("new_in:"):
             payload["destination_parent_location_id"] = reference.removeprefix("new_in:")
@@ -636,6 +652,10 @@ class PlayerIntentInterpreter:
         remap = {old: new for new, old in enumerate(kept)}
         draft.actions = [draft.actions[index] for index in kept]
         for action in draft.actions:
+            if action.return_to_action_index is not None:
+                if action.return_to_action_index not in remap:
+                    raise ValueError("A return cannot reference a discarded speech entry")
+                action.return_to_action_index = remap[action.return_to_action_index]
             if action.produced_item_action_index is not None:
                 if action.produced_item_action_index not in remap:
                     raise ValueError("Produced item reference points to a discarded speech contribution")
@@ -645,7 +665,7 @@ class PlayerIntentInterpreter:
     def _check_places(draft, references, catalog=None):
         """Deterministic ID check of the typed place choice; no fuzzy matching decides identity."""
         for action in draft.actions:
-            if action.action_type != "movement":
+            if action.action_type != "movement" or action.return_to_action_index is not None:
                 continue
             # An exact engine-owned route label outranks a model's "new" choice.
             routes = [key for key, place in (catalog or {}).items()
