@@ -137,7 +137,7 @@ async def test_restart_recovers_every_stuck_item_and_is_idempotent(file_db):
         assistant = await TurnRepository(session).create(
             cid, TurnCreate(role="assistant", content="ответ", parent_turn_id=user.id))
         session.add(PostTurnJob(campaign_id=str(cid), assistant_turn_id=str(assistant.id), job_type="memory",
-                                status="running", locked_at=datetime.utcnow() - timedelta(seconds=1)))
+                                status="running", locked_at=datetime.utcnow() - timedelta(minutes=10)))
         await session.commit()
     async with file_db() as session:
         assert await recover_interrupted_generations(session) == 3

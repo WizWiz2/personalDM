@@ -1,7 +1,7 @@
 """Recover durable generation work left behind by a dead process.
 
-Runs before the server accepts requests, so every ``running`` row belongs to a
-dead process. Recovery is idempotent and never blocks boot: each run is
+A running row may belong to another live process using the same SQLite file.
+Only the owner of the campaign process lease may recover it. Recovery is idempotent and never blocks boot: each run is
 recovered in its own transaction and a bad record is logged and skipped.
 """
 from __future__ import annotations
@@ -18,6 +18,7 @@ from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.tables import GenerationRun, Turn
 from app.models.jobs import GenerationPhase
 from app.services.prepared_turn_compensation import compensate_prepared_turn
+from app.services.campaign_process_lease import GenerationAlreadyRunningError, campaign_process_lease
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,17 @@ async def recover_interrupted_generations(session: AsyncSession) -> int:
     recovered = 0
     for run_id in run_ids:
         try:
-            await _recover_run(session, await session.get(GenerationRun, run_id))
-            await session.commit()
-            recovered += 1
+            run = await session.get(GenerationRun, run_id)
+            with campaign_process_lease(session.bind, run.campaign_id):
+                # Refresh after admission: a prior owner may have finished while we read.
+                await session.refresh(run)
+                if run.status != "running":
+                    continue
+                await _recover_run(session, run)
+                await session.commit()
+                recovered += 1
+        except GenerationAlreadyRunningError:
+            await session.rollback()
         except Exception:
             await session.rollback()
             logger.exception("Startup recovery skipped generation run %s", run_id)
@@ -63,8 +72,8 @@ async def recover_interrupted_generations(session: AsyncSession) -> int:
             NarrationValidationRun.trigger_turn_id.in_(select(GenerationRun.user_turn_id).where(
                 GenerationRun.status.in_(("failed", "cancelled")))),
         ).values(status="failed", failure_reason="Generation ended before validation completed"))
-        # The previous process is dead: every running post-turn job is stale.
-        await PostTurnJobRepository(session).recover_stale(stale_after_seconds=0)
+        # Another server may still own fresh post-turn jobs; respect their leases.
+        await PostTurnJobRepository(session).recover_stale()
         await session.commit()
     except Exception:
         await session.rollback()
