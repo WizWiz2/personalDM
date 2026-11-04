@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # default is `medium`; `low` keeps sequential control calls fast. Valid values are the
     # model's `supported_reasoning_levels` (plus `none`); empty sends no reasoning field.
     LLM_REASONING_EFFORT: str | None = "low"
+    # Structured control roles (intent/outcome/validator): `none` answers typed JSON without a
+    # reasoning pass; empty falls back to LLM_REASONING_EFFORT.
+    CONTROL_LLM_REASONING_EFFORT: Literal["none", "low", "medium", "high"] | None = "none"
 
     # Visual generation can be local (ComfyUI), cloud (OpenAI-compatible images API)
     # or off. IMAGE_ENABLED is retained as a backward-compatible runtime gate.

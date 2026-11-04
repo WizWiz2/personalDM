@@ -201,6 +201,7 @@ class RoleModelRouter:
                 "provider_kind": (
                     "chatgpt" if use_chatgpt_plan else "openai_compatible"
                 ),
+                "reasoning_effort": settings.CONTROL_LLM_REASONING_EFFORT if role in CONTROL_ROLES else None,
             }
         )
         strict_control = role in CONTROL_ROLES

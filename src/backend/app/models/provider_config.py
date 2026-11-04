@@ -18,6 +18,7 @@ class ProviderConfigRead(BaseModel):
     context_window: int
     provider_kind: str = "openai_compatible"
     created_at: datetime
+    reasoning_effort: str | None = None  # role-resolved; None keeps the global effort
 
     model_config = ConfigDict(from_attributes=True)
 
