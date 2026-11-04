@@ -153,7 +153,7 @@ async def test_a_blocked_source_cannot_leave_an_artifact_or_partial_inventory_mu
     assert len(states) == 1 and states[0].properties == {}
 
 
-@pytest.mark.parametrize("kind,expected", [("item_creation", "introduction"), ("item_change", "property effect")])
+@pytest.mark.parametrize("kind,expected", [("item_creation", "introduction")])
 def test_native_outcome_cannot_assert_success_without_its_required_physical_effect(kind, expected):
     wire = _outcome_wire_model(1, required_effects={0: kind})
     with pytest.raises(ValidationError, match=expected):

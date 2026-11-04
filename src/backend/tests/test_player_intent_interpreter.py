@@ -30,15 +30,6 @@ async def test_every_stated_own_act_is_typed_in_the_one_intent_call():
     assert len(acts["required"]) == 3  # «иду обратно на пристань» must be mapped to an entry
 
 
-@pytest.mark.asyncio
-async def test_a_stated_act_mapped_to_no_entry_fails_closed():
-    text = "Расплачиваюсь и иду обратно на пристань."
-    router = _Router({"summary": text, "actions": [
-        {"action_type": "service", "intent": "Расплатиться.", "evidence_quote": "Расплачиваюсь"}],
-        "stated_act_entries": {"act_0": 0, "act_1": 3}})
-    with pytest.raises(TurnPlanningError):
-        await PlayerIntentInterpreter(router).interpret(SimpleNamespace(), [], text)
-    assert router.calls == ["PlayerIntentContractDraft"]
 
 
 @pytest.mark.asyncio

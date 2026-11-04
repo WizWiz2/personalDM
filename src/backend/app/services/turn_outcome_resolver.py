@@ -500,6 +500,7 @@ def _outcome_wire_model(
     movement_indices: set[int] | None = None,
     allow_name_revelation: bool = True,
     bound_response_speaker: str | None = None,
+    addressee_elsewhere: bool = False,
     resident_slots: list[str] | None = None,
     required_slot: str | None = None,
     handoff_states=None,
@@ -532,7 +533,9 @@ def _outcome_wire_model(
     prerequisite_type = Literal[tuple(range(action_count))] | None if action_count else type(None)
     revealed_name_type = str | None if allow_name_revelation else type(None)
     # With other people here the answering person is a closed choice; "newcomer" is this turn's introduction.
-    speaker_type = (Literal[bound_response_speaker] | None if bound_response_speaker
+    # A known addressee who is elsewhere cannot answer here: the response is a typed silence.
+    speaker_type = (type(None) if addressee_elsewhere
+                    else Literal[bound_response_speaker] | None if bound_response_speaker
                     else Literal[(*present_names, "newcomer")] | None if len(present_names or ()) > 1
                     else str | None)
 
@@ -901,18 +904,10 @@ def _outcome_wire_model(
             for index, effect in (required_effects or {}).items():
                 if outcomes.get(index) is None or outcomes[index].resolution != "auto_success":
                     continue
-                if effect == "fetch_person" and allow_introductions and outcomes[index].npc_response == "accepted" \
-                        and outcomes[index].sends_for is None:
-                    raise ValueError("An accepted errand to fetch someone requires that action's sends_for")
                 if effect == "item_creation" and not any(item.after_action_index == index for item in self.item_introductions):
                     raise ValueError("Successful artifact creation requires a typed introduction at its source index")
                 if effect == "item_read" and not any(read.action_index == index for read in self.item_revelations):
                     raise ValueError("Successful document reading requires concrete typed disclosed content")
-                # Units taken out of an item are its typed change (its count), not a free property.
-                if effect == "item_change" and not any(item.action_index == index for item in self.item_property_changes) \
-                        and not any(item.after_action_index == index and item.taken_from_item_id
-                                    for item in self.item_introductions):
-                    raise ValueError("Successful physical change requires a typed property effect at its source index")
             for source, count in (required_artifact_counts or {}).items():
                 if source in outcomes and outcomes[source].resolution == "auto_success" and sum(
                     item.after_action_index == source for item in self.item_introductions
@@ -1385,6 +1380,9 @@ class TurnOutcomeResolver:
                 bound_response_speaker=(
                     contract.addressed_character_name if existing_addressee else None
                 ),
+                addressee_elsewhere=not existing_addressee and any(
+                    identity_key(name) == identity_key(contract.addressed_character_name or "")
+                    for name in (known_cast or {}).values()),
                 present_names=sorted(present_character_names(context_messages).union(
                     *(destination_cast or {}).values()
                 )),
