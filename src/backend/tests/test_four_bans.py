@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.services.turn_authority_validator import NarrationFindings
 from app.models.narration_validation import GrantedBeat, NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
@@ -73,7 +74,7 @@ class _Router:
         return SimpleNamespace(config=SimpleNamespace(model_name="control"), source="test")
 
     async def generate_json(self, _provider, _selection, messages, **kwargs):
-        assert issubclass(kwargs["response_model"], NarrationValidationResult)
+        assert issubclass(kwargs["response_model"], NarrationFindings)
         self.calls.append(messages)
         return self.verdicts.pop(0)
 

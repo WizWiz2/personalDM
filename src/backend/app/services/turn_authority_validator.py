@@ -47,6 +47,35 @@ def candidate_sentences(text: str) -> dict[str, str]:
     return {f"S{index}": sentence for index, sentence in enumerate(fragments)}
 
 
+_CORRECTION = {
+    "absent_character": "Убери этого человека из сцены: его нет здесь по фактам хода.",
+    "canon_conflict": "Верни это место к установленным фактам хода.",
+    "player_agency": "Убери за игрока новые слова, решения, мысли или действия.",
+    "invalid_movement": "Убери перемещение: перехода нет в фактах хода.",
+}
+
+
+def found_violation_model(authority: TurnAuthority, candidate_text: str, **scope) -> type[BaseModel]:
+    """A violation is a ban and the anchor of the sentence committing it; code supplies the rest."""
+    absent = tuple(authority.known_absent_character_names)
+    return create_model(
+        "FoundViolation", __config__=ConfigDict(extra="forbid"),
+        violation_type=(Literal[tuple(sorted(FOUR_BANS))], ...),
+        sentence=(Literal[tuple(candidate_sentences(candidate_text))], ...),
+        known_absent_name=((Literal[absent] if absent else type(None)) | None, None),
+        **scope,
+    )
+
+
+def expand_found(data: dict, candidate_text: str) -> dict:
+    """Anchored findings become full violations: evidence is the cited sentence, correction its ban."""
+    sentences = candidate_sentences(candidate_text)
+    return {**data, "violations": [
+        {**item, "severity": "error", "evidence": sentences[item["sentence"]],
+         "correction": _CORRECTION[item["violation_type"]]} if "sentence" in item else item
+        for item in data.get("violations") or []]}
+
+
 def inventory_validation_model(authority: TurnAuthority, candidate_text: str | None = None) -> type[BaseModel]:
     """Only the item changes the prose narrates, each bound to an audited ID and a sentence anchor."""
     ids = tuple(str(state.item_id) for state in authority.audited_item_states())
@@ -54,14 +83,14 @@ def inventory_validation_model(authority: TurnAuthority, candidate_text: str | N
     if candidate_text is not None:
         sentences = candidate_sentences(candidate_text)
         fields["evidence"] = (type(None), None)
-        fields["sentence"] = (Literal[tuple(sentences)], Field(description=(
-            "Anchor of the candidate sentence: " + json.dumps(sentences, ensure_ascii=False))))
+        fields["sentence"] = (Literal[tuple(sentences)], Field(description="[SENTENCE ANCHORS] key."))
     claim = create_model("BoundItemPositionClaim", __base__=ItemPositionClaim, **fields)
-    violation = create_model(
-        "ScopedNarrationViolation", __base__=NarrationViolation,
+    scope = dict(
         state_domain=(Literal["item_position", "item_content", "item_property", "other"], ...),
         item_id=(Literal[tuple(str(item.item_id) for item in authority.item_states)] | None, ...),
     )
+    violation = (found_violation_model(authority, candidate_text, **scope) if candidate_text is not None
+                 else create_model("ScopedNarrationViolation", __base__=NarrationViolation, **scope))
     return create_model(
         "CompleteInventoryValidation", __base__=InventoryNarrationValidation,
         position_claims=(list[claim], Field(default_factory=list, max_length=16, description=(
@@ -223,22 +252,8 @@ Present characters may speak, answer, refuse, stay silent, gesture, move inside 
 opinions, claims or new information. None of that is required and none of it is a violation.
 Style, completeness, pacing, atmosphere and how a question is answered are not your concern.
 
-For every error, evidence is the shortest exact fragment of the candidate and correction is a
-short prose-only fix in Russian. Report violations only: no walk-through, no summary; [] if none.
-Return exactly:
-{
-  "entrances": [{"evidence": "exact fragment", "who": "cast name|background_crowd|untyped_person"}],
-  "names_given": [{"evidence": "exact fragment", "who": "cast name", "name": "name given in prose"}],
-  "violations": [
-    {
-      "violation_type": "absent_character|canon_conflict|player_agency|invalid_movement",
-      "severity": "error",
-      "evidence": "shortest exact candidate fragment",
-      "correction": "specific prose-only correction in Russian",
-      "known_absent_name": null
-    }
-  ]
-}
+For every violation give only its ban and the S anchor of the sentence committing it; no
+explanation, no walk-through, no summary. violations=[] means the candidate passes.
 """
 
     ITEM_REVIEW_PROMPT = """[ITEM POSITION CLAIMS]
@@ -275,7 +290,6 @@ turn may create, carry and place one artifact in different locations. Rendered i
 states use their actual receipt and moment; never compare them to the end-of-turn snapshot.
 Location IDs in each receipt identify the owner's room at that moment, not the owner's final room.
 Then check the four bans below; report only violations.
-For errors, evidence is an exact quote and correction is a short prose-only fix in Russian.
 
 """
 
@@ -319,7 +333,9 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
             raise NarrationValidationError("Narrator returned empty prose")
         with local_span("validation.prepare"):
             wire = entrance_model(authority, inventory_validation_model(authority, candidate_text)
-                                  if authority.item_states else NarrationValidationResult)
+                                  if authority.item_states else create_model(
+                "NarrationFindings", __base__=NarrationFindings, violations=(list[found_violation_model(
+                    authority, candidate_text)], Field(default_factory=list, max_length=12))))
             outcomes = NarrationPublicationGuard.confirmed_outcomes(authority) if require_outcomes else []
             paragraphs = {f"P{index}": line.strip() for index, line in enumerate(
                 line for line in candidate_text.splitlines() if line.strip())}
@@ -329,9 +345,10 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                     **{f"result_{index}": (Literal[tuple(paragraphs)] | None, Field(description=outcome))
                        for index, outcome in enumerate(outcomes)})
                 wire = create_model(wire.__name__, __base__=wire, outcome_coverage=(coverage, ...))
+            sentences = candidate_sentences(candidate_text)
             messages = [
                 ChatMessage(role="system", content=(
-                    self.ITEM_REVIEW_PROMPT + self.SYSTEM_PROMPT.split("For every error,")[0]
+                    self.ITEM_REVIEW_PROMPT + self.SYSTEM_PROMPT.split("For every violation")[0]
                     if authority.item_states else self.SYSTEM_PROMPT
                 )),
                 ChatMessage(
@@ -341,6 +358,8 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
                         + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
                         + "\n\n[CANDIDATE NARRATION]\n"
                         + candidate_text
+                        + "\n\n[SENTENCE ANCHORS]\n"
+                        + json.dumps(sentences, ensure_ascii=False)
                     ),
                 ),
             ]
@@ -402,6 +421,7 @@ For errors, evidence is an exact quote and correction is a short prose-only fix 
 
     @staticmethod
     def _interpret(authority: TurnAuthority, candidate_text: str, data: dict) -> NarrationValidationResult:
+        data = expand_found(data, candidate_text)
         if authority.item_states:
             audited = authority.audited_item_states()
             audited_ids = {str(state.item_id) for state in audited}
