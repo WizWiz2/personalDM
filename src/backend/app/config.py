@@ -38,9 +38,6 @@ class Settings(BaseSettings):
     # default is `medium`; `low` keeps sequential control calls fast. Valid values are the
     # model's `supported_reasoning_levels` (plus `none`); empty sends no reasoning field.
     LLM_REASONING_EFFORT: str | None = "low"
-    # The narration validator answers a closed ban list without a reasoning pass; planners keep
-    # LLM_REASONING_EFFORT (they lose item/identity correctness at `none`).
-    VALIDATOR_LLM_REASONING_EFFORT: Literal["none", "low", "medium", "high"] | None = "none"
 
     # Visual generation can be local (ComfyUI), cloud (OpenAI-compatible images API)
     # or off. IMAGE_ENABLED is retained as a backward-compatible runtime gate.

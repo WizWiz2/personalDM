@@ -519,9 +519,8 @@ class LLMProvider:
             "store": False,
             "prompt_cache_key": cls._prompt_cache_key(config, messages),
         }
-        effort = getattr(config, "reasoning_effort", None) or settings.LLM_REASONING_EFFORT
-        if effort:
-            payload["reasoning"] = {"effort": effort}
+        if settings.LLM_REASONING_EFFORT:
+            payload["reasoning"] = {"effort": settings.LLM_REASONING_EFFORT}
         return payload
 
     @staticmethod

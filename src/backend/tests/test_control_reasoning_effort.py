@@ -9,10 +9,9 @@ from tests.test_role_model_router import FakeConfigRepo, primary_config
 
 
 @pytest.mark.asyncio
-async def test_only_the_validator_drops_reasoning_planners_and_narrator_keep_the_campaign_effort(monkeypatch):
+async def test_every_role_keeps_the_campaign_reasoning_effort(monkeypatch):
     primary = primary_config(base_url="https://cloud.example/v1", model_name="luna")
     monkeypatch.setattr(settings, "LLM_REASONING_EFFORT", "low")
-    monkeypatch.setattr(settings, "VALIDATOR_LLM_REASONING_EFFORT", "none")
     monkeypatch.setattr(settings, "CONTROL_LLM_BASE_URL", None)
     monkeypatch.setattr(settings, "PLANNER_LLM_MODEL", None)
     monkeypatch.setattr(settings, "NARRATION_VALIDATOR_LLM_MODEL", None)
@@ -20,7 +19,7 @@ async def test_only_the_validator_drops_reasoning_planners_and_narrator_keep_the
     messages = [{"role": "user", "content": "x"}]
 
     validator = await router.resolve(primary.campaign_id, ModelRole.NARRATION_VALIDATOR)
-    assert LLMProvider._responses_payload(validator.config, messages)["reasoning"] == {"effort": "none"}
+    assert LLMProvider._responses_payload(validator.config, messages)["reasoning"] == {"effort": "low"}
     planner = await router.resolve(primary.campaign_id, ModelRole.PLANNER)
     assert LLMProvider._responses_payload(planner.config, messages)["reasoning"] == {"effort": "low"}
     narrator = await router.resolve(primary.campaign_id, ModelRole.NARRATOR)
