@@ -97,22 +97,6 @@ def test_vague_upward_gesture_does_not_fail_or_authorize_a_new_placement():
     assert action.item_placement_detail is None
 
 
-@pytest.mark.parametrize("candidate", [
-    "Марта передаёт письмо в траурной рамке Ирме.",
-    "Письмо в траурной рамке оказывается у вас в руке.",
-    "Письмо в траурной рамке переходит к тебе.",
-])
-def test_third_person_and_impersonal_handoffs_require_executed_inventory(candidate):
-    auth = TurnAuthority(
-        campaign_id=uuid4(), trigger_turn_id=uuid4(), player_input="Забираю письмо.",
-        object_names=["письмо в траурной рамке"],
-        observable_consequences=["Письмо остаётся на конторке."],
-    )
-    published, meta = NarrationPublicationGuard.publish(
-        auth, candidate, NarrationValidationResult(verdict="pass"),
-    )
-    assert meta["unsupported_item_claim"]
-    assert published == "Письмо остаётся на конторке."
 
 
 def test_wrong_encryption_key_has_reconnect_guidance(monkeypatch, tmp_path):

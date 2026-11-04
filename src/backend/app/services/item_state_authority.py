@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.tables import Character, Entity, Item
-from app.models.item_state import ItemPositionClaim, ItemStateSnapshot
-from app.models.narration_validation import NarrationViolation
+from app.models.item_state import ItemStateSnapshot
 from app.services.item_content_authority import revealed_item_contents
 from app.services.item_property_authority import current_item_properties
 
@@ -42,72 +40,3 @@ async def load_item_states(session: AsyncSession, campaign_id: UUID) -> list[Ite
         content_source_step_id=contents.get(entity.id, (None, None))[1],
         properties=properties.get(entity.id, {}),
     ) for entity, item in rows]
-
-
-def item_position_violations(
-    states: list[ItemStateSnapshot], claims: list[ItemPositionClaim], text: str,
-    receipts: Sequence[dict] = (),
-) -> list[NarrationViolation]:
-    """Compare typed semantic claims against the executed state, never against service prose."""
-    by_id = {state.item_id: state for state in states}
-    violations = []
-    for claim in claims:
-        if claim.scope in {"past", "speech", "conditional"}:
-            continue
-        state = by_id.get(claim.item_id)
-        reference = state
-        invalid_transition = False
-        if claim.scope == "executed_action":
-            receipt = next((row for row in receipts
-                            if row.get("step_index") == claim.action_step_index
-                            and str(row.get("item_id")) == str(claim.item_id)), None)
-            invalid_transition = receipt is None
-            if receipt is not None:
-                prefix = "item_previous" if claim.moment == "before" else "item_result"
-                reference = ItemStateSnapshot(
-                    item_id=claim.item_id, name=state.name if state else "Предмет",
-                    owner_id=receipt.get(f"{prefix}_owner_id"),
-                    location_id=receipt.get(f"{prefix}_location_id"),
-                    placement_detail=receipt.get(f"{prefix}_placement_detail"),
-                    owner_location_id=receipt.get("source_location_id" if claim.moment == "before" else "target_location_id")
-                    if receipt.get(f"{prefix}_owner_id") else None,
-                )
-        actual_mode = (
-            "owned" if reference and reference.owner_id else "located"
-            if reference and reference.location_id else "unpositioned"
-        )
-        compatible_surface = bool(
-            reference and reference.owner_id and reference.placement_detail
-            and claim.mode == "located" and claim.placement_matches is True
-            and claim.owner_id in {None, reference.owner_id}
-            and claim.location_id in {None, reference.owner_location_id}
-        )
-        compatible_room = bool(
-            reference and reference.owner_id and claim.mode == "owned"
-            and claim.owner_id == reference.owner_id
-            and claim.location_id == reference.owner_location_id
-        )
-        position_conflict = not compatible_surface and (
-            claim.mode != actual_mode
-            or (claim.mode == "owned" and claim.owner_id != (reference.owner_id if reference else None))
-            or (claim.location_id != (reference.location_id if reference else None) and not compatible_room)
-        )
-        if claim.polarity == "denied":
-            # A denial conflicts only when it denies the current typed position. It must
-            # not be turned into the positive claim that caused QA-301 repair oscillation.
-            position_conflict = not position_conflict and not claim.placement_conflicts
-        conflict = (
-            reference is None or claim.evidence not in text or invalid_transition or position_conflict
-            or (claim.placement_conflicts and claim.polarity == "asserted")
-        )
-        if conflict:
-            if state and state.owner_id:
-                correction = f"{state.name}: владелец — {state.owner_name or 'прежний персонаж'}."
-            elif state and state.location_id:
-                correction = f"{state.name}: предмет находится в {state.location_name}, {state.placement_detail or 'точное место не уточнено'}."
-            else:
-                correction = "Не утверждай неподтверждённое положение предмета."
-            violations.append(NarrationViolation(
-                violation_type="canon_conflict", evidence=claim.evidence, correction=correction,
-            ))
-    return violations

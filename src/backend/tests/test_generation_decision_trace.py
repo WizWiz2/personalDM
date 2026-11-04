@@ -97,19 +97,7 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
             {"model": "test", "model_role": selection.role.value, "status": "completed"}
         )
         if issubclass(kwargs.get("response_model") or object, NarrationFindings):
-            return {
-                "verdict": "repair_required",
-                "outcome_coverage": {"result_0": None},
-                "summary": "Решение за игрока.",
-                "violations": [
-                    {
-                        "violation_type": "player_agency",
-                        "severity": "error",
-                        "evidence": EVIDENCE,
-                        "correction": "Оставить решение игроку.",
-                    }
-                ],
-            }
+            return {"violations": [{"violation_type": "player_agency", "sentence": "S1"}]}
         raise AssertionError(f"unexpected control call {kwargs.get('response_model')}")
 
     def no_projection(cls, authority):

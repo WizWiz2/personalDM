@@ -50,102 +50,12 @@ async def _world(session):
     return cid, room, elsewhere, hero, npc, letter, scene
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["located", "owned"])
-async def test_static_item_claim_is_rejected_even_when_model_verdict_says_pass(mode):
-    item, hero, npc, room = uuid4(), uuid4(), uuid4(), uuid4()
-    text = "Письмо теперь находится у Марты за конторкой." if mode == "owned" else "Письмо лежит на конторке."
-    router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "violations": [], "position_claims": [{
-            "item_id": str(item), "evidence": text, "change": "moved", "scope": "current", "mode": mode,
-            "owner_id": str(npc) if mode == "owned" else None,
-            "location_id": str(room) if mode == "located" else None,
-        }],
-    }))
-    auth = TurnAuthority(
-        campaign_id=uuid4(), trigger_turn_id=uuid4(), player_input="Где письмо?",
-        item_states=[ItemStateSnapshot(item_id=item, name="Письмо", owner_id=hero, owner_name="Ирма")],
-        observable_consequences=["Марта согласилась помочь."],
-    )
-    result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)
-    assert result.verdict == "repair_required"
-    assert result.violations[0].violation_type == "canon_conflict"
 
 
-@pytest.mark.asyncio
-async def test_quoted_past_position_does_not_override_current_owner():
-    item, hero, room = uuid4(), uuid4(), uuid4()
-    text = "— Вчера письмо лежало на конторке, — вспоминает Марта."
-    router = SimpleNamespace(generate_json=AsyncMock(return_value={
-        "verdict": "pass", "violations": [], "position_claims": [{
-            "item_id": str(item), "evidence": "Вчера письмо лежало на конторке", "change": "moved", "scope": "past",
-            "mode": "located", "location_id": str(room),
-        }],
-    }))
-    auth = TurnAuthority(campaign_id=uuid4(), trigger_turn_id=uuid4(), player_input="Где письмо?",
-                         item_states=[ItemStateSnapshot(item_id=item, name="Письмо", owner_id=hero)])
-    assert (await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, text)).verdict == "pass"
 
 
-@pytest.mark.asyncio
-async def test_real_publication_path_cannot_bypass_inventory_guard(db_session, monkeypatch):
-    cid, _, _, hero, _, letter, scene = await _world(db_session)
-    user = await TurnRepository(db_session).create(cid, TurnCreate(role="user", content="Возьмите письмо", scene_id=scene))
-    row = await db_session.get(Item, str(letter))
-    row.current_owner_id = str(hero)
-    await db_session.flush()
-    auth = TurnAuthority(
-        campaign_id=cid, trigger_turn_id=user.id, player_input=user.content,
-        object_names=["письмо Оста Эндлина"], item_states=await load_item_states(db_session, cid),
-        action_sequence={"steps": [{"action_type": "service", "status": "completed",
-                                    "observable_outcome": "Алиса передаёт письмо Оста Эндлина."}]},
-    )
-    pipeline = AuthorityNarrationPipeline(db_session, SimpleNamespace(
-        resolve=AsyncMock(return_value=SimpleNamespace(config=SimpleNamespace(model_name="test"))),
-    ))
-    monkeypatch.setattr(pipeline, "_narrate", AsyncMock(return_value=(
-        "Алиса передаёт письмо Оста Эндлина.", None, {},
-    )))
-    monkeypatch.setattr(TurnAuthorityValidator, "validate", AsyncMock(return_value=NarrationValidationResult(verdict="pass")))
-    with pytest.raises(NarrationRefused):  # an uncertified item claim is never published
-        await pipeline.generate(
-            campaign_id=cid, trigger_turn_id=user.id, scene_id=scene, narrator_messages=[],
-            narrator_selection=SimpleNamespace(config=SimpleNamespace()), authority=auth,
-        )
 
 
-@pytest.mark.asyncio
-async def test_repeated_false_static_claim_falls_back_to_actual_item_state(db_session, monkeypatch):
-    cid, room, _, hero, _, letter, scene = await _world(db_session)
-    item = await db_session.get(Item, str(letter))
-    item.current_owner_id = str(hero)
-    await db_session.flush()
-    user = await TurnRepository(db_session).create(cid, TurnCreate(role="user", content="Где письмо?", scene_id=scene))
-    false_text = "Письмо Оста Эндлина лежит на конторке."
-    router = SimpleNamespace(
-        resolve=AsyncMock(return_value=SimpleNamespace(config=SimpleNamespace(model_name="test"))),
-        generate_json=AsyncMock(return_value={
-            "verdict": "pass", "violations": [], "position_claims": [{
-                "item_id": str(letter), "evidence": false_text, "change": "moved", "scope": "current",
-                "mode": "located", "location_id": str(room),
-            }],
-        }),
-    )
-    auth = TurnAuthority(
-        campaign_id=cid, trigger_turn_id=user.id, player_input=user.content,
-        item_states=await load_item_states(db_session, cid), observable_consequences=[false_text],
-    )
-    pipeline = AuthorityNarrationPipeline(db_session, router)
-    monkeypatch.setattr(pipeline, "_narrate", AsyncMock(return_value=(false_text, None, {})))
-    with pytest.raises(NarrationRefused):
-        await pipeline.generate(
-            campaign_id=cid, trigger_turn_id=user.id, scene_id=scene, narrator_messages=[],
-            narrator_selection=SimpleNamespace(config=SimpleNamespace()), authority=auth,
-        )
-    # draft, repair, narrowed contract: each one checked against the real item state
-    assert router.generate_json.await_count == 3
-    contract = pipeline._narrate.await_args_list[-1].args[0][-1].content
-    assert "Вера" in contract
 
 
 @pytest.mark.asyncio

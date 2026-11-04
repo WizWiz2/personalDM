@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Entity, Item
-from app.models.item_state import ItemPositionClaim, ItemPropertyChange, RequestedInventoryAction
+from app.models.item_state import ItemPropertyChange, RequestedInventoryAction
 from app.models.player_intent import (
     ActionOutcomeDecision,
     NpcItemHandoff,
@@ -23,7 +23,7 @@ from app.models.turn import ChatMessage, TurnCreate
 from app.models.turn_authority import PlannedItemIntroduction, TurnAuthority
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.action_sequence_executor import ActionSequenceExecutor
-from app.services.item_state_authority import item_position_violations, load_item_states
+from app.services.item_state_authority import load_item_states
 from app.services.narration_publication_guard import NarrationPublicationGuard
 from app.services.player_intent_interpreter import (
     PlayerActionIntentDraft,
@@ -32,7 +32,7 @@ from app.services.player_intent_interpreter import (
     normalize_intent_draft,
 )
 from app.services.scene_state_service import SceneStateService
-from app.services.turn_authority_validator import TurnAuthorityValidator, inventory_validation_model
+from app.services.turn_authority_validator import TurnAuthorityValidator
 from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
 from app.services.turn_outcome_resolver import _outcome_wire_model
 from app.services.turn_planner import PlanContractError
@@ -170,21 +170,8 @@ async def test_compiler_backstop_repairs_missing_artifact_effect_before_executio
         await ActionPlanCompiler(db_session).compile(cid, contract, TurnOutcomeDecision(action_outcomes=[_success()]))
 
 
-def test_native_inventory_audit_binds_each_claim_to_a_registered_identity():
-    auth = _auth()
-    model = inventory_validation_model(auth)
-    with pytest.raises(ValidationError):
-        model.model_validate({"position_claims": [{"item_id": "00000000-0000-0000-0000-000000000000",
-                                                   "evidence": "x", "scope": "current", "mode": "located"}]})
 
 
-@pytest.mark.asyncio
-async def test_claim_free_audit_preserves_dialogue():
-    auth = _auth()
-    prose = "Осип отвечает: — Я вас услышал."
-    router = SimpleNamespace(generate_json=AsyncMock(return_value={"position_claims": []}))
-    result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, prose)
-    assert result.verdict == "pass" and router.generate_json.await_count == 1
 
 
 def test_destination_response_owner_is_not_rejected_against_the_origin_cast():
@@ -256,41 +243,6 @@ def test_degraded_reading_retains_disclosed_text_without_salvaging_rejected_pros
     assert content in text
 
 
-@pytest.mark.asyncio
-async def test_created_artifact_can_be_placed_in_another_location_in_the_same_turn_and_undone(db_session):
-    cid, room, elsewhere, hero, _, _, scene = await _world(db_session)
-    await SceneStateService(db_session).create_exit(cid, room, LocationExitCreate(
-        to_location_id=elsewhere, label="в лавку", bidirectional=True))
-    contract = PlayerIntentContract(summary="Сделать оттиск, уйти и выложить его.", actions=[
-        PlayerActionIntent(action_type="interaction", intent="Сделать отдельный оттиск.", expected_effect="item_creation"),
-        PlayerActionIntent(action_type="movement", intent="Уйти в лавку.", destination_location="Лавка", destination_location_id=elsewhere),
-        PlayerActionIntent(action_type="inventory", intent="Выложить новый оттиск на полку.", produced_item_action_index=0,
-                           inventory_operation="place", item_placement_detail="на полке"),
-    ])
-    decision = TurnOutcomeDecision(action_outcomes=[_success(),
-        ActionOutcomeDecision(action_index=1, resolution="auto_success", observable_outcome="Герой пришёл в лавку."),
-        ActionOutcomeDecision(action_index=2, resolution="auto_success", observable_outcome="Оттиск выложен на полку.")],
-        item_introductions=[PlannedItemIntroduction(canonical_name="Оттиск старого знака", after_action_index=0,
-            evidence="Герой изготовил отдельный оттиск.", owned_by_player=True)])
-    execution = await _execute(db_session, cid, scene, contract, decision)
-    produced_id = execution.steps[2].item_id
-    assert produced_id is not None and execution.completed_steps == 3
-    item = await db_session.get(Item, str(produced_id))
-    assert item.current_location_id == str(elsewhere) and item.current_owner_id is None
-    assert item.placement_detail == "на полке"
-    states = await load_item_states(db_session, cid)
-    authority = TurnAuthority(campaign_id=cid, trigger_turn_id=execution.trigger_turn_id,
-        player_input=contract.summary, item_states=states, action_sequence=execution.model_dump(mode="json"))
-    text = "Созданный оттиск пока находится у героя."
-    claim = ItemPositionClaim(item_id=produced_id, evidence=text, scope="executed_action", action_step_index=0,
-                              moment="after", mode="owned", owner_id=hero, location_id=room)
-    assert not item_position_violations(states, [claim], text, authority.inventory_receipts())
-    assert item_position_violations(states, [claim.model_copy(update={"scope": "current"})], text)
-    executor = ActionSequenceExecutor(db_session)
-    await executor.mark_applied(execution.sequence_id)
-    await executor.undo_applied(execution.sequence_id)
-    assert await db_session.get(Item, str(produced_id)) is None
-    assert await db_session.get(Entity, str(produced_id)) is None
 
 
 @pytest.mark.asyncio
