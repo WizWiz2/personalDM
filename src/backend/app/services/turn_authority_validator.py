@@ -22,11 +22,12 @@ from app.services.turn_performance import call_reason, reason_scope
 FOUR_BANS = frozenset({"absent_character", "canon_conflict", "player_agency", "invalid_movement"})
 # Prose cannot change the world: movement and item positions are typed upstream and executed by
 # code. The validator judges prose only for the bans prose itself can commit.
-PROSE_BANS = ("absent_character", "canon_conflict", "player_agency")
+PROSE_BANS = tuple(sorted(FOUR_BANS))
 _CORRECTION = {
     "absent_character": "Убери этого человека из сцены: его нет здесь по фактам хода.",
     "canon_conflict": "Верни это место к установленным фактам хода.",
     "player_agency": "Убери за игрока новые слова, решения, мысли или действия.",
+    "invalid_movement": "Оставь персонажа там, где он находится по фактам хода.",
 }
 
 
@@ -136,13 +137,12 @@ class TurnAuthorityValidator:
     """One control-model call that judges prose against the four bans of a typed TurnAuthority.
 
     What is not forbidden is allowed. The typed facts come from ``TurnAuthority.validator_payload``;
-    item reviews must cover the supplied snapshot before a pass can be published.
+    violations point to the sentence that needs repair.
     """
 
     SYSTEM_PROMPT = """[PROSE BANS CHECK]
 You never continue the story. You receive the typed FACTS of one turn and candidate prose.
-Prose cannot change the world: positions, custody and movement come from the typed facts and are
-never your concern. Everything that is not banned below is allowed. Report ONLY these bans:
+The typed facts define positions, custody and movement. Report ONLY these bans:
 
 1. absent_character: a known_absent_characters entry is physically here, or an individuated person
    not in present_characters, allowed_new_npcs or allowed_existing_npc_arrivals speaks here in
@@ -151,11 +151,14 @@ never your concern. Everything that is not banned below is allowed. Report ONLY 
    Set known_absent_name to the exact known_absent_characters entry when it is one, else null.
 2. canon_conflict: prose denies or overwrites an established_state entry, scene_time, revealed
    document content, or the result of an executed step (a completed step happened, a blocked step
-   did not). A cast member's identity is a fact too: list in names_given any personal name the
+   did not), or contradicts an item's recorded position or custody.
+   A cast member's identity is a fact too: list in names_given any personal name the
    prose gives them.
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or
    voluntary actions beyond player_input. Rendering player_input itself, its result, and what the
    player character perceives is allowed.
+4. invalid_movement: a character arrives, departs or changes locations without a corresponding
+   typed transition or authorized arrival. Movement within the current place is allowed.
 
 Present characters may speak, answer, refuse, stay silent, gesture, move, share opinions, claims or
 new information. None of that is required and none of it is a violation. Style, completeness,
@@ -204,7 +207,7 @@ explanation. violations=[] means the candidate passes.
                 ChatMessage(role="system", content=self.SYSTEM_PROMPT),
                 ChatMessage(role="user", content=(
                     "[TURN FACTS]\n"
-                    + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
+                    + json.dumps(authority.validator_payload(), ensure_ascii=False, separators=(",", ":"))
                     + "\n\n[CANDIDATE NARRATION]\n" + candidate_text
                     + "\n\n[SENTENCE ANCHORS]\n"
                     + json.dumps(candidate_sentences(candidate_text), ensure_ascii=False)
@@ -256,7 +259,7 @@ explanation. violations=[] means the candidate passes.
             "Отредактируй текст минимально: исправь только перечисленные места и сохрани всё "
             "остальное, включая реплики присутствующих персонажей. Ответ на русском языке.\n\n"
             "ФАКТЫ ХОДА:\n"
-            + json.dumps(authority.validator_payload(), ensure_ascii=False, indent=2)
+            + json.dumps(authority.validator_payload(), ensure_ascii=False, separators=(",", ":"))
             + "\n\nНАРУШЕНИЯ:\n"
             + ("\n".join(violations) or (result.summary if result else ""))
             + "\n\n[REJECTED CANDIDATE]\n"
