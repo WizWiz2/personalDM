@@ -304,11 +304,9 @@ class AuthorityNarrationPipeline:
         authority: TurnAuthority,
         candidate: str,
         attempt_index: int,
-        require_outcomes: bool = False,
     ) -> NarrationValidationResult:
         with reason_scope('validate_after_repair' if attempt_index else 'validate_narration'):
-            result = await validator.validate(selection, authority, candidate,
-                **({"require_outcomes": True} if require_outcomes else {}))
+            result = await validator.validate(selection, authority, candidate)
         await audit.record_attempt(
             run,
             attempt_index=attempt_index,
@@ -395,13 +393,6 @@ class AuthorityNarrationPipeline:
 
         async def accepted(text: str, status: str, attempts: int, reason: str | None = None,
                            beat=None, validation=None, narrowed: bool = False):
-            _, publication = NarrationPublicationGuard.publish(authority, text, validation)
-            if publication["mode"] != "validated_candidate":
-                reason_now = "item state not certified by the typed check"
-                if narrowed:
-                    raise NarrationRefused(reason_now)
-                # An uncertified item claim: the typed outcome becomes the next contract.
-                return await narrow(reason_now, attempts)
             record_decision("publish", "narrowed_candidate" if narrowed else "validated_candidate",
                             {"status": status})
             return await self._finish(
@@ -413,8 +404,7 @@ class AuthorityNarrationPipeline:
                 repair_attempts=attempts,
                 telemetry=telemetry,
                 publication={"mode": "narrowed_candidate" if narrowed else "validated_candidate",
-                             "validated_surface": True,
-                             "outcomes_verified": bool(validation and validation._outcomes_verified)},
+                             "validated_surface": True},
                 validation_result=validation,
                 reason=reason,
                 beat=beat,
@@ -439,8 +429,7 @@ class AuthorityNarrationPipeline:
                 raise NarrationRefused(f"{reason}; narrowed narrator failed: {exc}") from exc
             if not (foreign_script_intrusions(text) or leaked_meta_lines(text)
                     or await self._repeats(campaign_id, text)):
-                result = await self._check(**check, candidate=text, attempt_index=attempts + 1,
-                                           require_outcomes=True)
+                result = await self._check(**check, candidate=text, attempt_index=attempts + 1)
                 if result.verdict == "pass":
                     return await accepted(text, "repaired", attempts + 1, reason=reason,
                                           validation=result, narrowed=True)
@@ -515,7 +504,7 @@ class AuthorityNarrationPipeline:
                 repaired_result = None
             else:
                 repaired_result = await self._check(
-                    **check, candidate=repaired, attempt_index=1, require_outcomes=True,
+                    **check, candidate=repaired, attempt_index=1,
                 )
                 if repaired_result.verdict == "pass":
                     if repaired_failure:

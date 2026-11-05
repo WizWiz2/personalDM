@@ -10,6 +10,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 
+from app.services.turn_authority_validator import NarrationFindings
 from app.db.engine import get_session
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
@@ -95,20 +96,8 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
         await record_provider_telemetry(
             {"model": "test", "model_role": selection.role.value, "status": "completed"}
         )
-        if issubclass(kwargs.get("response_model") or object, NarrationValidationResult):
-            return {
-                "verdict": "repair_required",
-                "outcome_coverage": {"result_0": None},
-                "summary": "Решение за игрока.",
-                "violations": [
-                    {
-                        "violation_type": "player_agency",
-                        "severity": "error",
-                        "evidence": EVIDENCE,
-                        "correction": "Оставить решение игроку.",
-                    }
-                ],
-            }
+        if issubclass(kwargs.get("response_model") or object, NarrationFindings):
+            return {"violations": [{"violation_type": "player_agency", "sentence": "S1"}]}
         raise AssertionError(f"unexpected control call {kwargs.get('response_model')}")
 
     def no_projection(cls, authority):

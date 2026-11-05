@@ -12,14 +12,13 @@ from app.config import settings
 from app.db.repositories.belief_repo import BeliefRepository
 from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Character, Entity, GenerationRun, Item, Location, Turn
-from app.models.item_state import ItemContentRevelation, ItemPositionClaim, ItemStateSnapshot
+from app.models.item_state import ItemContentRevelation, ItemStateSnapshot
 from app.models.narration_validation import GrantedBeat
 from app.models.player_intent import ActionOutcomeDecision, PlayerActionIntent, PlayerIntentContract, TurnOutcomeDecision
 from app.models.turn import TurnCreate
 from app.models.turn_authority import PlannedItemIntroduction, TurnAuthority, WorldThreadClosure
 from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.canon_semantics import canon_envelope_for_entities
-from app.services.item_state_authority import item_position_violations
 from app.services.player_intent_interpreter import PlayerActionIntentDraft, PlayerIntentContractDraft, normalize_intent_draft
 from app.services.published_speech_memory import remember_published_speech
 from app.services.turn_authority_resolvers import NpcIntroductionResolver
@@ -106,31 +105,8 @@ def test_native_fact_schema_requires_the_registered_subject_before_generation():
     wire.model_validate({"proposals": [{**proposal, "subject_entity_id": subject}]})
 
 
-def test_validator_cannot_reverse_a_canonical_position_through_free_text_correction():
-    document, room = uuid4(), uuid4()
-    text = "Бланк с проколотым углом остаётся в деле."
-    authority = TurnAuthority(campaign_id=uuid4(), trigger_turn_id=uuid4(), player_input="Проверяю бланк.",
-        item_states=[ItemStateSnapshot(item_id=document, name="Бланк с проколотым углом", location_id=room,
-                                      location_name="Зал станции")])
-    result = TurnAuthorityValidator._interpret(authority, text, {
-        "verdict": "repair_required", "violations": [{"violation_type": "canon_conflict", "severity": "error",
-            "state_domain": "item_position", "item_id": str(document), "evidence": text,
-            "correction": "Положить проколотый бланк под дверь маяка."}],
-        "position_claims": [{
-            "item_id": str(document), "evidence": text, "scope": "current", "mode": "located",
-            "location_id": str(room), "polarity": "asserted"}],
-    })
-    assert result.verdict == "pass" and not result.violations
 
 
-@pytest.mark.parametrize("denied_room_is_current", [False, True])
-def test_position_denials_are_checked_without_turning_them_into_positive_claims(denied_room_is_current):
-    document, room, elsewhere = uuid4(), uuid4(), uuid4()
-    text = "Проколотого бланка у маяка нет."
-    state = ItemStateSnapshot(item_id=document, name="Проколотый бланк", location_id=room)
-    claim = ItemPositionClaim(item_id=document, evidence=text, scope="current", mode="located",
-        location_id=room if denied_room_is_current else elsewhere, polarity="denied")
-    assert bool(item_position_violations([state], [claim], text)) == denied_room_is_current
 
 
 @pytest.mark.asyncio

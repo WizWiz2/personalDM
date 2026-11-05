@@ -422,12 +422,7 @@ class NpcIntroductionResolver:
                 present_keys.add(existing_key)
                 continue
 
-            location = str(current_location_id) if current_location_id else "неизвестна"
-            target = str(target_location_id) if target_location_id else "неизвестна"
-            raise AuthorityResolutionError(
-                "Известный персонаж не может появиться без структурного перемещения: "
-                f"{existing.canonical_name} находится в {location}, target location = {target}"
-            )
+            # Elsewhere and no typed trip brings them: they stay where they are (ban 4), the turn goes on.
 
         # Authorized first appearances are physically present for narrator/validator this turn.
         for introduction in new_introductions:

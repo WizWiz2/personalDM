@@ -613,14 +613,15 @@ class LLMProvider:
             text_format = None
             if response_schema:
                 compact_text = json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))
+                with suppress(ValueError):  # an open dictionary stays prompt-only
+                    text_format = {"type": "json_schema", "name": response_model.__name__[:64],
+                                   "schema": self._strict_schema(response_schema), "strict": True}
+                    compact_text = "(the strict response format of this request)"  # sent once, not twice
                 for message in base_messages:
                     for ascii_only in (False, True):
                         message["content"] = message["content"].replace(
                             json.dumps(original_schema, ensure_ascii=ascii_only), compact_text,
                         )
-                with suppress(ValueError):  # an open dictionary stays prompt-only
-                    text_format = {"type": "json_schema", "name": response_model.__name__[:64],
-                                   "schema": self._strict_schema(response_schema), "strict": True}
 
         started = time.monotonic()
         last_error: Exception | None = None

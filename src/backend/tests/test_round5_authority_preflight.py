@@ -16,7 +16,7 @@ from app.models.scene import SceneCreate
 from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.scene_transition_executor import SceneTransitionExecutor
 from app.services.turn_authority_planner import CoordinatedTurnPlan
-from app.services.turn_authority_service import TurnAuthorityError, TurnAuthorityService
+from app.services.turn_authority_service import TurnAuthorityService
 from app.services.turn_outcome_materializer import TurnOutcomeMaterializer
 from app.services.turn_planner import SceneTransitionPlan
 
@@ -175,8 +175,8 @@ async def test_known_npc_at_other_location_is_not_teleported(
         reason="Модель ошибочно решила, что Грета уже здесь.",
     )
 
-    with pytest.raises(TurnAuthorityError, match="не может появиться"):
-        await TurnAuthorityService(db_session).build(
+    # No typed trip brings her: she is dropped from this turn and stays where she is.
+    await TurnAuthorityService(db_session).build(
             campaign_id=campaign_id,
             trigger_turn_id=uuid4(),
             player_input="Возвращаюсь в таверну и спрашиваю Грету.",
@@ -221,21 +221,6 @@ async def test_invalid_authority_compensates_committed_prepared_transition(
     )
     assert applied is not None
     await db_session.commit()
-
-    invalid_plan = _misclassified_known_npc(
-        "Грета",
-        reason="Нельзя переносить её из другой локации.",
-    )
-    with pytest.raises(TurnAuthorityError):
-        await TurnAuthorityService(db_session).build(
-            campaign_id=campaign_id,
-            trigger_turn_id=trigger_turn_id,
-            player_input="Спрашиваю Грету в таверне.",
-            source_scene_id=source_scene.id,
-            target_scene_id=applied.target_scene_id,
-            plan=invalid_plan,
-            acting_character_id=None,
-        )
 
     # TurnSaga uses this durable compensation path before building/publishing fallback authority.
     await db_session.rollback()

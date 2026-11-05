@@ -244,14 +244,14 @@ async def test_generic_npcs_in_different_places_materialize_without_teleport(db_
     assert repeated.new_introductions == []
     assert repeated.existing_arrivals[0].entity_id == newcomer.id
 
-    # A stable name at another location must still be rejected, not cloned or moved.
+    # A stable name at another location is neither cloned nor moved: without a typed trip they
+    # simply do not appear this turn, and the attempt is not killed.
     named = await entities.create_character(
         campaign_id, CharacterCreate(canonical_name="Илья", current_location_id=old.id)
     )
-    with pytest.raises(AuthorityResolutionError, match="структурного перемещения"):
-        await resolver.resolve(
+    elsewhere = await resolver.resolve(
             campaign_id=campaign_id,
-            introductions=[
+        introductions=[
                 PlannedNpcIntroduction(
                     **_npc(
                         canonical_name=named.canonical_name,
@@ -263,6 +263,9 @@ async def test_generic_npcs_in_different_places_materialize_without_teleport(db_
             present_names=[],
             target_location_id=new.id,
         )
+    assert elsewhere.new_introductions == [] and elsewhere.existing_arrivals == []
+    assert named.canonical_name not in elsewhere.present_names
+    assert (await entities.get_character(named.id)).current_location_id == old.id
 
 
 @pytest.mark.asyncio

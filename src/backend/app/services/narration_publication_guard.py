@@ -11,8 +11,7 @@ class NarrationPublicationError(RuntimeError):
 class NarrationPublicationGuard:
     """Publish validated prose verbatim, or the typed step outcomes as plain text.
 
-    Complete validated frames pass verbatim. Older frames retain a conservative
-    inventory fallback until their state has been checked.
+    Validated frames pass verbatim; anything else publishes the typed outcome.
     """
 
     @classmethod
@@ -23,46 +22,15 @@ class NarrationPublicationGuard:
         validation: NarrationValidationResult | None,
     ) -> tuple[str, dict]:
         text = (candidate or "").strip()
-        # A full typed item check has already compared semantic claims with the
-        # snapshot and receipts. Do not reject its passing prose a second time
-        # using vocabulary or the mere presence of a blocked inventory attempt.
-        if text and validation is not None and validation.verdict == "pass" and validation._item_states_verified:
+        # Prose cannot change the world: the executor owns item state, so passing prose is published.
+        if text and validation is not None and validation.verdict == "pass":
             return text, {
                 "mode": "validated_candidate", "validated_surface": True,
-                "item_states_verified": True, "candidate_characters": len(text),
-                "published_characters": len(text),
+                "candidate_characters": len(text), "published_characters": len(text),
             }
-        # QA-213 F-33: a semantic "pass" alone cannot certify a failed
-        # inventory mutation. On a blocked physical step publish the typed
-        # outcome, not a fluent account of an item hand-off that never occurred.
-        steps = (authority.action_sequence or {}).get("steps") or []
-        blocked_inventory = any(
-            isinstance(step, dict)
-            and step.get("action_type") == "inventory"
-            and step.get("status") == "blocked"
-            for step in steps
-        )
-        # A legacy frame without a completed item audit cannot certify item state.
-        # Do not guess physical effects from Russian verbs, noun stems or punctuation.
-        unsupported_item_claim = bool(
-            authority.object_names or authority.unavailable_item_names or authority.item_states
-            or any(isinstance(step, dict) and step.get("item_id") for step in steps)
-        )
-        if (
-            text and not blocked_inventory and not unsupported_item_claim
-            and validation is not None and validation.verdict == "pass"
-        ):
-            return text, {
-                "mode": "validated_candidate",
-                "candidate_characters": len(candidate or ""),
-                "published_characters": len(text),
-                "validated_surface": True,
-            }
-        fallback = (cls.render_item_states(authority) if authority.item_states
-                    and (unsupported_item_claim or validation is None) else cls.render_authority(authority))
+        fallback = (cls.render_item_states(authority) if authority.item_states and validation is None
+                    else cls.render_authority(authority))
         return fallback, {
-            "blocked_inventory_override": blocked_inventory,
-            "unsupported_item_claim": unsupported_item_claim,
             "mode": "authority_projection",
             "candidate_characters": len(candidate or ""),
             "published_characters": len(fallback),

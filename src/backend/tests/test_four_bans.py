@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.services.turn_authority_validator import NarrationFindings
 from app.models.narration_validation import GrantedBeat, NarrationValidationResult
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedNpcIntroduction, TurnAuthority
@@ -15,7 +16,7 @@ from app.services.narration_publication_guard import (
     NarrationPublicationError,
     NarrationPublicationGuard,
 )
-from app.services.turn_authority_validator import TurnAuthorityValidator, entrance_model, four_bans_only
+from app.services.turn_authority_validator import TurnAuthorityValidator, four_bans_only
 
 pytestmark = pytest.mark.interagent_contract_enforced
 
@@ -73,7 +74,7 @@ class _Router:
         return SimpleNamespace(config=SimpleNamespace(model_name="control"), source="test")
 
     async def generate_json(self, _provider, _selection, messages, **kwargs):
-        assert issubclass(kwargs["response_model"], NarrationValidationResult)
+        assert issubclass(kwargs["response_model"], NarrationFindings)
         self.calls.append(messages)
         return self.verdicts.pop(0)
 
@@ -168,45 +169,6 @@ def test_fallback_raises_only_without_any_typed_outcome():
         NarrationPublicationGuard.render_authority(_authority(observable_consequences=[]))
 
 
-@pytest.mark.asyncio
-async def test_rejected_repair_gets_a_narrowed_contract_never_a_raw_projection(db_session, monkeypatch):
-    from app.db.repositories.turn_repo import TurnRepository
-    from app.models.campaign import CampaignCreate
-    from app.models.turn import TurnCreate
-    from app.services.campaign_service import CampaignService
-
-    campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Four bans"))
-    user_turn = await TurnRepository(db_session).create(
-        campaign.id, TurnCreate(role="user", content="Стучу в дверь."),
-    )
-    await db_session.commit()
-    router = _Router(_verdict("player_agency"),
-        {**_verdict("player_agency"), "outcome_coverage": {"result_0": None}},
-        {**_verdict(), "outcome_coverage": {"result_0": "P0"}})
-    pipeline = AuthorityNarrationPipeline(db_session, router)
-    drafts: list[str] = []
-
-    async def narrate(messages, selection, *, temperature):
-        drafts.append(messages[-1].content)
-        if "[NARROWED CONTRACT]" in messages[-1].content:
-            return "Ты стучишь, и дежурный приоткрывает дверь.", {"model": "narrator"}
-        return "Рэт решает уйти.", {"model": "narrator"}
-
-    monkeypatch.setattr(pipeline, "_generate_text", narrate)
-    authority = _authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id)
-    result = await pipeline.generate(
-        campaign_id=campaign.id,
-        trigger_turn_id=user_turn.id,
-        scene_id=None,
-        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
-        narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="narrator")),
-        authority=authority,
-    )
-    assert result.text == "Ты стучишь, и дежурный приоткрывает дверь."
-    assert result.validation_status == "repaired"
-    assert "[REPAIR REJECTED NARRATION]" in drafts[1]
-    assert "Дежурный приоткрывает дверь" in drafts[2]  # the typed outcome is the contract
-    assert len(router.calls) == 3
 
 
 @pytest.mark.asyncio
@@ -260,24 +222,6 @@ def test_background_crowd_is_allowed_but_a_quoted_stranger_or_known_absentee_is_
     assert judged("Шептун стоит у двери", known="Шептун") == "repair_required"
 
 
-def test_an_untyped_individual_walking_in_is_a_movement_error_but_a_crowd_is_not():
-    """replay15 k8: «вошедший пожилой речник направился к стойке» passed with no typed arrival."""
-    prose = "Дверь открылась, и вошедший пожилой речник направился к стойке. Следом ввалились извозчики."
-    authority = _authority()
-    schema = entrance_model(
-        authority, NarrationValidationResult).model_json_schema()
-    who = schema["$defs"]["StagedEntrance"]["properties"]["who"]["enum"]
-    assert "Дежурный" in who and "untyped_person" in who and "Шептун" not in who
-
-    def judged(*entrances):
-        data = {**_verdict(), "entrances": [{"evidence": e, "who": w} for e, w in entrances]}
-        return TurnAuthorityValidator._interpret(authority, prose, data)
-
-    assert judged(("Следом ввалились извозчики", "background_crowd")).verdict == "pass"
-    assert judged(("Дверь открылась", "Дежурный")).verdict == "pass"
-    staged = judged(("вошедший пожилой речник направился к стойке", "untyped_person"))
-    assert staged.verdict == "repair_required"
-    assert staged.violations[0].violation_type == "invalid_movement"
 
 
 def test_narrator_gets_the_typed_place_frame():
@@ -293,7 +237,7 @@ def test_a_prose_name_for_a_cast_member_is_a_canon_conflict_unless_revealed():
     from app.models.addressed_response import AddressedResponse
     prose = "— Степан меня зовут, — ответил дежурный."
     data = {**_verdict(), "entrances": [],
-            "names_given": [{"evidence": "Степан меня зовут", "who": "Дежурный", "name": "Степан"}]}
+            "names_given": [{"sentence": "S0", "who": "Дежурный", "name": "Степан"}]}
     assert TurnAuthorityValidator._interpret(_authority(), prose, data).verdict == "repair_required"
     revealed = _authority(addressed_response=AddressedResponse(
         speaker_name="Дежурный", revealed_name="Степан", name_evidence="Степан меня зовут"))

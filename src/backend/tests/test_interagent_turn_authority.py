@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.turn_authority_validator import NarrationFindings
 from app.db.repositories.campaign_repo import CampaignRepository
 from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
@@ -71,7 +72,7 @@ class FakeControlRouter:
                 "designation_evidence": self.plan.observable_consequences[0],
                 "reason": "The role designation refers to the person opening the door.",
             }
-        if isinstance(response_model, type) and issubclass(response_model, NarrationValidationResult):
+        if isinstance(response_model, type) and issubclass(response_model, NarrationFindings):
             self.narration_validation_calls += 1
             return {"verdict": "pass", "summary": "Дежурный введён типизированно.", "violations": []}
         raise AssertionError(response_model)

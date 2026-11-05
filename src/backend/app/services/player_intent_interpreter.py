@@ -269,13 +269,13 @@ class _LocalActionWire(_ActionWire):
     action_type: Literal["service", "interaction", "observation", "other"]
     spatial_effect: Literal["local", "none"]
     subject_item_id: UUID | None = None
-    expected_effect: Literal["ordinary", "item_creation", "item_change", "item_read", "presence_check", "fetch_person"]
+    expected_effect: Literal["ordinary", "item_creation", "presence_check", "fetch_person"]
 
-    @model_validator(mode="after")
-    def require_property_subject(self):
-        if self.expected_effect in {"item_change", "item_read"} and self.subject_item_id is None:
-            raise ValueError("A physical property change requires its existing subject_item_id")
-        return self
+
+class _PropertyActionWire(_LocalActionWire):
+    """Changing or reading an item is an act on that existing item: its ID is required by schema."""
+    subject_item_id: UUID
+    expected_effect: Literal["item_change", "item_read"]
 
 
 class _SpeechWire(_ActionWire):
@@ -302,7 +302,7 @@ class _IntentWire(PlayerIntentContractDraft):
     # Conditional requirements belong in the model-facing schema: a movement needs a destination,
     # and a transfer needs an item and recipient. Keep the permissive draft for legacy normalization.
     actions: list[_MovementWire | _SequenceReturnWire | _InventoryWire | _GiveWire | _ProducedInventoryWire | _TimeWire | _LocalActionWire
-                  | _SpeechWire] = (
+                  | _PropertyActionWire | _SpeechWire] = (
         Field(max_length=8)
     )
 
@@ -334,6 +334,16 @@ def _controlled_id(context_messages: list[ChatMessage]) -> str | None:
     ), None)
 
 
+def stated_act_wire(wire, acts: tuple[str, ...]):
+    """Every stated own act names its covering entry; the schema makes that entry exist."""
+    entries = create_model("StatedActEntries", __config__=ConfigDict(extra="forbid"), **{
+        f"act_{i}": (int, Field(ge=0, le=len(acts) - 1, description=f"Index of the entry covering: {act}"))
+        for i, act in enumerate(acts)})
+    actions = wire.model_fields["actions"].annotation
+    return create_model("PlayerIntentContractDraft", __base__=wire, stated_act_entries=(entries, ...),
+                        actions=(actions, Field(min_length=len(acts), max_length=8)))
+
+
 @measured_local("schema.intent")
 def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str, str] | None = None,
                        visited: tuple[str, ...] = ()):
@@ -359,10 +369,11 @@ def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str
             create_model("OnwardMovement", __base__=movement, returns_to_earlier_scene=(Literal[False], ...)),
         ]
     if owned or objects:
-        variants[-1] = create_model(
-            "ReferencedLocalAction", __base__=_LocalActionWire,
-            subject_item_id=(Literal[tuple(sorted(owned.keys() | objects.keys()))] | None, None),
-        )
+        items = Literal[tuple(sorted(owned.keys() | objects.keys()))]
+        variants[-1] = create_model("ReferencedLocalAction", __base__=_LocalActionWire,
+                                    subject_item_id=(items | None, None))
+        variants.append(create_model("ReferencedPropertyAction", __base__=_PropertyActionWire,
+                                     subject_item_id=(items, ...)))
     if owned or objects:
         variants.append(create_model(
             "ReferencedInventoryAction", __base__=_InventoryWire,
@@ -711,11 +722,7 @@ class PlayerIntentInterpreter:
 
             acts = self._linguistic_analyzer.stated_acts(player_input)
             if acts:
-                # Every stated own act names its covering entry in the same call (no repair call).
-                entries = create_model("StatedActEntries", __config__=ConfigDict(extra="forbid"), **{
-                    f"act_{i}": (int, Field(ge=0, le=7, description=f"Index of the entry covering: {act}"))
-                    for i, act in enumerate(acts)})
-                wire = create_model("PlayerIntentContractDraft", __base__=wire, stated_act_entries=(entries, ...))
+                wire = stated_act_wire(wire, acts)
             with reason_scope("interpret_player_intent"):
                 data = await self._router.generate_json(
                     self._provider,
@@ -737,9 +744,6 @@ class PlayerIntentInterpreter:
                 {"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)}
             )
             draft = PlayerIntentContractDraft.model_validate(data)
-            if acts and any(index >= len(draft.actions)
-                            for index in entries.model_validate(data.get("stated_act_entries")).model_dump().values()):
-                raise ValueError("A stated own act maps to no intent entry")
             self._apply_ownership(draft, player_input, _controlled_id(context_messages))
             self._check_places(draft, references, location_catalog)
             contract = normalize_intent_draft(draft, player_input)
