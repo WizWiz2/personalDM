@@ -466,3 +466,35 @@ def test_a_step_that_brings_someone_carries_their_typed_introduction() -> None:
 
     [arrival] = decision.npc_introductions
     assert (arrival.canonical_name, arrival.after_action_index, arrival.arrives) == ("Речник", 0, True)
+
+
+@pytest.mark.asyncio
+async def test_known_offscreen_addressee_does_not_require_a_replacement_speaker():
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.models.turn import ChatMessage
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    class Router:
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            return response_model.model_validate({
+                "npc_introductions": [],
+                "action_outcomes": [],
+                "response_speaker_name": None,
+                "observable_consequences": ["Марта не отвечает."],
+            }).model_dump()
+
+    contract = PlayerIntentContract(
+        summary="Зову Марту.", addressed_character_name="Марта",
+        addressed_response_requested=True,
+    )
+    decision = await TurnOutcomeResolver(Router()).resolve(
+        SimpleNamespace(),
+        [ChatMessage(role="system", content="Physically present characters: Борм, Тарин")],
+        "Зову Марту.", contract,
+        known_cast={str(uuid4()): "Марта"},
+        resident_slots=[(str(uuid4()), "смотритель", False)],
+    )
+    assert decision.npc_introductions == []
+    assert decision.addressed_response is None

@@ -243,6 +243,8 @@ class TurnAuthorityService:
             campaign_id,
             entity_type="character",
         )
+        all_characters = [entity for entity in all_characters
+                          if getattr(entity, "status", "active") != "inactive"]
         absent_names = [
             entity.canonical_name
             for entity in all_characters
@@ -305,6 +307,11 @@ class TurnAuthorityService:
             target_location_path=(list(target_state.location_path) if target_state else []),
             scene_time=getattr(target_state, "world_time_label", None),
             present_character_names=present_names,
+            character_aliases={
+                entity.canonical_name: entity.aliases for entity in all_characters
+                if getattr(entity, "aliases", None)
+                and (identity_key(entity.canonical_name) in present_keys or entity.canonical_name in left_behind)
+            },
             known_absent_character_names=absent_names,
             present_before_departure=left_behind,
             allowed_new_npcs=npc_resolution.new_introductions,

@@ -51,3 +51,20 @@ async def test_unauthorized_movement_requires_repair():
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, candidate)
     assert result.verdict == "repair_required"
     assert result.violations[0].evidence == candidate
+
+
+@pytest.mark.asyncio
+async def test_registered_alias_is_valid_only_for_its_own_cast_member():
+    auth = _authority().model_copy(update={
+        "present_character_names": ["Йонас Кель", "Борм"],
+        "character_aliases": {"Йонас Кель": ["Господин Кель"]},
+    })
+    candidate = "Господин Кель кивает."
+    generate = AsyncMock(return_value={
+        "violations": [],
+        "names_given": [{"who": "Йонас Кель", "name": "Господин Кель", "sentence": "S0"}],
+    })
+    validator = TurnAuthorityValidator(SimpleNamespace(generate_json=generate))
+    assert (await validator.validate(SimpleNamespace(), auth, candidate)).verdict == "pass"
+    generate.return_value["names_given"][0]["who"] = "Борм"
+    assert (await validator.validate(SimpleNamespace(), auth, candidate)).verdict == "repair_required"

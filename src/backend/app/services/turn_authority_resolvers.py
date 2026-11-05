@@ -216,6 +216,8 @@ class NpcIntroductionResolver:
             campaign_id,
             entity_type="character",
         )
+        all_characters = [entity for entity in all_characters
+                          if getattr(entity, "status", "active") != "inactive"]
         place = await LocationRepository(self._session).get_by_id(target_location_id) if target_location_id else None
         role = ((place.custom_fields or {}).get("resident_role") if place else None) or ""
         slot = str(target_location_id)
@@ -438,7 +440,7 @@ class NpcIntroductionResolver:
             for entity in all_characters if identity_key(entity.canonical_name) in present_keys
             for value in (entity.canonical_name, *entity.aliases)
         }
-        lookup.update(bound)
+        lookup.update({key: name for key, name in bound.items() if identity_key(name) in present_keys})
         lookup.update({identity_key(name): name for name in names})
         return NpcIntroductionResolution(
             new_introductions=new_introductions,

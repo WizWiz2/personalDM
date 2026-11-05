@@ -5,19 +5,24 @@ from app.db.repositories.location_repo import LocationRepository
 from app.db.tables import Character
 from app.models.location import LocationCreate
 from app.models.scene_state import LocationExitCreate
+from app.models.turn_authority import PlannedNpcIntroduction
 from app.services.player_intent_interpreter import PlayerIntentContractDraft, normalize_intent_draft
 from app.services.scene_state_service import SceneStateService
+from app.services.turn_authority_resolvers import NpcIntroductionResolver
 from tests.test_qa219_regressions import _world
 from tests.test_qa223_regressions import _execute
 
 
 @pytest.mark.asyncio
 async def test_compound_return_uses_the_original_departure_even_with_a_wrong_catalog_hint(db_session):
-    cid, start, gallery, hero, _, _, scene = await _world(db_session)
+    cid, start, gallery, hero, npc, _, scene = await _world(db_session)
     sea = await LocationRepository(db_session).create(cid, LocationCreate(canonical_name="Море"))
     service = SceneStateService(db_session)
     for a, b in [(start, gallery), (gallery, sea.id)]:
         await service.create_exit(cid, a, LocationExitCreate(to_location_id=b, label="Проход", bidirectional=True))
+    npc_row = await db_session.get(Character, str(npc))
+    npc_row.current_location_id = str(sea.id)
+    await db_session.flush()
     text = "Выхожу на галерею, спускаюсь к морю, затем возвращаюсь туда, откуда вышел."
     actions = [
         {"action_type": "movement", "intent": "Выйти на галерею.", "destination_location": "Галерея", "place": str(gallery)},
@@ -34,6 +39,19 @@ async def test_compound_return_uses_the_original_departure_even_with_a_wrong_cat
     execution = await _execute(db_session, cid, scene, contract, decision)
     assert [step.status for step in execution.steps] == ["completed"] * 3
     assert (await db_session.get(Character, str(hero))).current_location_id == str(start)
+    cast = await NpcIntroductionResolver(db_session).resolve(
+        campaign_id=cid,
+        introductions=[PlannedNpcIntroduction(
+            canonical_name="Алиса", role="знакомая", reason="Герой вернулся в зал.",
+            existing_entity_id=npc,
+        )],
+        present_names=["Вера"], target_location_id=start, addressee="Алиса",
+    )
+    assert cast.present_names == ["Вера"]
+    assert cast.addressee is None
+    assert cast.new_introductions == cast.existing_arrivals == []
+    assert npc_row.current_location_id == str(sea.id)
+
 
 
 def test_native_return_selects_an_earlier_departure_without_a_catalog_destination():

@@ -78,7 +78,15 @@ def findings_model(authority: TurnAuthority, candidate_text: str) -> type[BaseMo
 def _expand(data: dict, candidate: str, authority: TurnAuthority) -> list[NarrationViolation]:
     """Anchored findings become full violations; an untyped personal name is an identity conflict."""
     sentences = candidate_sentences(candidate)
-    revealed = authority.addressed_response.revealed_name if authority.addressed_response else None
+    allowed_names = {
+        name: {identity_key(name), *(identity_key(alias) for alias in aliases)}
+        for name, aliases in authority.character_aliases.items()
+    }
+    response = authority.addressed_response
+    if response and response.speaker_name and response.revealed_name:
+        allowed_names.setdefault(response.speaker_name, {identity_key(response.speaker_name)}).add(
+            identity_key(response.revealed_name)
+        )
     return [
         NarrationViolation(violation_type=item["violation_type"], evidence=sentences[item["sentence"]],
                            correction=_CORRECTION[item["violation_type"]],
@@ -88,7 +96,7 @@ def _expand(data: dict, candidate: str, authority: TurnAuthority) -> list[Narrat
         NarrationViolation(violation_type="canon_conflict", evidence=sentences[item["sentence"]],
                            correction=f"Не давай имени «{item['name']}»: в фактах он «{item['who']}».")
         for item in data.get("names_given") or []
-        if identity_key(item.get("name", "")) not in {identity_key(item.get("who", "")), identity_key(revealed or "")}
+        if identity_key(item["name"]) not in allowed_names.get(item["who"], {identity_key(item["who"])})
     ]
 
 
@@ -152,7 +160,7 @@ The typed facts define positions, custody and movement. Report ONLY these bans:
 2. canon_conflict: prose denies or overwrites an established_state entry, scene_time, revealed
    document content, or the result of an executed step (a completed step happened, a blocked step
    did not), or contradicts an item's recorded position or custody.
-   A cast member's identity is a fact too: list in names_given any personal name the
+   Registered character_aliases refer to the same cast member. A cast member's identity is a fact too: list in names_given any personal name the
    prose gives them.
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or
    voluntary actions beyond player_input. Rendering player_input itself, its result, and what the

@@ -1041,6 +1041,8 @@ def normalize_outcome_draft(
     draft: TurnOutcomeDecisionDraft,
     contract: PlayerIntentContract,
     newcomer: OutcomeNpcIntroductionDraft | None = None,
+    *,
+    addressee_elsewhere: bool = False,
 ) -> TurnOutcomeDecision:
     """Turn permissive model output into strict world-facing semantics deterministically."""
 
@@ -1141,7 +1143,9 @@ def normalize_outcome_draft(
     public_outcomes = [
         {key: value for key, value in item.items() if key != "reaction"} for item in action_outcomes
     ]
-    response_speaker = _compact(draft.response_speaker_name) or contract.addressed_character_name
+    response_speaker = _compact(draft.response_speaker_name)
+    if not response_speaker and not addressee_elsewhere:
+        response_speaker = contract.addressed_character_name
     return TurnOutcomeDecision.model_validate(
         {
             "action_outcomes": public_outcomes,
@@ -1339,11 +1343,15 @@ class TurnOutcomeResolver:
                 for name in present_character_names(context_messages)
                 .union(*(destination_cast or {}).values())
             )
+            addressee_elsewhere = not existing_addressee and any(
+                identity_key(name) == identity_key(contract.addressed_character_name or "")
+                for name in (known_cast or {}).values()
+            )
             slots = resident_slots or []
             required_slot = next(
                 (slot_id for slot_id, _role, filled in slots if not filled),
                 None,
-            ) if seeks_contact_or_presence(contract) and not existing_addressee else None
+            ) if seeks_contact_or_presence(contract) and not (existing_addressee or addressee_elsewhere) else None
             response_model = _outcome_wire_model(
                 len(contract.actions),
                 known_cast=known_cast,
@@ -1376,13 +1384,13 @@ class TurnOutcomeResolver:
                     if action.action_type == "observation"
                 },
                 allow_introductions=not existing_addressee or bool(contract.actions),
-                allow_name_revelation=contract.identity_reveal_requested or not existing_addressee,
+                allow_name_revelation=not addressee_elsewhere and (
+                    contract.identity_reveal_requested or not existing_addressee
+                ),
                 bound_response_speaker=(
                     contract.addressed_character_name if existing_addressee else None
                 ),
-                addressee_elsewhere=not existing_addressee and any(
-                    identity_key(name) == identity_key(contract.addressed_character_name or "")
-                    for name in (known_cast or {}).values()),
+                addressee_elsewhere=addressee_elsewhere,
                 present_names=sorted(present_character_names(context_messages).union(
                     *(destination_cast or {}).values()
                 )),
@@ -1417,7 +1425,7 @@ class TurnOutcomeResolver:
                     f"\n[UNFILLED RESIDENT SLOT] The keeper of slot {required_slot} is here now: "
                     "introduce them in npc_introductions."
                 )
-            elif (solo_cast and seeks_contact_or_presence(contract)) or force_introduce_contact:
+            elif not addressee_elsewhere and (force_introduce_contact or (solo_cast and seeks_contact_or_presence(contract))):
                 # Optional guidance only: a search that finds nobody is a valid outcome.
                 empty_cast_guidance = (
                     "\n[EMPTY CAST / CONTACT-SEEKING — guidance]\n"
@@ -1497,7 +1505,7 @@ class TurnOutcomeResolver:
                 draft = draft.model_copy(update={
                     "world_move": move, "observable_consequences": [*consequences[:3], move.outcome],
                 })
-            decision = normalize_outcome_draft(draft, contract, newcomer)
+            decision = normalize_outcome_draft(draft, contract, newcomer, addressee_elsewhere=addressee_elsewhere)
             if draft.thread_reviews is not None:
                 decision.world_thread_closures = [WorldThreadClosure(
                     source=threads[key]["source"], actor_id=threads[key].get("actor_id"),

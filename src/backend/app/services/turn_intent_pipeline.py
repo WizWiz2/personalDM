@@ -7,6 +7,7 @@ from sqlalchemy import func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
+from app.db.repositories.entity_repo import EntityRepository
 from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
@@ -15,6 +16,7 @@ from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedWorldMove
 from app.services.action_plan_compiler import ActionPlanCompiler
+from app.services.entity_identity import exact_identity_matches
 from app.services.master_director import (
     apply_moves_to_narration_guidance,
     apply_moves_to_outcome_decision,
@@ -100,6 +102,7 @@ class TurnIntentPlanningPipeline:
             .join(Entity, Entity.id == Character.entity_id)
             .where(
                 Entity.campaign_id == str(campaign_id),
+                Entity.status != "inactive",
                 Character.current_location_id.in_(targets),
                 Entity.id != (campaign.player_character_id if campaign else ""),
             )
@@ -197,11 +200,15 @@ class TurnIntentPlanningPipeline:
             location_references=names,
             location_catalog=catalog,
         )
-        known_cast = dict((await self._session.execute(
-            select(Entity.id, Entity.canonical_name).where(
-                Entity.campaign_id == str(campaign_id), Entity.entity_type == "character",
-            )
-        )).all()) if isinstance(self._session, AsyncSession) else None
+        known_cast = None
+        if isinstance(self._session, AsyncSession):
+            cast = [entity for entity in await EntityRepository(self._session).list_by_campaign(
+                campaign_id, entity_type="character",
+            ) if entity.status != "inactive"]
+            known_cast = {str(entity.id): entity.canonical_name for entity in cast}
+            matches = exact_identity_matches(cast, contract.addressed_character_name)
+            if len(matches) == 1:
+                contract = contract.model_copy(update={"addressed_character_name": matches[0].canonical_name})
         # Director moves are selected before outcome resolution so force_introduce_contact
         # can add optional contact guidance to the resolver. Rhythm is NOT persisted here.
         seek_contact = seeks_contact_or_presence(contract)
