@@ -20,6 +20,13 @@ import { TextProviderQuickSwitch } from '../components/TextProviderQuickSwitch'
 
 type Mode = 'play' | 'dm'
 
+const generationPhaseLabel: Record<string, string> = {
+  received: 'разбирает ход…',
+  planned: 'применяет исходы хода…',
+  prepared: 'пишет и проверяет ответ…',
+  narrated: 'сохраняет ход…',
+}
+
 function readStoredTurn(key: string): Turn | null {
   try {
     const raw = window.sessionStorage.getItem(key)
@@ -524,7 +531,7 @@ export function PlayPage() {
             })}
             {busy && <article className={`turn dm thinking-turn ${generation?.user_turn_id === acceptedTurn?.id && acceptedTurn?.role === 'meta_user' ? 'meta' : ''}`}>
               <div className="turn-label">Мастер</div>
-              <div className="turn-thinking"><span /><span /><span /><em>обрабатывает ход…</em></div>
+              <div className="turn-thinking"><span /><span /><span /><em>{generationPhaseLabel[generation?.phase ?? ''] ?? 'обрабатывает ход…'}</em></div>
             </article>}
             <div ref={bottomRef} />
           </div>

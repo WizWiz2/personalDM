@@ -519,7 +519,13 @@ class ActionPlanCompiler:
                     change.action_index == index for change in decision.item_property_changes
                 ) and not any(item.after_action_index == index and item.taken_from_item_id
                               for item in decision.item_introductions):
-                    raise PlanContractError("Successful physical change is missing its typed property effect")
+                    reason = "Изменение предмета не подтверждено."
+                    outcome = outcome_by_index[index] = outcome.model_copy(update={
+                        "resolution": "blocked",
+                        "safe_mundane": False,
+                        "observable_outcome": None,
+                        "blocking_reason": reason,
+                    })
             if action.action_type == "movement":
                 step, next_cursor, discovery = await self._compile_movement(
                     campaign_id=campaign_id,
@@ -623,11 +629,7 @@ class ActionPlanCompiler:
             # quotation of its prose summary. Identity, prerequisites and actual
             # possession/presence are checked structurally, never by text equality.
             if handoff.after_action_index is not None:
-                prerequisite = next(
-                    (row for row in decision.action_outcomes
-                     if row.action_index == handoff.after_action_index),
-                    None,
-                )
+                prerequisite = outcome_by_index.get(handoff.after_action_index)
                 if prerequisite is None or prerequisite.resolution != "auto_success":
                     raise PlanContractError("NPC item handoff depends on an unfinished action")
                 if prerequisite.npc_response == "refused":

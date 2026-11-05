@@ -57,3 +57,61 @@ async def test_retry_old_failed_turn_after_newer_input_is_rejected(db_session: A
         await retry_failed_turn(campaign_id, failed_id, db_session)
     assert exc.value.status_code == 409
     assert (await db_session.get(Turn, str(failed_id))).status == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_status", ["failed", "active"])
+async def test_failed_retry_keeps_source_retryable(db_session, source_status):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    from app.application.game_application import GameApplication
+
+    campaign_id, turn_id = uuid4(), uuid4()
+    db_session.add(Campaign(id=str(campaign_id), name="QA-305 retry"))
+    db_session.add(Turn(id=str(turn_id), campaign_id=str(campaign_id),
+                        role="user", content="Осматриваю комнату.", status=source_status))
+    db_session.add(GenerationRun(campaign_id=str(campaign_id),
+                                 user_turn_id=str(turn_id), status="failed"))
+    await db_session.commit()
+    factory = async_sessionmaker(db_session.bind)
+
+    async def bind_current_scene(self, campaign_id, data):
+        return data
+
+    with patch.object(GameApplication, "_bind_current_scene", bind_current_scene):
+        for _ in range(2):
+            async with factory() as request_session:
+                response = await retry_failed_turn(campaign_id, turn_id, request_session)
+                async for _ in response.body_iterator:
+                    pass
+            async with factory() as observer:
+                assert (await observer.get(Turn, str(turn_id))).status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_only_one_stream_can_retry_the_same_failed_attempt(db_session):
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    campaign_id, turn_id = uuid4(), uuid4()
+    db_session.add(Campaign(id=str(campaign_id), name="QA-305 retry admission"))
+    db_session.add(Turn(id=str(turn_id), campaign_id=str(campaign_id),
+                        role="user", content="Осматриваю комнату.", status="failed"))
+    db_session.add(GenerationRun(campaign_id=str(campaign_id),
+                                 user_turn_id=str(turn_id), status="failed"))
+    await db_session.commit()
+    factory = async_sessionmaker(db_session.bind)
+
+    async def chunks():
+        yield "Ход принят."
+
+    with patch("app.api.turns.GameApplication") as application:
+        application.return_value.route_input = AsyncMock(
+            side_effect=lambda *args, **kwargs: GameInputRoute(channel="narrative", stream=chunks()),
+        )
+        async with factory() as first, factory() as second:
+            first_response = await retry_failed_turn(campaign_id, turn_id, first)
+            second_response = await retry_failed_turn(campaign_id, turn_id, second)
+            assert [chunk async for chunk in first_response.body_iterator] == ["Ход принят."]
+            assert [chunk async for chunk in second_response.body_iterator] == [
+                "Повтор хода недоступен: состояние генерации уже изменилось.",
+            ]

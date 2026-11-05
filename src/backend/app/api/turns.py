@@ -21,6 +21,7 @@ from app.db.repositories.turn_repo import TurnRepository
 from app.db.tables import Turn
 from app.models.jobs import GenerationRunRead
 from app.models.turn import TurnCreate, TurnRead
+from app.services.campaign_process_lease import campaign_process_lease
 from app.services.detached_turn_dispatcher import (
     DetachedTurnDispatcher,
     GenerationAlreadyRunningError,
@@ -237,43 +238,52 @@ async def retry_failed_turn(
     turn = await session.get(Turn, str(turn_id))
     if not turn or turn.campaign_id != str(campaign_id) or turn.role != "user":
         raise HTTPException(status_code=404, detail="Failed user turn not found")
-    generation = await GenerationRunRepository(session).get_by_user_turn(turn_id)
-    if turn.status != "failed" or not generation or generation.status not in {"failed", "cancelled"}:
+    runs = GenerationRunRepository(session)
+    generation = await runs.get_by_user_turn(turn_id)
+    # Older builds could leave a failed run with an active source turn.
+    if turn.status not in {"failed", "active"} or not generation or generation.status not in {"failed", "cancelled"}:
         raise HTTPException(status_code=409, detail="Only failed or cancelled user turns can be retried")
-    newest_user_turn_id = (
-        await session.execute(
-            select(Turn.id).where(
-                Turn.campaign_id == str(campaign_id),
-                Turn.role == "user",
-            ).order_by(
-                Turn.created_at.desc(), literal_column("turns.rowid").desc(),
-            ).limit(1)
-        )
-    ).scalar_one_or_none()
-    if newest_user_turn_id != str(turn_id):
+    newest_user_turn = (
+        select(Turn.id).where(Turn.campaign_id == str(campaign_id), Turn.role == "user")
+        .order_by(Turn.created_at.desc(), literal_column("turns.rowid").desc()).limit(1)
+    )
+    if await session.scalar(newest_user_turn) != str(turn_id):
         raise HTTPException(status_code=409, detail="Cannot retry a turn after newer user actions")
 
-    # Re-enable its existing source turn rather than creating an indistinguishable
-    # duplicate. The saga marks it failed again if this attempt also fails.
-    try:
-        route = await GameApplication(session).route_input(
-            campaign_id,
-            TurnCreate(
-                role="user",
-                content=turn.content,
-                scene_id=UUID(turn.scene_id) if turn.scene_id else None,
-                acting_character_id=UUID(turn.acting_character_id) if turn.acting_character_id else None,
-                model_name=turn.model_name,
-            ),
-            existing_user_turn_id=turn_id,
-        )
-    except Exception:
-        await session.rollback()
-        raise
-    turn.status = "active"
-    await session.commit()
+    route = await GameApplication(session).route_input(
+        campaign_id,
+        TurnCreate(
+            role="user",
+            content=turn.content,
+            scene_id=UUID(turn.scene_id) if turn.scene_id else None,
+            acting_character_id=UUID(turn.acting_character_id) if turn.acting_character_id else None,
+            model_name=turn.model_name,
+        ),
+        existing_user_turn_id=turn_id,
+    )
+
+    async def retry_stream():
+        # Hold the same lease as the saga, including admission. Recovery must not
+        # mistake an accepted retry for an abandoned run before the saga starts.
+        try:
+            with campaign_process_lease(session.bind, campaign_id):
+                await session.refresh(turn)
+                if (
+                    turn.status in {"failed", "active"}
+                    and await session.scalar(newest_user_turn) == str(turn_id)
+                    and await runs.claim_retry(generation.id, generation.updated_at)
+                ):
+                    turn.status = "active"
+                    await session.commit()
+                    async for chunk in route.stream:
+                        yield chunk
+                    return
+        except GenerationAlreadyRunningError:
+            pass
+        yield "Повтор хода недоступен: состояние генерации уже изменилось."
+
     return StreamingResponse(
-        route.stream,
+        retry_stream(),
         media_type="text/plain; charset=utf-8",
         headers={"X-PersonalDM-Channel": route.channel},
     )

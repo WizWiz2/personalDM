@@ -56,6 +56,18 @@ class GenerationRunRepository(BaseRepository):
         await self._session.flush()
         return await self._read(row)
 
+    async def claim_retry(self, run_id: UUID, previous_update: datetime) -> bool:
+        result = await self._session.execute(
+            update(GenerationRun)
+            .where(
+                GenerationRun.id == str(run_id),
+                GenerationRun.status.in_(("failed", "cancelled")),
+                GenerationRun.updated_at == previous_update,
+            )
+            .values(status="running", cancel_requested=False, error=None, updated_at=datetime.utcnow())
+        )
+        return bool(result.rowcount)
+
     async def is_cancel_requested(self, run_id: UUID) -> bool:
         result = await self._session.execute(
             select(GenerationRun.cancel_requested).where(GenerationRun.id == str(run_id))
