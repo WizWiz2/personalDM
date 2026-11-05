@@ -111,6 +111,7 @@ class SceneStateContextProvider:
 
             from app.services.item_prompt_scope import prompt_item_states
             from app.services.item_state_authority import load_item_states
+            from app.services.planning_context import ITEM_POSITIONS_HEADER
 
             items = await load_item_states(self._session, request.campaign_id)
             snapshots = prompt_item_states(items, location_id=state.location_id,
@@ -118,7 +119,7 @@ class SceneStateContextProvider:
                 query=request.current_user_content or "")
             registered = (
                 "Registered items: " + ", ".join(f"{item.name} [id={item.item_id}]" for item in items)
-                + "\n[CURRENT ITEM POSITIONS — executor-owned, override old prose]\n"
+                + f"\n{ITEM_POSITIONS_HEADER}\n"
                 + "\n".join(json.dumps(item, ensure_ascii=False, separators=(",", ":")) for item in snapshots)
                 + "\nThese identities include unreachable items. Selecting an ID does not authorize "
                   "success; execution checks custody and actual physical presence. Archived remote "

@@ -19,7 +19,7 @@ from app.services.linguistic_intent_analyzer import (
     LinguisticParserUnavailable,
 )
 from app.services.planning_context import action_reference_catalog, intent_reference_context
-from app.services.provider_request_timing import measured_local, model_schema_json
+from app.services.provider_request_timing import local_span, measured_local, model_schema_json
 from app.services.role_model_router import RoleModelRouter, RoleModelSelection
 from app.services.turn_performance import reason_scope
 from app.services.turn_planner import TurnPlanningError
@@ -720,9 +720,10 @@ class PlayerIntentInterpreter:
                 user += "\n\n[LOCATION REFERENCES]\n" + json.dumps(
                     location_catalog or references, ensure_ascii=False)
 
-            acts = self._linguistic_analyzer.stated_acts(player_input)
-            if acts:
-                wire = stated_act_wire(wire, acts)
+            with local_span("intent.stated_acts"):
+                acts = self._linguistic_analyzer.stated_acts(player_input)
+                if acts:
+                    wire = stated_act_wire(wire, acts)
             with reason_scope("interpret_player_intent"):
                 data = await self._router.generate_json(
                     self._provider,

@@ -96,6 +96,9 @@ def action_reference_catalog(messages: list[ChatMessage], prefix: str) -> dict[s
     return references
 
 
+ITEM_POSITIONS_HEADER = "[CURRENT ITEM POSITIONS — executor-owned, override old prose]"
+
+
 def item_reference_states(messages: list[ChatMessage]):
     """Read engine-owned JSON snapshots; None distinguishes absent legacy catalogs."""
     from app.models.item_state import ItemStateSnapshot
@@ -106,7 +109,7 @@ def item_reference_states(messages: list[ChatMessage]):
             continue
         reading = False
         for line in message.content.splitlines():
-            if line == "[CURRENT ITEM POSITIONS — executor-owned, override old prose]":
+            if line == ITEM_POSITIONS_HEADER:
                 states = []
                 reading = True
             elif reading:
@@ -134,5 +137,8 @@ def outcome_reference_context(messages: list[ChatMessage]) -> str:
     if start >= 0:
         end = context.find("\n[", start + len(marker))
         context = context[:start] + (context[end:] if end >= 0 else "")
-    return "\n".join(line for line in context.splitlines()
-                     if not line.startswith("Style instructions:")).strip()
+    omitted = ("Style instructions:",)
+    if ITEM_POSITIONS_HEADER in context:
+        # The typed snapshots already carry every registered item's ID and name.
+        omitted += ("Registered items:",)
+    return "\n".join(line for line in context.splitlines() if not line.startswith(omitted)).strip()

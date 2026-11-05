@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
@@ -22,6 +22,7 @@ from app.services.master_director import (
 )
 from app.services.master_service import MasterService
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
+from app.services.provider_request_timing import local_span
 from app.services.role_model_router import ModelRole, RoleModelRouter
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.services.turn_outcome_resolver import (
@@ -139,12 +140,23 @@ class TurnIntentPlanningPipeline:
             if place.status != "inactive"
         ]
         names = {str(location.id): location.canonical_name for location in locations}
-        openings = dict((await self._session.execute(
-            select(SceneLocationLink.location_id, Turn.content)
+        ranked_turns = (
+            select(
+                SceneLocationLink.location_id,
+                Turn.id.label("turn_id"),
+                func.row_number().over(
+                    partition_by=SceneLocationLink.location_id,
+                    order_by=(Turn.created_at.desc(), literal_column("turns.rowid").desc()),
+                ).label("rank"),
+            )
             .join(Turn, Turn.scene_id == SceneLocationLink.scene_id)
-            .where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant",
-                   Turn.status == "active")
-            .order_by(Turn.created_at)
+            .where(Turn.campaign_id == str(campaign_id), Turn.role == "assistant", Turn.status == "active")
+            .subquery()
+        )
+        openings = dict((await self._session.execute(
+            select(ranked_turns.c.location_id, func.substr(Turn.content, 1, 240))
+            .join(Turn, Turn.id == ranked_turns.c.turn_id)
+            .where(ranked_turns.c.rank == 1)
         )).all())
         try:
             here = str((await self._compiler._world(campaign_id))[1].location_id)
@@ -160,7 +172,7 @@ class TurnIntentPlanningPipeline:
                 "name": location.canonical_name,
                 "parent": names.get(str(location.parent_location_id)),
                 "description": (location.description or "")[:240],
-                "scene_opening": (openings.get(key) or "")[:240],
+                "scene_opening": openings.get(key) or "",
                 "current": key == here,
                 "exit_labels_from_current": exit_labels.get(key, []),
             }
@@ -176,12 +188,8 @@ class TurnIntentPlanningPipeline:
         context_messages,
         selection,
     ) -> tuple[CoordinatedTurnPlan, dict]:
-        names, catalog = await self._location_catalog(campaign_id)
-        known_cast = dict((await self._session.execute(
-            select(Entity.id, Entity.canonical_name).where(
-                Entity.campaign_id == str(campaign_id), Entity.entity_type == "character",
-            )
-        )).all()) if isinstance(self._session, AsyncSession) else None
+        with local_span("planning.location_catalog"):
+            names, catalog = await self._location_catalog(campaign_id)
         contract = await self._intent.interpret(
             selection,
             context_messages,
@@ -189,6 +197,11 @@ class TurnIntentPlanningPipeline:
             location_references=names,
             location_catalog=catalog,
         )
+        known_cast = dict((await self._session.execute(
+            select(Entity.id, Entity.canonical_name).where(
+                Entity.campaign_id == str(campaign_id), Entity.entity_type == "character",
+            )
+        )).all()) if isinstance(self._session, AsyncSession) else None
         # Director moves are selected before outcome resolution so force_introduce_contact
         # can add optional contact guidance to the resolver. Rhythm is NOT persisted here.
         seek_contact = seeks_contact_or_presence(contract)

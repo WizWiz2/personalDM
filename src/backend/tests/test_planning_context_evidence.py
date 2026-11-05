@@ -21,3 +21,17 @@ def test_style_and_transient_texture_are_not_blocking_evidence():
     assert "Нужна новая угроза." not in context
     assert "Тень похожа на охранника." not in context
     assert "take requires" not in context
+
+
+def test_outcomes_keep_typed_item_evidence_without_a_duplicate_item_index():
+    snapshot = '{"item_id":"123","name":"Письмо","quantity":2}'
+    message = ChatMessage(role="system", content=(
+        "Registered items: Письмо [id=123]\n"
+        "[CURRENT ITEM POSITIONS — executor-owned, override old prose]\n"
+        + snapshot
+    ))
+    assert snapshot in outcome_reference_context([message])
+    assert "Письмо [id=123]" not in outcome_reference_context([message])
+
+    legacy = ChatMessage(role="system", content="Registered items: Письмо [id=123]")
+    assert "Письмо [id=123]" in outcome_reference_context([legacy])
