@@ -68,9 +68,8 @@ class TurnSaga:
         await self._generation_lifecycle.set_phase(run_id, phase)
         await self._session.commit()
 
-    async def _fail_user_turn(self, user_turn_id: UUID, owned: bool) -> None:
-        if owned:
-            await self._turn_repo.mark_failed(user_turn_id)
+    async def _fail_user_turn(self, user_turn_id: UUID) -> None:
+        await self._turn_repo.mark_failed(user_turn_id)
         await self._session.commit()
 
     @staticmethod
@@ -308,7 +307,6 @@ class TurnSaga:
         started = perf_counter()
         phase_started = started
         stage_timings: dict[str, float] = {}
-        owns_user_turn = existing_user_turn_id is None
         if existing_user_turn_id:
             user_turn = await self._turn_repo.get_by_id(existing_user_turn_id)
             if not user_turn or user_turn.role != "user":
@@ -317,6 +315,7 @@ class TurnSaga:
         else:
             user_turn = await self._turn_repo.create(campaign_id, turn_create)
 
+        source_ready = perf_counter()
         generation_run = await self._generation_runs.start_or_resume(campaign_id, user_turn.id)
         await self._generation_lifecycle.start_attempt(generation_run.id)
         await self._session.commit()
@@ -329,6 +328,9 @@ class TurnSaga:
             bind=self._session.bind,
             performance_started=started,
         )
+
+        record_interval("database", "turn.source", started, source_ready)
+        record_interval("database", "turn.start_attempt", source_ready)
 
         source_scene_id = user_turn.scene_id
         effective_scene_id = source_scene_id
@@ -763,7 +765,7 @@ class TurnSaga:
                 "failed" if timed_out else "cancelled",
                 error=error,
             )
-            await self._fail_user_turn(user_turn.id, True if timed_out else owns_user_turn)
+            await self._fail_user_turn(user_turn.id)
             if not timed_out:
                 raise
             finish_trace()
@@ -800,7 +802,7 @@ class TurnSaga:
                     "total_ms": round((perf_counter() - started) * 1000, 2),
                 }
                 failed_user.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
-            await self._fail_user_turn(user_turn.id, owns_user_turn)
+            await self._fail_user_turn(user_turn.id)
             finish_trace()
             await close_usage_context(usage_context_token)
             usage_context_token = None
