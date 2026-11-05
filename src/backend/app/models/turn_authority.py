@@ -144,6 +144,7 @@ class TurnAuthority(BaseModel):
     scene_time: str | None = None
 
     present_character_names: list[str] = Field(default_factory=list)
+    character_aliases: dict[str, list[str]] = Field(default_factory=dict)
     known_absent_character_names: list[str] = Field(default_factory=list)
     present_before_departure: list[str] = Field(default_factory=list)
     allowed_new_npcs: list[PlannedNpcIntroduction] = Field(default_factory=list)
@@ -314,6 +315,7 @@ class TurnAuthority(BaseModel):
                 for item in self.allowed_new_npcs
             ],
             "allowed_existing_npc_arrivals": self.allowed_existing_npc_arrival_names,
+            **({"character_aliases": self.character_aliases} if self.character_aliases else {}),
             "known_absent_characters": self.known_absent_character_names,
             "present_before_departure": self.present_before_departure,
             "established_state": self.established_state,
