@@ -305,3 +305,17 @@ async def test_failed_payment_does_not_swallow_independent_travel(db_session):
     execution = await _execute(db_session, cid, scene, contract, decision)
     assert [s.status for s in execution.steps] == ["blocked", "completed"]
     assert execution.blocked_step_index == 0
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_property_change_executes_as_blocked(db_session):
+    cid, _, _, _, _, item_id, scene = await _world(db_session)
+    contract = PlayerIntentContract(summary="Разламываю печать.", actions=[PlayerActionIntent(
+        action_type="interaction", intent="Разламываю печать.",
+        subject_item_id=item_id, expected_effect="item_change",
+    )])
+    decision = TurnOutcomeDecision(action_outcomes=[_success()])
+    execution = await _execute(db_session, cid, scene, contract, decision)
+    assert execution.steps[0].status == "blocked"
+    assert execution.steps[0].observable_outcome is None
+    assert (await load_item_states(db_session, cid))[0].properties == {}
