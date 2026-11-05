@@ -102,6 +102,7 @@ class TurnIntentPlanningPipeline:
             .join(Entity, Entity.id == Character.entity_id)
             .where(
                 Entity.campaign_id == str(campaign_id),
+                Entity.status != "inactive",
                 Character.current_location_id.in_(targets),
                 Entity.id != (campaign.player_character_id if campaign else ""),
             )
