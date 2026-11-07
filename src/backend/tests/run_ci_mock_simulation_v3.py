@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import typing
 import asyncio
 import json
 import os
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import get_args
 
 from app.providers.llm_provider import LLMProvider, LLMProviderError
+from app.services.turn_authority_validator import NarrationFindings
 
 CALLS: Counter[str] = Counter()
 
@@ -373,34 +373,20 @@ def _semantic_plan_review() -> str:
     )
 
 
-def _authority_verdict(prompt: str, response_model=None) -> str:
+def _authority_verdict(prompt: str) -> str:
     CALLS["authority_validator"] += 1
-    payload = {}
     if "[TURN FACTS]\n" in prompt and "[CANDIDATE NARRATION]\n" in prompt:
         encoded, candidate = prompt.split("[TURN FACTS]\n", 1)[1].split("\n\n[CANDIDATE NARRATION]\n", 1)
-        facts = json.loads(encoded)
-        states = facts.get("item_states", [])
-        if response_model and "position_claims" in response_model.model_fields:
-            claim = typing.get_args(response_model.model_fields["position_claims"].annotation)[0]
-            audited = set(typing.get_args(claim.model_fields["item_id"].annotation))
-            states = [state for state in states if state["item_id"] in audited]
-        # This controlled mock prose contains no item positions. Refuse to
-        # certify different prose by silently reporting no claim for a mentioned item.
+        states = json.loads(encoded).get("item_states", [])
+        # Keep the controlled mock's existing refusal to certify positional prose.
         if any(state["name"].casefold() in candidate.casefold() for state in states):
             raise AssertionError("Mock inventory auditor does not support positional prose")
-        payload = {"position_claims": [], "entrances": [], "names_given": []}
-    return json.dumps(
-        {
-            **payload,
-            "verdict": "pass",
-            "summary": "Candidate follows typed turn authority.",
-            "violations": [],
-        },
-        ensure_ascii=False,
-    )
+    return json.dumps({"violations": [], "names_given": []})
 
 
 def _dispatch_json(prompt: str, response_model=None) -> str:
+    if response_model is not None and issubclass(response_model, NarrationFindings):
+        return _authority_verdict(prompt)
     if "[TURN PLAN SEMANTIC REVIEWER]" in prompt:
         return _semantic_plan_review()
     if (
@@ -408,8 +394,6 @@ def _dispatch_json(prompt: str, response_model=None) -> str:
         and "[TURN PLANNER]" in prompt
     ):
         return _turn_authority_plan(prompt)
-    if "[TURN AUTHORITY VALIDATOR]" in prompt or "[FOUR BANS NARRATION CHECK]" in prompt:
-        return _authority_verdict(prompt, response_model)
     if "[ACTOR CLAIM SEGMENT SELECTOR]" in prompt:
         return _actor_segment_selector(prompt)
     if "Ты проектируешь новый акт автономной кампании" in prompt:
