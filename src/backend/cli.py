@@ -266,19 +266,25 @@ async def configure_llm_menu(
     if config:
         print(f"Сейчас: {config.model_name} @ {config.base_url}")
         print(f"Размер контекста: {config.context_window}")
-    base_url = input(f"Адрес API [{settings.LLM_BASE_URL}]: ").strip()
-    model_name = input(f"Модель [{settings.LLM_MODEL}]: ").strip()
-    api_key = input("Ключ API [Enter — оставить значение по умолчанию]: ").strip()
-    context_raw = input(f"Размер контекста [{settings.LLM_CONTEXT_WINDOW}]: ").strip()
+    defaults = config or ProviderConfigCreate(
+        base_url=settings.LLM_BASE_URL,
+        model_name=settings.LLM_MODEL,
+        context_window=settings.LLM_CONTEXT_WINDOW,
+    )
+    base_url = input(f"Адрес API [{defaults.base_url}]: ").strip()
+    model_name = input(f"Модель [{defaults.model_name}]: ").strip()
+    api_key = input("Ключ API [Enter — оставить сохранённое значение]: ").strip()
+    context_raw = input(f"Размер контекста [{defaults.context_window}]: ").strip()
     await campaign_service.configure_provider(
         campaign_id,
         ProviderConfigCreate(
-            base_url=base_url or settings.LLM_BASE_URL,
-            model_name=model_name or settings.LLM_MODEL,
-            api_key=api_key or settings.LLM_API_KEY,
+            base_url=base_url or defaults.base_url,
+            model_name=model_name or defaults.model_name,
+            api_key=api_key or (None if config else settings.LLM_API_KEY),
             context_window=(
-                int(context_raw) if context_raw.isdigit() else settings.LLM_CONTEXT_WINDOW
+                int(context_raw) if context_raw.isdigit() else defaults.context_window
             ),
+            provider_kind=defaults.provider_kind,
         ),
     )
     await session.commit()
