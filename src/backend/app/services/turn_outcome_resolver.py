@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from functools import reduce
 from operator import or_
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import (
@@ -11,6 +11,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    WrapValidator,
     create_model,
     field_validator,
     model_validator,
@@ -223,7 +224,8 @@ candidate: check current custody, heard introductions, confirmations and complet
 mere description of someone's presence or an already completed event is not an unfinished agenda.
 Mark fulfilled conditions resolved, displaced assumptions superseded, uncertainty uncertain. Never
 revoke completed transfers or demand an already heard introduction. The quoted old goal is not
-proof it is still unfulfilled. A world_move may select only a thread reviewed active.
+proof it is still unfulfilled. If you cannot cite an anchor, use uncertain with null evidence.
+A world_move may select only a thread reviewed active with evidence.
 world_initiative_due=true asks for a development while at least one thread remains active. outcome is one concrete observable development.
 Kinds: pressure (a thread tightens), information (news reaches the hero through existing
 communication), deadline (due_phase equals the clock phase; one-shot), npc_action (the
@@ -769,11 +771,19 @@ def _outcome_wire_model(
     # A thread's own source line is not offered to it, so an old intention cannot certify itself.
     review_sources = _evidence_sources(review_evidence)
 
+    def ignore_invalid_evidence(value, handler):
+        # Non-strict transports may still send a quote or an unknown anchor.
+        try:
+            return handler(value)
+        except ValidationError:
+            return None
+
     def review_model(source: str):
         refs = [ref for ref, line in review_sources.items() if _compact(source) not in _compact(line)]
         refs += [f"A{index}" for index in range(action_count)]
+        anchor = Literal[tuple(refs)] | None if refs else type(None)
         return create_model("ThreadReview", status=(Literal["active", "resolved", "superseded", "uncertain"], ...),
-            evidence=(Literal[tuple(refs)] if refs else type(None), ...))
+            evidence=(Annotated[anchor, WrapValidator(ignore_invalid_evidence)], None))
 
     reviews_model = create_model("WorldThreadReviews", __config__=ConfigDict(extra="forbid"),
         **{key: (review_model(thread["source"]), ...) for key, thread in thread_sources.items()}
@@ -878,6 +888,11 @@ def _outcome_wire_model(
             # A count is the typed split's job, never a free property: such an entry is void, not a retry.
             self.item_property_changes = [change for change in self.item_property_changes
                                           if change.property_name not in ItemStateSnapshot.model_fields]
+            if self.thread_reviews is not None:
+                for key in thread_sources:
+                    review = getattr(self.thread_reviews, key)
+                    if not _review_evidence_text(review.evidence, self, review_sources):
+                        review.status = "uncertain"
             move = self.world_move
             if thread_sources and move is not None and getattr(self.thread_reviews, move.thread_id).status != "active":
                 # The draft's own review closed this thread: its review wins, the move is void (no retry).
@@ -1016,12 +1031,14 @@ def _evidence_sources(context: str) -> dict[str, str]:
     return {f"E{index}": line for index, line in enumerate(lines)}
 
 
-def _review_evidence_text(ref: str, draft, review_evidence: str) -> str:
+def _review_evidence_text(ref: str | None, draft, sources: dict[str, str]) -> str:
     """Provenance of a selected anchor: its engine-owned line or the approved action result."""
+    if not ref:
+        return ""
     if ref.startswith("A"):
-        outcome = next(item for item in draft.action_outcomes if f"A{item.action_index}" == ref)
-        return outcome.observable_outcome or outcome.blocking_reason or ref
-    return _evidence_sources(review_evidence)[ref]
+        outcome = next((item for item in draft.action_outcomes if f"A{item.action_index}" == ref), None)
+        return _compact(outcome.observable_outcome or outcome.blocking_reason) if outcome else ""
+    return sources.get(ref, "")
 
 
 def _indexed_evidence(context: str, start: int = 0) -> str:
@@ -1507,9 +1524,10 @@ class TurnOutcomeResolver:
                 })
             decision = normalize_outcome_draft(draft, contract, newcomer, addressee_elsewhere=addressee_elsewhere)
             if draft.thread_reviews is not None:
+                review_sources = _evidence_sources(authoritative_context + "\n" + player_input)
                 decision.world_thread_closures = [WorldThreadClosure(
                     source=threads[key]["source"], actor_id=threads[key].get("actor_id"),
-                    status=review["status"], evidence=_review_evidence_text(review["evidence"], draft, authoritative_context + "\n" + player_input),
+                    status=review["status"], evidence=_review_evidence_text(review["evidence"], draft, review_sources)[:1000],
                 ) for key, review in draft.thread_reviews.model_dump().items()
                   if review["status"] in {"resolved", "superseded"}
                   and not threads[key].get("due_phase")]
