@@ -199,8 +199,9 @@ def test_thread_review_evidence_is_a_selected_anchor_not_a_quote():
     wire.model_validate(review("E2"))  # current input line
     wire.model_validate(review("A0"))  # this draft's approved action result
     for invalid in ("E1", "Я инспектор", "E9"):  # own source, paraphrase, unknown anchor
-        with pytest.raises(ValidationError):
-            wire.model_validate(review(invalid))
+        draft = wire.model_validate(review(invalid))
+        assert draft.thread_reviews.thread_0.status == "uncertain"
+        assert draft.thread_reviews.thread_0.evidence is None
 
 
 @pytest.mark.asyncio

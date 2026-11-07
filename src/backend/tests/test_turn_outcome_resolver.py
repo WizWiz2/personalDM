@@ -498,3 +498,40 @@ async def test_known_offscreen_addressee_does_not_require_a_replacement_speaker(
     )
     assert decision.npc_introductions == []
     assert decision.addressed_response is None
+
+
+@pytest.mark.asyncio
+async def test_bad_thread_review_preserves_the_player_outcome_and_other_reviews():
+    from types import SimpleNamespace
+
+    from app.models.game_master import InitiativePolicy
+    from app.models.turn import ChatMessage
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    class Router:
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            return response_model.model_validate({
+                "npc_introductions": [],
+                "action_outcomes": [],
+                "observable_consequences": ["Елена отвечает на вопрос."],
+                "thread_reviews": {
+                    "thread_0": {"status": "active", "evidence": "Неподтверждённая цитата"},
+                    "thread_1": {"status": "resolved", "evidence": "E0"},
+                },
+                "world_move": {"thread_id": "thread_0", "kind": "information",
+                               "outcome": "Вестник сообщает о задержке."},
+            }).model_dump(mode="json")
+
+    context = [ChatMessage(role="system", content="Пропуск уже доставлен.")]
+    decision = await TurnOutcomeResolver(Router()).resolve(
+        SimpleNamespace(), context, "Елена, что известно?",
+        PlayerIntentContract(summary="Спрашиваю Елену."),
+        initiative=(InitiativePolicy(world_moves=["information"]), {"sources": [
+            {"thread_id": "thread_0", "source": "Найти вестника."},
+            {"thread_id": "thread_1", "source": "Доставить пропуск."},
+        ]}),
+    )
+    assert decision.observable_consequences == ["Елена отвечает на вопрос."]
+    assert decision.world_move is None
+    [closure] = decision.world_thread_closures
+    assert (closure.source, closure.evidence) == ("Доставить пропуск.", "Пропуск уже доставлен.")
