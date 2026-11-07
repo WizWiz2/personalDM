@@ -36,7 +36,10 @@ on:
       - "src/backend/tests/test_planner_intent_repair.py"
       - "src/backend/tests/test_planner_control_plane_simplification.py"
       - "src/backend/tests/test_narration_validation.py"
-      - "src/backend/tests/test_qa302_strict_schema.py"
+      - "src/backend/tests/test_validator_prose_bans.py"
+      - "src/backend/tests/test_frozen_intent_wire_schema.py"
+      - "src/backend/tests/test_strict_schema_sent_once.py"
+      - "src/backend/tests/test_chatgpt_plan_provider.py"
       - "src/backend/tests/test_qa303_*.py"
       - ".github/workflows/round3-playability-contracts.yml"
 
@@ -95,6 +98,9 @@ jobs:
             tests/test_planner_intent_repair.py \
             tests/test_planner_control_plane_simplification.py \
             tests/test_narration_validation.py \
-            tests/test_qa302_strict_schema.py \
+            tests/test_validator_prose_bans.py \
+            tests/test_frozen_intent_wire_schema.py \
+            tests/test_strict_schema_sent_once.py \
+            tests/test_chatgpt_plan_provider.py \
             tests/test_qa303_*.py \
             --tb=short
