@@ -598,6 +598,15 @@ def normalize_intent_draft(
     )
 
 
+class DialogueBeatDraft(BaseModel):
+    """One present NPC's response posture, without world effects or written dialogue."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    speaker_id: UUID
+    reaction: Literal["cooperate", "hesitate", "decline"]
+
+
 class PlayerIntentInterpreter:
     """One typed intent call (quote → kind → actor → place), UD syntax, deterministic ID check."""
 
@@ -610,6 +619,7 @@ class PlayerIntentInterpreter:
         self._provider = LLMProvider()
         self._linguistic_analyzer = linguistic_analyzer or LinguisticIntentAnalyzer()
         self.audit: list[dict] = []
+        self.dialogue_beat: DialogueBeatDraft | None = None
 
     @staticmethod
     def _authoritative_context(context_messages: list[ChatMessage]) -> str:
@@ -704,7 +714,9 @@ class PlayerIntentInterpreter:
         *,
         location_references: dict[str, str] | None = None,
         location_catalog: dict[str, dict] | None = None,
+        dialogue_master: str = "",
     ) -> PlayerIntentContract:
+        self.dialogue_beat = None
         references = location_references or {}
         user = (
             "[AUTHORITATIVE CONTEXT]\n"
@@ -724,6 +736,29 @@ class PlayerIntentInterpreter:
                 acts = self._linguistic_analyzer.stated_acts(player_input)
                 if acts:
                     wire = stated_act_wire(wire, acts)
+            dialogue_prompt = ""
+            if dialogue_master:
+                controlled_id = _controlled_id(context_messages)
+                people = action_reference_catalog(
+                    [message for message in context_messages if message.role == "system"],
+                    "Physically present characters:",
+                )
+                speakers = tuple(person for person in people if person != controlled_id)
+                if controlled_id in people and speakers:
+                    beat = create_model("DialogueBeat", __base__=DialogueBeatDraft,
+                                        speaker_id=(Literal[speakers], ...))
+                    wire = create_model("PlayerIntentContractDraft", __base__=wire,
+                                        dialogue_beat=(beat | None, None))
+                    dialogue_prompt = (
+                        "\n\nThe following is the only exception to the rule against choosing NPC reactions. "
+                        "For a direct conversation with one present NPC that only calls for speech, "
+                        "also give dialogue_beat: that NPC's ID and a brief response posture in the "
+                        "selected master's style (cooperate, hesitate, decline). "
+                        "The narrator writes the dialogue from world context. Use null for any "
+                        "action, request for an item or service, new fact, identity reveal, bargain, "
+                        "commitment, or other potential change to world state."
+                        + dialogue_master
+                    )
             with reason_scope("interpret_player_intent"):
                 data = await self._router.generate_json(
                     self._provider,
@@ -731,7 +766,7 @@ class PlayerIntentInterpreter:
                     [
                         ChatMessage(
                             role="system",
-                            content=_INTENT_PROMPT
+                            content=_INTENT_PROMPT + dialogue_prompt
                             + "\n\n[OUTPUT JSON SCHEMA]\n"
                             + model_schema_json(wire),
                         ),
@@ -748,6 +783,8 @@ class PlayerIntentInterpreter:
             self._apply_ownership(draft, player_input, _controlled_id(context_messages))
             self._check_places(draft, references, location_catalog)
             contract = normalize_intent_draft(draft, player_input)
+            if dialogue_prompt and data.get("dialogue_beat") is not None:
+                self.dialogue_beat = DialogueBeatDraft.model_validate(data["dialogue_beat"])
             self.audit.append(
                 {
                     "phase": "single_pass",

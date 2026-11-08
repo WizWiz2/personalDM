@@ -12,6 +12,7 @@ from app.db.repositories.location_repo import LocationRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.scene_location_table import SceneLocationLink
 from app.db.tables import Campaign, Character, Entity, Item, Turn
+from app.models.addressed_response import AddressedResponse
 from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
 from app.models.turn import ChatMessage
 from app.models.turn_authority import PlannedWorldMove
@@ -21,8 +22,10 @@ from app.services.master_director import (
     apply_moves_to_narration_guidance,
     apply_moves_to_outcome_decision,
     outcome_master_block,
+    select_director_moves,
 )
 from app.services.master_service import MasterService
+from app.services.planning_context import action_reference_catalog
 from app.services.player_intent_interpreter import PlayerIntentInterpreter
 from app.services.provider_request_timing import local_span
 from app.services.role_model_router import ModelRole, RoleModelRouter
@@ -193,14 +196,31 @@ class TurnIntentPlanningPipeline:
     ) -> tuple[CoordinatedTurnPlan, dict]:
         with local_span("planning.location_catalog"):
             names, catalog = await self._location_catalog(campaign_id)
+        empty_cast = solo_physical_presence(context_messages)
+        master_service = MasterService(self._session)
+        campaign = await self._session.get(Campaign, str(campaign_id)) if isinstance(self._session, AsyncSession) else None
+        scene_id = UUID(campaign.current_scene_id) if campaign and campaign.current_scene_id else None
+        momentum = None
+        dialogue_master = ""
+        if not empty_cast and scene_id:
+            master = await master_service.get(campaign_id)
+            momentum = await WorldMomentumService(self._session).snapshot(
+                campaign_id, scene_id, patience=master.resolved.initiative.patience_turns,
+            )
+            if not (momentum.get("sources") or momentum.get("automatic_deadline")):
+                # Contact seeking does not change the seeded director selection with a companion present.
+                moves = select_director_moves(master.resolved, master.state.rhythm, campaign_id=str(campaign_id))
+                dialogue_master = outcome_master_block(master.resolved, list(moves.moves))
         contract = await self._intent.interpret(
             selection,
             context_messages,
             user_input,
             location_references=names,
             location_catalog=catalog,
+            dialogue_master=dialogue_master,
         )
         known_cast = None
+        addressee_id = None
         if isinstance(self._session, AsyncSession):
             cast = [entity for entity in await EntityRepository(self._session).list_by_campaign(
                 campaign_id, entity_type="character",
@@ -208,32 +228,23 @@ class TurnIntentPlanningPipeline:
             known_cast = {str(entity.id): entity.canonical_name for entity in cast}
             matches = exact_identity_matches(cast, contract.addressed_character_name)
             if len(matches) == 1:
+                addressee_id = matches[0].id
                 contract = contract.model_copy(update={"addressed_character_name": matches[0].canonical_name})
-        # Director moves are selected before outcome resolution so force_introduce_contact
-        # can add optional contact guidance to the resolver. Rhythm is NOT persisted here.
-        seek_contact = seeks_contact_or_presence(contract)
-        empty_cast = solo_physical_presence(context_messages)
-        master_service = MasterService(self._session)
         persona, director, rhythm_before = await master_service.select_moves_for_turn(
             campaign_id,
-            seek_contact=seek_contact,
+            seek_contact=seeks_contact_or_presence(contract),
             empty_companion_cast=empty_cast,
             persist_rhythm=False,
         )
 
         # A deterministic pacing signal and verified actor goals are fed into
         # the *outcome* resolver. Narrator prose alone cannot move the world.
-        momentum = {"sources": [], "pressure_due": False, "quiet_turns": 0}
-        scene_id = None
-        if isinstance(self._session, AsyncSession):
-            campaign = await self._session.get(Campaign, str(campaign_id))
-            scene_id = (
-                UUID(campaign.current_scene_id)
-                if campaign and campaign.current_scene_id else None
-            )
+        if momentum is None:
             momentum = await WorldMomentumService(self._session).snapshot(
                 campaign_id, scene_id, patience=persona.initiative.patience_turns,
-            )
+            ) if isinstance(self._session, AsyncSession) else {
+                "sources": [], "pressure_due": False, "quiet_turns": 0,
+            }
         world_context = context_messages
         if isinstance(self._session, AsyncSession) and world_context:
             setup = await CampaignSetupRepository(self._session).get(campaign_id)
@@ -303,8 +314,36 @@ class TurnIntentPlanningPipeline:
         resident_slots = await self._compiler.resident_slots(campaign_id)
         # A due world initiative rides the outcome call even on known-route travel.
         world_due = bool(momentum.get("pressure_due") and momentum.get("sources"))
-        decision = None if world_due else await self._compiler.resolve_known_travel(campaign_id, contract)
-        outcome_owner = "route_graph" if decision is not None else "external_resolver"
+        decision = None
+        beat = self._intent.dialogue_beat
+        outcome_owner = "external_resolver"
+        if (beat and contract.addressed_response_requested and contract.addressed_character_name
+                and not (contract.actions or contract.time_advance or contract.pending_player_choice
+                         or contract.named_absent_people or contract.identity_reveal_requested
+                         or contract.world_state_question or momentum.get("sources")
+                         or momentum.get("automatic_deadline") or director.forced_introduce_contact)):
+            speaker_id = str(beat.speaker_id)
+            present = action_reference_catalog(
+                [message for message in context_messages if message.role == "system"],
+                "Physically present characters:",
+            )
+            if speaker_id in present and speaker_id == str(addressee_id):
+                decision = TurnOutcomeDecision(
+                    addressed_response=AddressedResponse(
+                        speaker_id=beat.speaker_id, speaker_name=contract.addressed_character_name,
+                    ),
+                    observable_consequences=[f"Реплика обращена к персонажу «{contract.addressed_character_name}»."],
+                    narration_guidance=[{
+                        "cooperate": "Адресат готов говорить на эту тему.",
+                        "hesitate": "Адресат отвечает с оговорками.",
+                        "decline": "Адресат не хочет обсуждать эту тему.",
+                    }[beat.reaction]],
+                )
+                outcome_owner = "combined_dialogue"
+        if decision is None and not world_due:
+            decision = await self._compiler.resolve_known_travel(campaign_id, contract)
+            if decision is not None:
+                outcome_owner = "route_graph"
         if decision is None:
             decision = await self._outcomes.resolve(
                 selection,

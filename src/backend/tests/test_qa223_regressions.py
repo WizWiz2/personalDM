@@ -319,3 +319,48 @@ async def test_unconfirmed_property_change_executes_as_blocked(db_session):
     assert execution.steps[0].status == "blocked"
     assert execution.steps[0].observable_outcome is None
     assert (await load_item_states(db_session, cid))[0].properties == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.product_contract
+@pytest.mark.parametrize("active_thread", [False, True])
+async def test_addressed_dialogue_combines_planning_only_without_a_world_thread(
+    db_session, monkeypatch, active_thread,
+):
+    from app.services.world_momentum_service import WorldMomentumService
+
+    cid, _, _, hero, npc, _, _ = await _world(db_session)
+    text = "Алиса, ты видела письмо?"
+    context = [ChatMessage(role="system", content=(
+        f"Controlled character: {hero}\nPhysically present characters: Вера [id={hero}], Алиса [id={npc}]"
+    ))]
+    guidance = "Адресат отвечает с оговорками."
+
+    async def generate_json(provider, selection, messages, *, response_model, **kwargs):
+        if response_model.__name__ != "PlayerIntentContractDraft":
+            raise AssertionError("Unexpected second model call")
+        return response_model.model_validate({
+            "summary": text, "actions": [], "addressed_response_requested": True,
+            "addressed_character_name": "Алиса",
+            "dialogue_beat": {"speaker_id": str(npc), "reaction": "hesitate"},
+        }).model_dump(mode="json")
+
+    sources = [{"thread_id": "thread_0", "source": "Доставить письмо."}] if active_thread else []
+    monkeypatch.setattr(WorldMomentumService, "snapshot", AsyncMock(return_value={"sources": sources}))
+    pipeline = TurnIntentPlanningPipeline(db_session, SimpleNamespace(generate_json=generate_json))
+    if active_thread:
+        pipeline._outcomes.resolve = AsyncMock(return_value=TurnOutcomeDecision(
+            observable_consequences=["Вопрос вызвал обсуждение письма."],
+        ))
+    plan, metadata = await pipeline.plan(
+        campaign_id=cid, user_input=text, context_messages=context, selection=SimpleNamespace(),
+    )
+    assert plan.action_sequence.steps == []
+    assert plan.world_move is None and plan.world_thread_closures == []
+    if active_thread:
+        assert metadata["outcome_owner"] == "external_resolver"
+        assert plan.observable_consequences == ["Вопрос вызвал обсуждение письма."]
+    else:
+        assert metadata["outcome_owner"] == "combined_dialogue"
+        assert plan.addressed_response.speaker_id == npc
+        assert guidance in plan.narration_guidance
