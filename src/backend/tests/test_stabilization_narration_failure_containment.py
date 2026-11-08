@@ -369,3 +369,48 @@ async def test_granted_narration_schema_admits_only_the_owner_id(db_session):
     cast = next(iter(schemas[0]["$defs"].values()))["properties"]["cast_id"]
     assert cast.get("const", (cast.get("enum") or [None])[0]) == str(host)
     assert beat.cast_id == str(host) and prose == "— Да."
+
+
+@pytest.mark.asyncio
+async def test_single_anchored_repair_preserves_other_sentences_and_revalidates(db_session, monkeypatch):
+    campaign = await CampaignService(db_session).create_campaign(CampaignCreate(name="Fragment repair"))
+    user_turn = await TurnRepository(db_session).create(
+        campaign.id, TurnCreate(role="user", content="Оглядываюсь."),
+    )
+    await db_session.commit()
+
+    head, rejected, tail = "Дождь барабанит по крыше.", "Ты решаешь уйти.", "На пороге лежит ключ."
+    replacement = "Дверь остаётся открытой."
+    draft = f"{head} {rejected} {tail}"
+    expected = f"{head} {replacement} {tail}"
+
+    class FakeRouter:
+        async def resolve(self, *args, **kwargs):
+            return SimpleNamespace(config=SimpleNamespace(model_name="m"), source="control_default")
+
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            return response_model.model_validate({"replacement": replacement}).model_dump()
+
+    pipeline = AuthorityNarrationPipeline(db_session, FakeRouter())
+
+    async def generate_text(messages, selection, *, temperature):
+        return draft, {}
+
+    async def validate(self, selection, authority, candidate_text):
+        if candidate_text == expected:
+            return NarrationValidationResult(verdict="pass")
+        assert candidate_text == draft
+        return NarrationValidationResult(verdict="repair_required", violations=[{
+            "violation_type": "player_agency", "evidence": rejected, "correction": "Оставить выбор игроку.",
+        }])
+
+    monkeypatch.setattr(pipeline, "_generate_text", generate_text)
+    monkeypatch.setattr(TurnAuthorityValidator, "validate", validate)
+    result = await pipeline.generate(
+        campaign_id=campaign.id, trigger_turn_id=user_turn.id, scene_id=None,
+        narrator_messages=[ChatMessage(role="system", content="Narrate.")],
+        narrator_selection=SimpleNamespace(config=SimpleNamespace(model_name="m"), source="x"),
+        authority=_authority(campaign_id=campaign.id, trigger_turn_id=user_turn.id),
+    )
+    assert result.text == expected
+    assert result.validation_status == "repaired"
