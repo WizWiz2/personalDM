@@ -151,7 +151,9 @@ def test_a_named_absent_person_without_a_cast_id_is_typed_offscreen():
     wire = _outcome_wire_model(1, required_absent=("Прохор Белов",))
     base = {"action_outcomes": [{"action_index": 0, "resolution": "auto_success",
                                  "observable_outcome": "Рыбак отвечает."}], "npc_introductions": []}
-    with pytest.raises(ValidationError):
-        wire.model_validate({**base, "absent_people": []})
-    wire.model_validate({**base, "absent_people": [belov]})
+    undecided = wire.model_validate({**base, "absent_people": []})
+    assert undecided.absent_people == []
+    [confirmed] = wire.model_validate({**base, "absent_people": [belov]}).absent_people
+    assert confirmed.canonical_name == "Прохор Белов"
+    assert not confirmed.temporary_name
     assert "absent_people" in wire.model_json_schema()["required"]
