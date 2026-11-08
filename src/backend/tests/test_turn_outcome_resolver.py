@@ -535,3 +535,39 @@ async def test_bad_thread_review_preserves_the_player_outcome_and_other_reviews(
     assert decision.world_move is None
     [closure] = decision.world_thread_closures
     assert (closure.source, closure.evidence) == ("Доставить пропуск.", "Пропуск уже доставлен.")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role_only_record", [False, True])
+async def test_an_officer_title_misclassified_as_a_name_does_not_abort_the_turn(role_only_record):
+    from types import SimpleNamespace
+
+    from app.models.turn import ChatMessage
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    text = "Ты должен провести меня к старшему офицеру а мы тут плутаем уже который час"
+    result = "Проводник указывает, где найти старшего офицера."
+    role_only = {
+        "canonical_name": "старший офицер", "mentioned_name": "старший офицер",
+        "role": "старший офицер", "reason": "Герой хочет к старшему офицеру.",
+        "description": "Старший офицер, о котором пока известно только его звание.",
+        "appearance": "Герой ещё не видел офицера и ничего не знает о его внешности.",
+        "temporary_name": True, "personal_name_evidence": None,
+    }
+
+    class Router:
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            return response_model.model_validate({
+                "action_outcomes": [], "npc_introductions": [],
+                "absent_people": [role_only] if role_only_record else [],
+                "observable_consequences": [result],
+            }).model_dump(mode="json")
+
+    decision = await TurnOutcomeResolver(Router()).resolve(
+        SimpleNamespace(),
+        [ChatMessage(role="system", content="Physically present characters: Герой, Проводник")],
+        text, PlayerIntentContract(summary=text, named_absent_people=["старший офицер"]),
+        required_absent=("старший офицер",),
+    )
+    assert decision.observable_consequences == [result]
+    assert decision.npc_introductions == []

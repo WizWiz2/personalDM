@@ -234,10 +234,11 @@ takes ONE listed available_destinations edge, never into the hero's place), arri
 person arrives here: the thread's actor when it has one, such as someone sent for; otherwise
 the newcomer typed in world_move.newcomer). When an NPC here agrees to send for a person who is
 not in the cast, type that person in that action's sends_for (required for accepted fetch_person).
-ABSENT PEOPLE: whenever the input, the hero's goal or your result speaks of a person by personal
-name who has no cast ID (someone sought, rumored, named by a witness), add them to absent_people
-once (temporary_name=false, personal_name_evidence = the verbatim mention). They stay offscreen;
-that name then belongs to them and to nobody else.
+ABSENT PEOPLE: absent_people registers confirmed personal identities from the candidate mentions.
+Include each confirmed person once (temporary_name=false, personal_name_evidence = the verbatim
+personal name mention). They stay offscreen. A job, rank, title or unclear designation is not
+a personal name. Omit such candidates from absent_people and still resolve the player's request.
+Use [] when none can be confirmed. Never invent a personal name or its evidence to fill the list.
 PLACES: when a result or world move reveals a concrete place the hero could go that is not a
 known place (where someone lives, where the lights were seen), type it in place_introductions:
 place=new_in:<ID of the KNOWN PLACE it lies in>, a short name and profile. It becomes a destination.
@@ -818,9 +819,9 @@ def _outcome_wire_model(
             default_factory=list, min_length=action_count,
             max_length=action_count,
         )
-        # A person the human named who has no cast ID is typed offscreen this turn (replay15 Keeper).
+        # The frozen mentions bound the possible registrations, but can contain role labels.
         absent_people: list[absent_model] = Field(
-            default_factory=list, min_length=len(required_absent or ()),
+            default_factory=list,
             max_length=len(required_absent) if required_absent is not None else 2)
         npc_introductions: list[IndexedNpcIntroductionDraft] = Field(
             default_factory=list, min_length=1 if required_slot and allow_introductions else 0,
@@ -905,17 +906,13 @@ def _outcome_wire_model(
             def mention(item):
                 return identity_key(getattr(item, "mentioned_name", None) or item.canonical_name)
 
-            typed = {mention(item) for item in self.absent_people
-                     if not item.temporary_name and item.personal_name_evidence}
             if required_absent is not None and any(
                 mention(item) not in {identity_key(name) for name in required_absent}
                 or (item.cast_id not in (known_cast or {}) and identity_key(item.canonical_name) != mention(item))
                 for item in self.absent_people
+                if not item.temporary_name and _compact(item.personal_name_evidence)
             ):
                 raise ValueError("Offscreen people must be the personal identities frozen from player input, not roles in document text")
-            if any(identity_key(name) not in typed for name in required_absent or ()):
-                raise ValueError(f"absent_people must type each named absent person {list(required_absent)} "
-                                 "with temporary_name=false and personal_name_evidence")
             for index, effect in (required_effects or {}).items():
                 if outcomes.get(index) is None or outcomes[index].resolution != "auto_success":
                     continue
@@ -1105,7 +1102,7 @@ def normalize_outcome_draft(
         for item in draft.action_outcomes if getattr(item, "sends_for", None)
     ] + [  # A named person spoken of is offscreen too: their name is theirs (REPORT14 «Прохор Белов»).
         item.model_copy(update={"after_action_index": None, "resident_slot": None})
-        for item in draft.absent_people if not item.temporary_name
+        for item in draft.absent_people if not item.temporary_name and _compact(item.personal_name_evidence)
     ]
     for arrives, npc in [*((True, item) for item in arrivals), *((False, item) for item in draft.npc_introductions),
                          *((None, item) for item in errands)]:
