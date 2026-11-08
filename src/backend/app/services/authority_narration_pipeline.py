@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,7 @@ from app.services.narration_publication_guard import (
 from app.services.narration_validator import NarrationValidationError, NarrationValidator
 from app.services.role_model_router import ModelRole, RoleModelRouter, RoleModelSelection
 from app.services.script_consistency import consistent_script, foreign_script_intrusions
-from app.services.turn_authority_validator import TurnAuthorityValidator
+from app.services.turn_authority_validator import TurnAuthorityValidator, candidate_sentences
 from app.services.turn_performance import reason_scope
 
 
@@ -48,6 +48,12 @@ NARROWED_CONTRACT = (
     "second person, in Russian. Add no new people, objects, places, facts or player actions.\n"
     "CONFIRMED OUTCOMES:\n{contract}"
 )
+
+
+class NarrationSentenceRepair(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    replacement: str = Field(min_length=1, max_length=500)
 
 
 @dataclass(frozen=True)
@@ -470,29 +476,48 @@ class AuthorityNarrationPipeline:
                         )
                     return await accepted(draft, "passed", 0, beat=beat, validation=result)
 
+            errors = [item for item in result.violations if item.severity == "error"] if result else []
+            fragment = errors[0].evidence if len(errors) == 1 and authority.beat_owner_id is None else ""
+            # Only replace an exact, unique, complete span. Leave quoted speech and grants
+            # to the full repair, which can adjust the surrounding punctuation and beat.
+            if (fragment == draft or draft.count(fragment) != 1
+                    or any(mark in fragment for mark in ('«', '»', '"'))
+                    or fragment not in candidate_sentences(draft).values()):
+                fragment = ""
             record_decision(
-                "repair", "requested", {"strategy": "single_model_repair"},
+                "repair", "requested",
+                {"strategy": "sentence_repair" if fragment else "single_model_repair"},
                 role=ModelRole.NARRATOR.value,
             )
-            repair_messages = [
-                *narrator_messages,
-                ChatMessage(
-                    role="user",
-                    content=validator.repair_prompt(
-                        authority, draft, result, beat_failure, repeats,
-                        script_intrusions=intrusions,
-                    ),
-                ),
-            ]
+            prompt = validator.repair_prompt(
+                authority, draft, result, beat_failure, repeats, script_intrusions=intrusions,
+            )
             try:
-                repaired, repaired_beat, repair_telemetry = await self._narrate(
-                    repair_messages,
-                    narrator_selection,
-                    authority,
-                    temperature=settings.NARRATION_REPAIR_TEMPERATURE,
-                    diagnostic_reason="repair_narration",
-                )
-            except LLMProviderError as exc:
+                if fragment:
+                    messages = [*narrator_messages, ChatMessage(role="user", content=(
+                        prompt + "\n\nВерни только замену указанного предложения в поле replacement. "
+                        "Остальные предложения движок сохранит дословно."
+                    ))]
+                    with reason_scope("repair_narration_sentence"):
+                        patch = NarrationSentenceRepair.model_validate(await self._router.generate_json(
+                            self._provider, narrator_selection, messages,
+                            temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+                            max_tokens=300, response_model=NarrationSentenceRepair,
+                        ))
+                    replacement = patch.replacement.strip()
+                    if not replacement:
+                        raise LLMProviderError("Sentence repair returned empty prose")
+                    repaired = draft.replace(fragment, replacement, 1)
+                    repaired_beat, repair_telemetry = None, self.last_telemetry
+                else:
+                    repaired, repaired_beat, repair_telemetry = await self._narrate(
+                        [*narrator_messages, ChatMessage(role="user", content=prompt)],
+                        narrator_selection,
+                        authority,
+                        temperature=settings.NARRATION_REPAIR_TEMPERATURE,
+                        diagnostic_reason="repair_narration",
+                    )
+            except (LLMProviderError, ValueError) as exc:
                 return await narrow(f"repair narrator failed: {type(exc).__name__}: {exc}", 1)
             telemetry = {**telemetry, "repair_generation": repair_telemetry}
             repaired_failure = self._beat_failure(authority, repaired, repaired_beat)

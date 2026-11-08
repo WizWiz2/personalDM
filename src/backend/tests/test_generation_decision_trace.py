@@ -27,7 +27,7 @@ from app.models.provider_config import ProviderConfigCreate
 from app.models.scene import SceneCreate
 from app.models.turn import TurnCreate
 from app.services import llm_usage_tracker
-from app.services.authority_narration_pipeline import AuthorityNarrationPipeline
+from app.services.authority_narration_pipeline import AuthorityNarrationPipeline, NarrationSentenceRepair
 from app.services.llm_usage_tracker import (
     close_usage_context,
     record_decision,
@@ -98,6 +98,8 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
         )
         if issubclass(kwargs.get("response_model") or object, NarrationFindings):
             return {"violations": [{"violation_type": "player_agency", "sentence": "S1"}]}
+        if kwargs.get("response_model") is NarrationSentenceRepair:
+            return {"replacement": "Ты всё равно решаешь уйти."}
         raise AssertionError(f"unexpected control call {kwargs.get('response_model')}")
 
     def no_projection(cls, authority):
@@ -181,7 +183,7 @@ async def test_failed_run_persists_violations_repairs_and_final_reason(db_sessio
 
     assert "evaluate" not in steps
     repairs = [item for item in decisions if item["step"] == "repair"]
-    assert [item["payload"]["strategy"] for item in repairs] == ["single_model_repair", "narrowed_contract"]
+    assert [item["payload"]["strategy"] for item in repairs] == ["sentence_repair", "narrowed_contract"]
     assert steps.count("validate") == 2
 
     final = decisions[-1]
