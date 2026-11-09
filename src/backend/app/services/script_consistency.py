@@ -36,21 +36,10 @@ def consistent_script(text: str, names: Iterable[str] = ()) -> str:
                    for _, chars in groupby(text, key=str.isalpha) for part in ["".join(chars)])
 
 
-_INTRUDER_SCRIPTS = frozenset({
-    "CJK", "HIRAGANA", "KATAKANA", "HANGUL", "THAI", "ARABIC", "HEBREW",
-    # QA-209 F-15: standalone Kannada syllables leaked into Russian prose.
-    "KANNADA",
-})
-
-
-def foreign_script_intrusions(text: str) -> list[str]:
-    """Words carrying letters of scripts that cannot belong to the novel's alphabet.
-
-    Decoder noise leaks whole CJK/Hangul/Thai garbage words into European-language prose;
-    consistent_script deliberately leaves them alone because each word is single-script,
-    so they would reach the published surface untouched (playtest 2026-10-12). They are
-    reported for repair, never silently rewritten.
-    """
+def foreign_script_intrusions(text: str, references: Iterable[str] = ()) -> list[str]:
+    """Report words using scripts unsupported by the current scene and campaign context."""
+    allowed = {script for reference in references for word in _words(reference)
+               for script in _scripts(word)}
     return sorted({
-        word for word in _words(text or "") if _INTRUDER_SCRIPTS & set(_scripts(word))
+        word for word in _words(text or "") if allowed and not set(_scripts(word)) <= allowed
     })

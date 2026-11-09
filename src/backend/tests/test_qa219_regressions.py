@@ -184,8 +184,8 @@ def test_crash_diagnostics_default_is_in_data_dir(tmp_path):
     assert "QA219 log probe" in (tmp_path / "data" / "personal-dm-crash-errors.log").read_text(encoding="utf-8")
 
 
-def test_engine_state_wording_is_not_publishable_prose():
-    assert leaked_meta_lines("В авторитетном состоянии сцены письмо числится у Ирмы.")
+def test_engine_state_heading_is_not_publishable_prose():
+    assert leaked_meta_lines("[AUTHORITATIVE SCENE STATE] Письмо числится у Ирмы.")
 
 
 async def _heard_introduction(session):

@@ -1045,7 +1045,7 @@ class EntityRegistrar:
         self, selection, assistant_content: str, mention: CharacterMention,
         entities, character_profiles,
     ) -> str:
-        """Rare LLM arbitration; a suffix match is a hint, never an identity verdict.
+        """Rare LLM arbitration; a morphological match only supplies a candidate.
 
         Require an exact published evidence span. Neither a model-generated name
         nor an unsourced claim may silently merge or create a physical person.
@@ -1061,11 +1061,9 @@ class EntityRegistrar:
             data = await self._router.generate_json(
                 self._provider, selection, [
                     ChatMessage(role="system", content=(
-                        "Ты проверяешь только идентичность двух похожих русских имён "
-                        "в УЖЕ ОПУБЛИКОВАННОЙ сцене. Совпадение основы слова НЕ "
-                        "доказывает, что это один человек. Например, Макар и Макара "
-                        "могут быть двумя разными персонажами; Юнда может быть "
-                        "родительным падежом имени Юнд. Верни is_distinct_person=true "
+                        "Проверь, относится ли упоминание в опубликованной сцене к уже "
+                        "известному персонажу. Совпадение грамматической формы имени само "
+                        "по себе не доказывает тождество. Верни is_distinct_person=true "
                         "лишь если текст ясно вводит отдельную личность; false, если "
                         "упоминание явно обозначает уже известного персонажа; null, "
                         "если различить нельзя. evidence — точная цитата из сцены, "
@@ -1102,41 +1100,21 @@ class EntityRegistrar:
 
     @staticmethod
     def _inflected_twin_of_existing(name: str, entities) -> bool:
-        """True when a name MAY be a case form of a live identity.
+        """Generate arbitration candidates from morphological analyses of the observed name."""
+        from app.services.linguistic_intent_analyzer import _russian_morphology
 
-        Russian oblique forms stay close to the stem («Юнд»→«Юнда», «Тормод»→
-        «Тормода»). Exact identity_key equality was the only prior check, so such
-        surfaces minted twins of living people (playtest 2026-10-12: «Юнда» beside
-        «Юнд»). Single-token names only; multi-token identities are covered by the
-        existing collision contract.
-        """
         proposed = name.strip().casefold()
-        # Prefix resemblance is not morphology ("Мара" != "Марат"). Only block
-        # a proposed oblique suffix of an existing Cyrillic consonant-stem name.
-        # This intentionally has false negatives; creating a legitimate new NPC
-        # is safer than silently merging distinct identities by edit distance.
-        if not proposed.isalpha() or len(proposed) < 4:
+        if not proposed.isalpha() or not all(
+            "CYRILLIC" in unicodedata.name(char, "") for char in proposed
+        ):
             return False
-        for entity in entities:
-            if getattr(entity, "status", "active") != "active":
-                continue
-            surfaces = [
-                getattr(entity, "canonical_name", None),
-                *(getattr(entity, "aliases", None) or []),
-            ]
-            for existing in surfaces:
-                base = str(existing or "").strip().casefold()
-                if not base.isalpha() or len(base) < 3 or base == proposed:
-                    continue
-                if not all(
-                    "CYRILLIC" in unicodedata.name(char, "") for char in base + proposed
-                ):
-                    continue
-                if base[-1] in "аеёиоуыэюяьъй":
-                    continue
-                if proposed in {base + suffix for suffix in ("а", "у", "ом", "ем", "е", "ы", "и")}:
-                    return True
-        return False
+        bases = {form.normal_form for form in _russian_morphology().parse(proposed)
+                 if form.tag.POS == "NOUN"} - {proposed}
+        return any(
+            str(surface or "").strip().casefold() in bases
+            for entity in entities if getattr(entity, "status", "active") == "active"
+            for surface in (getattr(entity, "canonical_name", None), *(getattr(entity, "aliases", None) or []))
+        )
 
     @staticmethod
     def _clean_name(value: str) -> str | None:

@@ -9,10 +9,10 @@ def test_a_mixed_script_word_takes_the_cast_or_text_spelling() -> None:
 
 def test_foreign_script_garbage_is_reported_not_rewritten() -> None:
     """Playtest 2026-10-12: whole CJK/Hangul noise words must be surfaced for repair."""
-    assert foreign_script_intrusions("Фонарь качается. 面 文字 글.") == sorted(
+    assert foreign_script_intrusions("Фонарь качается. 面 文字 글.", ["Фонарь на ветру."]) == sorted(
         ["글", "面", "文字"]
     )
-    assert foreign_script_intrusions("Обычная русская проза with Latin.") == []
+    assert foreign_script_intrusions("Обычная русская проза with Latin.", ["Вывеска: Lantern."]) == []
     # The repair vocabulary path stays untouched: intrusions never rewrite the text.
     assert consistent_script("Фонарь качается. 面 文字.", []) == "Фонарь качается. 面 文字."
 

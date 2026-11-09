@@ -28,7 +28,7 @@ async def test_validator_wire_has_only_violations_over_four_prose_bans():
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, TEXT)
     kwargs = router.generate_json.await_args.kwargs
     schema = kwargs["response_model"].model_json_schema()
-    assert set(schema["properties"]) <= {"violations", "names_given"}
+    assert set(schema["properties"]) <= {"violations", "names_given", "non_story_sentences"}
     found = schema["$defs"][schema["properties"]["violations"]["items"]["$ref"].split("/")[-1]]
     assert set(found["properties"]["violation_type"]["enum"]) == {
         "absent_character", "canon_conflict", "player_agency", "invalid_movement",
@@ -68,3 +68,19 @@ async def test_registered_alias_is_valid_only_for_its_own_cast_member():
     assert (await validator.validate(SimpleNamespace(), auth, candidate)).verdict == "pass"
     generate.return_value["names_given"][0]["who"] = "Борм"
     assert (await validator.validate(SimpleNamespace(), auth, candidate)).verdict == "repair_required"
+
+
+@pytest.mark.asyncio
+async def test_story_context_distinguishes_a_character_line_from_a_writer_note():
+    text = "Хроника не ждёт вдохновения."
+    generate = AsyncMock(return_value={"non_story_sentences": ["S0"]})
+    validator = TurnAuthorityValidator(SimpleNamespace(generate_json=generate))
+    note = await validator.validate(SimpleNamespace(), _authority(), text)
+    assert note.verdict == "repair_required"
+    assert note.violations[0].violation_type == "meta_language"
+    assert note.violations[0].evidence == text
+
+    generate.return_value = {"non_story_sentences": []}
+    speech = f"— {text} — сказал летописец."
+    story = await validator.validate(SimpleNamespace(), _authority(), speech)
+    assert NarrationPublicationGuard.publish(_authority(), speech, story)[0] == speech

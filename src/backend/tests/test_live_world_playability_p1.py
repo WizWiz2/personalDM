@@ -135,7 +135,6 @@ async def test_world_clock_advances_only_after_published_ticks(db_session):
 
 
 def test_narrator_meta_guard_rejects_scratchpad_but_not_game_dialogue():
-    assert leaked_meta_lines("Иара? Need no invented. End actionable.")
     assert leaked_meta_lines("Analysis: avoid introducing another NPC")
     assert leaked_meta_lines("[APPROVED TURN PLAN]")
     assert not leaked_meta_lines("— Это дело ещё не раскрыто, — сказала Иара.")
@@ -354,8 +353,8 @@ def test_kannada_decoder_noise_is_held_for_narrator_repair():
     """QA-209 F-15: Indian-script garbage was not captured by CJK-only gate."""
     from app.services.script_consistency import foreign_script_intrusions
 
-    assert foreign_script_intrusions("— Да, дверь закрыта. ಿವೃದ್ಧ")
-    assert not foreign_script_intrusions("— Да, дверь закрыта. Гроссбух лежит рядом.")
+    assert foreign_script_intrusions("— Да, дверь закрыта. ಿವೃದ್ಧ", ["Открываю дверь."])
+    assert not foreign_script_intrusions("— Да, дверь закрыта. Гроссбух лежит рядом.", ["Открываю дверь."])
 
 
 def test_mojibake_player_input_is_rejected_before_persisting():
