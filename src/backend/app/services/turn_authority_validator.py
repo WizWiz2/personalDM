@@ -69,6 +69,7 @@ def findings_model(authority: TurnAuthority, candidate_text: str) -> type[BaseMo
     return create_model(
         "NarrationFindings", __base__=NarrationFindings,
         violations=(list[found], Field(default_factory=list, max_length=12)),
+        non_story_sentences=(list[Literal[sentences]], Field(default_factory=list, max_length=12)),
         names_given=(list[naming], Field(default_factory=list, max_length=4, description=(
             "Each personal name the candidate gives a cast member here (self-introduction or "
             "narration) that differs from their cast name. [] if none."))),
@@ -171,8 +172,12 @@ The typed facts define positions, custody and movement. Report ONLY these bans:
 Present characters may speak, answer, refuse, stay silent, gesture, move, share opinions, claims or
 new information. None of that is required and none of it is a violation. Style, completeness,
 pacing, atmosphere and how a question is answered are not your concern.
-For every violation give only its ban and the S anchor of the sentence committing it; no
-explanation. violations=[] means the candidate passes.
+For every violation give only its ban and the S anchor of the sentence committing it.
+Separately, non_story_sentences lists S anchors containing the model's private writing notes,
+references to the generation process, or placeholders delegating the response to another agent.
+Judge whether the sentence is outside the fiction in context. Words, phrases, roles, or
+references to storytelling can legitimately appear in the setting or in character speech.
+Do not flag them for wording alone. Leave both lists empty when neither issue applies.
 """
 
     def __init__(self, router: RoleModelRouter):
@@ -237,7 +242,20 @@ explanation. violations=[] means the candidate passes.
         violations = _expand(data, candidate_text, authority)
         result = NarrationValidationResult(verdict="repair_required" if violations else "pass",
                                            violations=violations[:12])
-        return four_bans_only(result, authority, candidate_text)
+        result = four_bans_only(result, authority, candidate_text)
+        if not data.get("non_story_sentences"):
+            return result
+        sentences = candidate_sentences(candidate_text)
+        notes = [
+            NarrationViolation(
+                violation_type="meta_language", evidence=sentences[anchor],
+                correction="Убери служебную заметку и оставь только происходящее в сцене.",
+            )
+            for anchor in dict.fromkeys(data["non_story_sentences"])
+        ]
+        return NarrationValidationResult(
+            verdict="repair_required", violations=[*notes, *result.violations][:12],
+        )
 
     @staticmethod
     def repair_prompt(

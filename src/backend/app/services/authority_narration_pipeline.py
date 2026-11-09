@@ -390,6 +390,14 @@ class AuthorityNarrationPipeline:
                 reason=reason,
             )
 
+        script_references = [
+            authority.player_input, *authority.present_character_names,
+            *authority.allowed_new_npc_names, *authority.object_names,
+            *authority.source_location_path, *authority.target_location_path,
+            *authority.established_state,
+            *(message.content for message in narrator_messages if message.role == "system"),
+        ]
+
         try:
             draft, beat, telemetry = await self._narrate(
                 narrator_messages,
@@ -447,7 +455,7 @@ class AuthorityNarrationPipeline:
                 )
             except LLMProviderError as exc:
                 return await recover(f"{reason}; narrowed narrator failed: {exc}", attempts + 1, run)
-            if not (foreign_script_intrusions(text) or leaked_meta_lines(text)
+            if not (foreign_script_intrusions(text, script_references) or leaked_meta_lines(text)
                     or await self._repeats(campaign_id, text)):
                 result = await check_candidate(text, attempts + 1)
                 if result.verdict == "pass":
@@ -488,7 +496,7 @@ class AuthorityNarrationPipeline:
             # repeat they disqualify the candidate from the surface, and the repair call
             # is told exactly which words to replace (playtest 2026-10-12: CJK tokens
             # reached published text because consistent_script only fixes mixed words).
-            intrusions = [*foreign_script_intrusions(draft), *leaked_meta_lines(draft)]
+            intrusions = [*foreign_script_intrusions(draft, script_references), *leaked_meta_lines(draft)]
             # A missed beat grant is an unhonored initiative decoration, not a forbidden
             # fact. When only the beat failed, the four-ban validator still guards the
             # authority surface: validated prose must reach the player instead of the
@@ -552,7 +560,7 @@ class AuthorityNarrationPipeline:
             repaired_failure = self._beat_failure(authority, repaired, repaired_beat)
             repeats = await self._repeats(campaign_id, repaired)
             repaired_intrusions = [
-                *foreign_script_intrusions(repaired), *leaked_meta_lines(repaired)
+                *foreign_script_intrusions(repaired, script_references), *leaked_meta_lines(repaired)
             ]
             if repeats or repaired_intrusions:
                 repaired_result = None

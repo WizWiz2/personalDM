@@ -53,7 +53,7 @@ async def test_two_puddles_of_the_same_label_stay_active_together(db_session: As
 
 
 def test_adjacent_name_is_only_an_arbitration_candidate_not_an_identity_decision() -> None:
-    """The suffix flags ambiguity; the registrar must adjudicate rather than veto."""
+    """A morphological reading flags ambiguity; the registrar must adjudicate rather than veto."""
     existing = SimpleNamespace(canonical_name="Макар", aliases=[], status="active")
     assert EntityRegistrar._inflected_twin_of_existing("Макара", [existing]) is True
 
@@ -75,12 +75,7 @@ def test_foreign_role_designator_does_not_hijack_the_keeper() -> None:
     assert candidates == []
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason=f"the allowed scripts must be derived from the campaign canon, not a fixed "
-    f"stop-list ({REVIEW} §6)",
-)
 def test_the_novel_may_quote_the_settings_own_script() -> None:
-    """In a wuxia campaign 武 is canon prose, not decoder noise; the locale-blind
-    detector flags the whole page."""
-    assert foreign_script_intrusions("武蔵は霧の中で待っていた。") == []
+    candidate = "武蔵は霧の中で待っていた。"
+    assert foreign_script_intrusions(candidate, ["宮本武蔵は浪人だ。"]) == []
+    assert foreign_script_intrusions(candidate, ["Мусаси ждёт в тумане."])

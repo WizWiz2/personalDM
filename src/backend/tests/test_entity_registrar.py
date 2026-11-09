@@ -522,6 +522,8 @@ def test_name_inflection_gate_does_not_merge_similar_distinct_people():
     ])
     assert EntityRegistrar._inflected_twin_of_existing("Юнда", [yund])
     assert EntityRegistrar._inflected_twin_of_existing("Юндом", [yund])
+    ilya = SimpleNamespace(canonical_name="Илья", aliases=[], status="active")
+    assert EntityRegistrar._inflected_twin_of_existing("Ильёй", [ilya])
 
 
 @pytest.mark.asyncio

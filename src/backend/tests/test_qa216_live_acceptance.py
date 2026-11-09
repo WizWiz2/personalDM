@@ -45,12 +45,9 @@ def test_f44_unknown_destination_does_not_erase_known_item_location():
     assert result is None
 
 
-def test_f45_rejects_reasoning_tail_inline_without_rejecting_english_world_text():
-    leaked = ('За окнами проходит утренний ветер. Иара? No. Need Russian no typo. '
-              'End situation meaningful: he waits. Maybe established said books not '
-              'basis. We can say "Чем могу помочь?" not established but allowed. Better.')
-    assert leaked_meta_lines(leaked)
+def test_english_world_text_is_not_a_protocol_marker():
     assert leaked_meta_lines("На двери табличка 'No entry'.") == []
+
 
 
 @pytest.mark.asyncio

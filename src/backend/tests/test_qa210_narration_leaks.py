@@ -5,10 +5,9 @@ from app.services.narration_meta_guard import leaked_meta_lines
 
 def test_qa210_pipeline_placeholder_and_glyphs_rejected():
     for text in (
-        "Его ответ ожидает подачи narrator-ом.",
-        "Перечисление содержимого остаётся за её ответом.",
+        "<|analysis|> Continue the response.",
+        "[APPROVED TURN PLAN]",
         "Инес сказала: Иара \uF87F.",
-        "The resolver will provide the NPC's answer.",
     ):
         assert leaked_meta_lines(text), text
 
