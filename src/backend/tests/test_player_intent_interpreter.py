@@ -832,3 +832,20 @@ async def test_a_trailing_question_cannot_erase_typed_physical_acts():
         information_request_only=True, information_recipient="narrator")
     result = await interpreter.interpret(SimpleNamespace(), [], text)
     assert [act.intent for act in result.actions] == ["Положить сумку у кровати."]
+
+
+def test_unbound_property_effect_cannot_abort_an_addressed_question():
+    text = "Спрашиваю Елену: который час?"
+    draft = PlayerIntentContractDraft(
+        summary=text, addressed_character_name="Елена", addressed_response_requested=True,
+        actions=[PlayerActionIntentDraft(
+            action_type="service", actor_role="addressee", intent=text,
+            expected_effect="item_change",
+        )],
+    )
+    contract = normalize_intent_draft(draft, text)
+
+    assert contract.addressed_character_name == "Елена"
+    assert contract.addressed_response_requested
+    assert contract.actions[0].expected_effect == "ordinary"
+    assert contract.actions[0].subject_item_id is None

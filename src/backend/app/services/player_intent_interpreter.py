@@ -517,6 +517,10 @@ def _normalized_action(
         payload["elapsed_time"] = _compact(action.elapsed_time) or None
         payload["time_after"] = _compact(action.time_after) or None
 
+    if (action.expected_effect in {"item_change", "item_read"}
+            and payload["subject_item_id"] is None and payload["item_id"] is None):
+        # An unbound effect cannot read or mutate an object. Keep the underlying attempt.
+        payload["expected_effect"] = "ordinary"
     return payload
 
 
