@@ -774,6 +774,10 @@ class ActionPlanCompiler:
         ]
 
         sequence = ActionSequencePlan(summary=contract.summary, steps=steps)
+        # An explicitly addressed but unbound person must not give the sole bystander a beat.
+        addressed = contract.addressed_response_requested and (
+            decision.addressed_response is not None or contract.addressed_character_name is None
+        )
         plan = CoordinatedTurnPlan(
             player_intent=contract.summary,
             resolution=decision.resolution,
@@ -790,12 +794,12 @@ class ActionPlanCompiler:
             place_introductions=decision.place_introductions,
             world_move=decision.world_move,
             world_thread_closures=decision.world_thread_closures,
-            addressed_response_requested=contract.addressed_response_requested,
+            addressed_response_requested=addressed,
             personal_name_revealed=False,
             identity_reveal_requested=contract.identity_reveal_requested,
             response_ownership_reason=(
                 "Последний ввод игрока явно ожидает ответ адресата."
-                if contract.addressed_response_requested
+                if addressed
                 else None
             ),
             observable_consequences=decision.observable_consequences,
