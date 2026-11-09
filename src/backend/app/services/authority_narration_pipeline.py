@@ -66,11 +66,7 @@ class AuthorityNarrationResult:
 
 
 class AuthorityNarrationPipeline:
-    """Render one authoritative turn without letting renderer mistakes cancel game state.
-
-    Planner/engine own the outcome. Code checks the typed beat grant, one validator call judges the
-    four bans; a rejected draft gets one model repair; then the typed step outcome is published.
-    """
+    """Render authoritative prose, with a receipt for travel that needs no model-authored result."""
 
     def __init__(
         self,
@@ -375,11 +371,25 @@ class AuthorityNarrationPipeline:
         narrator_selection: RoleModelSelection,
         authority: TurnAuthority,
     ) -> AuthorityNarrationResult:
-        """Draft, one validator call, at most one repair, then the typed-outcome fallback."""
+        """Validate draft and repairs before publishing prose or recovering a confirmed trip."""
         audit = NarrationValidator(
             self._session,
             RoleModelRouter(ProviderConfigRepository(self._session)),
         )
+        async def recover(reason: str, attempts: int, run=None) -> AuthorityNarrationResult:
+            receipt = NarrationPublicationGuard.movement_receipt(authority)
+            if not receipt:
+                raise NarrationRefused(reason)
+            if run is None:
+                run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, "", None)
+            record_decision("publish", "safe_fallback", {"mode": "movement_receipt"})
+            return await self._finish(
+                audit=audit, run=run, authority=authority, text=receipt,
+                status="safe_fallback", repair_attempts=attempts, telemetry=self.last_telemetry,
+                publication={"mode": "safe_fallback", "source": "movement_receipt", "validated_surface": False},
+                reason=reason,
+            )
+
         try:
             draft, beat, telemetry = await self._narrate(
                 narrator_messages,
@@ -388,7 +398,7 @@ class AuthorityNarrationPipeline:
                 temperature=settings.NARRATOR_TEMPERATURE,
             )
         except LLMProviderError as exc:
-            raise NarrationRefused(f"narrator failed: {type(exc).__name__}: {exc}") from exc
+            return await recover(f"narrator failed: {type(exc).__name__}: {exc}", 0)
         validation_selection = await self._router.resolve(
             campaign_id,
             ModelRole.NARRATION_VALIDATOR,
@@ -423,7 +433,7 @@ class AuthorityNarrationPipeline:
             try:
                 contract = NarrationPublicationGuard.render_contract(authority)
             except NarrationPublicationError as exc:
-                raise NarrationRefused(f"{reason}; {exc}") from exc
+                return await recover(f"{reason}; {exc}", attempts, run)
             corrections = "\n".join(
                 f"- {item.correction[:240]}" for item in (rejected.violations if rejected else [])
                 if item.severity == "error"
@@ -436,17 +446,17 @@ class AuthorityNarrationPipeline:
                     diagnostic_reason="narrowed_narration",
                 )
             except LLMProviderError as exc:
-                raise NarrationRefused(f"{reason}; narrowed narrator failed: {exc}") from exc
+                return await recover(f"{reason}; narrowed narrator failed: {exc}", attempts + 1, run)
             if not (foreign_script_intrusions(text) or leaked_meta_lines(text)
                     or await self._repeats(campaign_id, text)):
                 result = await check_candidate(text, attempts + 1)
                 if result.verdict == "pass":
                     return await accepted(text, "repaired", attempts + 1, reason=reason,
                                           validation=result, narrowed=True)
-            raise NarrationRefused(f"{reason}; narrowed retry did not pass")
+            return await recover(f"{reason}; narrowed retry did not pass", attempts + 1, run)
 
         if validation_selection is None:
-            raise NarrationRefused("validator routing unavailable")
+            return await recover("validator routing unavailable", 0, run)
 
         validator = TurnAuthorityValidator(self._router)
         check = {
@@ -457,8 +467,11 @@ class AuthorityNarrationPipeline:
             "authority": authority,
         }
         rejected_candidates: dict[str, NarrationValidationResult] = {}
+        last_validation_index = 0
 
         async def check_candidate(candidate: str, attempt_index: int) -> NarrationValidationResult:
+            nonlocal last_validation_index
+            last_validation_index = attempt_index
             if candidate in rejected_candidates:
                 record_decision("validate", "previously_rejected",
                                 {"attempt_index": attempt_index}, role=ModelRole.NARRATION_VALIDATOR.value)
@@ -572,8 +585,7 @@ class AuthorityNarrationPipeline:
                 rejected=repaired_result,
             )
         except NarrationValidationError as exc:
-            # Validator timeout/failure is fail-closed: an unchecked draft is never published.
-            raise NarrationRefused(f"authority validator failed: {exc}") from exc
+            return await recover(f"authority validator failed: {exc}", last_validation_index, run)
 
 
 __all__ = ["AuthorityNarrationPipeline", "AuthorityNarrationResult"]

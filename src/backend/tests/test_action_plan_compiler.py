@@ -292,3 +292,31 @@ async def test_typed_time_advance_moves_the_scene_clock_with_the_first_act() -> 
     plan = await compiler.compile(CAMPAIGN, look, TurnOutcomeDecision(action_outcomes=[_success(0)]))
     transition = plan.action_sequence.steps[0].transition
     assert (transition.transition_type, transition.time_after) == ("time_transition", "morning")
+
+
+@pytest.mark.asyncio
+async def test_missing_destination_enrichment_preserves_confirmed_route_prefix():
+    from app.providers.llm_provider import LLMProviderError
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    class FailingRouter:
+        async def generate_json(self, *args, **kwargs):
+            raise LLMProviderError("destination model unavailable")
+
+    compiler = _Compiler(
+        [_location(ROOM, "Комната"), _location(CORRIDOR, "Коридор")],
+        {ROOM: [_exit(ROOM, CORRIDOR, "Коридор")]},
+    )
+    contract = PlayerIntentContract(
+        summary="Иду через коридор в сад.", actions=[_move("Коридор", CORRIDOR), _move("Сад")],
+    )
+    decision = TurnOutcomeDecision(action_outcomes=[_success(0), _success(1)])
+    missing = await compiler.missing_destination_profiles(CAMPAIGN, contract, decision)
+    resolved = await TurnOutcomeResolver(FailingRouter()).enrich_destination_profiles(
+        SimpleNamespace(), contract.summary, decision, missing,
+    )
+    plan = await compiler.compile(CAMPAIGN, contract, resolved)
+    first, second = plan.action_sequence.steps
+    assert first.resolution == "auto_success" and first.transition.destination_location_id == CORRIDOR
+    assert second.resolution == "blocked" and not second.transition.required
+    assert second.observable_outcome is None

@@ -326,7 +326,15 @@ class ActionPlanCompiler:
         # containment come from the generated profile, never from the player's inflected wording.
         destination = outcome.destination
         if destination is None:
-            raise PlanContractError("new destination lacks a generated name and durable profile")
+            return (
+                self._blocked(
+                    action,
+                    "New destination has no confirmed profile.",
+                    "Переход не завершён. Уточни, куда направляешься.",
+                ),
+                cursor,
+                False,
+            )
         name = " ".join(destination.name.split())
         # Containment is the binder's typed choice of a known place (new_in:<ID>), else none.
         parent = getattr(by_id.get(action.destination_parent_location_id), "canonical_name", None)

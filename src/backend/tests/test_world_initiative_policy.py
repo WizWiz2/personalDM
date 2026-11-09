@@ -28,18 +28,21 @@ def test_world_move_names_only_known_threads_and_master_kinds():
     assert wire.model_validate(BASE).world_move is None
     for move in ({"thread_id": "thread_9", "kind": "information", "outcome": "Приходит весть с пристани."},
                  {"thread_id": "thread_0", "kind": "pressure", "outcome": "Приходит весть с пристани."}):
-        with pytest.raises(ValidationError):
-            wire.model_validate({**BASE, "world_move": move})
+        parsed = wire.model_validate({**BASE, "world_move": move})
+        assert parsed.world_move is None
+        assert parsed.observable_consequences == BASE["observable_consequences"]
 
 
 def test_npc_kinds_need_an_actor_thread_and_arrival_needs_a_typed_person():
     wire = _wire(world_kinds=("npc_action", "arrival"))
-    with pytest.raises(ValidationError):
-        wire.model_validate({**BASE, "world_move": {
-            "thread_id": "thread_0", "kind": "npc_action", "outcome": "Хозяин сам идёт к двери."}})
-    with pytest.raises(ValidationError):
-        wire.model_validate({**BASE, "world_move": {
-            "thread_id": "thread_0", "kind": "arrival", "outcome": "В трактир входит речник."}})
+    for move in (
+        {"thread_id": "thread_0", "kind": "npc_action", "outcome": "Хозяин сам идёт к двери."},
+        {"thread_id": "thread_0", "kind": "arrival", "outcome": "В трактир входит речник."},
+    ):
+        parsed = wire.model_validate({**BASE, "world_move": move})
+        assert parsed.world_move is None
+        assert parsed.observable_consequences == BASE["observable_consequences"]
+
 
 
 def test_no_threads_means_no_world_move_channel():
@@ -101,8 +104,9 @@ def test_a_strangers_arrival_carries_the_stranger_as_an_arriving_newcomer():
                 "appearance": "Тёмный дорожный кафтан, мокрая шапка, сапоги в грязи по колено."}
     move = {"thread_id": "thread_0", "kind": "arrival", "outcome": "В трактир входит поздний посетитель."}
     wire = _wire(world_kinds=("arrival",))
-    with pytest.raises(ValidationError):  # a person in npc_introductions is not the arrival's newcomer
-        wire.model_validate({**BASE, "npc_introductions": [stranger], "world_move": move})
+    unrelated = wire.model_validate({**BASE, "npc_introductions": [stranger], "world_move": move})
+    assert unrelated.world_move is None
+    assert len(unrelated.npc_introductions) == 1
     draft = wire.model_validate({**BASE, "world_move": {**move, "newcomer": stranger}})
     [npc] = normalize_outcome_draft(draft.model_copy(update={"world_move": None}),
                                     PlayerIntentContract(summary="Жду.", actions=[]),
