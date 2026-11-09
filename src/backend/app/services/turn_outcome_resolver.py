@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.addressed_response import AddressedResponse, GuideResponse
+from app.models.addressed_response import AddressedResponse
 from app.models.game_master import InitiativePolicy
 from app.models.item_state import (
     ItemContentRevelation,
@@ -99,8 +99,6 @@ Independent NPC initiative belongs to the later scene-development phase, after e
 For a movement outcome, carry_participants names only current companions whose joint movement
 is established by the input/context or whose participation you resolve now. Never infer that all
 present NPCs follow. A guide leading the protagonist must be included in that movement's roster.
-If the player now commits to following a present guide to the agreed destination, a recent guide
-offer establishes their consent unless current facts give a concrete reason it no longer holds.
 
 Only physically present people may respond. Existing identities must never be reintroduced, duplicated
 or moved from another scene. A question about a present person's name creates no NPC. A genuinely new
@@ -125,13 +123,6 @@ destination people. If a temporary responder introduces themself now, response_r
 their personal name and response_name_evidence a short self-identification containing it; keep
 response_speaker_name as the CURRENT designation so identity binds to the same entity. Do not
 reveal or change an already established personal name. Otherwise both revelation fields null.
-When the sole request is to guide the player to a known place, set guide_response to the present
-addressee's actual decision now (offer or decline) and select the registered destination ID.
-The place must be grounded in the request and context. Never invent where an absent person is.
-An offer is permission to follow if the player chooses; it does not move either character.
-When the same offer is already standing, preserve it only if still valid and give the next step
-instead of restaging a promise. A refusal needs a concrete reason in observable_consequences
-when established. Use null outside requests for guidance or when the destination is uncertain.
 For world_state_question state the existing state in observable_consequences without performing it.
 No complication without a grounded complication_source.
 SESSION AGREEMENTS AND DECISIONS: Agreed conditional promises are standing rules. Evaluate their
@@ -447,11 +438,6 @@ class PlaceIntroductionDraft(BaseModel):
     place: str = Field(description="new_in:<ID of the known place it lies in>")
 
 
-class GuideResponseDraft(BaseModel):
-    destination_id: UUID
-    decision: Literal["offer", "decline"]
-
-
 class TurnOutcomeDecisionDraft(BaseModel):
     """Permissive semantic draft with a mandatory action coverage field.
 
@@ -477,7 +463,6 @@ class TurnOutcomeDecisionDraft(BaseModel):
     resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     response_speaker_name: str | None = Field(default=None, max_length=120)
-    guide_response: GuideResponseDraft | None = None
     response_after_action_index: int | None = Field(default=None, ge=0, le=7)
     response_revealed_name: str | None = Field(default=None, max_length=120)
     response_name_evidence: str | None = Field(default=None, max_length=500)
@@ -817,12 +802,6 @@ def _outcome_wire_model(
         **{key: (review_model(thread["source"]), ...) for key, thread in thread_sources.items()}
     ) if thread_sources else type(None)
 
-    guide_type = (
-        create_model("BoundGuideResponse", __base__=GuideResponseDraft,
-                     destination_id=(Literal[known_places], ...)) | None
-        if bound_response_speaker and not action_count and known_places else type(None)
-    )
-
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
         npc_item_placements: list[placement_model] = Field(default_factory=list,
             max_length=8 if npc_placement_targets is None or npc_placement_targets else 0)
@@ -837,7 +816,6 @@ def _outcome_wire_model(
         else:
             thread_reviews: type(None) = None
         response_speaker_name: Annotated[speaker_type, WrapValidator(ignore_unbound_selection)] = None
-        guide_response: Annotated[guide_type, WrapValidator(ignore_unbound_selection)] = None
         # Not while the hero travels: the destination is profiled by travel (replay15 k3 twin inn).
         place_introductions: list[place_model] = Field(
             default_factory=list, max_length=1 if known_places and not movement_indices else 0)
@@ -1563,15 +1541,6 @@ class TurnOutcomeResolver:
                 draft, contract, newcomer,
                 bound_response_speaker=contract.addressed_character_name if existing_addressee else None,
             )
-            if (draft.guide_response and draft.response_speaker_name and decision.addressed_response
-                    and existing_addressee and contract.addressed_response_requested and not contract.pending_player_choice
-                    and not contract.identity_reveal_requested and not contract.world_state_question):
-                destination_id = str(draft.guide_response.destination_id)
-                if destination := (known_places or {}).get(destination_id):
-                    decision.addressed_response.guide = GuideResponse(
-                        destination_id=UUID(destination_id), destination_name=destination,
-                        decision=draft.guide_response.decision,
-                    )
             if draft.thread_reviews is not None:
                 review_sources = _evidence_sources(authoritative_context + "\n" + player_input)
                 decision.world_thread_closures = [WorldThreadClosure(

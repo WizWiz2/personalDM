@@ -376,31 +376,19 @@ class AuthorityNarrationPipeline:
             self._session,
             RoleModelRouter(ProviderConfigRepository(self._session)),
         )
-        async def publish_receipt(text: str, source: str, attempts: int, run=None, reason=None):
+        async def recover(reason: str, attempts: int, run=None) -> AuthorityNarrationResult:
+            receipt = NarrationPublicationGuard.movement_receipt(authority)
+            if not receipt:
+                raise NarrationRefused(reason)
             if run is None:
                 run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, "", None)
-            mode = "safe_fallback" if reason else "typed_result"
-            record_decision("publish", mode, {"mode": source})
+            record_decision("publish", "safe_fallback", {"mode": "movement_receipt"})
             return await self._finish(
-                audit=audit, run=run, authority=authority, text=text,
-                status=mode, repair_attempts=attempts, telemetry=self.last_telemetry,
-                publication={"mode": mode, "source": source, "validated_surface": False},
+                audit=audit, run=run, authority=authority, text=receipt,
+                status="safe_fallback", repair_attempts=attempts, telemetry=self.last_telemetry,
+                publication={"mode": "safe_fallback", "source": "movement_receipt", "validated_surface": False},
                 reason=reason,
             )
-
-        guide_text = NarrationPublicationGuard.guide_receipt(authority)
-
-        async def recover(reason: str, attempts: int, run=None) -> AuthorityNarrationResult:
-            if guide_text:
-                return await publish_receipt(guide_text, "guide_receipt", attempts, run, reason)
-            if receipt := NarrationPublicationGuard.movement_receipt(authority):
-                return await publish_receipt(receipt, "movement_receipt", attempts, run, reason)
-            raise NarrationRefused(reason)
-
-        if guide_text:
-            guide = authority.addressed_response.guide
-            if guide.repeated and guide.decision == "offer" and guide.route_open:
-                return await publish_receipt(guide_text, "guide_receipt", 0)
 
         try:
             draft, beat, telemetry = await self._narrate(
