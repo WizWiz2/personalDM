@@ -416,7 +416,7 @@ class AuthorityNarrationPipeline:
                 beat=beat,
             )
 
-        async def narrow(reason: str, attempts: int):
+        async def narrow(reason: str, attempts: int, rejected: NarrationValidationResult | None = None):
             """The typed outcome is a contract for one more narrator pass, never a publication."""
             record_decision("repair", "narrowed_contract", {"strategy": "narrowed_contract", "reason": reason[:500]},
                             role=ModelRole.NARRATOR.value)
@@ -424,10 +424,14 @@ class AuthorityNarrationPipeline:
                 contract = NarrationPublicationGuard.render_contract(authority)
             except NarrationPublicationError as exc:
                 raise NarrationRefused(f"{reason}; {exc}") from exc
+            corrections = "\n".join(
+                f"- {item.correction[:240]}" for item in (rejected.violations if rejected else [])
+                if item.severity == "error"
+            )
             try:
                 text, _, _ = await self._narrate(
                     [*narrator_messages, ChatMessage(role="user", content=NARROWED_CONTRACT.format(
-                        reason=reason[:600], contract=contract))],
+                        reason=f"{reason[:600]}\n{corrections[:800]}".rstrip(), contract=contract))],
                     narrator_selection, authority, temperature=settings.NARRATION_REPAIR_TEMPERATURE,
                     diagnostic_reason="narrowed_narration",
                 )
@@ -435,7 +439,7 @@ class AuthorityNarrationPipeline:
                 raise NarrationRefused(f"{reason}; narrowed narrator failed: {exc}") from exc
             if not (foreign_script_intrusions(text) or leaked_meta_lines(text)
                     or await self._repeats(campaign_id, text)):
-                result = await self._check(**check, candidate=text, attempt_index=attempts + 1)
+                result = await check_candidate(text, attempts + 1)
                 if result.verdict == "pass":
                     return await accepted(text, "repaired", attempts + 1, reason=reason,
                                           validation=result, narrowed=True)
@@ -452,6 +456,18 @@ class AuthorityNarrationPipeline:
             "selection": validation_selection,
             "authority": authority,
         }
+        rejected_candidates: dict[str, NarrationValidationResult] = {}
+
+        async def check_candidate(candidate: str, attempt_index: int) -> NarrationValidationResult:
+            if candidate in rejected_candidates:
+                record_decision("validate", "previously_rejected",
+                                {"attempt_index": attempt_index}, role=ModelRole.NARRATION_VALIDATOR.value)
+                return rejected_candidates[candidate]
+            result = await self._check(**check, candidate=candidate, attempt_index=attempt_index)
+            if result.verdict != "pass":
+                rejected_candidates[candidate] = result
+            return result
+
         try:
             beat_failure = self._beat_failure(authority, draft, beat)
             repeats = await self._repeats(campaign_id, draft)
@@ -468,7 +484,7 @@ class AuthorityNarrationPipeline:
             if repeats or intrusions:
                 result = None
             else:
-                result = await self._check(**check, candidate=draft, attempt_index=0)
+                result = await check_candidate(draft, 0)
                 if result.verdict == "pass":
                     if beat_failure:
                         return await accepted(
@@ -528,9 +544,7 @@ class AuthorityNarrationPipeline:
             if repeats or repaired_intrusions:
                 repaired_result = None
             else:
-                repaired_result = await self._check(
-                    **check, candidate=repaired, attempt_index=1,
-                )
+                repaired_result = await check_candidate(repaired, 1)
                 if repaired_result.verdict == "pass":
                     if repaired_failure:
                         return await accepted(
@@ -555,6 +569,7 @@ class AuthorityNarrationPipeline:
                     else "narration still breaks a ban after one repair"
                 ),
                 1,
+                rejected=repaired_result,
             )
         except NarrationValidationError as exc:
             # Validator timeout/failure is fail-closed: an unchecked draft is never published.
