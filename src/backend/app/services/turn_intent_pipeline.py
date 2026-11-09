@@ -169,14 +169,10 @@ class TurnIntentPlanningPipeline:
         except TurnPlanningError:
             here = None
         exit_labels: dict[str, list[str]] = {}
-        open_exits = set()
         if here and here != "None":
             for route in await self._compiler._state.list_exits(campaign_id, UUID(here)):
                 if route.active and route.discovered:
-                    target = str(route.to_location_id)
-                    exit_labels.setdefault(target, []).append(route.label)
-                    if not route.access_rule:
-                        open_exits.add(target)
+                    exit_labels.setdefault(str(route.to_location_id), []).append(route.label)
         return names, {
             key: {
                 "name": location.canonical_name,
@@ -185,46 +181,10 @@ class TurnIntentPlanningPipeline:
                 "scene_opening": openings.get(key) or "",
                 "current": key == here,
                 "exit_labels_from_current": exit_labels.get(key, []),
-                **({"open_exit_from_current": True} if key in open_exits else {}),
             }
             for location in locations
             for key in [str(location.id)]
         }
-
-    async def _last_scene_guide(self, campaign_id: UUID, scene_id: UUID) -> AddressedResponse | None:
-        snapshot = (await self._session.execute(
-            select(Turn.context_snapshot).where(
-                Turn.campaign_id == str(campaign_id), Turn.scene_id == str(scene_id),
-                Turn.role == "assistant", Turn.status == "active",
-            ).order_by(Turn.created_at.desc(), literal_column("turns.rowid").desc()).limit(1)
-        )).scalar_one_or_none()
-        try:
-            data = json.loads(snapshot or "{}")
-            response = AddressedResponse.model_validate(data.get("turn_authority", {}).get("addressed_response"))
-        except (AttributeError, TypeError, ValueError):
-            return None
-        return response if response.guide and response.speaker_id else None
-
-    @staticmethod
-    def _bind_guide(decision, addressee_id, previous_guide, catalog):
-        response = decision.addressed_response
-        if not response or not response.guide:
-            return
-        if not addressee_id or not response.speaker_name:
-            response.guide = None
-            return
-        response.speaker_id = addressee_id
-        guide = response.guide
-        previous = previous_guide.guide if previous_guide and previous_guide.speaker_id == addressee_id else None
-        guide.repeated = bool(previous and previous.destination_id == guide.destination_id
-                              and previous.decision == guide.decision)
-        destination = catalog.get(str(guide.destination_id), {})
-        # Only an already known, open exit can make the receipt invite immediate movement.
-        guide.route_open = bool(destination.get("open_exit_from_current"))
-        decision.narration_guidance = [
-            *decision.narration_guidance[:5],
-            guide.receipt(response.speaker_name),
-        ]
 
     async def plan(
         self,
@@ -242,17 +202,7 @@ class TurnIntentPlanningPipeline:
         scene_id = UUID(campaign.current_scene_id) if campaign and campaign.current_scene_id else None
         momentum = None
         dialogue_master = ""
-        previous_guide = None
         if not empty_cast and scene_id:
-            previous_guide = await self._last_scene_guide(campaign_id, scene_id)
-            if previous_guide and context_messages:
-                present = action_reference_catalog(context_messages, "Physically present characters:")
-                if str(previous_guide.speaker_id) in present and str(previous_guide.guide.destination_id) in names:
-                    first = context_messages[0]
-                    context_messages = [first.model_copy(update={"content": first.content
-                        + "\nRecent guide response: " + previous_guide.model_dump_json()}), *context_messages[1:]]
-                else:
-                    previous_guide = None
             master = await master_service.get(campaign_id)
             momentum = await WorldMomentumService(self._session).snapshot(
                 campaign_id, scene_id, patience=master.resolved.initiative.patience_turns,
@@ -450,7 +400,6 @@ class TurnIntentPlanningPipeline:
         decision = await self._without_carried_offscreen(campaign_id, decision)
 
         for attempt in range(2):
-            self._bind_guide(decision, addressee_id, previous_guide, catalog)
             try:
                 plan = await self._compiler.compile(campaign_id, contract, decision, player_input=user_input)
                 break

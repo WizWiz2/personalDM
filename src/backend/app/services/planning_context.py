@@ -71,7 +71,6 @@ def intent_reference_context(messages: list[ChatMessage]) -> str:
         "Player-owned items:",
         "Registered items:",
         "Controlled character:",
-        "Recent guide response:",
     )
     lines = [line for line in context.splitlines() if line.startswith(prefixes)]
     return "\n".join(lines) if lines else context
