@@ -571,3 +571,31 @@ async def test_an_officer_title_misclassified_as_a_name_does_not_abort_the_turn(
     )
     assert decision.observable_consequences == [result]
     assert decision.npc_introductions == []
+
+
+@pytest.mark.parametrize("speaker, expected", [
+    ("Начальник караула", None),
+    ("Веденин", "Веденин"),
+    ("newcomer", "Грузчик"),
+])
+def test_optional_speaker_keeps_the_outcome_and_only_binds_authorized_people(speaker, expected):
+    wire = _outcome_wire_model(0, present_names=["Веденин", "Глобин"])
+    result = "Герой узнаёт, что лодка ушла ночью."
+    introductions = [{
+        "canonical_name": "Грузчик", "role": "грузчик",
+        "description": "Местный рабочий, переносит мокрые сети с причала в сарай.",
+        "appearance": "Промокшая рабочая куртка и грубые верёвочные перчатки.",
+        "temporary_name": True, "reason": "Герой обращается к работающему на причале грузчику.",
+    }] if speaker == "newcomer" else []
+    parsed = wire.model_validate({
+        "action_outcomes": [], "observable_consequences": [result],
+        "response_speaker_name": speaker, "npc_introductions": introductions,
+    })
+    # Providers validate and serialize before the resolver validates the same wire payload.
+    parsed = wire.model_validate(parsed.model_dump(mode="json"))
+    decision = normalize_outcome_draft(parsed, PlayerIntentContract(summary="Спрашиваю про лодку."))
+    assert decision.observable_consequences == [result]
+    assert (decision.addressed_response.speaker_name if decision.addressed_response else None) == expected
+    assert [npc.canonical_name for npc in decision.npc_introductions] == (
+        ["Грузчик"] if speaker == "newcomer" else []
+    )

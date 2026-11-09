@@ -207,7 +207,8 @@ class TurnIntentPlanningPipeline:
             momentum = await WorldMomentumService(self._session).snapshot(
                 campaign_id, scene_id, patience=master.resolved.initiative.patience_turns,
             )
-            if not (momentum.get("sources") or momentum.get("automatic_deadline")):
+            if not (momentum.get("pressure_due") and momentum.get("sources")
+                    or momentum.get("automatic_deadline")):
                 # Contact seeking does not change the seeded director selection with a companion present.
                 moves = select_director_moves(master.resolved, master.state.rhythm, campaign_id=str(campaign_id))
                 dialogue_master = outcome_master_block(master.resolved, list(moves.moves))
@@ -320,7 +321,7 @@ class TurnIntentPlanningPipeline:
         if (beat and contract.addressed_response_requested and contract.addressed_character_name
                 and not (contract.actions or contract.time_advance or contract.pending_player_choice
                          or contract.named_absent_people or contract.identity_reveal_requested
-                         or contract.world_state_question or momentum.get("sources")
+                         or contract.world_state_question or world_due
                          or momentum.get("automatic_deadline") or director.forced_introduce_contact)):
             speaker_id = str(beat.speaker_id)
             present = action_reference_catalog(

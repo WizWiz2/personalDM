@@ -323,9 +323,9 @@ async def test_unconfirmed_property_change_executes_as_blocked(db_session):
 
 @pytest.mark.asyncio
 @pytest.mark.product_contract
-@pytest.mark.parametrize("active_thread", [False, True])
-async def test_addressed_dialogue_combines_planning_only_without_a_world_thread(
-    db_session, monkeypatch, active_thread,
+@pytest.mark.parametrize("active_thread, pressure_due", [(False, False), (True, False), (True, True)])
+async def test_addressed_dialogue_combines_planning_until_a_world_thread_is_due(
+    db_session, monkeypatch, active_thread, pressure_due,
 ):
     from app.services.world_momentum_service import WorldMomentumService
 
@@ -346,9 +346,11 @@ async def test_addressed_dialogue_combines_planning_only_without_a_world_thread(
         }).model_dump(mode="json")
 
     sources = [{"thread_id": "thread_0", "source": "Доставить письмо."}] if active_thread else []
-    monkeypatch.setattr(WorldMomentumService, "snapshot", AsyncMock(return_value={"sources": sources}))
+    monkeypatch.setattr(WorldMomentumService, "snapshot", AsyncMock(return_value={
+        "sources": sources, "pressure_due": pressure_due,
+    }))
     pipeline = TurnIntentPlanningPipeline(db_session, SimpleNamespace(generate_json=generate_json))
-    if active_thread:
+    if pressure_due:
         pipeline._outcomes.resolve = AsyncMock(return_value=TurnOutcomeDecision(
             observable_consequences=["Вопрос вызвал обсуждение письма."],
         ))
@@ -357,7 +359,7 @@ async def test_addressed_dialogue_combines_planning_only_without_a_world_thread(
     )
     assert plan.action_sequence.steps == []
     assert plan.world_move is None and plan.world_thread_closures == []
-    if active_thread:
+    if pressure_due:
         assert metadata["outcome_owner"] == "external_resolver"
         assert plan.observable_consequences == ["Вопрос вызвал обсуждение письма."]
     else:

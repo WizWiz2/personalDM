@@ -165,22 +165,7 @@ class _RejectingRouter:
         response_model,
     ):
         self.calls += 1
-        if self.calls == 1:
-            evidence = "Рэт кивает и решает войти."
-        else:
-            evidence = "Рэт снова кивает."
-        return {
-            "verdict": "repair_required",
-            "summary": "Нарратор снова управляет героем.",
-            "violations": [
-                {
-                    "violation_type": "player_agency",
-                    "severity": "error",
-                    "evidence": evidence,
-                    "correction": "Убрать действие героя.",
-                }
-            ],
-        }
+        return {"violations": [{"violation_type": "player_agency", "sentence": "S1"}]}
 
 
 class _BadNarratorProvider:
@@ -196,7 +181,7 @@ class _BadNarratorProvider:
             "usage": {"completion_tokens": 20},
         }
         if self.calls == 1:
-            yield "Дверь открывает дежурный. Рэт кивает и решает войти."
+            yield "Дверь открывает дежурный. Рэт говорит: «Я вхожу»."
         else:
             yield "Дежурный отступает от двери. Рэт снова кивает."
 
@@ -251,6 +236,8 @@ async def test_second_semantic_reject_gets_narrowed_contract_then_refuses(
             narrator_selection=narrator_selection,
             authority=authority,
         )
+    # The narrowed narrator repeated the already-rejected repair verbatim.
+    assert router.calls == 2
 
 
 class _TruncateThenContinueProvider:

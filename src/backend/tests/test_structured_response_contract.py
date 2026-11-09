@@ -4,12 +4,13 @@ import pytest
 from pydantic import ValidationError
 
 from app.models.addressed_response import AddressedResponse
-from app.models.player_intent import PlayerIntentContract
+from app.models.player_intent import PlayerIntentContract, TurnOutcomeDecision
 from app.services.turn_outcome_resolver import (
     TurnOutcomeDecisionDraft,
     _outcome_wire_model,
     normalize_outcome_draft,
 )
+from app.services.action_plan_compiler import ActionPlanCompiler
 from app.services.turn_authority_service import TurnAuthorityService
 from app.services.turn_authority_planner import CoordinatedTurnPlan
 from app.db.repositories.campaign_repo import CampaignRepository
@@ -37,7 +38,7 @@ def test_addressee_is_typed_but_no_answer_is_prewritten():
     draft = TurnOutcomeDecisionDraft(
         action_outcomes=[], observable_consequences=["Марта поднимает взгляд от сетей."],
     )
-    decision = normalize_outcome_draft(draft, contract())
+    decision = normalize_outcome_draft(draft, contract(), bound_response_speaker="Марта")
     response = decision.addressed_response
     assert response.speaker_name == "Марта"
     assert set(response.model_dump()) == {
@@ -140,6 +141,26 @@ async def test_response_binds_to_present_stable_id(db_session):
     # The grant decides who answers: a planner-named absent speaker cannot take the beat.
     assert unbound.addressed_response.speaker_id == unbound.beat_owner_id == marta.id
     assert "Отсутствующий капитан" not in unbound.present_character_names
+
+
+@pytest.mark.asyncio
+async def test_unbound_named_contact_does_not_give_a_bystander_the_beat(db_session):
+    campaign_id, _, _, scene = await world(db_session)
+    intent = PlayerIntentContract(
+        summary="Спрашиваю начальника караула.", addressed_response_requested=True,
+        addressed_character_name="Начальник караула",
+    )
+    plan = await ActionPlanCompiler(db_session).compile(
+        campaign_id, intent, TurnOutcomeDecision(observable_consequences=["Начальника здесь нет."]),
+        player_input=intent.summary,
+    )
+    authority = await TurnAuthorityService(db_session).build(
+        campaign_id=campaign_id, trigger_turn_id=uuid4(), player_input=intent.summary,
+        source_scene_id=scene.id, target_scene_id=scene.id, plan=plan, acting_character_id=None,
+    )
+    assert "Марта" in authority.present_character_names
+    assert authority.beat_owner_id is None
+    assert authority.addressed_response is None
 
 
 @pytest.mark.asyncio

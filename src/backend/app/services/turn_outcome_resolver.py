@@ -114,8 +114,8 @@ nobody is also a valid result. Anyone who appears must be typed in npc_introduct
 
 For actions=[] supply at least one short concrete external result in observable_consequences.
 Never write NPC lines or answers: what present characters say is left to the narrator.
-response_speaker_name is the existing contextual designation or typed introduction the player
-addresses (null when nobody is addressed). Every newly encountered person must be in
+For response_speaker_name select an exact offered designation, "newcomer" for a single typed
+introduction who responds, or null when nobody can be bound. Do not supply an unlisted title. Every newly encountered person must be in
 npc_introductions. response_after_action_index is the prerequisite action index if reaching the
 addressee requires completing a move first, otherwise null. Introductions likewise carry
 after_action_index for the hop that reaches them. A failed prerequisite must not produce
@@ -539,7 +539,7 @@ def _outcome_wire_model(
     # A known addressee who is elsewhere cannot answer here: the response is a typed silence.
     speaker_type = (type(None) if addressee_elsewhere
                     else Literal[bound_response_speaker] | None if bound_response_speaker
-                    else Literal[(*present_names, "newcomer")] | None if len(present_names or ()) > 1
+                    else Literal[(*present_names, "newcomer")] | None if present_names is not None
                     else str | None)
 
     slot_type = Literal[tuple(resident_slots)] | None if resident_slots else type(None)
@@ -772,8 +772,8 @@ def _outcome_wire_model(
     # A thread's own source line is not offered to it, so an old intention cannot certify itself.
     review_sources = _evidence_sources(review_evidence)
 
-    def ignore_invalid_evidence(value, handler):
-        # Non-strict transports may still send a quote or an unknown anchor.
+    def ignore_unbound_selection(value, handler):
+        # An invalid optional reference cannot grant authority or invalidate the outcome.
         try:
             return handler(value)
         except ValidationError:
@@ -784,7 +784,7 @@ def _outcome_wire_model(
         refs += [f"A{index}" for index in range(action_count)]
         anchor = Literal[tuple(refs)] | None if refs else type(None)
         return create_model("ThreadReview", status=(Literal["active", "resolved", "superseded", "uncertain"], ...),
-            evidence=(Annotated[anchor, WrapValidator(ignore_invalid_evidence)], None))
+            evidence=(Annotated[anchor, WrapValidator(ignore_unbound_selection)], None))
 
     reviews_model = create_model("WorldThreadReviews", __config__=ConfigDict(extra="forbid"),
         **{key: (review_model(thread["source"]), ...) for key, thread in thread_sources.items()}
@@ -803,7 +803,7 @@ def _outcome_wire_model(
             thread_reviews: reviews_model
         else:
             thread_reviews: type(None) = None
-        response_speaker_name: speaker_type = None
+        response_speaker_name: Annotated[speaker_type, WrapValidator(ignore_unbound_selection)] = None
         # Not while the hero travels: the destination is profiled by travel (replay15 k3 twin inn).
         place_introductions: list[place_model] = Field(
             default_factory=list, max_length=1 if known_places and not movement_indices else 0)
@@ -947,8 +947,8 @@ def _outcome_wire_model(
                     revealed_name=self.response_revealed_name,
                     name_evidence=self.response_name_evidence,
                 )
-            if self.response_speaker_name == "newcomer":
-                self.response_speaker_name = next((npc.canonical_name for npc in self.npc_introductions), None)
+                if not self.response_speaker_name and (bound_response_speaker or present_names is not None):
+                    raise ValueError("A name revelation needs an authorized response speaker")
             dependencies = [
                 self.response_after_action_index,
                 *(npc.after_action_index for npc in self.npc_introductions),
@@ -1056,7 +1056,7 @@ def normalize_outcome_draft(
     contract: PlayerIntentContract,
     newcomer: OutcomeNpcIntroductionDraft | None = None,
     *,
-    addressee_elsewhere: bool = False,
+    bound_response_speaker: str | None = None,
 ) -> TurnOutcomeDecision:
     """Turn permissive model output into strict world-facing semantics deterministically."""
 
@@ -1158,8 +1158,14 @@ def normalize_outcome_draft(
         {key: value for key, value in item.items() if key != "reaction"} for item in action_outcomes
     ]
     response_speaker = _compact(draft.response_speaker_name)
-    if not response_speaker and not addressee_elsewhere:
-        response_speaker = contract.addressed_character_name
+    if response_speaker == "newcomer":
+        encountered = [
+            npc["canonical_name"] for npc in introductions
+            if not npc["sent_for"] and npc["after_action_index"] == draft.response_after_action_index
+        ]
+        response_speaker = encountered[0] if len(encountered) == 1 else None
+    revealed_name = draft.response_revealed_name if response_speaker else None
+    response_speaker = response_speaker or bound_response_speaker
     return TurnOutcomeDecision.model_validate(
         {
             "action_outcomes": public_outcomes,
@@ -1188,10 +1194,10 @@ def normalize_outcome_draft(
             "addressed_response": AddressedResponse(
                 speaker_name=response_speaker,
                 after_action_index=draft.response_after_action_index,
-                revealed_name=draft.response_revealed_name,
-                name_evidence=draft.response_name_evidence,
+                revealed_name=revealed_name,
+                name_evidence=draft.response_name_evidence if revealed_name else None,
             ).model_dump()
-            if response_speaker or draft.response_revealed_name
+            if response_speaker
             else None,
             "observable_consequences": _bounded_strings(
                 list(
@@ -1519,7 +1525,10 @@ class TurnOutcomeResolver:
                 draft = draft.model_copy(update={
                     "world_move": move, "observable_consequences": [*consequences[:3], move.outcome],
                 })
-            decision = normalize_outcome_draft(draft, contract, newcomer, addressee_elsewhere=addressee_elsewhere)
+            decision = normalize_outcome_draft(
+                draft, contract, newcomer,
+                bound_response_speaker=contract.addressed_character_name if existing_addressee else None,
+            )
             if draft.thread_reviews is not None:
                 review_sources = _evidence_sources(authoritative_context + "\n" + player_input)
                 decision.world_thread_closures = [WorldThreadClosure(
