@@ -366,3 +366,102 @@ async def test_planned_npc_is_structurally_visible_before_narration_context(
 
     await materializer.rollback(authority.trigger_turn_id)  # confirmed on publication: nothing to undo
     assert await entities.get_by_id(prepared.introduced_character_ids[0]) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.interagent_contract_enforced
+@pytest.mark.parametrize("failure", ["narrator", "validator", "rejected"])
+async def test_confirmed_travel_has_a_receipt_when_prose_cannot_publish(db_session, failure):
+    from app.providers.llm_provider import LLMProviderError
+
+    class UnavailableNarrator(_BadNarratorProvider):
+        async def generate_stream(self, *args, **kwargs):
+            raise LLMProviderError("narrator unavailable")
+            yield
+
+    campaign_id = uuid4()
+    await CampaignRepository(db_session).create(campaign_id, CampaignCreate(name="Travel receipt"))
+    user_turn = await TurnRepository(db_session).create(
+        campaign_id, TurnCreate(role="user", content="Выхожу во двор."),
+    )
+    selection = _selection(campaign_id)
+    authority = TurnAuthority(
+        campaign_id=campaign_id, trigger_turn_id=user_turn.id, player_input=user_turn.content,
+        scene_disposition="location_transition", target_scene_id=uuid4(),
+        source_location_path=["Контора"], target_location_path=["Двор"],
+        action_sequence={"steps": [{
+            "status": "completed", "action_type": "movement",
+            "source_location_id": str(uuid4()), "target_location_id": str(uuid4()),
+            "observable_outcome": "Рэт придумал ловушку и выбежал во двор.",
+        }]},
+    )
+    pipeline = AuthorityNarrationPipeline(
+        db_session, router=_RejectingRouter(None if failure == "validator" else selection),
+        provider=UnavailableNarrator() if failure == "narrator" else _BadNarratorProvider(),
+    )
+    result = await pipeline.generate(
+        campaign_id=campaign_id, trigger_turn_id=user_turn.id, scene_id=None,
+        narrator_messages=[], narrator_selection=selection, authority=authority,
+    )
+    assert result.text == "Текущее место — «Двор»."
+    assert result.validation_status == "safe_fallback" and result.validation_run_id
+    assert result.beat is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.interagent_contract_enforced
+async def test_travel_receipt_is_published_with_the_actual_transition(db_session, monkeypatch):
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.db.repositories.provider_config_repo import ProviderConfigRepository
+    from app.db.tables import Character, Turn
+    from app.models.provider_config import ProviderConfigCreate
+    from app.models.player_intent import PlayerActionIntent, PlayerIntentContract
+    from app.models.scene_state import LocationExitCreate
+    from app.providers.llm_provider import LLMProviderError
+    from app.services.action_plan_compiler import ActionPlanCompiler
+    from app.services.scene_state_service import SceneStateService
+    from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
+    from app.services.turn_saga import TurnSaga
+    from tests.test_qa219_regressions import _world
+
+    campaign_id, origin, destination, hero, _, _, scene = await _world(db_session)
+    name = (await LocationRepository(db_session).get_by_id(destination)).canonical_name
+    await SceneStateService(db_session).create_exit(
+        campaign_id, origin, LocationExitCreate(to_location_id=destination, label=name),
+    )
+    await ProviderConfigRepository(db_session).create_or_update(
+        campaign_id, ProviderConfigCreate(base_url="http://localhost:11434/v1", model_name="test"),
+    )
+    await db_session.commit()
+    text = f"Иду в место «{name}»."
+
+    async def plan(self, *, campaign_id, user_input, **kwargs):
+        contract = PlayerIntentContract(summary=user_input, actions=[PlayerActionIntent(
+            action_type="movement", intent=user_input, destination_location=name,
+            destination_location_id=destination,
+        )])
+        compiler = ActionPlanCompiler(db_session)
+        decision = await compiler.resolve_known_travel(campaign_id, contract)
+        assert decision is not None
+        return await compiler.compile(campaign_id, contract, decision, player_input=user_input), {}
+
+    async def fail_narration(*args, **kwargs):
+        raise LLMProviderError("narrator offline")
+
+    monkeypatch.setattr(TurnIntentPlanningPipeline, "plan", plan)
+    monkeypatch.setattr(AuthorityNarrationPipeline, "_narrate", fail_narration)
+    output = "".join([chunk async for chunk in TurnSaga(db_session).run_turn_stream(
+        campaign_id, TurnCreate(role="user", content=text, scene_id=scene),
+    )])
+    receipt = f"Текущее место — «{name}»."
+    assert receipt in output
+    async with AsyncSession(db_session.bind) as published:
+        character = await published.get(Character, str(hero))
+        assert character.current_location_id == str(destination)
+        assistant = (await published.execute(select(Turn).where(
+            Turn.campaign_id == str(campaign_id), Turn.role == "assistant",
+        ))).scalar_one()
+        assert assistant.content == receipt
+        assert json.loads(assistant.context_snapshot)["interagent_protocol"]["validator_status"] == "safe_fallback"

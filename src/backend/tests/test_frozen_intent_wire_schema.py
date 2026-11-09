@@ -282,17 +282,22 @@ def test_typed_name_change_keeps_its_self_identification_evidence():
     assert parsed.response_name_evidence == "Меня зовут Мартин."
 
 
-def test_name_change_without_matching_self_identification_is_rejected():
-    with pytest.raises(ValidationError, match="self-identification"):
-        _outcome_wire_model(0).model_validate(_revealed_response(evidence="Меня зовут Эдгар."))
+def test_bad_self_identification_is_discarded_without_losing_the_outcome():
+    payload = _revealed_response(evidence="Меня зовут Эдгар.")
+    parsed = _outcome_wire_model(0).model_validate(payload)
+    assert parsed.response_revealed_name is None
+    assert parsed.response_name_evidence is None
+    assert parsed.observable_consequences == payload["observable_consequences"]
 
 
 def test_revealed_name_cannot_replace_the_existing_response_owner():
     wire = _outcome_wire_model(0, bound_response_speaker="Дежурный у стойки")
     payload = _revealed_response(evidence="Я Мартин.")
     payload["response_speaker_name"] = "Мартин"
-    with pytest.raises(ValidationError):
-        wire.model_validate(payload)
+    rejected = wire.model_validate(payload)
+    assert rejected.response_revealed_name is None
+    assert rejected.response_speaker_name is None
+    assert rejected.observable_consequences == payload["observable_consequences"]
     payload["response_speaker_name"] = "Дежурный у стойки"
     parsed = wire.model_validate(payload)
     assert parsed.response_speaker_name == "Дежурный у стойки"
@@ -307,8 +312,8 @@ def test_unbound_response_speaker_is_a_present_designation_or_this_turns_introdu
     payload["response_revealed_name"] = "Семён"
     payload["response_name_evidence"] = "Зовут меня Семён."
     payload["response_speaker_name"] = "Семён"
-    with pytest.raises(ValidationError):  # closed choice: not a present person and not "newcomer"
-        wire.model_validate(payload)
+    rejected = wire.model_validate(payload)
+    assert rejected.response_speaker_name is None and rejected.response_revealed_name is None
     payload["response_speaker_name"] = "Трактирщик"
     assert wire.model_validate(payload).response_revealed_name == "Семён"
 

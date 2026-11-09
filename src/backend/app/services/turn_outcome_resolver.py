@@ -740,6 +740,13 @@ def _outcome_wire_model(
         (1 if required_slot else 4 if resident_slots or not movement_indices else 0)
         if allow_introductions else 0
     )
+    def ignore_unbound_selection(value, handler):
+        # An invalid optional reference cannot grant authority or invalidate the outcome.
+        try:
+            return handler(value)
+        except ValidationError:
+            return None
+
     # The master's closed world-move kinds, minus kinds this turn's structure cannot carry.
     kinds = tuple(
         kind for kind in world_kinds
@@ -762,7 +769,19 @@ def _outcome_wire_model(
             # A stranger's arrival carries the stranger, so whoever walks in is cast (REPORT14 p10).
             newcomer: arrival_type = None
 
-        world_move_type = ThreadWorldMove if world_required else ThreadWorldMove | None
+            @model_validator(mode="after")
+            def bind_actor(self):
+                if not world_threads[self.thread_id]:
+                    if self.kind in {"npc_action", "npc_move"}:
+                        raise ValueError("NPC world move requires its thread's actor")
+                    if self.kind == "arrival" and self.newcomer is None:
+                        raise ValueError("Arrival requires the thread's actor or a typed newcomer")
+                return self
+
+        world_move_type = (
+            ThreadWorldMove if world_required
+            else Annotated[ThreadWorldMove | None, WrapValidator(ignore_unbound_selection)]
+        )
 
     # A new place lies inside a known one: the binder's own new_in:<ID> choice (REPORT14: no places).
     place_model = create_model("BoundPlaceIntroductionDraft", __base__=PlaceIntroductionDraft, place=(
@@ -771,13 +790,6 @@ def _outcome_wire_model(
     # Evidence is a selected anchor, never a re-typed quote: E-lines of context/input, A-indices of outcomes.
     # A thread's own source line is not offered to it, so an old intention cannot certify itself.
     review_sources = _evidence_sources(review_evidence)
-
-    def ignore_unbound_selection(value, handler):
-        # An invalid optional reference cannot grant authority or invalidate the outcome.
-        try:
-            return handler(value)
-        except ValidationError:
-            return None
 
     def review_model(source: str):
         refs = [ref for ref, line in review_sources.items() if _compact(source) not in _compact(line)]
@@ -813,8 +825,8 @@ def _outcome_wire_model(
         item_property_changes: list[property_model] = Field(default_factory=list, max_length=8 if revelations_allowed else 0)
         item_introductions: list[IndexedItemIntroduction] = Field(default_factory=list, max_length=4)
         response_after_action_index: prerequisite_type = None
-        response_revealed_name: revealed_name_type = None
-        response_name_evidence: revealed_name_type = None
+        response_revealed_name: Annotated[revealed_name_type, WrapValidator(ignore_unbound_selection)] = None
+        response_name_evidence: Annotated[revealed_name_type, WrapValidator(ignore_unbound_selection)] = None
         action_outcomes: list[action_model] = Field(
             default_factory=list, min_length=action_count,
             max_length=action_count,
@@ -898,11 +910,6 @@ def _outcome_wire_model(
             if thread_sources and move is not None and getattr(self.thread_reviews, move.thread_id).status != "active":
                 # The draft's own review closed this thread: its review wins, the move is void (no retry).
                 self.world_move = move = None
-            if move is not None and move.kind in {"npc_action", "npc_move"} and not world_threads[move.thread_id]:
-                raise ValueError("npc_action/npc_move must name a thread that has an actor")
-            if move is not None and move.kind == "arrival" and not world_threads[move.thread_id] \
-                    and move.newcomer is None:
-                raise ValueError("an arrival world_move without the thread's actor requires world_move.newcomer")
             def mention(item):
                 return identity_key(getattr(item, "mentioned_name", None) or item.canonical_name)
 
@@ -943,12 +950,17 @@ def _outcome_wire_model(
                 if target is not None and str(revelation.item_id) != target:
                     raise ValueError("A revelation must concern the frozen subject item, not another document")
             if self.response_revealed_name:
-                AddressedResponse(
-                    revealed_name=self.response_revealed_name,
-                    name_evidence=self.response_name_evidence,
-                )
+                try:
+                    AddressedResponse(
+                        revealed_name=self.response_revealed_name,
+                        name_evidence=self.response_name_evidence,
+                    )
+                except ValidationError:
+                    self.response_revealed_name = None
                 if not self.response_speaker_name and (bound_response_speaker or present_names is not None):
-                    raise ValueError("A name revelation needs an authorized response speaker")
+                    self.response_revealed_name = None
+            if not self.response_revealed_name:
+                self.response_name_evidence = None
             dependencies = [
                 self.response_after_action_index,
                 *(npc.after_action_index for npc in self.npc_introductions),
@@ -1606,14 +1618,13 @@ class TurnOutcomeResolver:
                 )
             patches = response_model.model_validate(data)
         except (LLMProviderError, ValueError, TypeError) as exc:
-            raise TurnPlanningError(f"destination profile enrichment failed: {exc}") from exc
+            self.audit.append({
+                "phase": "destination_profiles", "status": "unavailable",
+                "requests": requests, "error": str(exc)[:500],
+            })
+            return decision
 
-        expected = {item.action_index for item in missing}
-        by_index = {item.action_index: item for item in patches.patches}
-        if set(by_index) != expected:
-            raise TurnPlanningError(
-                "destination profile enrichment did not cover exactly the requested actions"
-            )
+        by_index = {patch.action_index: patch for patch in patches.patches}
         enriched = decision.model_copy(deep=True)
         outcomes = {item.action_index: item for item in enriched.action_outcomes}
         for index, patch in by_index.items():

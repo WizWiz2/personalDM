@@ -69,6 +69,27 @@ class NarrationPublicationGuard:
             cls._append_unique(parts, authority.world_move.outcome)
         return parts
 
+    @staticmethod
+    def movement_receipt(authority: TurnAuthority) -> str | None:
+        """Use only executor status and the actual location for a standalone travel result."""
+        if (
+            not authority.target_scene_id or not authority.target_location_path
+            or authority.addressed_response or authority.beat_owner_id or authority.pending_player_choice
+            or authority.allowed_new_npcs or authority.allowed_existing_npc_arrivals
+            or authority.allowed_new_items or authority.allowed_new_places
+            or authority.world_move or authority.world_thread_closures or authority.inventory_receipts()
+        ):
+            return None
+        steps = authority.executed_steps()
+        if not steps or any(
+            step["action_type"] != "movement" or step["item_property_changes"]
+            or (step["status"] == "completed" and not step["target_location_id"])
+            for step in steps
+        ):
+            return None
+        prefix = "Переход не завершён. " if steps[-1]["status"] == "blocked" else ""
+        return f"{prefix}Текущее место — «{authority.target_location_path[-1]}»."
+
     @classmethod
     def render_contract(cls, authority: TurnAuthority) -> str:
         """Typed outcome lines for a narrowed narrator contract (never published as-is)."""
