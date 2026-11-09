@@ -70,14 +70,33 @@ class NarrationPublicationGuard:
         return parts
 
     @staticmethod
-    def movement_receipt(authority: TurnAuthority) -> str | None:
+    def _additional_effects(authority: TurnAuthority) -> bool:
+        return bool(
+            authority.pending_player_choice or authority.allowed_new_npcs
+            or authority.allowed_existing_npc_arrivals or authority.allowed_new_items
+            or authority.allowed_new_places or authority.world_move or authority.world_thread_closures
+            or authority.inventory_receipts()
+        )
+
+    @classmethod
+    def guide_receipt(cls, authority: TurnAuthority) -> str | None:
+        response = authority.addressed_response
+        if (
+            authority.scene_disposition != "stay" or authority.executed_steps()
+            or cls._additional_effects(authority) or not response or not response.guide
+            or not response.speaker_name or not response.speaker_id
+            or response.speaker_id != authority.beat_owner_id
+            or authority.identity_reveal_requested or response.revealed_name
+        ):
+            return None
+        return response.guide.receipt(response.speaker_name)
+
+    @classmethod
+    def movement_receipt(cls, authority: TurnAuthority) -> str | None:
         """Use only executor status and the actual location for a standalone travel result."""
         if (
             not authority.target_scene_id or not authority.target_location_path
-            or authority.addressed_response or authority.beat_owner_id or authority.pending_player_choice
-            or authority.allowed_new_npcs or authority.allowed_existing_npc_arrivals
-            or authority.allowed_new_items or authority.allowed_new_places
-            or authority.world_move or authority.world_thread_closures or authority.inventory_receipts()
+            or authority.addressed_response or authority.beat_owner_id or cls._additional_effects(authority)
         ):
             return None
         steps = authority.executed_steps()
