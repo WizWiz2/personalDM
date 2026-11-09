@@ -411,6 +411,7 @@ class TurnAuthorityService:
             "addressed_response": (
                 response.model_copy(update={
                     "speaker_name": owner_name, "speaker_id": owner.id if owner else None,
+                    "guide": response.guide if owner and owner.id == response.speaker_id else None,
                 }) if response else None
             ),
         }

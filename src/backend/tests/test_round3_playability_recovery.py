@@ -465,3 +465,91 @@ async def test_travel_receipt_is_published_with_the_actual_transition(db_session
         ))).scalar_one()
         assert assistant.content == receipt
         assert json.loads(assistant.context_snapshot)["interagent_protocol"]["validator_status"] == "safe_fallback"
+
+
+@pytest.mark.asyncio
+@pytest.mark.product_contract
+async def test_repeated_guide_offer_is_actionable_and_following_moves_both(file_db, monkeypatch):
+    from sqlalchemy import select
+
+    from app.db.repositories.provider_config_repo import ProviderConfigRepository
+    from app.db.tables import Character, Turn
+    from app.models.provider_config import ProviderConfigCreate
+    from app.models.scene_state import LocationExitCreate
+    from app.providers.llm_provider import LLMProviderError
+    from app.services.role_model_router import RoleModelRouter
+    from app.services.scene_state_service import SceneStateService
+    from app.services.turn_saga import TurnSaga
+    from tests.test_qa219_regressions import _world
+
+    async with file_db() as db_session:
+        cid, origin, target, hero, npc, _, scene = await _world(db_session)
+        await SceneStateService(db_session).create_exit(
+            cid, origin, LocationExitCreate(to_location_id=target, label="Лавка"),
+        )
+        await ProviderConfigRepository(db_session).create_or_update(
+            cid, ProviderConfigCreate(base_url="http://localhost:11434/v1", model_name="test"),
+        )
+        await db_session.commit()
+
+    following = False
+
+    async def control(self, provider, selection, messages, *, response_model, **kwargs):
+        if response_model.__name__ == "PlayerIntentContractDraft":
+            data = {"summary": "Прошу проводить до лавки.", "actions": [],
+                    "addressed_response_requested": True, "addressed_character_name": "Алиса"}
+            if following:
+                data = {"summary": "Иду за Алисой до лавки.", "actions": [{
+                    "action_type": "movement", "contribution_kind": "world_action", "actor_id": str(hero),
+                    "intent": "Иду за Алисой до лавки.", "evidence_quote": "Иду за Алисой до лавки.",
+                    "spatial_effect": "travel", "destination_location": "Лавка", "place": str(target),
+                    "movement_method": "ordinary", "requested_companions": ["Алиса"],
+                }]}
+        else:
+            assert response_model.__name__ == "TurnOutcomeDecisionDraft"
+            data = {
+                "action_outcomes": [], "observable_consequences": ["Алиса готова показать путь."],
+                "response_speaker_name": "Алиса",
+                "guide_response": {"decision": "offer", "destination_id": str(target)},
+            }
+            if following:
+                data = {"action_outcomes": [{
+                    "action_index": 0, "resolution": "auto_success",
+                    "observable_outcome": "Оба дошли до лавки.", "carry_participants": ["Алиса"],
+                }]}
+        if "stated_act_entries" in response_model.model_fields:
+            data["stated_act_entries"] = dict.fromkeys(
+                response_model.model_fields["stated_act_entries"].annotation.model_fields, 0,
+            )
+        return response_model.model_validate(data).model_dump(mode="json")
+
+    async def fail_narration(*args, **kwargs):
+        raise LLMProviderError("narrator offline")
+
+    monkeypatch.setattr(RoleModelRouter, "generate_json", control)
+    monkeypatch.setattr(AuthorityNarrationPipeline, "_narrate", fail_narration)
+
+    async def play(text, current_scene=None):
+        async with file_db() as session:
+            return "".join([chunk async for chunk in TurnSaga(session).run_turn_stream(
+                cid, TurnCreate(role="user", content=text, scene_id=current_scene),
+            )])
+
+    assert "соглашается проводить" in await play("Алиса, проводи меня до лавки.", scene)
+    result = await play("Алиса, ты обещала показать дорогу к лавке.", scene)
+    assert "предложение провести" in result and "Можно пойти следом" in result
+
+    async with file_db() as persisted:
+        rows = (await persisted.execute(select(Turn).where(
+            Turn.campaign_id == str(cid), Turn.role == "assistant",
+        ).order_by(Turn.created_at))).scalars().all()
+        statuses = [json.loads(row.context_snapshot)["interagent_protocol"]["validator_status"] for row in rows]
+        assert statuses == ["safe_fallback", "typed_result"]
+        assert (await persisted.get(Character, str(hero))).current_location_id == str(origin)
+        assert (await persisted.get(Character, str(npc))).current_location_id == str(origin)
+
+    following = True
+    assert "Текущее место — «Лавка»." in await play("Иду за Алисой до лавки.", scene)
+    async with file_db() as persisted:
+        assert (await persisted.get(Character, str(hero))).current_location_id == str(target)
+        assert (await persisted.get(Character, str(npc))).current_location_id == str(target)

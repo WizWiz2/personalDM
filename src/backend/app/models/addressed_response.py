@@ -1,8 +1,28 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class GuideResponse(BaseModel):
+    destination_id: UUID
+    destination_name: str
+    decision: Literal["offer", "decline"]
+    repeated: bool = False
+    route_open: bool = False
+
+    def receipt(self, speaker: str) -> str:
+        destination = f"«{self.destination_name}»"
+        if self.decision == "decline":
+            return f"{speaker} отказывается проводить до места {destination}."
+        offer = (
+            f"{speaker} — предложение провести до места {destination} остаётся в силе."
+            if self.repeated else f"{speaker} соглашается проводить до места {destination}."
+        )
+        next_step = "Можно пойти следом." if self.route_open else "Попроси указать ближайший проход."
+        return f"{offer} {next_step}"
 
 
 class AddressedResponse(BaseModel):
@@ -15,6 +35,7 @@ class AddressedResponse(BaseModel):
     after_action_index: int | None = Field(default=None, ge=0, le=7)
     revealed_name: str | None = Field(default=None, min_length=2, max_length=120)
     name_evidence: str | None = Field(default=None, max_length=500)
+    guide: GuideResponse | None = None
 
     @model_validator(mode="after")
     def validate_name_revelation(self):

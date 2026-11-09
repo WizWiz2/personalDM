@@ -34,6 +34,9 @@ Speech is NOT an executable action, even in imperative form: "назовись",
 information_request_only=true, addressed_response_requested=true and the current addressee's
 designation (or null for unspecified people). A name question also sets identity_reveal_requested.
 Do not invent service/interaction/observation actions for asking, speaking or listening to a reply.
+Asking or reminding a present person to guide you is addressed speech. Actually going with or
+following them is the player's movement, with the guide among requested_companions. If the
+current context has an active guide offer, use its registered destination for explicit following.
 spoken_identity_evidence is a verbatim fragment where the human actually introduces the protagonist
 to another character now ("Я Ирма Вейс"). Otherwise null: private thoughts, hypothetical, negative,
 quoted third-party speech or mere mentions of a name are not an introduction.
