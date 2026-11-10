@@ -22,13 +22,16 @@ def _authority():
 
 
 @pytest.mark.asyncio
-async def test_validator_wire_has_only_violations_over_four_prose_bans():
+async def test_validator_wire_keeps_four_prose_bans_and_anchored_evidence():
     router = SimpleNamespace(generate_json=AsyncMock(return_value={"violations": [], "names_given": []}))
     auth = _authority()
     result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), auth, TEXT)
     kwargs = router.generate_json.await_args.kwargs
     schema = kwargs["response_model"].model_json_schema()
-    assert set(schema["properties"]) <= {"violations", "names_given", "non_story_sentences"}
+    assert set(schema["properties"]) == {
+        "violations", "names_given", "non_story_sentences", "location_change_claims",
+    }
+    assert schema["properties"]["location_change_claims"]["items"]["enum"] == ["S0", "S1"]
     found = schema["$defs"][schema["properties"]["violations"]["items"]["$ref"].split("/")[-1]]
     assert set(found["properties"]["violation_type"]["enum"]) == {
         "absent_character", "canon_conflict", "player_agency", "invalid_movement",

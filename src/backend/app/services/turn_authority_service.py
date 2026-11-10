@@ -303,6 +303,7 @@ class TurnAuthorityService:
             target_scene_id=effective_scene_id,
             scene_disposition=disposition,
             transition_type=transition_type,
+            source_location_id=source_state.location_id if source_state else None,
             source_location_path=(list(source_state.location_path) if source_state else []),
             target_location_path=(list(target_state.location_path) if target_state else []),
             scene_time=getattr(target_state, "world_time_label", None),

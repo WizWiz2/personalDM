@@ -242,3 +242,26 @@ def test_a_prose_name_for_a_cast_member_is_a_canon_conflict_unless_revealed():
     revealed = _authority(addressed_response=AddressedResponse(
         speaker_name="Дежурный", revealed_name="Степан", name_evidence="Степан меня зовут"))
     assert TurnAuthorityValidator._interpret(revealed, prose, data).verdict == "pass"
+
+
+@pytest.mark.asyncio
+@pytest.mark.interagent_contract_enforced
+@pytest.mark.parametrize("status", ["blocked", "completed"])
+async def test_location_change_claim_is_checked_against_execution(status):
+    prose = "Проводник пересёк мост вместе с тобой."
+    router = _Router({"violations": [], "location_change_claims": ["S0"]})
+    authority = _authority(
+        allowed_new_npcs=[], scene_disposition="sequence",
+        action_sequence={"steps": [{
+            "action_type": "movement", "status": status,
+            "source_location_id": str(uuid4()), "target_location_id": str(uuid4()),
+        }]},
+    )
+    result = await TurnAuthorityValidator(router).validate(SimpleNamespace(), authority, prose)
+    if status == "completed":
+        assert result.verdict == "pass"
+    else:
+        assert result.verdict == "repair_required"
+        assert [(v.violation_type, v.evidence) for v in result.violations] == [
+            ("invalid_movement", prose),
+        ]

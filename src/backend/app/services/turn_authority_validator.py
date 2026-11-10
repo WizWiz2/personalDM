@@ -70,6 +70,9 @@ def findings_model(authority: TurnAuthority, candidate_text: str) -> type[BaseMo
         "NarrationFindings", __base__=NarrationFindings,
         violations=(list[found], Field(default_factory=list, max_length=12)),
         non_story_sentences=(list[Literal[sentences]], Field(default_factory=list, max_length=12)),
+        **({
+            "location_change_claims": (list[Literal[sentences]], Field(default_factory=list, max_length=12)),
+        } if not authority.has_location_change_authority() else {}),
         names_given=(list[naming], Field(default_factory=list, max_length=4, description=(
             "Each personal name the candidate gives a cast member here (self-introduction or "
             "narration) that differs from their cast name. [] if none."))),
@@ -88,11 +91,19 @@ def _expand(data: dict, candidate: str, authority: TurnAuthority) -> list[Narrat
         allowed_names.setdefault(response.speaker_name, {identity_key(response.speaker_name)}).add(
             identity_key(response.revealed_name)
         )
+    findings = data.get("violations") or []
+    reported_movement = {item["sentence"] for item in findings if item["violation_type"] == "invalid_movement"}
+    movement_claims = data.get("location_change_claims") if not authority.has_location_change_authority() else None
     return [
+        NarrationViolation(violation_type="invalid_movement", evidence=sentences[anchor],
+                           correction=_CORRECTION["invalid_movement"])
+        for anchor in dict.fromkeys(movement_claims or [])
+        if anchor not in reported_movement
+    ] + [
         NarrationViolation(violation_type=item["violation_type"], evidence=sentences[item["sentence"]],
                            correction=_CORRECTION[item["violation_type"]],
                            known_absent_name=item.get("known_absent_name"))
-        for item in data.get("violations") or []
+        for item in findings
     ] + [
         NarrationViolation(violation_type="canon_conflict", evidence=sentences[item["sentence"]],
                            correction=f"Не давай имени «{item['name']}»: в фактах он «{item['who']}».")
@@ -170,9 +181,13 @@ The typed facts define positions, custody and movement. Report ONLY these bans:
    player character perceives is allowed.
 4. invalid_movement: a character arrives, departs or changes locations without a corresponding
    typed transition or authorized arrival. Movement within the current place is allowed.
+   When location_change_claims is in the schema, extract the S anchors where the prose
+   depicts an actual change of physical location in this turn. A decision to do it, an offer,
+   instructions, a gesture toward an exit, a quoted claim, and movement within the current
+   place are not changes of location. Record claims independently of your violations list.
 
-Present characters may speak, answer, refuse, stay silent, gesture, move, share opinions, claims or
-new information. None of that is required and none of it is a violation. Style, completeness,
+Present characters may speak, answer, refuse, stay silent, gesture, move within the current place,
+or share opinions, claims and new information. None of that is required. Style, completeness,
 pacing, atmosphere and how a question is answered are not your concern.
 For every violation give only its ban and the S anchor of the sentence committing it.
 Separately, non_story_sentences lists S anchors containing the model's private writing notes,

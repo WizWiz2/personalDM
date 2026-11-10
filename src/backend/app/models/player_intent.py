@@ -136,6 +136,7 @@ class PlayerIntentContract(BaseModel):
     # Speech/response ownership is separate from executable world actions.
     addressed_response_requested: bool = False
     addressed_character_name: str | None = Field(default=None, max_length=120)
+    npc_request_addressee_id: UUID | None = None
     identity_reveal_requested: bool = False
     world_state_question: bool = False
 

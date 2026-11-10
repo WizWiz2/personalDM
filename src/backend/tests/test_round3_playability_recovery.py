@@ -505,6 +505,10 @@ async def test_npc_request_result_survives_a_narrator_outage_and_continues(
         if response_model.__name__ == "PlayerIntentContractDraft":
             data = {"summary": requests[bool(prior)], "actions": [],
                     "addressed_response_requested": True, "addressed_character_name": "Алиса"}
+            if prior and follow_up == "unchanged":
+                data.update(addressed_response_requested=False, world_state_question=True,
+                            npc_request_addressee_id=str(npc),
+                            dialogue_beat={"speaker_id": str(npc), "reaction": "cooperate"})
             if "stated_act_entries" in response_model.model_fields:
                 entries = response_model.model_fields["stated_act_entries"].annotation.model_fields
                 text = requests[bool(prior)]

@@ -616,3 +616,38 @@ def test_unknown_request_reference_does_not_create_continuity_or_drop_the_turn()
     assert rejected.observable_consequences == payload["observable_consequences"]
     payload["request_outcome"]["continuation_of"] = published
     assert wire.model_validate(payload).request_outcome.continuation_of == published
+
+
+@pytest.mark.asyncio
+async def test_single_addressed_service_decision_is_available_to_later_turns():
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from app.models.turn import ChatMessage
+    from app.services.turn_outcome_resolver import TurnOutcomeResolver
+
+    class Router:
+        async def generate_json(self, provider, selection, messages, *, response_model, **kwargs):
+            return response_model.model_validate({
+                "action_outcomes": [{
+                    "action_index": 0, "resolution": "auto_success", "npc_response": "accepted",
+                    "observable_outcome": "Марта согласилась осмотреть механизм.",
+                }],
+                "observable_consequences": ["Марта согласилась осмотреть механизм."],
+            }).model_dump()
+
+    speaker_id = uuid4()
+    request = "Марта, осмотри механизм."
+    contract = PlayerIntentContract(
+        summary=request, addressed_response_requested=True, addressed_character_name="Марта",
+        npc_request_addressee_id=speaker_id,
+        actions=[{"action_type": "service", "intent": request, "requested_actor_id": speaker_id}],
+    )
+    decision = await TurnOutcomeResolver(Router()).resolve(
+        SimpleNamespace(),
+        [ChatMessage(role="system", content="Physically present characters: Рэт, Марта")],
+        request, contract, request_speaker_id=speaker_id,
+    )
+    assert decision.addressed_response.speaker_id == speaker_id
+    assert decision.addressed_response.request_outcome.decision == "accepted"
+    assert decision.addressed_response.request_outcome.standalone is False

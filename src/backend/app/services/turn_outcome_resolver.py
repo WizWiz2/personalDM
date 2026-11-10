@@ -1475,6 +1475,8 @@ class TurnOutcomeResolver:
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,
+                "npc_request_addressee_id": str(contract.npc_request_addressee_id)
+                if contract.npc_request_addressee_id else None,
                 "addressed_designation": contract.addressed_character_name,
                 "solo_physical_cast": solo_cast,
                 "seeks_contact_or_presence": seeks_contact_or_presence(contract),
@@ -1575,7 +1577,15 @@ class TurnOutcomeResolver:
                 bound_response_speaker=contract.addressed_character_name if existing_addressee else None,
             )
             request = draft.request_outcome
-            if request and request_speaker_id and draft.response_speaker_name and decision.addressed_response:
+            if request is None and request_speaker_id and len(contract.actions) == 1:
+                action = contract.actions[0]
+                outcome = next(iter(decision.action_outcomes), None)
+                if (action.requested_actor_id == request_speaker_id and outcome
+                        and outcome.npc_response in ("accepted", "refused")):
+                    # The action already contains the NPC decision. Its result can contain
+                    # other effects, so the bare decision cannot stand in for the full turn.
+                    request = RequestOutcomeDraft(decision=outcome.npc_response, standalone=False)
+            if request and request_speaker_id and decision.addressed_response:
                 previous = (recent_requests or {}).get(request.continuation_of)
                 if request.decision != "unchanged" or previous:
                     decision.addressed_response.speaker_id = request_speaker_id
