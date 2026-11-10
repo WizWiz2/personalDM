@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, literal_column, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.db.repositories.campaign_setup_repo import CampaignSetupRepository
 from app.db.repositories.entity_repo import EntityRepository
@@ -186,6 +187,36 @@ class TurnIntentPlanningPipeline:
             for key in [str(location.id)]
         }
 
+    async def _recent_requests(self, campaign_id: UUID, scene_id: UUID, speaker_id: UUID) -> dict:
+        """Only published, active answers from this speaker and scene can supply continuity."""
+        request = aliased(Turn)
+        rows = (await self._session.execute(
+            select(Turn.id, Turn.context_snapshot, request.content)
+            .join(request, Turn.parent_turn_id == request.id)
+            .where(
+                Turn.campaign_id == str(campaign_id), Turn.scene_id == str(scene_id),
+                Turn.acting_character_id == str(speaker_id), Turn.role == "assistant", Turn.status == "active",
+                request.campaign_id == str(campaign_id), request.role == "user", request.status == "active",
+            )
+            .order_by(Turn.created_at.desc(), literal_column("turns.rowid").desc()).limit(6)
+        )).all()
+        recent = {}
+        for turn_id, snapshot, player_input in rows:
+            try:
+                authority = json.loads(snapshot or "{}").get("turn_authority") or {}
+                response = AddressedResponse.model_validate(authority.get("addressed_response"))
+            except (AttributeError, ValueError, TypeError):
+                continue
+            if response.speaker_id == speaker_id and response.request_outcome:
+                consequences = authority.get("observable_consequences") or []
+                recent[turn_id] = {
+                    "request": player_input[:300],
+                    "decision": response.request_outcome.decision,
+                    "standalone": response.request_outcome.standalone,
+                    "consequences": [line[:240] for line in consequences[:2] if isinstance(line, str)],
+                }
+        return recent
+
     async def plan(
         self,
         *,
@@ -345,6 +376,17 @@ class TurnIntentPlanningPipeline:
             decision = await self._compiler.resolve_known_travel(campaign_id, contract)
             if decision is not None:
                 outcome_owner = "route_graph"
+        request_scope = {}
+        if decision is None and scene_id and addressee_id and contract.addressed_response_requested and not (
+            contract.actions or contract.pending_player_choice or contract.identity_reveal_requested
+            or contract.time_advance or contract.world_state_question
+        ):
+            present = action_reference_catalog(context_messages, "Physically present characters:")
+            if str(addressee_id) in present and str(addressee_id) != str(campaign.player_character_id):
+                request_scope = {
+                    "request_speaker_id": addressee_id,
+                    "recent_requests": await self._recent_requests(campaign_id, scene_id, addressee_id),
+                }
         if decision is None:
             decision = await self._outcomes.resolve(
                 selection,
@@ -359,6 +401,7 @@ class TurnIntentPlanningPipeline:
                 known_places=names,
                 known_cast=known_cast,
                 required_absent=await self._uncast(campaign_id, contract.named_absent_people),
+                **request_scope,
             )
         elif director.forced_introduce_contact and not decision.npc_introductions:
             # Route-graph travel decisions skip the LLM outcome path; re-enter the resolver so
@@ -418,6 +461,7 @@ class TurnIntentPlanningPipeline:
                     known_cast=known_cast,
                     required_absent=await self._uncast(campaign_id, contract.named_absent_people),
                     repair_feedback=str(exc) + "\nPrevious decision:\n" + decision.model_dump_json(),
+                    **request_scope,
                 )
                 decision = apply_due_deadline(apply_moves_to_outcome_decision(decision, director), contract, momentum)
                 decision = await self._without_carried_offscreen(campaign_id, decision)

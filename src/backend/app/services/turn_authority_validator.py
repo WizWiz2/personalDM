@@ -161,6 +161,8 @@ The typed facts define positions, custody and movement. Report ONLY these bans:
 2. canon_conflict: prose denies or overwrites an established_state entry, scene_time, revealed
    document content, or the result of an executed step (a completed step happened, a blocked step
    did not), or contradicts an item's recorded position or custody.
+   A request_outcome records the addressed NPC's decision, not execution. Preserve its terms;
+   an unchanged decision already stood before this turn.
    Registered character_aliases refer to the same cast member. A cast member's identity is a fact too: list in names_given any personal name the
    prose gives them.
 3. player_agency: prose gives the player character new speech, decisions, thoughts, feelings or

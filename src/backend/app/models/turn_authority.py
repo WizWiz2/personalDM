@@ -325,6 +325,11 @@ class TurnAuthority(BaseModel):
             "item_states": [state.model_dump(mode="json") for state in self.item_states],
             "inventory_receipts": self.inventory_receipts(),
             "unavailable_items": self.unavailable_item_names,
+            **({"request_outcome": {
+                **self.addressed_response.request_outcome.model_dump(mode="json"),
+                "speaker": self.addressed_response.speaker_name,
+                "consequences": self.observable_consequences,
+            }} if self.addressed_response and self.addressed_response.request_outcome else {}),
             "approved_world_move": (
                 self.world_move.model_dump(mode="json") if self.world_move else None
             ),

@@ -42,7 +42,7 @@ def test_addressee_is_typed_but_no_answer_is_prewritten():
     response = decision.addressed_response
     assert response.speaker_name == "Марта"
     assert set(response.model_dump()) == {
-        "speaker_name", "speaker_id", "after_action_index", "revealed_name", "name_evidence",
+        "speaker_name", "speaker_id", "after_action_index", "revealed_name", "name_evidence", "request_outcome",
     }
     assert decision.observable_consequences == ["Марта поднимает взгляд от сетей."]
 

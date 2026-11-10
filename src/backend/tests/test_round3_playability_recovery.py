@@ -465,3 +465,98 @@ async def test_travel_receipt_is_published_with_the_actual_transition(db_session
         ))).scalar_one()
         assert assistant.content == receipt
         assert json.loads(assistant.context_snapshot)["interagent_protocol"]["validator_status"] == "safe_fallback"
+
+
+@pytest.mark.asyncio
+@pytest.mark.product_contract
+@pytest.mark.parametrize("requests,first,follow_up,expected", [
+    (("Алиса, проводи меня к архиву.", "Алиса, ты согласна показать дорогу?"),
+     "accepted", "unchanged", "подтверждает согласие"),
+    (("Алиса, открой ворота.", "Алиса, всё-таки пропустишь?"),
+     "refused", "unchanged", "по-прежнему отказывает"),
+    (("Алиса, передай письмо.", "Алиса, передай письмо по просьбе адресата."),
+     "refused", "accepted", "соглашается"),
+])
+async def test_npc_request_result_survives_a_narrator_outage_and_continues(
+    file_db, monkeypatch, requests, first, follow_up, expected,
+):
+    from sqlalchemy import select
+
+    from app.db.repositories.provider_config_repo import ProviderConfigRepository
+    from app.db.tables import Character, Turn
+    from app.models.provider_config import ProviderConfigCreate
+    from app.providers.llm_provider import LLMProviderError
+    from app.services.role_model_router import RoleModelRouter
+    from app.services.turn_intent_pipeline import TurnIntentPlanningPipeline
+    from app.services.turn_saga import TurnSaga
+    from app.services.turn_undo_service import TurnUndoService
+    from tests.test_qa219_regressions import _world
+
+    async with file_db() as session:
+        cid, origin, _, hero, npc, _, scene = await _world(session)
+        await ProviderConfigRepository(session).create_or_update(
+            cid, ProviderConfigCreate(base_url="http://localhost:11434/v1", model_name="test"),
+        )
+        await session.commit()
+
+    prior = None
+
+    async def control(self, provider, selection, messages, *, response_model, **kwargs):
+        if response_model.__name__ == "PlayerIntentContractDraft":
+            data = {"summary": requests[bool(prior)], "actions": [],
+                    "addressed_response_requested": True, "addressed_character_name": "Алиса"}
+            if "stated_act_entries" in response_model.model_fields:
+                entries = response_model.model_fields["stated_act_entries"].annotation.model_fields
+                text = requests[bool(prior)]
+                data["actions"] = [{
+                    "actor_id": str(hero), "contribution_kind": "speech",
+                    "evidence_quote": text, "intent": text, "expected_effect": "ordinary",
+                } for _ in entries]
+                data["stated_act_entries"] = {key: index for index, key in enumerate(entries)}
+        else:
+            assert response_model.__name__ == "TurnOutcomeDecisionDraft"
+            data = {"action_outcomes": [], "response_speaker_name": "Алиса",
+                    "observable_consequences": ["Алиса сообщила решение по просьбе."],
+                    "request_outcome": {"decision": follow_up if prior else first,
+                                        "continuation_of": str(prior) if prior else None,
+                                        "standalone": True}}
+        return response_model.model_validate(data).model_dump(mode="json")
+
+    async def fail_narration(*args, **kwargs):
+        raise LLMProviderError("narrator offline")
+
+    monkeypatch.setattr(RoleModelRouter, "generate_json", control)
+    monkeypatch.setattr(AuthorityNarrationPipeline, "_narrate", fail_narration)
+
+    async def play(text):
+        async with file_db() as session:
+            return "".join([chunk async for chunk in TurnSaga(session).run_turn_stream(
+                cid, TurnCreate(role="user", content=text, scene_id=scene),
+            )])
+
+    assert ("соглашается" if first == "accepted" else "отказывает") in await play(requests[0])
+    async with file_db() as published:
+        prior = (await published.execute(select(Turn.id).where(
+            Turn.campaign_id == str(cid), Turn.role == "assistant",
+        ))).scalar_one()
+
+    assert expected in await play(requests[1])
+    async with file_db() as published:
+        rows = (await published.execute(select(Turn).where(
+            Turn.campaign_id == str(cid), Turn.role == "assistant",
+        ).order_by(Turn.created_at))).scalars().all()
+        outcomes = [json.loads(row.context_snapshot)["turn_authority"]["addressed_response"] for row in rows]
+        assert all(result["speaker_id"] == str(npc) for result in outcomes)
+        assert [result["request_outcome"]["decision"] for result in outcomes] == [
+            first, first if follow_up == "unchanged" else follow_up,
+        ]
+        assert outcomes[1]["request_outcome"]["continuation_of"] == str(prior)
+        assert outcomes[1]["request_outcome"]["unchanged"] is (follow_up == "unchanged")
+        assert (await published.get(Character, str(hero))).current_location_id == str(origin)
+        assert (await published.get(Character, str(npc))).current_location_id == str(origin)
+
+        assert await TurnUndoService(published).undo_last_pair(cid)
+        await published.commit()
+        recent = await TurnIntentPlanningPipeline(published, None)._recent_requests(cid, scene, npc)
+        assert set(recent) == {prior}
+        assert recent[prior]["decision"] == first

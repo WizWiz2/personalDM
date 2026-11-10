@@ -599,3 +599,20 @@ def test_optional_speaker_keeps_the_outcome_and_only_binds_authorized_people(spe
     assert [npc.canonical_name for npc in decision.npc_introductions] == (
         ["Грузчик"] if speaker == "newcomer" else []
     )
+
+
+def test_unknown_request_reference_does_not_create_continuity_or_drop_the_turn():
+    from uuid import uuid4
+
+    published = str(uuid4())
+    wire = _outcome_wire_model(0, bound_response_speaker="Алиса", recent_request_ids=(published,))
+    payload = {
+        "action_outcomes": [], "observable_consequences": ["Алиса повторяет своё решение."],
+        "response_speaker_name": "Алиса",
+        "request_outcome": {"decision": "unchanged", "continuation_of": str(uuid4())},
+    }
+    rejected = wire.model_validate(payload)
+    assert rejected.request_outcome is None
+    assert rejected.observable_consequences == payload["observable_consequences"]
+    payload["request_outcome"]["continuation_of"] = published
+    assert wire.model_validate(payload).request_outcome.continuation_of == published
