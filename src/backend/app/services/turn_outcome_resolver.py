@@ -17,7 +17,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.addressed_response import AddressedResponse
+from app.models.addressed_response import AddressedResponse, RequestOutcome
 from app.models.game_master import InitiativePolicy
 from app.models.item_state import (
     ItemContentRevelation,
@@ -123,6 +123,17 @@ destination people. If a temporary responder introduces themself now, response_r
 their personal name and response_name_evidence a short self-identification containing it; keep
 response_speaker_name as the CURRENT designation so identity binds to the same entity. Do not
 reveal or change an already established personal name. Otherwise both revelation fields null.
+For a single request to a present NPC to do or allow something, record their actual decision
+in request_outcome. Acknowledgment alone is not acceptance. An acceptance does not execute the
+request. Use conditional when permission or agreement depends on something; give the condition
+in observable_consequences. Use deferred when no decision was made. A refusal with an explanation
+must keep the explanation in observable_consequences. Leave request_outcome null for questions
+about facts, greetings, and replies with multiple independent outcomes.
+Set standalone=true only when plain agreement or refusal fully conveys the result, without
+omitting an explanation, condition, new information, or completed action.
+If recent published requests include the same attempt, select its turn ID in continuation_of.
+Use unchanged only if the prior decision still holds under the current facts. Do not repeat it
+as a fresh event. Give the current constraint, what remains possible, or what changed.
 For world_state_question state the existing state in observable_consequences without performing it.
 No complication without a grounded complication_source.
 SESSION AGREEMENTS AND DECISIONS: Agreed conditional promises are standing rules. Evaluate their
@@ -438,6 +449,12 @@ class PlaceIntroductionDraft(BaseModel):
     place: str = Field(description="new_in:<ID of the known place it lies in>")
 
 
+class RequestOutcomeDraft(BaseModel):
+    decision: Literal["accepted", "refused", "conditional", "deferred", "unchanged"]
+    continuation_of: str | None = None
+    standalone: bool = False
+
+
 class TurnOutcomeDecisionDraft(BaseModel):
     """Permissive semantic draft with a mandatory action coverage field.
 
@@ -463,6 +480,7 @@ class TurnOutcomeDecisionDraft(BaseModel):
     resolution: TurnResolution = "success"
     observable_consequences: list[str] = Field(default_factory=list, max_length=4)
     response_speaker_name: str | None = Field(default=None, max_length=120)
+    request_outcome: RequestOutcomeDraft | None = None
     response_after_action_index: int | None = Field(default=None, ge=0, le=7)
     response_revealed_name: str | None = Field(default=None, max_length=120)
     response_name_evidence: str | None = Field(default=None, max_length=500)
@@ -522,6 +540,7 @@ def _outcome_wire_model(
     npc_placement_targets: dict[int, str] | None = None,
     thread_sources: dict[str, dict] | None = None,
     review_evidence: str = "",
+    recent_request_ids: tuple[str, ...] | None = None,
 ) -> type[TurnOutcomeDecisionDraft]:
     """Constrain only structural coverage at the model boundary.
 
@@ -802,6 +821,14 @@ def _outcome_wire_model(
         **{key: (review_model(thread["source"]), ...) for key, thread in thread_sources.items()}
     ) if thread_sources else type(None)
 
+    request_type = type(None)
+    if bound_response_speaker and recent_request_ids is not None:
+        reference = Literal[recent_request_ids] | None if recent_request_ids else type(None)
+        request_type = create_model(
+            "BoundRequestOutcome", __base__=RequestOutcomeDraft,
+            continuation_of=(reference, None),
+        ) | None
+
     class ExactTurnOutcomeDecisionDraft(TurnOutcomeDecisionDraft):
         npc_item_placements: list[placement_model] = Field(default_factory=list,
             max_length=8 if npc_placement_targets is None or npc_placement_targets else 0)
@@ -816,6 +843,7 @@ def _outcome_wire_model(
         else:
             thread_reviews: type(None) = None
         response_speaker_name: Annotated[speaker_type, WrapValidator(ignore_unbound_selection)] = None
+        request_outcome: Annotated[request_type, WrapValidator(ignore_unbound_selection)] = None
         # Not while the hero travels: the destination is profiled by travel (replay15 k3 twin inn).
         place_introductions: list[place_model] = Field(
             default_factory=list, max_length=1 if known_places and not movement_indices else 0)
@@ -1346,6 +1374,8 @@ class TurnOutcomeResolver:
         known_places: dict[str, str] | None = None,
         required_absent: tuple[str, ...] = (),
         known_cast: dict[str, str] | None = None,
+        request_speaker_id: UUID | None = None,
+        recent_requests: dict | None = None,
     ) -> TurnOutcomeDecision:
         policy, momentum = initiative or (InitiativePolicy(), {})
         threads = {thread["thread_id"]: thread for thread in momentum.get("sources", [])
@@ -1441,6 +1471,7 @@ class TurnOutcomeResolver:
                 required_absent=required_absent,
                 thread_sources=threads,
                 review_evidence=authoritative_context + "\n" + player_input,
+                recent_request_ids=tuple(recent_requests or ()) if request_speaker_id else None,
             )
             response_contract = {
                 "response_requested": contract.addressed_response_requested,
@@ -1491,6 +1522,8 @@ class TurnOutcomeResolver:
                                 + contract.model_dump_json()
                                 + "\n\n[CURRENT RESPONSE OWNERSHIP]\n"
                                 + json.dumps(response_contract, ensure_ascii=False)
+                                + ("\n[RECENT PUBLISHED REQUESTS TO THIS NPC]\n"
+                                   + json.dumps(recent_requests, ensure_ascii=False) if recent_requests else "")
                                 + empty_cast_guidance
                                 + master_block
                                 + ("\n[KNOWN PLACES]\n" + json.dumps(known_places, ensure_ascii=False)
@@ -1541,6 +1574,19 @@ class TurnOutcomeResolver:
                 draft, contract, newcomer,
                 bound_response_speaker=contract.addressed_character_name if existing_addressee else None,
             )
+            request = draft.request_outcome
+            if request and request_speaker_id and draft.response_speaker_name and decision.addressed_response:
+                previous = (recent_requests or {}).get(request.continuation_of)
+                if request.decision != "unchanged" or previous:
+                    decision.addressed_response.speaker_id = request_speaker_id
+                    decision.addressed_response.request_outcome = RequestOutcome(
+                        decision=previous["decision"] if request.decision == "unchanged" else request.decision,
+                        continuation_of=request.continuation_of,
+                        unchanged=request.decision == "unchanged",
+                        standalone=request.standalone and (
+                            request.decision != "unchanged" or previous.get("standalone", False)
+                        ),
+                    )
             if draft.thread_reviews is not None:
                 review_sources = _evidence_sources(authoritative_context + "\n" + player_input)
                 decision.world_thread_closures = [WorldThreadClosure(

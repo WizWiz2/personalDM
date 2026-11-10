@@ -371,22 +371,26 @@ class AuthorityNarrationPipeline:
         narrator_selection: RoleModelSelection,
         authority: TurnAuthority,
     ) -> AuthorityNarrationResult:
-        """Validate draft and repairs before publishing prose or recovering a confirmed trip."""
+        """Validate prose and recover verified outcomes when safe to display alone."""
         audit = NarrationValidator(
             self._session,
             RoleModelRouter(ProviderConfigRepository(self._session)),
         )
         async def recover(reason: str, attempts: int, run=None) -> AuthorityNarrationResult:
-            receipt = NarrationPublicationGuard.movement_receipt(authority)
+            receipt = NarrationPublicationGuard.request_receipt(authority)
+            source = "request_receipt"
+            if not receipt:
+                receipt = NarrationPublicationGuard.movement_receipt(authority)
+                source = "movement_receipt"
             if not receipt:
                 raise NarrationRefused(reason)
             if run is None:
                 run = await audit.start_run(campaign_id, trigger_turn_id, scene_id, "", None)
-            record_decision("publish", "safe_fallback", {"mode": "movement_receipt"})
+            record_decision("publish", "safe_fallback", {"mode": source})
             return await self._finish(
                 audit=audit, run=run, authority=authority, text=receipt,
                 status="safe_fallback", repair_attempts=attempts, telemetry=self.last_telemetry,
-                publication={"mode": "safe_fallback", "source": "movement_receipt", "validated_surface": False},
+                publication={"mode": "safe_fallback", "source": source, "validated_surface": False},
                 reason=reason,
             )
 

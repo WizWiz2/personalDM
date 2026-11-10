@@ -70,14 +70,42 @@ class NarrationPublicationGuard:
         return parts
 
     @staticmethod
-    def movement_receipt(authority: TurnAuthority) -> str | None:
+    def _has_additional_effects(authority: TurnAuthority) -> bool:
+        return bool(
+            authority.pending_player_choice or authority.allowed_new_npcs
+            or authority.allowed_existing_npc_arrivals or authority.allowed_new_items
+            or authority.allowed_new_places or authority.world_move or authority.world_thread_closures
+            or authority.inventory_receipts()
+        )
+
+    @classmethod
+    def request_receipt(cls, authority: TurnAuthority) -> str | None:
+        """Render a verified response when the decision alone completes the exchange."""
+        response = authority.addressed_response
+        if (
+            authority.scene_disposition != "stay" or authority.executed_steps()
+            or cls._has_additional_effects(authority) or authority.identity_reveal_requested
+            or not response or response.revealed_name or not response.speaker_name
+            or not response.speaker_id or response.speaker_id != authority.beat_owner_id
+        ):
+            return None
+        outcome = response.request_outcome
+        if not outcome or not outcome.standalone or len(authority.observable_consequences) != 1:
+            return None
+        if outcome.decision == "accepted":
+            return (f"«{response.speaker_name}» подтверждает согласие."
+                    if outcome.unchanged else f"«{response.speaker_name}» соглашается на просьбу.")
+        if outcome.decision == "refused":
+            return (f"«{response.speaker_name}» по-прежнему отказывает."
+                    if outcome.unchanged else f"«{response.speaker_name}» отказывает в просьбе.")
+        return None
+
+    @classmethod
+    def movement_receipt(cls, authority: TurnAuthority) -> str | None:
         """Use only executor status and the actual location for a standalone travel result."""
         if (
             not authority.target_scene_id or not authority.target_location_path
-            or authority.addressed_response or authority.beat_owner_id or authority.pending_player_choice
-            or authority.allowed_new_npcs or authority.allowed_existing_npc_arrivals
-            or authority.allowed_new_items or authority.allowed_new_places
-            or authority.world_move or authority.world_thread_closures or authority.inventory_receipts()
+            or authority.addressed_response or authority.beat_owner_id or cls._has_additional_effects(authority)
         ):
             return None
         steps = authority.executed_steps()
