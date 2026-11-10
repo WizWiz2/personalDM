@@ -137,6 +137,7 @@ class TurnAuthority(BaseModel):
         "actor_turn",
     ] = "stay"
     transition_type: str = "none"
+    source_location_id: UUID | None = None
     source_location_path: list[str] = Field(default_factory=list)
     target_location_path: list[str] = Field(default_factory=list)
     # Typed containment chain (outermost first, with stored profiles) and exit destinations of the scene.
@@ -304,6 +305,22 @@ class TurnAuthority(BaseModel):
             receipts.extend({**frame, **created} for created in step.get("created_items", []))
         return receipts
 
+    def has_location_change_authority(self) -> bool:
+        """Whether this turn provides any authority for a change of physical location."""
+        target_location_id = self.place_frame.get("location_id")
+        return bool(
+            (self.transition_type == "location_transition" and self.source_location_id
+             and target_location_id and str(self.source_location_id) != str(target_location_id))
+            or self.allowed_existing_npc_arrivals
+            or any(npc.arrives for npc in self.allowed_new_npcs)
+            or (self.world_move and self.world_move.kind in {"arrival", "npc_move"})
+            or any(
+                step["action_type"] == "movement" and step["status"] == "completed"
+                and step["target_location_id"] and step["target_location_id"] != step["source_location_id"]
+                for step in self.executed_steps()
+            )
+        )
+
     def validator_payload(self) -> dict:
         """Typed facts the four bans are judged against, and nothing else."""
         return {
@@ -334,6 +351,7 @@ class TurnAuthority(BaseModel):
                 self.world_move.model_dump(mode="json") if self.world_move else None
             ),
             "executed_steps": self.executed_steps(),
+            "location_change_authorized": self.has_location_change_authority(),
             "scene_disposition": self.scene_disposition,
             "transition_type": self.transition_type,
             "source_location": self.source_location_path,

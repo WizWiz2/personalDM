@@ -258,7 +258,13 @@ class TurnIntentPlanningPipeline:
                 campaign_id, entity_type="character",
             ) if entity.status != "inactive"]
             known_cast = {str(entity.id): entity.canonical_name for entity in cast}
-            matches = exact_identity_matches(cast, contract.addressed_character_name)
+            request_actor_id = contract.npc_request_addressee_id
+            if request_actor_id is None and len(contract.actions) == 1:
+                request_actor_id = contract.actions[0].requested_actor_id
+            if request_actor_id is not None:
+                matches = [entity for entity in cast if entity.id == request_actor_id]
+            else:
+                matches = exact_identity_matches(cast, contract.addressed_character_name)
             if len(matches) == 1:
                 addressee_id = matches[0].id
                 contract = contract.model_copy(update={"addressed_character_name": matches[0].canonical_name})
@@ -352,7 +358,7 @@ class TurnIntentPlanningPipeline:
         if (beat and contract.addressed_response_requested and contract.addressed_character_name
                 and not (contract.actions or contract.time_advance or contract.pending_player_choice
                          or contract.named_absent_people or contract.identity_reveal_requested
-                         or contract.world_state_question or world_due
+                         or contract.world_state_question or contract.npc_request_addressee_id or world_due
                          or momentum.get("automatic_deadline") or director.forced_introduce_contact)):
             speaker_id = str(beat.speaker_id)
             present = action_reference_catalog(
@@ -377,8 +383,14 @@ class TurnIntentPlanningPipeline:
             if decision is not None:
                 outcome_owner = "route_graph"
         request_scope = {}
-        if decision is None and scene_id and addressee_id and contract.addressed_response_requested and not (
-            contract.actions or contract.pending_player_choice or contract.identity_reveal_requested
+        single_npc_action = (
+            len(contract.actions) == 1 and addressee_id is not None
+            and contract.actions[0].requested_actor_id == addressee_id
+        )
+        if decision is None and scene_id and addressee_id and contract.addressed_response_requested and (
+            not contract.actions or single_npc_action
+        ) and not (
+            contract.pending_player_choice or contract.identity_reveal_requested
             or contract.time_advance or contract.world_state_question
         ):
             present = action_reference_catalog(context_messages, "Physically present characters:")

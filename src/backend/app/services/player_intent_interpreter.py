@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 from functools import reduce
 from operator import or_
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, create_model, model_validator
 
 from app.config import settings
 from app.models.item_state import RequestedInventoryAction
@@ -39,6 +39,9 @@ to another character now ("Я Ирма Вейс"). Otherwise null: private thoug
 quoted third-party speech or mere mentions of a name are not an introduction.
 Questions to the narrator about existing state use actions=[], information_request_only=true,
 world_state_question=true, addressed_response_requested=false; they do not execute the queried event.
+A request for a present NPC to do or allow something, or a check addressed to that NPC about
+their own earlier decision, is NPC dialogue even in question form. Choose that person's ID
+in npc_request_addressee_id. Leave it null for factual questions, greetings and unclear addressees.
 
 Extract actual affirmative world acts only. Negative boundaries and staying put are not acts.
 An explicit physical inspection IS observation. Mixed action + dialogue keeps both the real actions
@@ -175,6 +178,7 @@ class PlayerIntentContractDraft(BaseModel):
     actions: list[PlayerActionIntentDraft] = Field(max_length=8)
     addressed_response_requested: bool = False
     addressed_character_name: str | None = None
+    npc_request_addressee_id: UUID | None = None
     identity_reveal_requested: bool = False
     information_request_only: bool = False
     world_state_question: bool = False
@@ -402,9 +406,14 @@ def _intent_wire_model(context_messages: list[ChatMessage], references: dict[str
     action_model = reduce(or_, variants)
 
     others = tuple(sorted(name for key, name in people.items() if key != controlled_id))
+    request_addressee = Annotated[
+        Literal[tuple(sorted(recipients))] | None if recipients else type(None),
+        BeforeValidator(lambda value: str(value) if str(value) in recipients else None),
+    ]
 
     class ReferencedIntentWire(_IntentWire):
         actions: list[action_model] = Field(max_length=8)
+        npc_request_addressee_id: request_addressee = None
         # Present people are a choice; a not-yet-registered designation stays free text.
         addressed_character_name: (Literal[others] | str | None) if others else str | None = None
 
@@ -588,6 +597,7 @@ def normalize_intent_draft(
                 bool(draft.addressed_response_requested) or addressee_owned
             ),
             "addressed_character_name": _compact(draft.addressed_character_name) or None,
+            "npc_request_addressee_id": draft.npc_request_addressee_id,
             "identity_reveal_requested": bool(draft.identity_reveal_requested),
             "world_state_question": bool(draft.world_state_question),
             "pending_player_choice": _compact(draft.pending_player_choice) or None,
@@ -653,7 +663,10 @@ class PlayerIntentInterpreter:
             draft.information_request_only = all(a.contribution_kind == "speech" for a in draft.actions)
         physical = any("contribution_kind" in a.model_fields_set and a.contribution_kind == "world_action"
                        for a in draft.actions)
-        if syntax.information_request_only is True and syntax.information_recipient == "narrator" and not physical:
+        if draft.npc_request_addressee_id is not None:
+            draft.world_state_question = False
+            draft.addressed_response_requested = True
+        elif syntax.information_request_only is True and syntax.information_recipient == "narrator" and not physical:
             draft.information_request_only = True
             draft.world_state_question = True
             draft.addressed_response_requested = False
@@ -784,6 +797,13 @@ class PlayerIntentInterpreter:
                 {"phase": "intent_generation", "telemetry": dict(self._provider.last_telemetry)}
             )
             draft = PlayerIntentContractDraft.model_validate(data)
+            if draft.npc_request_addressee_id is not None:
+                people = action_reference_catalog(context_messages, "Physically present characters:")
+                request_id = str(draft.npc_request_addressee_id)
+                if request_id != _controlled_id(context_messages) and request_id in people:
+                    draft.addressed_character_name = people[request_id]
+                else:
+                    draft.npc_request_addressee_id = None
             self._apply_ownership(draft, player_input, _controlled_id(context_messages))
             self._check_places(draft, references, location_catalog)
             contract = normalize_intent_draft(draft, player_input)
