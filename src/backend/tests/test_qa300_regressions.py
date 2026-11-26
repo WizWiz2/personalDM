@@ -205,3 +205,19 @@ async def test_terminal_generation_closes_its_unfinished_validation_audit(db_ses
     await db_session.refresh(audit)
     assert audit.status == status and audit.failure_reason == "Validator failed"
     assert audit.final_text is None
+
+
+@pytest.mark.parametrize("physical", ["movement", "item_transfer"])
+def test_scribe_wire_schema_cannot_express_physical_changes(physical):
+    """Positions and custody are owned by typed executors; Scribe must not spend output on them."""
+    from uuid import uuid4
+
+    from app.services.canon_semantics import canon_envelope_for_entities
+    wire = canon_envelope_for_entities({str(uuid4())})
+    outcome = {"id": "o", "kind": "event", "description": "что-то случилось",
+               "evidence": "цитата", "authority": "dm_confirmed"}
+    proposal = {"outcome_id": "o", "change_type": physical, "payload": {"description": "x"}}
+    with pytest.raises(ValidationError):
+        wire.model_validate({"outcomes": [outcome], "proposals": [proposal]})
+    with pytest.raises(ValidationError):
+        wire.model_validate({"outcomes": [{**outcome, "kind": physical}]})

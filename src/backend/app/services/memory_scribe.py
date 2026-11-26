@@ -159,22 +159,22 @@ class MemoryScribe:
 - Не создавай canon_gap proposal и не оставляй durable outcome без конкретного fact/event/relationship
   payload: backend сам сформирует диагностический gap только если структурированное предложение
   действительно не удалось нормализовать.
-- Если результат одновременно меняет физическое владение/положение предмета и устойчивое отношение
-  между персонажами (например, возврат долга, прекращение обещания или смена статуса доверия),
-  создай отдельные proposals для каждого домена: item_transfer не заменяет relationship.
+- Перемещения персонажей и передачи предметов не записывай: их уже зафиксировали исполнители хода.
+  Если физическая передача одновременно меняет устойчивое отношение между персонажами (например,
+  возврат долга, прекращение обещания или смена статуса доверия), запиши только relationship.
   Для закрытия или замены уже текущего отношения используй change_type=relationship с operation
   revise или retract и укажи тех же subject_id/object_id и relation_type, что у изменяемой связи.
 - Если в CURRENT RELATIONSHIPS есть текущий debt между теми же персонажами, а ответ ДМа подтверждает
   возврат/передачу предмета кредитору как исполнение этого долга, relationship proposal обязателен:
   используй operation=retract (или revise с явно закрытым состоянием), те же subject_id, object_id и
-  relation_type=debt. Не оставляй debt current только потому, что item_transfer уже создан.
+  relation_type=debt. Не оставляй debt current только потому, что предмет уже передан.
 
 ФОРМАТ:
 {{
   "outcomes": [
     {{
       "id": "o1",
-      "kind": "world_state|event|knowledge_transfer|relationship_change|movement|item_transfer|narrative_detail",
+      "kind": "world_state|event|knowledge_transfer|relationship_change|narrative_detail",
       "description": "что устойчиво изменилось",
       "evidence": "точная цитата из ответа ДМа",
       "authority": "dm_confirmed|public_observation|character_claim|player_intent",
@@ -184,7 +184,7 @@ class MemoryScribe:
   "proposals": [
     {{
       "outcome_id": "o1",
-      "change_type": "fact|event|relationship|movement|knowledge|item_transfer|narrative_detail",
+      "change_type": "fact|event|relationship|knowledge|narrative_detail",
       "operation": "assert|revise|retract|contradict",
       "fact_type": "ID из каталога (только для change_type=fact)",
       "payload": {{}}
@@ -199,10 +199,8 @@ PAYLOAD:
 - scope=scene для следов, положения, состояния двери, локальной находки и любых наблюдений, истинных только здесь.
 - scope=campaign только для личности, происхождения, владения, глобального лора или устойчивого состояния, которое должно пережить смену сцены.
 - event: {{"event_type":"тип","description":"что произошло","location_id":"имя локации или null","participant_ids":["имена"]}}
-- movement: {{"character_id":"имя","location_id":"имя локации","description":"что переместилось"}}
 - relationship: {{"subject_id":"имя","object_id":"имя","relation_type":"стабильный тип","description":"новое состояние","reason":"подтверждённая причина","intensity":0.0}}
 - knowledge: {{"recipient_id":"имя слушателя","proposition":"что он узнал или услышал","source_character_id":"имя говорящего или null","confidence":0.8,"status":"known|believed|doubted","previous_proposition":"что исправляется или null"}}
-- item_transfer: {{"item_id":"точное имя предмета","owner_id":"имя владельца или null","location_id":"имя локации или null","description":"передача"}}
 
 FACT SEMANTICS:
 - Classify fact payloads semantically with memory_kind=world_canon|entity_state|scene_state.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field, ValidationError, create_model, model_validator
 
@@ -87,12 +87,26 @@ def canon_envelope_for_entities(entity_ids: set[str]):
                 raise ValueError("A fact requires an existing subject_entity_id")
             return self
 
+    # Character positions and item custody are owned by typed executors (scene
+    # transition, approved world move, inventory receipts). Prose extraction of them
+    # is always rejected, so the wire schema does not offer them at all.
+    executor_owned = {ChangeType.MOVEMENT, ChangeType.ITEM_TRANSFER}
     other = create_model(
         "BoundNonFactProposal", __base__=ProposalAtom,
-        change_type=(Literal[tuple(kind for kind in ChangeType if kind != ChangeType.FACT)], ...),
+        change_type=(Literal[tuple(
+            kind for kind in ChangeType if kind != ChangeType.FACT and kind not in executor_owned
+        )], ...),
         subject_entity_id=(identity, None),
     )
+    outcome = create_model(
+        "BoundOutcome", __base__=OutcomeAtom,
+        kind=(Literal[tuple(
+            kind for kind in get_args(OutcomeAtom.model_fields["kind"].annotation)
+            if kind not in {"movement", "item_transfer"}
+        )], ...),
+    )
     return create_model("BoundCanonEnvelope", __base__=CanonEnvelope,
+                        outcomes=(list[outcome], Field(default_factory=list, max_length=10)),
                         proposals=(list[BoundFact | other], Field(default_factory=list, max_length=12)))
 
 
