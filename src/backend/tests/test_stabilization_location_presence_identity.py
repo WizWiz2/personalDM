@@ -264,3 +264,46 @@ async def test_delayed_scribe_cannot_rewind_player_after_next_scene_transition(d
     assert player.current_location_id == second.target_location_id
     frame = await TurnWorldFrame.capture(db_session, cid, second.target_scene_id)
     assert frame.player_location_id == second.target_location_id
+
+
+@pytest.mark.asyncio
+async def test_scribe_prose_movement_cannot_relocate_an_npc(db_session):
+    """QA-410 A1: NPC location is owned by typed executors, never by prose extraction."""
+    from app.db.repositories.proposed_change_repo import ProposedChangeRepository
+    from app.models.proposed_change import ChangeType, ProposedChangeCreate
+    from app.services.post_turn_processor import PostTurnProcessor
+
+    cid = uuid4()
+    campaigns, entities, locations = (
+        CampaignRepository(db_session), EntityRepository(db_session),
+        LocationRepository(db_session),
+    )
+    await campaigns.create(cid, CampaignCreate(name="Prose NPC movement"))
+    corridor = await locations.create(cid, LocationCreate(canonical_name="Коридор"))
+    post = await locations.create(cid, LocationCreate(canonical_name="Пост"))
+    hero = await entities.create_character(cid, CharacterCreate(canonical_name="Вера"))
+    guide = await entities.create_character(
+        cid, CharacterCreate(canonical_name="Павел", current_location_id=corridor.id),
+    )
+    await campaigns.update(cid, CampaignUpdate(player_character_id=hero.id))
+    await db_session.commit()
+
+    turn = await TurnRepository(db_session).create(
+        cid, TurnCreate(role="assistant", content="Павел кивает и обещает проводить к посту."),
+    )
+    proposal_repo = ProposedChangeRepository(db_session)
+    [proposal] = await proposal_repo.create_batch(
+        turn.id,
+        [ProposedChangeCreate(
+            change_type=ChangeType.MOVEMENT,
+            payload={"character_id": str(guide.id), "location_id": str(post.id),
+                     "description": "Павел уходит к посту"},
+        )],
+    )
+    applied, staged = await PostTurnProcessor(db_session)._auto_commit_proposals(
+        cid, turn.id, [proposal],
+    )
+    assert (applied, staged) == (0, 1)
+    await db_session.commit()
+    assert (await proposal_repo.get_for_turn(turn.id))[0].status == "rejected"
+    assert (await entities.get_character(guide.id)).current_location_id == corridor.id

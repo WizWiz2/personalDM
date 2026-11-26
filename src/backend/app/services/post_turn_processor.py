@@ -15,7 +15,7 @@ from app.db.repositories.job_repo import PostTurnJobRepository
 from app.db.repositories.proposed_change_repo import ProposedChangeRepository
 from app.db.repositories.scene_repo import SceneRepository
 from app.db.repositories.turn_repo import TurnRepository
-from app.db.tables import Campaign, GenerationDecision, Turn
+from app.db.tables import GenerationDecision, Turn
 from app.models.proposed_change import ChangeType, ProposalAction
 from app.services import campaign_write_barrier
 from app.services.actor_turn_authority_guard import speech_spans
@@ -234,9 +234,6 @@ class PostTurnProcessor:
         applier = CanonApplier(self._session)
         applied = 0
         staged = 0
-        player_character_id = await self._session.scalar(
-            select(Campaign.player_character_id).where(Campaign.id == str(campaign_id))
-        )
         for proposal in proposals:
             if proposal.status != "proposed":
                 staged += 1
@@ -266,15 +263,11 @@ class PostTurnProcessor:
             # Custody changes belong to executed inventory receipts, never to
             # delayed prose extraction. A Scribe guess about possession may run
             # after several later moves (QA-209 F-14: bead was stolen from PC).
-            # Likewise PC movement belongs to the structured transition executor.
-            if (
-                change_type == ChangeType.ITEM_TRANSFER
-                or (
-                    change_type == ChangeType.MOVEMENT
-                    and player_character_id is not None
-                    and str(proposal.payload.get("character_id")) == str(player_character_id)
-                )
-            ):
+            # Likewise every character position belongs to typed executors: the
+            # scene transition (PC and carried participants) and the approved
+            # world move (autonomous NPC). Prose is never a movement source
+            # (QA-410 A1: "проведи меня" moved the NPC alone).
+            if change_type in {ChangeType.ITEM_TRANSFER, ChangeType.MOVEMENT}:
                 await repo.resolve(proposal.id, ProposalAction(status="rejected"))
                 staged += 1
                 continue
