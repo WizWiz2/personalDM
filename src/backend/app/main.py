@@ -75,6 +75,9 @@ async def lifespan(app: FastAPI):
         if worker and worker_task:
             worker.stop()
             await worker_task
+        from app.providers.llm_provider import close_model_clients
+
+        await close_model_clients()
         print("[personalDM] Shutting down backend server")
 
 

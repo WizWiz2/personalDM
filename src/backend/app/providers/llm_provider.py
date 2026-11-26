@@ -1,9 +1,11 @@
+import asyncio
 import hashlib
 import json
 import time
+import weakref
 from collections import Counter
 from collections.abc import AsyncIterator
-from contextlib import aclosing, suppress
+from contextlib import aclosing, asynccontextmanager, suppress
 from copy import deepcopy
 from typing import Any
 from urllib.parse import urlparse
@@ -16,12 +18,41 @@ from app.models.provider_config import ProviderConfigRead
 from app.models.turn import ChatMessage
 from app.providers.local_inference_queue import LocalInferenceQueueTimeout, local_inference_slot
 from app.services.provider_request_timing import (
+    TimedClient,
     local_span,
     measured_local,
     observe_event,
-    timed_client,
     validate_structured,
 )
+
+# One keep-alive client per event loop for model requests: a fresh client per call
+# repaid the TLS handshake every time (~0.25 s against api.openai.com). Keyed by the
+# client factory so a test that substitutes httpx.AsyncClient gets its own instance.
+_MODEL_CLIENTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[Any, TimedClient]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+@asynccontextmanager
+async def model_client() -> AsyncIterator[TimedClient]:
+    clients = _MODEL_CLIENTS.setdefault(asyncio.get_running_loop(), {})
+    factory = httpx.AsyncClient
+    client = clients.get(factory)
+    if client is None:
+        raw = factory(
+            trust_env=False,
+            timeout=httpx.Timeout(240.0, connect=10.0),
+            limits=httpx.Limits(keepalive_expiry=30.0),
+        )
+        client = clients[factory] = TimedClient(await raw.__aenter__())
+    yield client
+
+
+async def close_model_clients() -> None:
+    clients = _MODEL_CLIENTS.pop(asyncio.get_running_loop(), {})
+    for client in clients.values():
+        with suppress(Exception):
+            await client._client.__aexit__(None, None, None)
 
 
 class LLMProviderError(RuntimeError):
@@ -627,10 +658,7 @@ class LLMProvider:
         last_error: Exception | None = None
         last_raw_text = ""
         attempts: list[dict[str, Any]] = []
-        async with timed_client(httpx.AsyncClient(
-            trust_env=False,
-            timeout=httpx.Timeout(240.0, connect=10.0),
-        )) as client:
+        async with model_client() as client:
             for attempt in range(1, 4):
                 request_messages = list(base_messages)
                 if attempt > 1:
@@ -731,10 +759,7 @@ class LLMProvider:
         frames = 0
         completed = False
         try:
-            async with timed_client(httpx.AsyncClient(
-                trust_env=False,
-                timeout=httpx.Timeout(240.0, connect=10.0),
-            )) as client:
+            async with model_client() as client:
                 async for data in self._stream_once(client, url, headers, payload):
                     if data.get("_malformed"):
                         continue
@@ -822,10 +847,7 @@ class LLMProvider:
         needs_more_output = False
         from app.services.base_context_compiler import count_tokens
 
-        async with timed_client(httpx.AsyncClient(
-            trust_env=False,
-            timeout=httpx.Timeout(240.0, connect=10.0),
-        )) as client:
+        async with model_client() as client:
             for attempt in range(1, 4):
                 # More tokens help a truncated JSON object, not a semantically rejected one.
                 # Doubling every validation retry used to extend inference while evicting the
@@ -1195,10 +1217,7 @@ class LLMProvider:
         last_error: Exception | None = None
 
         try:
-            async with timed_client(httpx.AsyncClient(
-                trust_env=False,
-                timeout=httpx.Timeout(240.0, connect=10.0),
-            )) as client:
+            async with model_client() as client:
                 for candidate_index, candidate in enumerate(payload_variants):
                     used_payload = candidate
                     try:

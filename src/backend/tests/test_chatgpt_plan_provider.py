@@ -352,3 +352,25 @@ def test_chatgpt_disconnect_revokes_refresh_and_keeps_registration(
         method == "POST" and url.endswith("/oauth/revoke")
         for method, url, _ in _FakeSyncClient.calls
     )
+
+
+@pytest.mark.asyncio
+async def test_model_requests_reuse_one_keep_alive_client(monkeypatch):
+    """Each call used to build a client and repay the TLS handshake (~0.25 s on api.openai.com)."""
+    constructed: list[dict] = []
+
+    class _CountingClient(_ResponsesClient):
+        def __init__(self, *args, **kwargs):
+            constructed.append(kwargs)
+
+    _ResponsesClient.requests = []
+    _ResponsesClient.response_text = json.dumps({"ok": True})
+    monkeypatch.setattr(llm_provider_module.httpx, "AsyncClient", _CountingClient)
+
+    for _ in range(3):
+        await LLMProvider().generate_json(
+            [ChatMessage(role="system", content="Верни только JSON.")],
+            _chatgpt_config(), "oauth-token", response_model=_StructuredPayload,
+        )
+    assert len(_ResponsesClient.requests) == 3
+    assert len(constructed) == 1
