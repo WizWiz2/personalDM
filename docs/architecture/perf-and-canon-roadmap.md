@@ -18,7 +18,9 @@
 | P0.5 | Одна компиляция контекста за ход, без N+1 | todo | | |
 | P1 | Стриминг с валидацией по предложениям | todo | | |
 | P2 | Объединённый вызов intent+outcome | todo | | |
-| K1.0 | Срез: типизированный `npc_movements` в исходе, без перемещений из прозы (QA-410 A1) | todo | | |
+| K1.0 | Срез: позиции персонажей только из типизированных исполнителей, без перемещений из прозы (QA-410 A1) | done (ждёт PR) | `fix/k1-scribe-movement`, `da6cf514` | Красный→зелёный `test_scribe_prose_movement_cannot_relocate_an_npc`; полный suite 1399 passed, 1 падение платформенное (`test_qa304_process_ownership`, `
+` на Windows, не связано). Отдельное поле `npc_movements` не понадобилось: автономное перемещение NPC уже типизировано в `PlannedWorldMove(actor_id, destination_location_id)`, перенос спутников — в `carry_participants` перехода |
+| K1.0a | Убрать `movement` и `item_transfer` из схемы и промпта Scribe (их всегда отклоняют, это пустые выходные токены фонового вызова) | todo | | |
 | K1 | TE2 как единственный писатель (FactClaim, нити, миграция, shadow) | todo | | |
 | K2 | CanonView и типизированный валидатор (`fact_ref`) | todo | | |
 | K3 | Снос писателей из прозы (Scribe-цепочка, guard'ы, curator), undo через события | todo | | |
